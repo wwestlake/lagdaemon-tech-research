@@ -1,0 +1,9 @@
+fn fact(n: f64) -> f64 = {
+    if n <= 1.0 {
+        return 1.0;
+    } else {
+        return n * fact(n - 1.0);
+    }
+}
+
+fn main() = {}
