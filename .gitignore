@@ -1,3 +1,13 @@
+# Sensitive credentials
+CREDENTIALS-MASTER.txt
+*.pem
+*.key
+secrets/
+
+# Git Wiki temporary working directory
+wiki/
+wiki_repo/
+
 # Build directories
 build/
 bin/
@@ -16,3 +26,21 @@ llvm-install/
 # OS files
 .DS_Store
 Thumbs.db
+
+# Frust compiler debug IR dumps (regenerated on every run)
+output.ll
+output_pre_opt.ll
+output_post_opt.ll
+output.obj
+
+# Frate build/package output
+*.frpod
+
+# Captured process output
+stdout.txt
+stderr.txt
+
+# Root-level scratch dirs from manual Frate/Frust CLI testing
+/test/
+/test_link*/
+/test_workspace/

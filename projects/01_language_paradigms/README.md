@@ -1,29 +1,31 @@
-# Project 01: Multi-Paradigm Compiler Experiment
+# Project 01: Frust Multi-Paradigm Compiler Experiment
 
-## Vision: Beyond Bleeding Edge
-Exploring a multi-paradigm language architecture that unifies 4 major paradigms into a cohesive, JIT-backed LLVM language engine.
+## Vision: Frust (Functional Rust)
+Exploring a revolutionary multi-paradigm language architecture that unifies 4 major paradigms into a cohesive, JIT/AOT-backed LLVM language engine.
 
 ---
 
-## The 4 Core Paradigm Dimensions
+## Paradigm Integration Structure
 
-### 1. Imperative Dimension (`01_imperative`)
-* **Linear / Affine Resource Ownership**: Guarantees memory safety and deterministic cleanup without garbage collection or complex explicit lifetime annotations.
+### 1. Imperative & Memory Dimension (`01_imperative` & Smart Pointers)
+* **Built-in Smart Pointers**: `own T` (unique owned), `shared T` (ref-counted), `weak T` (observer), `raw* T` (hardware/OS MMIO), `&T` (auto-borrowed managed ref).
+* **No Lifetime Annotation Friction**: No `'a`, `'b` syntax overhead—compiler infers scope bounds automatically.
 * **Control Flow Graphs**: Direct LLVM IR basic block generation with zero-overhead stack allocation (`alloca`).
 
-### 2. Functional Dimension (`02_functional`)
-* **Algebraic Effects & Handlers**: Replaces exceptions, async/await, generators, and Dependency Injection with a single, unified effect handling system.
-* **Expression-Oriented Engine**: Immutable bindings, ADTs, pattern matching, and Tail-Call Optimization (TCO).
+### 2. Functional & Component Dimension (`02_functional`)
+* **First-Class Verifiable Components**: `interface`, `component`, contractual invariants (`where`), and composable port wiring (`~>`).
+* **Expression-Oriented Engine**: Immutable bindings, ADTs (Sum/Product types), Monads (`Option<T>`, `Result<T, E>`), and Tail-Call Optimization (TCO).
 
 ### 3. Meta Dimension (`03_meta`)
-* **OrcJIT Compile-Time Execution**: Executes macro logic in-memory *during compilation* using LLVM OrcJIT.
-* **AST Reflection & Code Synthesis**: First-class AST quote/unquote and type reflection.
+* **Intuitive Metaprogramming**: Types as first-class values (`Type`). Metaprogramming is plain code executed *during compilation* via LLVM OrcJIT (`build_time`).
+* **AST Reflection & Code Synthesis**: First-class AST quote/unquote and type reflection without template bloat.
 
 ### 4. Declarative Dimension (`04_declarative`)
 * **Reactive Dataflow & Signal Graph**: Declarative dependency nodes compiled into incremental evaluation loops (tailored for JUCE audio/visual node graphs and reactive UIs).
-* **Constraint & Rule Execution**: Declarative logic expressions compiled to optimized LLVM branching.
 
 ---
 
-## Unified JIT Engine (`common_ir_jit`)
-Links all 4 dimensions into a single runtime backed by **LLVM OrcJIT v2**, **Clang C Interop**, and **WebAssembly Code Emission**.
+## Unified Execution Core (`common_ir_jit`)
+Links all 4 dimensions into a dual-target backend:
+1. **Dynamic JIT**: LLVM OrcJIT v2 for live REPL & JUCE app hot-swapping.
+2. **Hard-Iron Bare-Metal AOT**: Native machine code emission linked via `LLD` for standalone `.exe` / ELF OS kernels and binaries.

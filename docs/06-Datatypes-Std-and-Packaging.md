@@ -1,4 +1,4 @@
-# 06 - Datatypes, Standard Library & Package Management
+# 06 - Datatypes, Standard Library & Packaging (`frate`)
 
 ## 1. Dual Compilation Engine: JIT + Bare-Metal AOT ("Hard Iron")
 
@@ -19,7 +19,7 @@ Our LLVM architecture supports **both** execution modes from the exact same LLVM
 
 ### Sum & Product Data Types
 
-```ldfn
+```frust
 // Sum Types (Algebraic Data Types)
 type Shape =
     | Circle(f32)
@@ -40,6 +40,6 @@ record Player {
 
 ---
 
-## 3. Package Management & Build Tools (`ldpack`)
+## 3. Package Management & Build Tools (`frate`)
 
-Cargo-style package management (`ldpack.toml`) managing module resolution, versioning, C/libc FFI bindings (`std::libc`), and target selection (`jit` vs `aot`).
+Cargo-style package management (`frate.toml` / `frate.lock`) managing module resolution, versioning, C/libc FFI bindings (`std::libc`), and target selection (`jit` vs `aot`).

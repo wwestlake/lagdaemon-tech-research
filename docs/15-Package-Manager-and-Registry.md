@@ -1,6 +1,6 @@
-# 15 - Package Manager, Storage & Registry (`frustpack`)
+# 15 - Frate Package Manager, Storage & Registry
 
-**`frustpack`** is the official package manager, build tool, dependency solver, and server registry ecosystem for **Frust** (**F**unctional **Rust**).
+**`frate`** (**F**unctional C**rate**) is the official package manager, build tool, dependency solver, and server registry ecosystem for **Frust** (**F**unctional **Rust**).
 
 ---
 
@@ -8,11 +8,11 @@
 
 * **`bin`**: Standalone AOT "Hard-Iron" executable binary (`.exe` / ELF).
 * **`lib`**: Frust library module for JIT and AOT linking.
-* **`bundle`**: Compressed `.frpack` archive containing source code, config files (`frustpack.toml`), binary artifacts, and resources.
+* **`bundle`**: Compressed `.frate` archive containing source code, config files (`frate.toml`), binary artifacts, and resources.
 
 ---
 
-## 2. Manifest (`frustpack.toml`) & Lockfile (`frustpack.lock`)
+## 2. Manifest (`frate.toml`) & Lockfile (`frate.lock`)
 
 ```toml
 [package]
@@ -34,22 +34,22 @@ assets = ["assets/presets/", "config/default.toml"]
 ## 3. Server Architecture (PostgreSQL + S3 Storage)
 
 ```
-[ frustpack publish ] ──> [ LagDaemon Registry API (lagdaemon.com) ]
+[ frate publish ] ──> [ LagDaemon Registry API (lagdaemon.com/api/frate/) ]
                                   │
                   ┌───────────────┴───────────────┐
                   ▼                               ▼
     [ PostgreSQL Index ]                 [ Amazon S3 Storage ]
-    - Metadata & SemVer                  - Stores .frpack archives
+    - Metadata & SemVer                  - Stores .frate archives
     - Dependency Graph                   - Source, config & assets
 ```
 
 ---
 
-## 4. CLI Commands
+## 4. CLI Commands (`frate`)
 
 ```bash
-frustpack new my_app --bin     # Create new binary project
-frustpack build --release      # Build Hard-Iron AOT binary
-frustpack pack                 # Create .frpack bundle
-frustpack publish              # Publish to LagDaemon Registry (S3 + Postgres)
+frate new my_app --bin     # Create new binary project
+frate build --release      # Build Hard-Iron AOT binary
+frate pack                 # Create .frate bundle
+frate publish              # Publish to LagDaemon Registry (S3 + Postgres)
 ```
