@@ -42,6 +42,14 @@ add_library(juce_docking STATIC
     src/DockManager.cpp
 )
 
+# juce_gui_extra.cpp gets compiled fresh here too (see the GTK3 comment
+# below), and JUCE_WEB_BROWSER defaults to 1 unless a consumer opts out -
+# the IDE target already sets 0 for its own compile of the same module,
+# but that define doesn't propagate to juce_docking's independent one.
+# juce_docking has no actual use for WebBrowserComponent; without this,
+# gui_extra.cpp unconditionally requires webkit2gtk headers on Linux.
+target_compile_definitions(juce_docking PUBLIC JUCE_WEB_BROWSER=0)
+
 target_include_directories(juce_docking PUBLIC
     include
 )
@@ -52,3 +60,15 @@ target_link_libraries(juce_docking PUBLIC
     juce::juce_gui_basics
     juce::juce_gui_extra
 )
+
+# On Linux, JUCE modules are recompiled from source for every target that
+# links them (no shared "libjuce" - each target gets its own translation
+# units) - so juce_gui_extra.cpp gets compiled here too, and needs GTK3's
+# headers, which live under a non-default include path
+# (/usr/include/gtk-3.0/gtk/gtk.h) that installing libgtk-3-dev alone
+# doesn't add to the compiler's default search. Not needed on Windows/Mac.
+if(UNIX AND NOT APPLE)
+    find_package(PkgConfig REQUIRED)
+    pkg_check_modules(GTK3 REQUIRED gtk+-3.0)
+    target_include_directories(juce_docking PRIVATE ${GTK3_INCLUDE_DIRS})
+endif()
