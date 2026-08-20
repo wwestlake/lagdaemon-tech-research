@@ -6,17 +6,17 @@ dump — see `HANDOFF_GEMINI.md` at repo root for broader project context
 if you need it (it's stale in places, but the repo/toolchain background
 still holds).
 
-## The library itself: `projects/03_juce_docking_system/`
+## The library itself: `projects/03_creation_dock/`
 
-A standalone static library (CMake target `juce_docking`), built from
+A standalone static library (CMake target `CreationDock`), built from
 scratch - **not** JUCE's own `TabbedComponent`/`DockingWindow` (JUCE
 doesn't ship a real docking system). Resizable splitters, drag-to-dock
 zones, persisted layout to disk.
 
 ```
-projects/03_juce_docking_system/
+projects/03_creation_dock/
   CMakeLists.txt
-  include/juce_docking/
+  include/CreationDock/
     DockManager.h        - the top-level API: registerPanel(), load/save layout
     DockContainer.h
     DockPanel.h
@@ -45,20 +45,20 @@ bit it a real, non-obvious multi-hour debugging session.
 `projects/02_juce_language_host/Source/WorkbenchComponent.h/.cpp` is the
 integration point - the IDE's main window.
 
-- `WorkbenchComponent.h:4` — `#include <juce_docking/DockManager.h>`
-- `WorkbenchComponent.h:37` — `std::unique_ptr<juce_docking::DockManager> dockManager;`
+- `WorkbenchComponent.h:4` — `#include <CreationDock/DockManager.h>`
+- `WorkbenchComponent.h:37` — `std::unique_ptr<CreationDock::DockManager> dockManager;`
 - `WorkbenchComponent.cpp` (around line 61-68) — every panel the IDE has
   gets registered here, one line each:
 
   ```cpp
-  dockManager->registerPanel("explorer", "Project Explorer", std::move(fileTree), juce_docking::DockTargetZone::Left);
-  dockManager->registerPanel("editor", "Code Editor", std::move(editor), juce_docking::DockTargetZone::CenterTab);
-  dockManager->registerPanel("metadata", "AST & Metadata Inspector", std::move(metadata), juce_docking::DockTargetZone::Right);
-  dockManager->registerPanel("context", "Frust Context", std::move(context), juce_docking::DockTargetZone::Right);
-  dockManager->registerPanel("frate", "Frate Package Manager", std::move(frate), juce_docking::DockTargetZone::Right);
-  dockManager->registerPanel("ai", "AI Assistant", std::move(aiChat), juce_docking::DockTargetZone::Right);
-  dockManager->registerPanel("console", "Console & Output REPL", std::move(console), juce_docking::DockTargetZone::Bottom);
-  dockManager->registerPanel("terminal", "OS Terminal", std::move(terminal), juce_docking::DockTargetZone::Bottom);
+  dockManager->registerPanel("explorer", "Project Explorer", std::move(fileTree), CreationDock::DockTargetZone::Left);
+  dockManager->registerPanel("editor", "Code Editor", std::move(editor), CreationDock::DockTargetZone::CenterTab);
+  dockManager->registerPanel("metadata", "AST & Metadata Inspector", std::move(metadata), CreationDock::DockTargetZone::Right);
+  dockManager->registerPanel("context", "Frust Context", std::move(context), CreationDock::DockTargetZone::Right);
+  dockManager->registerPanel("frate", "Frate Package Manager", std::move(frate), CreationDock::DockTargetZone::Right);
+  dockManager->registerPanel("ai", "AI Assistant", std::move(aiChat), CreationDock::DockTargetZone::Right);
+  dockManager->registerPanel("console", "Console & Output REPL", std::move(console), CreationDock::DockTargetZone::Bottom);
+  dockManager->registerPanel("terminal", "OS Terminal", std::move(terminal), CreationDock::DockTargetZone::Bottom);
 
   dockManager->loadLayoutFromFile(getLayoutFile());
   ```
@@ -81,7 +81,7 @@ integration point - the IDE's main window.
   in `WorkbenchComponent.cpp`. Don't touch `DockManager` itself unless the
   panel needs a genuinely new *zone* concept, not just another panel.
 - The library is consumed via relative path
-  (`add_subdirectory("${CMAKE_CURRENT_SOURCE_DIR}/../03_juce_docking_system" ...)`)
+  (`add_subdirectory("${CMAKE_CURRENT_SOURCE_DIR}/../03_creation_dock" ...)`)
   from three consumers right now: the IDE, and (transitively, since it's
   in the same build graph) nothing else currently links it directly -
   it's IDE-only, not part of `frust_lang`/`frust_compiler`/`frate`.
