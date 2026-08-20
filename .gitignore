@@ -45,3 +45,9 @@ stderr.txt
 /test/
 /test_link*/
 /test_workspace/
+
+# process_task.fr's file-based IPC convention (task-id-named input/
+# output files) - written to whatever the cwd was when a multiprocessing
+# test ran, real scratch, never meant to be tracked.
+/*_in.txt
+/*_out.txt
