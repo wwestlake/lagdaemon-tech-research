@@ -1,6 +1,6 @@
-#include "juce_docking/DockSplitter.h"
+#include "CreationDock/DockSplitter.h"
 
-namespace juce_docking {
+namespace CreationDock {
 
 DockSplitter::DockSplitter(SplitterOrientation orientationIn)
     : orientation(orientationIn)
@@ -43,4 +43,4 @@ void DockSplitter::mouseDrag(const juce::MouseEvent& e)
     if (onDragDelta) onDragDelta(delta);
 }
 
-} // namespace juce_docking
+} // namespace CreationDock

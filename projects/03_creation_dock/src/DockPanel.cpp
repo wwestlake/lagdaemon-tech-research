@@ -1,6 +1,6 @@
-#include "juce_docking/DockPanel.h"
+#include "CreationDock/DockPanel.h"
 
-namespace juce_docking {
+namespace CreationDock {
 
 DockPanel::DockPanel(const juce::String& panelID, const juce::String& title, std::unique_ptr<juce::Component> contentComponent)
     : id(panelID), panelTitle(title), content(std::move(contentComponent))
@@ -24,4 +24,4 @@ void DockPanel::setTitle(const juce::String& newTitle)
     if (onTitleChanged) onTitleChanged();
 }
 
-} // namespace juce_docking
+} // namespace CreationDock

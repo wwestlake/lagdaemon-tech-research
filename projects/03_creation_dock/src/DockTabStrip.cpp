@@ -1,7 +1,7 @@
-#include "juce_docking/DockTabStrip.h"
-#include "juce_docking/DockPanel.h"
+#include "CreationDock/DockTabStrip.h"
+#include "CreationDock/DockPanel.h"
 
-namespace juce_docking {
+namespace CreationDock {
 
 DockTabStrip::DockTabStrip(DockZone& ownerZone)
     : zone(ownerZone)
@@ -60,4 +60,4 @@ int DockTabStrip::indexOfPanel(DockPanel* panel) const
     return -1;
 }
 
-} // namespace juce_docking
+} // namespace CreationDock

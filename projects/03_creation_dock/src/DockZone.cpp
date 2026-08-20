@@ -1,6 +1,6 @@
-#include "juce_docking/DockZone.h"
+#include "CreationDock/DockZone.h"
 
-namespace juce_docking {
+namespace CreationDock {
 
 DockZone::DockZone()
 {
@@ -103,4 +103,4 @@ void DockZone::refreshLayout()
     tabStrip.repaint();
 }
 
-} // namespace juce_docking
+} // namespace CreationDock

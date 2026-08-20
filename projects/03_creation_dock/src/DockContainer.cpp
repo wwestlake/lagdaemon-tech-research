@@ -1,6 +1,6 @@
-#include "juce_docking/DockContainer.h"
+#include "CreationDock/DockContainer.h"
 
-namespace juce_docking {
+namespace CreationDock {
 
 namespace {
     constexpr int splitterThickness = 6;
@@ -107,4 +107,4 @@ void DockContainer::resized()
     centerZone->setBounds(bounds);
 }
 
-} // namespace juce_docking
+} // namespace CreationDock

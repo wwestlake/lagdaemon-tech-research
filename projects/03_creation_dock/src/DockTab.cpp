@@ -1,8 +1,8 @@
-#include "juce_docking/DockTab.h"
-#include "juce_docking/DockZone.h"
-#include "juce_docking/DockPanel.h"
+#include "CreationDock/DockTab.h"
+#include "CreationDock/DockZone.h"
+#include "CreationDock/DockPanel.h"
 
-namespace juce_docking {
+namespace CreationDock {
 
 DockTab::DockTab(DockZone& ownerZone, DockPanel& ownedPanel)
     : zone(ownerZone), panel(ownedPanel)
@@ -121,4 +121,4 @@ void DockTab::showContextMenu()
     });
 }
 
-} // namespace juce_docking
+} // namespace CreationDock

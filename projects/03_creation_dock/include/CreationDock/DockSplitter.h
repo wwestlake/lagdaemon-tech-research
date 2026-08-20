@@ -3,7 +3,7 @@
 #include <juce_gui_extra/juce_gui_extra.h>
 #include <functional>
 
-namespace juce_docking {
+namespace CreationDock {
 
 enum class SplitterOrientation { Vertical, Horizontal };
 
@@ -34,4 +34,4 @@ private:
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(DockSplitter)
 };
 
-} // namespace juce_docking
+} // namespace CreationDock

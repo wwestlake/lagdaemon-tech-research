@@ -2,7 +2,7 @@
 
 #include <juce_gui_extra/juce_gui_extra.h>
 
-namespace juce_docking {
+namespace CreationDock {
 
 enum class DockTargetZone { None, CenterTab, Left, Right, Top, Bottom };
 
@@ -27,4 +27,4 @@ private:
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(DockOverlay)
 };
 
-} // namespace juce_docking
+} // namespace CreationDock

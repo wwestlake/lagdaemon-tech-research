@@ -3,7 +3,7 @@
 #include <juce_gui_extra/juce_gui_extra.h>
 #include <functional>
 
-namespace juce_docking {
+namespace CreationDock {
 
 // The content wrapper docked into a DockZone (or floated in its own window).
 // Owns the id/title and the caller-supplied content component. All tab UI -
@@ -40,4 +40,4 @@ private:
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(DockPanel)
 };
 
-} // namespace juce_docking
+} // namespace CreationDock

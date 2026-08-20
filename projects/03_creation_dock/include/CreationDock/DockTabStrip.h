@@ -5,7 +5,7 @@
 #include <memory>
 #include "DockTab.h"
 
-namespace juce_docking {
+namespace CreationDock {
 
 class DockZone;
 class DockPanel;
@@ -39,4 +39,4 @@ private:
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(DockTabStrip)
 };
 
-} // namespace juce_docking
+} // namespace CreationDock

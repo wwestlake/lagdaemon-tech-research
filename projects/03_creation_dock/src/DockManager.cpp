@@ -1,6 +1,6 @@
-#include "juce_docking/DockManager.h"
+#include "CreationDock/DockManager.h"
 
-namespace juce_docking {
+namespace CreationDock {
 
 namespace {
     const char* zoneKeyFor(DockTargetZone zone)
@@ -355,4 +355,4 @@ bool DockManager::loadLayoutFromFile(const juce::File& file)
     return true;
 }
 
-} // namespace juce_docking
+} // namespace CreationDock

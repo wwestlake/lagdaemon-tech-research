@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.22)
-project(juce_docking VERSION 0.1.0 LANGUAGES C CXX)
+project(CreationDock VERSION 0.1.0 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -28,9 +28,9 @@ set(CMAKE_LIBRARY_OUTPUT_DIRECTORY_DEBUG   "${REPO_ROOT_DIR}/lib/Debug")
 set(CMAKE_LIBRARY_OUTPUT_DIRECTORY_RELEASE "${REPO_ROOT_DIR}/lib/Release")
 
 # ------------------------------------------------------------------------------
-# Add juce_docking Static Library Target
+# Add CreationDock Static Library Target
 # ------------------------------------------------------------------------------
-add_library(juce_docking STATIC
+add_library(CreationDock STATIC
     src/DockPanel.cpp
     src/DockTab.cpp
     src/DockTabStrip.cpp
@@ -45,16 +45,16 @@ add_library(juce_docking STATIC
 # juce_gui_extra.cpp gets compiled fresh here too (see the GTK3 comment
 # below), and JUCE_WEB_BROWSER defaults to 1 unless a consumer opts out -
 # the IDE target already sets 0 for its own compile of the same module,
-# but that define doesn't propagate to juce_docking's independent one.
-# juce_docking has no actual use for WebBrowserComponent; without this,
+# but that define doesn't propagate to CreationDock's independent one.
+# CreationDock has no actual use for WebBrowserComponent; without this,
 # gui_extra.cpp unconditionally requires webkit2gtk headers on Linux.
-target_compile_definitions(juce_docking PUBLIC JUCE_WEB_BROWSER=0)
+target_compile_definitions(CreationDock PUBLIC JUCE_WEB_BROWSER=0)
 
-target_include_directories(juce_docking PUBLIC
+target_include_directories(CreationDock PUBLIC
     include
 )
 
-target_link_libraries(juce_docking PUBLIC
+target_link_libraries(CreationDock PUBLIC
     juce::juce_core
     juce::juce_graphics
     juce::juce_gui_basics
@@ -70,5 +70,5 @@ target_link_libraries(juce_docking PUBLIC
 if(UNIX AND NOT APPLE)
     find_package(PkgConfig REQUIRED)
     pkg_check_modules(GTK3 REQUIRED gtk+-3.0)
-    target_include_directories(juce_docking PRIVATE ${GTK3_INCLUDE_DIRS})
+    target_include_directories(CreationDock PRIVATE ${GTK3_INCLUDE_DIRS})
 endif()

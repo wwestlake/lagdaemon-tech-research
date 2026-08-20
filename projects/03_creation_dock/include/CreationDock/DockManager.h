@@ -6,7 +6,7 @@
 #include "DockOverlay.h"
 #include "FloatingDockWindow.h"
 
-namespace juce_docking {
+namespace CreationDock {
 
 class DockManager : public juce::Component
 {
@@ -63,4 +63,4 @@ private:
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(DockManager)
 };
 
-} // namespace juce_docking
+} // namespace CreationDock

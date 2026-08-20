@@ -3,7 +3,7 @@
 #include <juce_gui_extra/juce_gui_extra.h>
 #include "DockPanel.h"
 
-namespace juce_docking {
+namespace CreationDock {
 
 class FloatingDockWindow : public juce::DocumentWindow
 {
@@ -25,4 +25,4 @@ private:
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(FloatingDockWindow)
 };
 
-} // namespace juce_docking
+} // namespace CreationDock

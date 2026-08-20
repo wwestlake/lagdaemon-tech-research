@@ -1,6 +1,6 @@
-#include "juce_docking/DockOverlay.h"
+#include "CreationDock/DockOverlay.h"
 
-namespace juce_docking {
+namespace CreationDock {
 
 DockOverlay::DockOverlay()
 {
@@ -60,4 +60,4 @@ void DockOverlay::hideOverlay()
     repaint();
 }
 
-} // namespace juce_docking
+} // namespace CreationDock

@@ -1,6 +1,6 @@
-#include "juce_docking/FloatingDockWindow.h"
+#include "CreationDock/FloatingDockWindow.h"
 
-namespace juce_docking {
+namespace CreationDock {
 
 FloatingDockWindow::FloatingDockWindow(const juce::String& name, std::unique_ptr<DockPanel> panel)
     : juce::DocumentWindow(name, juce::Colour(0xff181818), juce::DocumentWindow::allButtons)
@@ -31,4 +31,4 @@ std::unique_ptr<DockPanel> FloatingDockWindow::detachPanel()
     return std::move(ownedPanel);
 }
 
-} // namespace juce_docking
+} // namespace CreationDock

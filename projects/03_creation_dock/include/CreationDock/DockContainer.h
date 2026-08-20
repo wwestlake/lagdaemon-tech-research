@@ -4,7 +4,7 @@
 #include "DockZone.h"
 #include "DockSplitter.h"
 
-namespace juce_docking {
+namespace CreationDock {
 
 class DockContainer : public juce::Component
 {
@@ -53,4 +53,4 @@ private:
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(DockContainer)
 };
 
-} // namespace juce_docking
+} // namespace CreationDock
