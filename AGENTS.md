@@ -2,6 +2,25 @@
 
 Rules for any AI agent (Claude, Codex, Gemini, etc.) working in this repo.
 
+## Platform target - read this first
+
+**Windows only. No Linux/Unix/cross-platform consideration, ever, for
+any part of this project — the language, the compiler, the IDE, the
+standard library — unless the user explicitly asks for it in that
+specific moment.** Do not pause, defer, or scope a feature down
+because "it wouldn't be portable" or "there's no platform-conditional
+compilation mechanism yet." Do not add `#ifdef`/`#cfg`-style
+portability branches, do not write code with an eye toward a future
+Linux port, do not note "Windows-only for now" as a caveat implying
+it should change later. Build it for Windows and ship it.
+
+The user has stated this directly, repeatedly, across sessions
+("I have said this umpteen times... it does not need to be compatible
+with unix, stop that, its not a consideration for you now" -
+2026-08-22). Treat it as settled, not open for reconsideration. If you
+notice yourself about to hedge on cross-platform grounds, that is the
+signal to stop and just build the Windows version.
+
 ## Build
 
 - **Debug builds, not Release.** Build/run with `--config Debug`, not `Release`, unless explicitly told otherwise for a specific test.
