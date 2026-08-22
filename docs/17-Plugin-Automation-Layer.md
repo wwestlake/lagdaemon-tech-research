@@ -98,13 +98,37 @@ This is the inverse direction of `frust_plugin_register_host_function`
 **host** something to call, keyed by an event name rather than a fixed
 symbol name a human has to already know.
 
-### 4.2 Discoverable contribution points (named, not yet prioritized)
+### 4.2 Discoverable contribution points
 
-A plugin should be able to *declare* what it provides in a structured,
-host-discoverable way (matching VS Code contribution points / Eclipse
-extension points), rather than the host needing to already know a
-plugin's exact function names to call it (as `PluginsPanel`'s Call box
-and the `automation_host_example.cpp` harness both currently require).
+**Partially built.** `FrustPluginManifest` (`plugin.json`) already
+existed (name/version/`entryPoints`, purely informational) - extended
+this session with real, structured, host-consumable fields: `sourceFile`
+(the actual loadable `.frust` path), `implementedInterfaces` (which
+`interface`s a plugin implements, the concrete type, and its
+constructor function - enough for a host to build-and-call an instance
+without hardcoding the type name), `firedEvents`/`listenedEvents`
+(§4.1's event names), and `requiredHostFunctions` (what the plugin
+needs the host to provide, checkable *before* attempting to load).
+
+Verified via `automation_host_example.cpp`: a host now constructs and
+ticks both `RampAutomation` and `DecayAutomation` reading the
+constructor/type names entirely from `automation.json` - zero hardcoded
+type-name string literals in the driving code. `event_example.cpp`
+verifies the event-facing fields and uses `requiredHostFunctions` to
+check compatibility before loading.
+
+**Still not done**: no reflection of an interface's own method names
+(a host still has to already know `Automation` means `tick(f32) -> f32`
+- only *which* interface/type/constructor is discovered, not the full
+callable shape), and no host-side registry that enumerates multiple
+plugins' manifests together - each manifest is read independently, one
+plugin at a time.
+
+### 4.3 Plugin-to-plugin service discovery (named, not yet prioritized)
+
+Beyond host↔plugin, a dynamic registry (Eclipse/OSGi's service pattern)
+letting one loaded plugin discover and call another loaded plugin's
+declared capabilities, without hardcoded cross-plugin knowledge.
 
 ### 4.3 Plugin-to-plugin service discovery (named, not yet prioritized)
 
