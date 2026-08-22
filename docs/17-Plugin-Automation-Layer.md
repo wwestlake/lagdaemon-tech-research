@@ -151,6 +151,52 @@ harness never calls the provider's function directly, only observes
 the result. Confirmed the safety property too: after the provider is
 unloaded, a lookup for "doubler" returns NULL, not a stale pointer.
 
+### 4.4 Host-advertised capabilities
+
+**Built and verified.** The user's own concrete case: a plugin needs a
+file - the host shows an open-file dialog, the user picks a CSV, the
+host hands back something both sides can use to read/write it; a
+plugin should similarly be able to ask the host to open a window and
+draw a labeled 2D/3D graph. Turns out to need no new mechanism at all -
+§4.3's service registry is symmetric. The host registers its own
+capabilities via `frust_register_service` directly from its own
+startup code (not from inside a tracked `on_init` - the host itself
+never unloads, so there's no ownership window to track), and any
+plugin discovers and calls them via `lookup_service` exactly like it
+would another plugin's service.
+
+The one real design point: a capability like file I/O is **stateful and
+multi-operation** (open, then read/write repeatedly, then close) - a
+different shape than a single stateless function call. Solved without
+new plumbing: each operation is its own named service
+(`file_dialog_open`, `file_open`, `file_read_line`, `file_write_line`,
+`file_close`), threaded together by a lightweight `i64` id. The host
+owns the real OS handle in its own internal map; the plugin only ever
+holds and passes back the id - never a raw pointer/handle - exactly
+the ownership split the user specified directly ("the host will
+maintain the OS file handle structure, we pass the host an index or
+label of some kind, it finds the correct handle and performs the
+correct operation").
+
+Verified end-to-end (`host_file_service_example.cpp`/
+`file_reader_plugin.frust`/`sample_data.csv`): a host registers the
+five file capabilities above (the dialog stands in for a real GUI file
+picker), a plugin discovers all of them via `lookup_service`, opens a
+real CSV through the id-based handle, reads all four lines correctly
+in a loop, and closes it - the harness never reads the file itself,
+only observes what the plugin reports back.
+
+**Known, named limitation**: no automatic handle cleanup if a plugin is
+unloaded without closing what it opened - unlike events/services,
+which are owned during the tracked `on_init` window, file operations
+can happen at any point during a plugin's execution, and there's no
+"which plugin is currently executing" tracker broad enough to attribute
+an arbitrary mid-execution call. A plugin that opens a file is
+responsible for closing it, same as any normal file API's contract.
+Graph/window capabilities (the other half of the user's example) are a
+separate, later piece - real new JUCE windowing/2D-3D-rendering work,
+not just registry plumbing, deliberately not started yet.
+
 ## 5. Explicit Non-Goals
 
 - Not audio/VST-specific in any way - no parameter-automation vocabulary
