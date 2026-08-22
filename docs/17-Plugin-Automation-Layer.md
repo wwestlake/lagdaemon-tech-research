@@ -129,6 +129,41 @@ callable shape), and no host-side registry that enumerates multiple
 plugins' manifests together - each manifest is read independently, one
 plugin at a time.
 
+**Update - real compatibility checking, built in, not advisory.** User's
+direct requirement: "an application should be able to know what
+plugins are valid for it, that info should be in the way it handles
+them, and yes some metadata about the application its intended for is
+essential." Previously `requiredHostFunctions` was readable but nothing
+ever actually checked it - a host had to hand-roll the comparison
+itself. Added:
+- `intendedApplications` on the manifest - which application(s) a
+  plugin declares itself built for. Empty means unrestricted
+  (compatible with any host); non-empty means the CURRENT host's own
+  declared identity must appear in the list.
+- `frust_plugin_host_set_application_identity()`/
+  `frust_plugin_host_application_identity()` (`FrustPluginHost.h`) - a
+  host declares who it is, once.
+- `frust_plugin_is_host_function_available()` - a REAL symbol-table
+  check (not "was this name ever registered"), so `requiredHostFunctions`
+  checking reflects what would actually resolve.
+- `frust_plugin_manifest_is_compatible()` - the actual built-in check,
+  combining both: an identity-restricted manifest with no matching host
+  identity is incompatible (conservative default - silence on the host
+  side plus an explicit restriction on the plugin side is exactly the
+  "might be the wrong app" case worth catching); a manifest whose
+  `requiredHostFunctions` aren't all currently resolvable is
+  incompatible even if the identity matches. `frust_plugin_manifest_incompatibility_reason()`
+  gives a real, readable reason for either case.
+
+Verified (`app_identity_example.cpp`) through every real combination:
+unrestricted manifest always compatible; restricted manifest
+incompatible with no host identity set; still incompatible once the
+identity matches but a required function is missing (proves both
+checks are real, not just the first one short-circuiting); compatible
+once both hold; incompatible again if the host's identity changes to
+something that doesn't match, even with every function already
+registered (proves the identity check isn't a one-time gate).
+
 ### 4.3 Plugin-to-plugin service discovery
 
 **Built and verified.** `frust_register_service`/`frust_lookup_service`
