@@ -5,6 +5,7 @@ Rules for any AI agent (Claude, Codex, Gemini, etc.) working in this repo.
 ## Build
 
 - **Debug builds, not Release.** Build/run with `--config Debug`, not `Release`, unless explicitly told otherwise for a specific test.
+- **Single-core builds only.** Never pass `/m` or `/maxcpucount` to MSBuild (or equivalent parallel-build flags to other build tools) on this machine — this is the user's own machine and they need it usable while a build runs. Plain `MSBuild.exe solution.sln /t:target /p:Configuration=Debug`, no parallelism flag, every time.
 
 ## Standard workflow (every change, no exceptions)
 

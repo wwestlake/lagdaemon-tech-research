@@ -172,38 +172,83 @@ incompatible plugin would load anyway. User's direct call on this:
 "these low level design decisions are not mine unless they impact
 architecture of user operation, if the framework can know that the
 plugin is not compatible it should refuse it" - and, when asked what
-should happen with no manifest at all, "if it doesn't know, let the
-app decide."
+should happen with no manifest at all, initially "if it doesn't know,
+let the app decide."
 
-`frust_plugin_load(path)` now derives where a manifest for that source
-WOULD be (`<basename>.json` next to `<basename>.frust` - the existing
-convention every example fixture already follows) and, only if that
-file actually exists, parses it and runs the same
-`IsCompatible()`/`frust_plugin_manifest_is_compatible()` check
-internally. If it fails, `frust_plugin_load` returns `nullptr` and
-`frust_plugin_last_error()` explains why - no host code required. If
-there's no manifest at that path, or it fails to parse, the framework
-genuinely doesn't know either way, so it loads exactly as before (the
-"let the app decide" case, unchanged permissive default). Done before
-`frust_plugin_load` takes its own internal state lock, since the
-compatibility check's own dependents
-(`frust_plugin_host_application_identity`,
-`frust_plugin_is_host_function_available`) each take that same lock.
+First implementation (superseded below, kept here for the historical
+record): `frust_plugin_load(path)` derived where a manifest for that
+source WOULD be (`<basename>.json` next to `<basename>.frust`) and,
+only if that file existed, parsed and checked it - no manifest meant
+the framework "didn't know," so it loaded permissively either way.
+
+**Update - the manifest is now embedded IN the plugin's own source, not
+a separate file, and there is no more permissive fallback.** User's own
+question, unprompted: "is there a way to make the manifest part of the
+plugin... this is all IL right so we should be able to include the
+metadata in the file [instead of a separate file]" - immediately
+followed by "no manifest, no load at all" once that became possible.
+
+Frust gained a new, narrow, single-purpose top-level declaration:
+```
+manifest "{ \"name\": \"event_plugin\", \"listenedEvents\": [...], ... }";
+```
+(`grammar/frust.y`'s `manifest_decl`, `AST.h`'s `DeclKind::Manifest`/
+`ManifestDecl`, `Codegen.h`'s `compileManifestDecl`) - deliberately NOT
+a general `const`/`static` language feature (Frust has neither), just
+this one purpose-built construct, to avoid language scope creep for a
+plugin-hosting concern. It compiles the raw JSON text into a
+`PrivateLinkage` LLVM global under a fixed name
+(`AST.h`'s `kFrustPluginManifestGlobalName`) - private so it never
+becomes a resolvable extern JIT symbol a plugin's own code could
+collide with, since the host reads it directly off the in-memory
+`llvm::Module` object, not through the JIT's symbol table.
+
+`frust_plugin_load(path)` now, after parsing and codegen succeed but
+**before the module is ever linked into the JIT or a single instruction
+of it runs**: looks up that global on the freshly-compiled module
+(`llvm::Module::getGlobalVariable(name, /*AllowInternal=*/true)` - the
+`AllowInternal` flag is required for a private-linkage global, a real
+bug caught during verification, see below), extracts its string,
+parses it as JSON, and runs the same compatibility check as before.
+**No manifest declaration in the source at all → refused, full stop -
+there is no longer a permissive "let the app decide" fallback.** A
+manifest that fails to parse is also refused (an unreadable manifest
+gives the host no more confidence than no manifest at all). This all
+happens outside `frust_plugin_load`'s own internal state lock, for the
+same reason as before: the compatibility check's own dependents each
+take that lock themselves.
+
+A loaded plugin's manifest is retrievable from the host side via the
+new `frust_plugin_get_manifest(handle)` (`FrustPluginHost.h`) - the
+SAME `PluginManifest` `frust_plugin_load` itself already parsed and
+verified, stored on the handle, not a second independent read. Every
+test harness that used to read a plugin's manifest from its companion
+`.json` file (`event_example.cpp`, `automation_host_example.cpp`,
+`lifecycle_example.cpp`) now reads it this way instead - the companion
+`.json` files (`event_plugin.json`, `lifecycle_plugin.json`,
+`automation.json`) were deleted as superseded, single-source-of-truth
+data now living only in each plugin's own source.
 
 Verified (`auto_refuse_example.cpp`): a restricted plugin
-(`restricted_plugin.frust` + `restricted_plugin.json`) is refused by
-`frust_plugin_load` itself with no host identity set; still refused
-once the identity matches but the required function isn't registered
-yet; loads once both hold; refused again if the identity later changes
-to a non-matching one (proves the check runs fresh on every call, not
-cached from a prior success); an unrestricted plugin always loads; a
-plugin with no manifest at all loads regardless of identity. Full
-regression sweep across every existing example (event, service, file
-service, lifecycle, reload/reload-events, automation, multi-plugin and
-8-thread concurrency stress) still passes clean - `test_mark_fired` and
-`some_fn`-style required functions in existing fixtures are already
-registered before their harnesses call `frust_plugin_load`, so no
-existing test's load order needed to change.
+(`restricted_plugin.frust`, manifest now embedded) is refused with no
+host identity set; still refused once the identity matches but the
+required function isn't registered yet; loads once both hold; refused
+again if the identity later changes to a non-matching one (proves the
+check runs fresh on every call, not cached); an unrestricted plugin
+always loads; **a plugin with no embedded manifest at all
+(`test_plugin.frust`, deliberately left without one) is now ALWAYS
+refused**, regardless of host identity - replacing the old "loads
+regardless" expectation entirely. Full regression sweep across every
+existing example (event, service, file service, lifecycle,
+reload/reload-events, automation, multi-plugin and 8-thread
+concurrency stress) passes clean after migrating every loadable
+`.frust`/`.fr` fixture (10+ files, plus `host_example.cpp`'s
+dynamically-written scratch plugin sources) to carry its own embedded
+manifest. JUCE IDE rebuilt clean against the updated, now-coupled
+headers (`FrustPluginHost.h` includes `FrustPluginManifest.h` - a
+manifest is no longer optional, loosely-related metadata once "no
+manifest, no load" is the rule, so the coupling is deliberate, not
+incidental).
 
 ### 4.3 Plugin-to-plugin service discovery
 
