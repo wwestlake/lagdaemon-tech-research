@@ -2,8 +2,13 @@
 
 ## Status
 
-Requirements only. Nothing described in this document beyond
-[Section 2](#2-current-state-already-built-and-verified) is built yet.
+Sections 4.1 (event subscription), 4.2 (manifest-based discovery,
+partial - see its own note on what's still missing), and 4.3
+(plugin-to-plugin service discovery) are built and verified. This
+document was requirements-only when first written; it's since been
+updated in place as each piece landed, per this project's practice
+("nothing written is an absolute must, but we do talk about them") -
+treat it as the current state, not a frozen spec.
 
 ## 1. Problem Statement
 
@@ -124,17 +129,27 @@ callable shape), and no host-side registry that enumerates multiple
 plugins' manifests together - each manifest is read independently, one
 plugin at a time.
 
-### 4.3 Plugin-to-plugin service discovery (named, not yet prioritized)
+### 4.3 Plugin-to-plugin service discovery
 
-Beyond host↔plugin, a dynamic registry (Eclipse/OSGi's service pattern)
-letting one loaded plugin discover and call another loaded plugin's
-declared capabilities, without hardcoded cross-plugin knowledge.
+**Built and verified.** `frust_register_service`/`frust_lookup_service`
+in `frust_plugin_host` (native registry, same architecture as §4.1's
+event system: ownership tracked via the `on_init` thread-local window,
+automatic purge on `frust_plugin_unload` - fixed one real bug found
+while implementing the purge, where a later plugin overwriting an
+earlier one's service name under the same key would have had its
+registration incorrectly erased when the earlier plugin unloaded; fixed
+by only erasing when the registry still holds that specific plugin's
+own pointer, not by name alone). `core/services.fr` wraps it as
+`register_service`/`lookup_service` for plugin authors.
 
-### 4.3 Plugin-to-plugin service discovery (named, not yet prioritized)
-
-Beyond host↔plugin, a dynamic registry (Eclipse/OSGi's service pattern)
-letting one loaded plugin discover and call another loaded plugin's
-declared capabilities, without hardcoded cross-plugin knowledge.
+Verified with two SEPARATELY loaded plugins (`service_provider.frust`/
+`service_consumer.frust`) - the provider registers a "doubler" service
+in its own `on_init`; the consumer, a completely different plugin/
+JITDylib, looks it up by name and calls it entirely from its own Frust
+code (via the existing `call_i64` indirect-call builtin) - the host
+harness never calls the provider's function directly, only observes
+the result. Confirmed the safety property too: after the provider is
+unloaded, a lookup for "doubler" returns NULL, not a stale pointer.
 
 ## 5. Explicit Non-Goals
 
