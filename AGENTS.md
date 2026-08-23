@@ -38,8 +38,8 @@ signal to stop and just build the Windows version.
 
 ## Git discipline
 
-- **Commit often.** Commit after every verified build/change, don't let work pile up uncommitted.
-- **Push needs explicit go-ahead each time.** Committing is proactive; pushing to `origin` is not, unless the user has already said so for this specific batch.
+- **Commit AND push proactively, both, every time.** After every verified build/change: commit right then, push to `origin`/`master` right after. Don't wait to be asked for either one - "commit only when explicitly asked" is not and has never been a rule here (a prior version of this file said otherwise in this section while contradicting the Standard Workflow section above; that was wrong and has been corrected). The user has said this directly and repeatedly: "I have consistently said commit commit commit, you don't need my permission to commit code."
+- **This repo has no deployment - it's just a git repo.** `master` is the de facto working branch (no separate dev branch exists here); pushing straight to it carries no CI/CD or production risk. Treat pushing to `master` as routine, not something to hesitate over.
 - Never force-push, never `--no-verify`, never skip hooks without being told to.
 
 ## Communication
