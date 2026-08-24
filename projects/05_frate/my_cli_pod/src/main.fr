@@ -1,5 +1,0 @@
-// Frust pod: my_cli_pod
-
-fn main() {
-    // TODO: implement
-}

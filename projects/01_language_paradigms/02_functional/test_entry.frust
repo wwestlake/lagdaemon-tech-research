@@ -1,3 +1,0 @@
-entry fn start_app() -> i64 = {
-    42
-}
