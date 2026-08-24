@@ -2,6 +2,15 @@
 
 Rules for any AI agent (Claude, Codex, Gemini, etc.) working in this repo.
 
+**Frust and its whole ecosystem (compiler, IDE, plugin host, node
+compiler, stdlib, etc.) moved to its own repo, 2026-08-24:
+[`wwestlake/FrustLang`](https://github.com/wwestlake/FrustLang)** -
+full history preserved via `git filter-repo`. That repo has its own
+`AGENTS.md` (carried over from this one). Frust work no longer happens
+here - if you're looking for `projects/01_language_paradigms/02_functional`,
+`projects/09_frust_plugin_host`, `projects/02_juce_language_host`, or
+similar, they're gone from this repo and live there now.
+
 ## Platform target - read this first
 
 **Windows only. No Linux/Unix/cross-platform consideration, ever, for
@@ -33,7 +42,7 @@ signal to stop and just build the Windows version.
 3. `git status` / `git diff` — check what's actually changed before staging.
 4. Commit, with a real message explaining why, not just what.
 5. Push to `origin` — for this repo the user has standing authorization to push routinely ("push early, push often"); still use judgment on force-push/branch-deletion style destructive ops, those always need explicit sign-off.
-6. If it's a submodule (e.g. `projects/06_frust_library`), commit+push inside the submodule first, THEN commit+push the parent repo's pointer bump. Two separate pushes, always in that order.
+6. If it's a submodule, commit+push inside the submodule first, THEN commit+push the parent repo's pointer bump. Two separate pushes, always in that order.
 7. If you told the user a rule/process applies going forward, write it into this file, not just into your own private memory. This file is what's authoritative and visible in the repo — private memory is a supplement, never a substitute.
 
 ## Git discipline
@@ -47,7 +56,7 @@ signal to stop and just build the Windows version.
 - **Don't silently downgrade a possibly-transient failure into "it's gone" before an expensive fallback.** Say the assumption out loud first, especially before hours-long rebuilds.
 - **State the target machine/file directly instead of asking the user to disambiguate** when context already makes it obvious.
 - **Don't ask the user to make implementation-level technical decisions** — make the call and proceed. Only surface real goals/priorities as questions.
-- **Discuss real design choices before implementing them** — especially Frust language/tooling conventions — don't just build and present as done.
+- **Discuss real design choices before implementing them** — don't just build and present as done.
 - **Critical handoff info (passwords, IPs, key facts) gets its own short, clearly labeled block** — never buried in a paragraph.
 - **Never trigger UAC/sudo/admin elevation beyond already-agreed scope without discussing first**, every time, no exceptions.
 
