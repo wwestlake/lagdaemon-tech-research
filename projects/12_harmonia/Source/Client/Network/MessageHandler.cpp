@@ -2,51 +2,74 @@
 #include "Shared/Network/HarpSerializer.h"
 
 namespace Harmonia {
+
 MessageHandler::MessageHandler(WorldState* ws, AudioEngine* audio, OpenWorld* world)
     : worldState_(ws), audio_(audio), world_(world) {}
 
-void MessageHandler::onConnected(uint32_t playerID, const juce::String& serverName) {}
-void MessageHandler::onDisconnected(const juce::String& reason) {}
+void MessageHandler::onConnected(uint32_t /*playerID*/, const juce::String& /*serverName*/) {}
+void MessageHandler::onDisconnected(const juce::String& /*reason*/) {}
 
 void MessageHandler::onMessage(Net::MsgType type, const juce::MemoryBlock& payload) {
-    Net::HarpReader reader(payload.getData(), payload.getSize());
+    // HarpReader takes const juce::MemoryBlock&
+    Net::HarpReader reader(payload);
+
     switch (type) {
         case Net::MsgType::PlayerJoined: {
-            uint32_t id = reader.readU32();
+            uint32_t id       = reader.readU32();
             juce::String name = reader.readString();
-            float hue = reader.readFloat();
-            glm::vec3 pos(reader.readFloat(), reader.readFloat(), reader.readFloat());
-            world_->onPlayerJoined(id, name, hue, pos);
+            float hue         = reader.readF32();
+            glm::vec3 pos(reader.readF32(), reader.readF32(), reader.readF32());
+            if (world_) world_->onPlayerJoined(id, name, hue, pos);
             break;
         }
         case Net::MsgType::PlayerLeft: {
             uint32_t id = reader.readU32();
-            world_->onPlayerLeft(id);
+            if (world_) world_->onPlayerLeft(id);
             break;
         }
         case Net::MsgType::PlayerPosition: {
             uint32_t id = reader.readU32();
-            glm::vec3 pos(reader.readFloat(), reader.readFloat(), reader.readFloat());
-            float yaw = reader.readFloat();
-            world_->onPlayerPosition(id, pos, yaw);
+            glm::vec3 pos(reader.readF32(), reader.readF32(), reader.readF32());
+            float yaw = reader.readF32();
+            if (world_) world_->onPlayerPosition(id, pos, yaw);
             break;
         }
         case Net::MsgType::NoteOn: {
             uint32_t id = reader.readU32();
-            int note = reader.readU8();
-            float vel = reader.readFloat();
-            world_->onNoteOn(id, note, vel);
-            audio_->noteOn(note, vel, 1);
+            int   note  = reader.readU8();
+            float vel   = reader.readF32();
+            if (world_) world_->onNoteOn(id, note, vel);
+            if (audio_) audio_->noteOn(note, vel, 1);
             break;
         }
         case Net::MsgType::NoteOff: {
             uint32_t id = reader.readU32();
-            int note = reader.readU8();
-            world_->onNoteOff(id, note);
-            audio_->noteOff(note, 1);
+            int note    = reader.readU8();
+            if (world_) world_->onNoteOff(id, note);
+            if (audio_) audio_->noteOff(note, 1);
             break;
         }
-        default: break;
+        case Net::MsgType::VoxelDelta: {
+            uint16_t count = reader.readU16();
+            if (worldState_ && worldState_->livingGrid) {
+                for (int i = 0; i < (int)count; ++i) {
+                    uint8_t x = reader.readU8();
+                    uint8_t y = reader.readU8();
+                    uint8_t z = reader.readU8();
+                    float   s = reader.readF32();
+                    worldState_->livingGrid->setVoxel(x, y, z, s);
+                }
+            }
+            break;
+        }
+        case Net::MsgType::VoxelFullSync: {
+            if (worldState_ && worldState_->livingGrid)
+                worldState_->livingGrid->deserialise(payload);
+            break;
+        }
+        default:
+            break;
     }
 }
-}
+
+} // namespace Harmonia

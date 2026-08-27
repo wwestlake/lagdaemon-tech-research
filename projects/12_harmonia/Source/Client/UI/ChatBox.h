@@ -8,7 +8,7 @@ public:
     ChatBox();
     void paint(juce::Graphics&) override;
     void resized() override;
-    void keyPressed(const juce::KeyPress&);
+    bool keyPressed(const juce::KeyPress&) override;
     
     void addMessage(const juce::String& playerName, const juce::String& msg, juce::Colour nameColor);
     std::function<void(juce::String)> onSend;

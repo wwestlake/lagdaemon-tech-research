@@ -11,7 +11,7 @@ HarmoniaApp::HarmoniaApp() {
     glCtx_ = std::make_unique<HarmoniaGLContext>();
     glCtx_->attachTo(*this);
     
-    world_ = std::make_unique<OpenWorld>(worldState_.get(), audio_.get(), midi_.get(), net_.get(), &glCtx_->glCtx_);
+    world_ = std::make_unique<OpenWorld>(worldState_.get(), audio_.get(), midi_.get(), net_.get(), &glCtx_->glContext());
     msgHandler_ = std::make_unique<MessageHandler>(worldState_.get(), audio_.get(), world_.get());
     net_->addListener(this);
     

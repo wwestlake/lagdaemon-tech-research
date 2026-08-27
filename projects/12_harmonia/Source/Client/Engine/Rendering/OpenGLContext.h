@@ -24,6 +24,7 @@ public:
     void setVoxelGrid(std::shared_ptr<VoxelGrid> grid);
     void setWorldState(WorldState* state);
     Camera& camera();
+    juce::OpenGLContext& glContext() { return glCtx_; }
     
 private:
     juce::OpenGLContext glCtx_;
