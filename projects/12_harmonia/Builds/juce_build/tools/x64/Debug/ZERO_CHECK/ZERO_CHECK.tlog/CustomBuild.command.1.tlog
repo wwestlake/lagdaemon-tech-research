@@ -1,0 +1,10 @@
+^D:\000 TECH RESEARCH\PROJECTS\12_HARMONIA\BUILDS\JUCE_BUILD\TOOLS\CMAKEFILES\0AD9730BC3AB64A797673FE1543F3420\GENERATE.STAMP.RULE
+setlocal
+"C:\Program Files\CMake\bin\cmake.exe" -SD:/JUCE "-BD:/000 Tech Research/projects/12_harmonia/Builds/juce_build/tools" --check-stamp-list CMakeFiles/generate.stamp.list --vs-solution-file "D:/000 Tech Research/projects/12_harmonia/Builds/juce_build/tools/JUCE.sln"
+if %errorlevel% neq 0 goto :cmEnd
+:cmEnd
+endlocal & call :cmErrorLevel %errorlevel% & goto :cmDone
+:cmErrorLevel
+exit /b %1
+:cmDone
+if %errorlevel% neq 0 goto :VCEnd

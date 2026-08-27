@@ -1,0 +1,12 @@
+# CMake generation dependency list for this directory.
+C:/Program Files/CMake/share/cmake-4.0/Modules/BasicConfigVersion-ExactVersion.cmake.in
+C:/Program Files/CMake/share/cmake-4.0/Modules/CMakeDependentOption.cmake
+C:/Program Files/CMake/share/cmake-4.0/Modules/CMakePackageConfigHelpers.cmake
+C:/Program Files/CMake/share/cmake-4.0/Modules/WriteBasicConfigVersionFile.cmake
+D:/000 Tech Research/projects/12_harmonia/Builds/CMakeFiles/cmake.verify_globs
+D:/JUCE/CMakeLists.txt
+D:/JUCE/extras/Build/CMake/JUCECheckAtomic.cmake
+D:/JUCE/extras/Build/CMake/JUCEConfig.cmake.in
+D:/JUCE/extras/Build/CMake/JUCEHelperTargets.cmake
+D:/JUCE/extras/Build/CMake/JUCEModuleSupport.cmake
+D:/JUCE/extras/Build/CMake/JUCEUtils.cmake

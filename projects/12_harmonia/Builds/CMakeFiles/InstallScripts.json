@@ -1,0 +1,13 @@
+{
+	"InstallScripts" : 
+	[
+		"D:/000 Tech Research/projects/12_harmonia/Builds/cmake_install.cmake",
+		"D:/000 Tech Research/projects/12_harmonia/Builds/juce_build/cmake_install.cmake",
+		"D:/000 Tech Research/projects/12_harmonia/Builds/juce_build/modules/cmake_install.cmake",
+		"D:/000 Tech Research/projects/12_harmonia/Builds/juce_build/extras/Build/cmake_install.cmake",
+		"D:/000 Tech Research/projects/12_harmonia/Builds/juce_build/extras/Build/juceaide/cmake_install.cmake",
+		"D:/000 Tech Research/projects/12_harmonia/Builds/_deps/glm-build/cmake_install.cmake",
+		"D:/000 Tech Research/projects/12_harmonia/Builds/_deps/glm-build/glm/cmake_install.cmake"
+	],
+	"Parallel" : false
+}

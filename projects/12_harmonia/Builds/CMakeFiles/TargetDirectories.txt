@@ -1,0 +1,17 @@
+D:/000 Tech Research/projects/12_harmonia/Builds/CMakeFiles/HarmoniaShared.dir
+D:/000 Tech Research/projects/12_harmonia/Builds/CMakeFiles/HarmoniaServer.dir
+D:/000 Tech Research/projects/12_harmonia/Builds/CMakeFiles/HarmoniaServer_rc_lib.dir
+D:/000 Tech Research/projects/12_harmonia/Builds/CMakeFiles/Harmonia.dir
+D:/000 Tech Research/projects/12_harmonia/Builds/CMakeFiles/Harmonia_rc_lib.dir
+D:/000 Tech Research/projects/12_harmonia/Builds/CMakeFiles/INSTALL.dir
+D:/000 Tech Research/projects/12_harmonia/Builds/CMakeFiles/ALL_BUILD.dir
+D:/000 Tech Research/projects/12_harmonia/Builds/CMakeFiles/ZERO_CHECK.dir
+D:/000 Tech Research/projects/12_harmonia/Builds/juce_build/CMakeFiles/INSTALL.dir
+D:/000 Tech Research/projects/12_harmonia/Builds/juce_build/CMakeFiles/ALL_BUILD.dir
+D:/000 Tech Research/projects/12_harmonia/Builds/juce_build/modules/CMakeFiles/INSTALL.dir
+D:/000 Tech Research/projects/12_harmonia/Builds/juce_build/extras/Build/CMakeFiles/INSTALL.dir
+D:/000 Tech Research/projects/12_harmonia/Builds/juce_build/extras/Build/juceaide/CMakeFiles/INSTALL.dir
+D:/000 Tech Research/projects/12_harmonia/Builds/_deps/glm-build/CMakeFiles/INSTALL.dir
+D:/000 Tech Research/projects/12_harmonia/Builds/_deps/glm-build/CMakeFiles/ALL_BUILD.dir
+D:/000 Tech Research/projects/12_harmonia/Builds/_deps/glm-build/glm/CMakeFiles/glm.dir
+D:/000 Tech Research/projects/12_harmonia/Builds/_deps/glm-build/glm/CMakeFiles/INSTALL.dir

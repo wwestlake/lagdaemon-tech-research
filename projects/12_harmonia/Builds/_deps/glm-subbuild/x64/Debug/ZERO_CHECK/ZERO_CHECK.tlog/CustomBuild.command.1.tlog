@@ -1,0 +1,10 @@
+^D:\000 TECH RESEARCH\PROJECTS\12_HARMONIA\BUILDS\_DEPS\GLM-SUBBUILD\CMAKEFILES\7C702E7BE5CC5BA8B81B44D0DEA69DB9\GENERATE.STAMP.RULE
+setlocal
+"C:\Program Files\CMake\bin\cmake.exe" "-SD:/000 Tech Research/projects/12_harmonia/Builds/_deps/glm-subbuild" "-BD:/000 Tech Research/projects/12_harmonia/Builds/_deps/glm-subbuild" --check-stamp-list CMakeFiles/generate.stamp.list --vs-solution-file "D:/000 Tech Research/projects/12_harmonia/Builds/_deps/glm-subbuild/glm-populate.sln"
+if %errorlevel% neq 0 goto :cmEnd
+:cmEnd
+endlocal & call :cmErrorLevel %errorlevel% & goto :cmDone
+:cmErrorLevel
+exit /b %1
+:cmDone
+if %errorlevel% neq 0 goto :VCEnd
