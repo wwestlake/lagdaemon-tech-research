@@ -1,0 +1,25 @@
+# Build output
+Builds/
+build/
+out/
+
+# Generated files
+*.vcxproj.user
+*.aps
+*.ncb
+*.sdf
+*.suo
+*.vs/
+
+# Local config
+server.cfg.local
+
+# IDE
+.vs/
+*.db
+*.opendb
+
+# Python
+__pycache__/
+*.pyc
+generate_client.py
