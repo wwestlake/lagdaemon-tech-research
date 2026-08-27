@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 
 #include <juce_core/juce_core.h>
 #include <juce_events/juce_events.h>
@@ -26,6 +26,8 @@ public:
     bool         isAlive() const;
     int64_t      lastPingMs() const;
     void         recordPong(int64_t timestamp);
+    // Expose socket for handshake (used only before startThread)
+    juce::StreamingSocket* socket() { return socket_.get(); }
     
 private:
     std::unique_ptr<juce::StreamingSocket> socket_;

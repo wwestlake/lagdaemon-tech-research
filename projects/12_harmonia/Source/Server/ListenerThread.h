@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 
 #include <juce_core/juce_core.h>
 #include "SessionManager.h"
@@ -15,7 +15,8 @@ public:
     
 private:
     void acceptConnection(juce::StreamingSocket* newSocket);
-    void performHandshake(ClientConnection& conn, Session& session);
+    bool performHandshake(ClientConnection& conn, Session& session,
+                          uint32_t playerID, const juce::String& sessionName);
     
     int               port_;
     SessionManager&   sessions_;

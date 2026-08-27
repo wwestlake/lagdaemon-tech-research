@@ -21,6 +21,7 @@ public:
     bool sendHandshake(juce::StreamingSocket& socket, MsgType type);
 
     void clear();
+    const juce::MemoryBlock& getPayload() const { return payload; }
 
 private:
     juce::MemoryBlock payload;
