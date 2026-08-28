@@ -51,7 +51,8 @@ void MessageHandler::onMessage(Net::MsgType type, const juce::MemoryBlock& paylo
         }
         case Net::MsgType::VoxelDelta: {
             uint16_t count = reader.readU16();
-            if (worldState_ && worldState_->livingGrid) {
+            if (worldState_) {
+                if (!worldState_->livingGrid) worldState_->livingGrid = std::make_shared<VoxelGrid>(24, 8, 16);
                 for (int i = 0; i < (int)count; ++i) {
                     uint8_t x = reader.readU8();
                     uint8_t y = reader.readU8();
@@ -63,10 +64,13 @@ void MessageHandler::onMessage(Net::MsgType type, const juce::MemoryBlock& paylo
             break;
         }
         case Net::MsgType::VoxelFullSync: {
-            if (worldState_ && worldState_->livingGrid)
+            if (worldState_) {
+                if (!worldState_->livingGrid) worldState_->livingGrid = std::make_shared<VoxelGrid>(24, 8, 16);
                 worldState_->livingGrid->deserialise(payload);
+            }
             break;
         }
+
         default:
             break;
     }

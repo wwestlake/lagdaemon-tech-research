@@ -1,5 +1,6 @@
 #include "HarmoniaApp.h"
 #include "Client/UI/DesignTokens.h"
+#include "Shared/Network/HarpSerializer.h"
 
 namespace Harmonia {
 HarmoniaApp::HarmoniaApp() {
@@ -34,15 +35,30 @@ void HarmoniaApp::paint(juce::Graphics& g) {
 }
 
 void HarmoniaApp::onConnected(uint32_t playerID, const juce::String& serverName) {
-    juce::MessageManager::getInstance()->callAsync([this]() { enterWorld(); });
+    if (msgHandler_) msgHandler_->onConnected(playerID, serverName);
+    juce::MessageManager::getInstance()->callAsync([this, playerID]() { 
+        enterWorld(); 
+    });
 }
 
-void HarmoniaApp::onDisconnected(const juce::String& reason) {}
+void HarmoniaApp::onDisconnected(const juce::String& reason) {
+    if (msgHandler_) msgHandler_->onDisconnected(reason);
+}
 
-void HarmoniaApp::onMessage(Net::MsgType type, const juce::MemoryBlock& payload) {}
+void HarmoniaApp::onMessage(Net::MsgType type, const juce::MemoryBlock& payload) {
+    if (msgHandler_) msgHandler_->onMessage(type, payload);
+    
+    if (type == Net::MsgType::VoxelFullSync) {
+        if (glCtx_ && worldState_) {
+            glCtx_->setVoxelGrid(worldState_->livingGrid);
+        }
+    }
+}
 
-bool HarmoniaApp::keyPressed(const juce::KeyPress& key, juce::Component*) {
-    return false;
+void HarmoniaApp::enterWorld() {
+    if (browser_) browser_.reset();
+    grabKeyboardFocus();
+    resized();
 }
 
 void HarmoniaApp::showSplash() {
@@ -63,9 +79,28 @@ void HarmoniaApp::showServerBrowser() {
     browser_->onSolo = [this]() { spawnLocalServer(); };
 }
 
-void HarmoniaApp::enterWorld() {
-    browser_.reset();
+bool HarmoniaApp::keyPressed(const juce::KeyPress& key, juce::Component*) {
+    // Simple piano mapping for testing: z x c v b n m
+    int note = -1;
+    auto code = key.getKeyCode();
+    if (code == 'Z' || code == 'z') note = 60; // C4
+    if (code == 'X' || code == 'x') note = 62; // D4
+    if (code == 'C' || code == 'c') note = 64; // E4
+    if (code == 'V' || code == 'v') note = 65; // F4
+    if (code == 'B' || code == 'b') note = 67; // G4
+    if (code == 'N' || code == 'n') note = 69; // A4
+    if (code == 'M' || code == 'm') note = 71; // B4
+    
+    if (note != -1) {
+        Net::HarpWriter w;
+        w.writeU8((uint8_t)note);
+        w.writeF32(0.8f); // velocity
+        if (net_) net_->send(Net::MsgType::NoteOn, w.getPayload());
+        return true;
+    }
+    return false;
 }
+
 
 void HarmoniaApp::spawnLocalServer() {}
 }
