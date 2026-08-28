@@ -1,4 +1,4 @@
-﻿#include "HarpSerializer.h"
+#include "HarpSerializer.h"
 #include <cstring>
 
 namespace Harmonia { namespace Net {
@@ -198,6 +198,10 @@ juce::String HarpReader::readString() {
 
 bool HarpReader::isExhausted() const {
     return offset >= block.getSize();
+}
+
+void HarpWriter::writeRaw(const void* data, size_t size) {
+    if (size > 0) payload.append(data, size);
 }
 
 } // namespace Net
