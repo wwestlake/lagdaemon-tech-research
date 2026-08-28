@@ -96,7 +96,7 @@ ServerBrowser::~ServerBrowser() {
 
 void ServerBrowser::resized() {
     const int panelW = 320;
-    const int panelH = 380;
+    const int panelH = 450;
     auto panel = getLocalBounds().withSizeKeepingCentre(panelW, panelH);
 
     titleLabel_.setBounds(panel.removeFromTop(50));

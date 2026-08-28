@@ -112,6 +112,15 @@ bool HarmoniaApp::keyPressed(const juce::KeyPress& key, juce::Component*) {
     return false;
 }
 
+void HarmoniaApp::mouseDown(const juce::MouseEvent& e) {
+    if (glCtx_) glCtx_->camera().mouseDown(e);
+}
+
+void HarmoniaApp::mouseDrag(const juce::MouseEvent& e) {
+    if (glCtx_) glCtx_->camera().mouseDrag(e);
+}
 
 void HarmoniaApp::spawnLocalServer() {}
-}
+
+} // namespace Harmonia
+

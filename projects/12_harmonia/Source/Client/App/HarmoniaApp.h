@@ -26,7 +26,10 @@ public:
     void onDisconnected(const juce::String& reason) override;
     void onMessage(Net::MsgType type, const juce::MemoryBlock& payload) override;
     
-    bool keyPressed(const juce::KeyPress&, juce::Component*) override;
+    // Input
+    bool keyPressed(const juce::KeyPress& key, juce::Component* originatingComponent) override;
+    void mouseDown(const juce::MouseEvent& e) override;
+    void mouseDrag(const juce::MouseEvent& e) override;
     
 private:
     void showSplash();
