@@ -1,4 +1,4 @@
-﻿#include "ClientConnection.h"
+#include "ClientConnection.h"
 #include "Logger.h"
 
 namespace Harmonia { namespace Server {
@@ -14,7 +14,7 @@ ClientConnection::ClientConnection(juce::StreamingSocket* socket, uint32_t playe
       onMessage_(std::move(onMessage)),
       onDisconnect_(std::move(onDisconnect))
 {
-    startThread();
+    
 }
 
 ClientConnection::~ClientConnection() {
@@ -23,8 +23,6 @@ ClientConnection::~ClientConnection() {
 }
 
 void ClientConnection::run() {
-    bool firstPacket = true;
-
     while (!threadShouldExit() && alive_) {
         int ready = socket_->waitUntilReady(true, 100);
         if (ready < 0) {
@@ -38,34 +36,12 @@ void ClientConnection::run() {
         ::Harmonia::Net::MsgType msgType;
         uint32_t payloadLen = 0;
 
-        if (firstPacket) {
-            // Handshake: [4b magic][1b version][2b type][4b len]
-            Net::HandshakeHeader hdr{};
-            int r = socket_->read(&hdr, (int)sizeof(hdr), true);
-            if (r < (int)sizeof(hdr)) { disconnect(); break; }
-
-            if (hdr.magic != Net::kHarpMagic) {
-                Logger::warn("Bad HARP magic from client " + juce::String(playerID_));
-                disconnect();
-                break;
-            }
-            if (hdr.version != Net::kProtocolVersion) {
-                Logger::warn("Protocol version mismatch from client " + juce::String(playerID_));
-                disconnect();
-                break;
-            }
-            msgType    = static_cast<::Harmonia::Net::MsgType>(hdr.msgType);
-            payloadLen = hdr.payloadLen;
-            firstPacket = false;
-        } else {
-            // Normal packet: [1b version][2b type][4b len]
-            Net::PacketHeader hdr{};
+        Net::PacketHeader hdr{};
             int r = socket_->read(&hdr, (int)sizeof(hdr), true);
             if (r < (int)sizeof(hdr)) { disconnect(); break; }
 
             msgType    = static_cast<::Harmonia::Net::MsgType>(hdr.msgType);
             payloadLen = hdr.payloadLen;
-        }
 
         juce::MemoryBlock payload;
         if (payloadLen > 0) {
@@ -141,4 +117,5 @@ void ClientConnection::recordPong(int64_t timestamp) {
 
 }
 } // namespace Harmonia
+
 
