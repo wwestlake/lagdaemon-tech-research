@@ -110,6 +110,7 @@ target_sources(Harmonia PRIVATE
     Source/Client/Engine/Rendering/OpenGLContext.cpp
     Source/Client/Engine/Rendering/Camera.cpp
     Source/Client/Engine/Rendering/ShaderLibrary.cpp
+    Source/Client/Engine/Rendering/VoxelRenderer.cpp
     Source/Client/Engine/Rendering/ParticleSystem.cpp
     Source/Client/Engine/Rendering/AvatarRenderer.cpp
     Source/Client/Engine/Rendering/StarField.cpp

@@ -16,6 +16,7 @@ public:
     glm::mat4 projectionMatrix(float aspectRatio) const;
     glm::vec3 position() const;
     void flyTo(glm::vec3 target, float distanceFromTarget, float durationSec);
+    void setOrientation(float az, float el, float dist);  // instant, no animation
     
     float azimuth = 0.3f;
     float elevation = 0.4f;
