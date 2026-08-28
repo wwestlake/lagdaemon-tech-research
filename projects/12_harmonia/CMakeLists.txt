@@ -82,8 +82,8 @@ target_link_libraries(HarmoniaServer PRIVATE
 
 # Copy HarmoniaServer to bin folder
 add_custom_command(TARGET HarmoniaServer POST_BUILD
-    COMMAND ${CMAKE_COMMAND} -E make_directory "${CMAKE_SOURCE_DIR}/../harmonia_bin"
-    COMMAND ${CMAKE_COMMAND} -E copy "$<TARGET_FILE:HarmoniaServer>" "${CMAKE_SOURCE_DIR}/../harmonia_bin/HarmoniaServer.exe"
+    COMMAND ${CMAKE_COMMAND} -E make_directory "${CMAKE_SOURCE_DIR}/../../harmonia_bin"
+    COMMAND ${CMAKE_COMMAND} -E copy "$<TARGET_FILE:HarmoniaServer>" "${CMAKE_SOURCE_DIR}/../../harmonia_bin/HarmoniaServer.exe"
 )
 
 target_include_directories(HarmoniaServer PRIVATE Source)
@@ -170,8 +170,8 @@ target_link_libraries(Harmonia PRIVATE
 
 # Copy Harmonia to bin folder
 add_custom_command(TARGET Harmonia POST_BUILD
-    COMMAND ${CMAKE_COMMAND} -E make_directory "${CMAKE_SOURCE_DIR}/../harmonia_bin"
-    COMMAND ${CMAKE_COMMAND} -E copy "$<TARGET_FILE:Harmonia>" "${CMAKE_SOURCE_DIR}/../harmonia_bin/Harmonia.exe"
+    COMMAND ${CMAKE_COMMAND} -E make_directory "${CMAKE_SOURCE_DIR}/../../harmonia_bin"
+    COMMAND ${CMAKE_COMMAND} -E copy "$<TARGET_FILE:Harmonia>" "${CMAKE_SOURCE_DIR}/../../harmonia_bin/Harmonia.exe"
 )
 
 target_include_directories(Harmonia PRIVATE Source)
