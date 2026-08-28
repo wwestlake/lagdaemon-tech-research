@@ -51,3 +51,6 @@ stderr.txt
 # test ran, real scratch, never meant to be tracked.
 /*_in.txt
 /*_out.txt
+
+# Harmonia executables top-level directory
+harmonia_bin/

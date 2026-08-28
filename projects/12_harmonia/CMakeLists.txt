@@ -50,6 +50,8 @@ juce_add_console_app(HarmoniaServer
     COMPANY_NAME    "LagDaemon"
 )
 
+
+
 target_sources(HarmoniaServer PRIVATE
     Source/Server/ServerMain.cpp
     Source/Server/ServerApp.cpp
@@ -76,6 +78,12 @@ target_link_libraries(HarmoniaServer PRIVATE
     PUBLIC
     juce::juce_recommended_config_flags
     juce::juce_recommended_warning_flags
+)
+
+# Copy HarmoniaServer to bin folder
+add_custom_command(TARGET HarmoniaServer POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E make_directory "${CMAKE_SOURCE_DIR}/../harmonia_bin"
+    COMMAND ${CMAKE_COMMAND} -E copy "$<TARGET_FILE:HarmoniaServer>" "${CMAKE_SOURCE_DIR}/../harmonia_bin/HarmoniaServer.exe"
 )
 
 target_include_directories(HarmoniaServer PRIVATE Source)
@@ -158,6 +166,12 @@ target_link_libraries(Harmonia PRIVATE
     juce::juce_recommended_config_flags
     juce::juce_recommended_lto_flags
     juce::juce_recommended_warning_flags
+)
+
+# Copy Harmonia to bin folder
+add_custom_command(TARGET Harmonia POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E make_directory "${CMAKE_SOURCE_DIR}/../harmonia_bin"
+    COMMAND ${CMAKE_COMMAND} -E copy "$<TARGET_FILE:Harmonia>" "${CMAKE_SOURCE_DIR}/../harmonia_bin/Harmonia.exe"
 )
 
 target_include_directories(Harmonia PRIVATE Source)
