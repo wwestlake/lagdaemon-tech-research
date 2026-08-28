@@ -8,6 +8,7 @@ public:
     SplashScreen();
     void paint(juce::Graphics&) override;
     void resized() override {}
+    void mouseDown(const juce::MouseEvent&) override;
     
     std::function<void()> onComplete;
     
