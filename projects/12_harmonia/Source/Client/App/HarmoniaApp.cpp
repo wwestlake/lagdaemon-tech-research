@@ -90,25 +90,42 @@ void HarmoniaApp::showServerBrowser() {
 }
 
 
-bool HarmoniaApp::keyPressed(const juce::KeyPress& key, juce::Component*) {
+bool HarmoniaApp::keyPressed(const juce::KeyPress&, juce::Component*) { return false; }
+
+bool HarmoniaApp::keyStateChanged(bool /*isKeyDown*/, juce::Component*) {
     // Simple piano mapping for testing: z x c v b n m
-    int note = -1;
-    auto code = key.getKeyCode();
-    if (code == 'Z' || code == 'z') note = 60; // C4
-    if (code == 'X' || code == 'x') note = 62; // D4
-    if (code == 'C' || code == 'c') note = 64; // E4
-    if (code == 'V' || code == 'v') note = 65; // F4
-    if (code == 'B' || code == 'b') note = 67; // G4
-    if (code == 'N' || code == 'n') note = 69; // A4
-    if (code == 'M' || code == 'm') note = 71; // B4
+    std::map<int, int> keyToNote = {
+        {'Z', 60}, {'X', 62}, {'C', 64}, {'V', 65},
+        {'B', 67}, {'N', 69}, {'M', 71}
+    };
     
-    if (note != -1) {
-        Net::HarpWriter w;
-        w.writeU8((uint8_t)note);
-        w.writeF32(0.8f); // velocity
-        if (net_) net_->send(Net::MsgType::NoteOn, w.getPayload());
-        return true;
+    std::set<int> newKeysDown;
+    for (auto& pair : keyToNote) {
+        if (juce::KeyPress::isKeyCurrentlyDown(pair.first) || juce::KeyPress::isKeyCurrentlyDown(tolower(pair.first))) {
+            newKeysDown.insert(pair.second);
+        }
     }
+    
+    // Check for new notes (NoteOn)
+    for (int note : newKeysDown) {
+        if (keysDown_.find(note) == keysDown_.end()) {
+            Net::HarpWriter w;
+            w.writeU8((uint8_t)note);
+            w.writeF32(0.8f);
+            if (net_) net_->send(Net::MsgType::NoteOn, w.getPayload());
+        }
+    }
+    
+    // Check for released notes (NoteOff)
+    for (int note : keysDown_) {
+        if (newKeysDown.find(note) == newKeysDown.end()) {
+            Net::HarpWriter w;
+            w.writeU8((uint8_t)note);
+            if (net_) net_->send(Net::MsgType::NoteOff, w.getPayload());
+        }
+    }
+    
+    keysDown_ = newKeysDown;
     return false;
 }
 
