@@ -77,6 +77,7 @@ void HarmoniaApp::showServerBrowser() {
         net_->connect(host, port, name, session);
     };
     browser_->onSolo = [this]() { spawnLocalServer(); };
+    resized();
 }
 
 bool HarmoniaApp::keyPressed(const juce::KeyPress& key, juce::Component*) {

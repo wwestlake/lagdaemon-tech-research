@@ -14,7 +14,7 @@ void SplashScreen::paint(juce::Graphics& g) {
     const float h = (float)getHeight();
     const float cx = w * 0.5f;
     const float cy = h * 0.5f;
-    const float alpha = 1.0f - fadeOut_;
+    const float alpha = juce::jlimit(0.0f, 1.0f, 1.0f - fadeOut_);
 
     // Deep space background with radial gradient
     g.setGradientFill(juce::ColourGradient(
