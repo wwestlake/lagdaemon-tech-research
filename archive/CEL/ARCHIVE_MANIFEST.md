@@ -12,6 +12,7 @@ Archived on 2026-08-27 as part of the Creation Suite CEL retirement.
 | `creation-engine/EngineCore/` | `CreationEngine/EngineCore/{include,src}/` CEL script integration | `a2bcda3b7e4a376a943a1540633510e2404bb4b5` |
 | `creation-engine/Source/Views/` | `CreationEngine/Source/Views/{ScriptPanel,CelCodeTokeniser,NodeEditor}/` | `a2bcda3b7e4a376a943a1540633510e2404bb4b5` |
 | `creation-engine/Source/Import/Importers/ScriptAssetImporter.*` | `CreationEngine/Source/Import/Importers/ScriptAssetImporter.*` | `a2bcda3b7e4a376a943a1540633510e2404bb4b5` |
+| `creation-engine/docs/` | `CreationEngine/docs/` CEL scripting and cross-app language design documents | `a2bcda3b7e4a376a943a1540633510e2404bb4b5` |
 | `creation-station/Source/Language/` | `CreationStation/Source/Language/` | `121023d97eabfcbb4e0c2278b5050f2b23d7285b` |
 | `creation-station/Source/Views/` | `CreationStation/Source/Views/{DslPanel,FoleyPanel}.{h,cpp}` | `121023d97eabfcbb4e0c2278b5050f2b23d7285b` |
 
