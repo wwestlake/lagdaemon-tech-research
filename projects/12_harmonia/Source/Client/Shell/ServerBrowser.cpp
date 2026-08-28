@@ -29,8 +29,8 @@ struct HarmoniaLookAndFeel : public juce::LookAndFeel_V4 {
     }
 
     juce::Font getTextButtonFont(juce::TextButton&, int buttonHeight) override {
-        return juce::Font("Segoe UI", (float)juce::jmin(15, buttonHeight - 6),
-                          juce::Font::plain);
+        float size = (float)juce::jmin(15, buttonHeight - 6);
+        return juce::Font("Segoe UI", juce::jmax(1.0f, size), juce::Font::plain);
     }
 };
 
