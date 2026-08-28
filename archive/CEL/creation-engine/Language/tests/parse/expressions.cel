@@ -1,0 +1,5 @@
+func Compute(a: float, b: float) -> float {
+    var t = a + b * 2.0 - -a / b;
+    var flag = a < b && b <= 10.0 || !flag2;
+    return t;
+}

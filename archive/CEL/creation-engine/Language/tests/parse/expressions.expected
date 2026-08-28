@@ -1,0 +1,27 @@
+Program
+  FuncDecl Compute(a: float, b: float) -> float
+    Block
+      VarDecl t: <inferred>
+        Binary -
+          Binary +
+            Identifier a
+            Binary *
+              Identifier b
+              FloatLiteral 2.000000
+          Binary /
+            Unary -
+              Identifier a
+            Identifier b
+      VarDecl flag: <inferred>
+        Binary ||
+          Binary &&
+            Binary <
+              Identifier a
+              Identifier b
+            Binary <=
+              Identifier b
+              FloatLiteral 10.000000
+          Unary !
+            Identifier flag2
+      Return
+        Identifier t

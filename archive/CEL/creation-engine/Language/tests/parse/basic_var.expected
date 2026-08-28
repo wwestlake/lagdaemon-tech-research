@@ -1,0 +1,5 @@
+Program
+  GlobalVarDecl radius: float
+    FloatLiteral 4.000000
+  GlobalVarDecl speed: <inferred>
+    FloatLiteral 1.500000

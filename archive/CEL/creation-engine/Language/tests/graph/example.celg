@@ -1,0 +1,14 @@
+celg 1
+graph ExampleGraph
+node 1 TestSource core 100 200
+pin 1 out 1 execOut exec
+pin 1 out 2 value data float
+node 2 TestSink core 400 200
+pin 2 in 1 execIn exec
+pin 2 in 2 value data float default float 3.5
+pin 2 in 3 label data string default string hello world
+pin 2 in 4 offset data vec3 default vec3 1 2 3
+pin 2 in 5 enabled data bool default bool true
+pin 2 in 6 count data int default int 42
+connection 1 1 1 2 1
+connection 2 1 2 2 2

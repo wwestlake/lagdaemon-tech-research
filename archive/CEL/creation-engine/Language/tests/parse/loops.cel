@@ -1,0 +1,15 @@
+func CountDown(n: int) {
+    while (n > 0) {
+        n -= 1;
+        if (n == 5) {
+            continue;
+        }
+        if (n == 1) {
+            break;
+        }
+    }
+
+    for (var i: int = 0; i < 10; i += 1) {
+        log_int("i", i);
+    }
+}

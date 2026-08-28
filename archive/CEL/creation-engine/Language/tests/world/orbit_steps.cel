@@ -1,0 +1,32 @@
+// The exact on_start/on_tick shape the GS scripting plan describes,
+// simplified for celc's headless `--run-world` driver (Runtime::
+// RunWorldProgram): `init()` is called once, before any tick, and its
+// returned entity is threaded into every later `tick(self)` call as
+// `self` -- the only way v1 CEL can carry an entity's identity across
+// separate native calls at all, since there's no entity literal syntax
+// and no int->entity cast (see intrinsics.def's find_by_name comment).
+//
+// Each tick re-derives the entity's position on a radius-4 circle from
+// world_time() (the host's ScriptContext::elapsedTime accumulator, which
+// --run-world advances by `dt` before every call) using cos/sin, writes
+// it via set_position, then reads it straight back via get_position --
+// so this genuinely round-trips through the real Transform component,
+// not just the value just computed.
+//
+// Verification is the geometric invariant x^2 + z^2 == radius^2 == 16.0
+// -- true at every single tick regardless of which one, rather than
+// hand-simulating 300 trigonometric steps by hand. floor(... + 0.5)
+// rounds the float32 sin/cos rounding noise away to an exact integer
+// value so the result is exact-string-comparable against a fixture,
+// same as every other GS4/GS5 test.
+func init() -> entity {
+    return spawn_at(vec3(4.0, 0.0, 0.0));
+}
+
+func tick(self: entity) -> float {
+    var t: float = world_time();
+    set_position(self, vec3(4.0 * cos(t), 0.0, 4.0 * sin(t)));
+    var p: vec3 = get_position(self);
+    var sumSq: float = p.x * p.x + p.z * p.z;
+    return floor(sumSq + 0.5);
+}

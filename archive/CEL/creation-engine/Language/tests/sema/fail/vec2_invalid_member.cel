@@ -1,0 +1,5 @@
+// vec2 only has .x and .y -- .z is valid on vec3/vec4 but not vec2.
+func main() -> float {
+    var v: vec2 = vec2(1.0, 2.0);
+    return v.z;
+}

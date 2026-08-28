@@ -1,0 +1,13 @@
+Program
+  FuncDecl Add(a: int, b: int) -> int
+    Block
+      Return
+        Binary +
+          Identifier a
+          Identifier b
+  FuncDecl Greet(self: entity) -> void
+    Block
+      ExprStmt
+        Call
+          Identifier log
+          StringLiteral "hello"

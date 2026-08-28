@@ -1,0 +1,43 @@
+// GS9: hand-written reference for Language/tests/nodegen/bounce.celg
+// (built programmatically by ce::lang::tools::BuildBounceGraph, see
+// Language/tools/celc/nodegen_fixtures.cpp) -- must describe EXACTLY
+// the same behavior, statement for statement and operation for
+// operation, as the graph generates via `celc --graph-to-source`. Both
+// are run through `celc --run-simulation` / `celc --run-graph`
+// respectively for the same tick count, and their two-line position/
+// checksum output must be byte-identical (see
+// run_nodegen_parity_test.cmake) -- the single strongest proof in this
+// milestone that the graph and the text really are one language, not
+// two things that merely look similar.
+//
+// x/loopCounter are file-scope (not function-local): the graph's
+// GetVariable/SetVariable nodes hoist to file-scope var declarations
+// specifically so a value set in on_tick persists to the next tick
+// (see graph_to_source.cpp's own comment on why a function-local var
+// would silently reset every call) -- this mirrors that exactly.
+var x: float = 0.0;
+var loopCounter: float = 0.0;
+
+func on_start(self: entity) {
+    set_position(self, vec3(0.0, 0.0, 0.0));
+    x = 0.0;
+    loopCounter = 0.0;
+
+    var scratch: entity = spawn_at(vec3(10.0, 0.0, 0.0));
+    log("spawned scratch entity");
+    destroy(scratch);
+    log("destroyed scratch entity");
+    while (loopCounter < 3.0) {
+        loopCounter = loopCounter + 1.0;
+        log("loop tick");
+    }
+    log("loop complete");
+}
+
+func on_tick(self: entity, dt: float) {
+    x = x + (2.0 * dt);
+    set_position(self, vec3(x, 0.0, 0.0));
+    if (x >= 5.0) {
+        log("passed midpoint");
+    }
+}

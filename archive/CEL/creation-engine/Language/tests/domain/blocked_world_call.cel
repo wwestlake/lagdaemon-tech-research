@@ -1,0 +1,11 @@
+// GS-Interop: spawn() is domain World (see intrinsics.def). Compiled
+// with --domains core (no World access, e.g. a hypothetical
+// non-gameplay host's capability profile), this must fail with
+// CEL2023. Compiled with --domains core,world (or no --domains flag at
+// all, i.e. the real default IntrinsicDomainSet::All()), this must
+// type-check cleanly -- proving the default is genuinely unchanged
+// behavior, not just documented as such. See
+// Language/tests/run_domain_diag_test.cmake / run_domain_ok_test.cmake.
+func main() {
+    spawn();
+}

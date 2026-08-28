@@ -1,0 +1,22 @@
+// Classify(42): 42 > 100? no. 42 > 10? yes -> 2. Exercises nested
+// if/else (the same structural pattern the dangling-else grammar work
+// in GS2 was specifically built to parse unambiguously).
+func Classify(x: int) -> int {
+    if (x > 100) {
+        return 3;
+    } else {
+        if (x > 10) {
+            return 2;
+        } else {
+            if (x > 0) {
+                return 1;
+            } else {
+                return 0;
+            }
+        }
+    }
+}
+
+func main() -> int {
+    return Classify(42);
+}

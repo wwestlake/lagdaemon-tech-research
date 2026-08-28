@@ -1,0 +1,29 @@
+// Spawns a real 5x5 grid of entities (i in [0,4], j in [0,4]) into a
+// real headless World via spawn_at, reads each one straight back via
+// get_position (round-tripping through the actual Transform component
+// EngineCore stores, not just the value handed to spawn_at), and
+// accumulates x+y+z over all 25 entities.
+//
+// Hand-computed: y is always 0, so the sum is just i+j summed over the
+// grid. sum_{i=0..4} sum_{j=0..4} (i+j) = sum_i (5*i + 10) = 5*10 + 50 =
+// 100.0 exactly -- every term is an exact small integer as a float, no
+// rounding ambiguity anywhere in the computation.
+//
+// Loop counters are float, not int: CEL v1 has no int->float cast (see
+// type.h), and vec3()'s components are float, so counting in float from
+// the start avoids needing one.
+func main() -> float {
+    var sum: float = 0.0;
+    var i: float = 0.0;
+    while (i < 5.0) {
+        var j: float = 0.0;
+        while (j < 5.0) {
+            var e: entity = spawn_at(vec3(i, 0.0, j));
+            var p: vec3 = get_position(e);
+            sum += p.x + p.y + p.z;
+            j += 1.0;
+        }
+        i += 1.0;
+    }
+    return sum;
+}

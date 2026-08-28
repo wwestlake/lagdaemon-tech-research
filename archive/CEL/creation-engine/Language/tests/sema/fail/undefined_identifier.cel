@@ -1,0 +1,3 @@
+func Bad() -> int {
+    return undeclared_name;
+}

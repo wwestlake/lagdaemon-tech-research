@@ -1,0 +1,11 @@
+// LLVM's sdiv/srem truncate toward zero (C semantics), not floor
+// (Python semantics) -- hand-computed: -7 / 2 = -3 (truncated, not -4),
+// -7 % 2 = -1 (satisfies a == (a/b)*b + a%b: -3*2 + -1 == -7). Result:
+// q*10 + r = -3*10 + -1 = -31.
+func main() -> int {
+    var a: int = -7;
+    var b: int = 2;
+    var q: int = a / b;
+    var r: int = a % b;
+    return q * 10 + r;
+}

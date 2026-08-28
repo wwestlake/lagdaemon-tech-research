@@ -1,0 +1,10 @@
+celg 1
+graph TraceDemo
+node 1 OnStart event 0 0
+pin 1 out 1 execOut exec
+pin 1 out 2 self data entity
+node 2 Log core 0 0
+pin 2 in 1 execIn exec
+pin 2 in 2 message data string default string trace demo
+pin 2 out 3 execOut exec
+connection 1 1 1 2 1

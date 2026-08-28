@@ -1,0 +1,26 @@
+// Exercises get_color/set_color against a real headless World via
+// --run-world, mirroring spawn_grid.cel's shape: spawn a real entity,
+// round-trip a value through the real ABI/Tint component, sum to one
+// hand-computed float so CTest can assert an exact match.
+//
+// Checks two things in one pass:
+// 1. get_color on an entity that has never had set_color called lazily
+//    emplaces the {1,1,1} identity default (Tint's own doc comment) --
+//    beforeSum is exactly 3.0.
+// 2. set_color followed by get_color round-trips exactly -- afterSum is
+//    exactly 0.25 + 0.5 + 0.75 = 1.5.
+//
+// 3.0 + 1.5 = 4.5 exactly -- every term is representable exactly in
+// float, no rounding ambiguity.
+func main() -> float {
+    var e: entity = spawn();
+
+    var before: vec3 = get_color(e);
+    var beforeSum: float = before.x + before.y + before.z;
+
+    set_color(e, vec3(0.25, 0.5, 0.75));
+    var after: vec3 = get_color(e);
+    var afterSum: float = after.x + after.y + after.z;
+
+    return beforeSum + afterSum;
+}

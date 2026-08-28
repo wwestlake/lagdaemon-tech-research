@@ -1,0 +1,52 @@
+Program
+  FuncDecl CountDown(n: int) -> void
+    Block
+      While
+        Condition
+          Binary >
+            Identifier n
+            IntLiteral 0
+        Body
+          Block
+            Assign -=
+              Target
+                Identifier n
+              Value
+                IntLiteral 1
+            If
+              Condition
+                Binary ==
+                  Identifier n
+                  IntLiteral 5
+              Then
+                Block
+                  Continue
+            If
+              Condition
+                Binary ==
+                  Identifier n
+                  IntLiteral 1
+              Then
+                Block
+                  Break
+      For
+        Init
+          VarDecl i: int
+            IntLiteral 0
+        Condition
+          Binary <
+            Identifier i
+            IntLiteral 10
+        Step
+          Assign +=
+            Target
+              Identifier i
+            Value
+              IntLiteral 1
+        Body
+          Block
+            ExprStmt
+              Call
+                Identifier log_int
+                StringLiteral "i"
+                Identifier i

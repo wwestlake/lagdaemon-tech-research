@@ -1,0 +1,8 @@
+// Matrices have no member access at all (.x etc only exist on vecN) --
+// a matN is not a vec type, so this hits NoMemberAccess (2021), not
+// UnknownMember (2022, which is specifically "a vec type with an
+// invalid field letter").
+func main() -> float {
+    var m: mat2 = mat2_identity();
+    return m.x;
+}

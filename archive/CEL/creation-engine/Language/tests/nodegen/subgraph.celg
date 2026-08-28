@@ -1,0 +1,56 @@
+celg 1
+graph SubgraphDemo
+node 1 OnStart event 0 0
+pin 1 out 1 execOut exec
+pin 1 out 2 self data entity
+node 2 SubgraphEntry core 0 0
+pin 2 in 1 name data string default string Helper
+pin 2 out 2 execOut exec
+node 3 GetVariable core 0 0
+pin 3 in 1 name data string default string counter
+pin 3 out 2 value data float default float 0
+node 4 Add core 0 0
+pin 4 in 1 a data float default float 0
+pin 4 in 2 b data float default float 1
+pin 4 out 3 result data float default float 0
+node 5 SetVariable core 0 0
+pin 5 in 1 execIn exec
+pin 5 in 2 name data string default string counter
+pin 5 in 3 value data float default float 0
+pin 5 out 4 execOut exec
+node 6 SetVariable core 0 0
+pin 6 in 1 execIn exec
+pin 6 in 2 name data string default string counter
+pin 6 in 3 value data float default float 0
+pin 6 out 4 execOut exec
+node 7 CallSubgraph core 0 0
+pin 7 in 1 execIn exec
+pin 7 in 2 name data string default string Helper
+pin 7 out 3 execOut exec
+node 8 CallSubgraph core 0 0
+pin 8 in 1 execIn exec
+pin 8 in 2 name data string default string Helper
+pin 8 out 3 execOut exec
+node 9 SetPosition core 0 0
+pin 9 in 1 execIn exec
+pin 9 in 2 entity data entity
+pin 9 in 3 value data vec3 default vec3 0 0 0
+pin 9 out 4 execOut exec
+node 10 GetVariable core 0 0
+pin 10 in 1 name data string default string counter
+pin 10 out 2 value data float default float 0
+node 11 MakeVec3 core 0 0
+pin 11 in 1 x data float default float 0
+pin 11 in 2 y data float default float 0
+pin 11 in 3 z data float default float 0
+pin 11 out 4 value data vec3 default vec3 0 0 0
+connection 1 2 2 5 1
+connection 2 3 2 4 1
+connection 3 4 3 5 3
+connection 4 1 1 6 1
+connection 5 6 4 7 1
+connection 6 7 3 8 1
+connection 7 8 3 9 1
+connection 8 1 2 9 2
+connection 9 10 2 11 1
+connection 10 11 4 9 3

@@ -1,0 +1,37 @@
+// Every value chosen to be exactly representable and exactly computed
+// in float. Matrices have no member access (.x etc only exist on
+// vecN) -- values are read out of a matrix by multiplying it against a
+// standard basis vector (vec2(1,0) extracts column 0, vec2(0,1)
+// extracts column 1, since matN*vecN is column-major matrix-vector
+// product).
+//
+//   ident * v = v (identity property) -> iv = (3,4)
+//   b = from_columns((1,2), (3,4)) -- col0=(1,2), col1=(3,4)
+//   transpose2(b) has col0=(1,3), col1=(2,4) -> bt_col0 = (1,3)
+//   b*b (real matrix multiply, hand-verified): col0=(7,10), col1=(15,22)
+//     -> bb_col1 = (15,22)
+//   2.0*b: col0=(2,4), col1=(6,8) -> scaled_col1 = (6,8)
+//   -ident: col0=(-1,0), col1=(0,-1) -> negI_col0 = (-1,0)
+// Subtotal: (3+4) + (1+3) + (15+22) + (6+8) + (-1) = 61
+// Plus the equality-branch bonus (100.0) since b == itself.
+// Total: 161.
+func main() -> float {
+    var ident: mat2 = mat2_identity();
+    var v: vec2 = vec2(3.0, 4.0);
+    var iv: vec2 = ident * v;
+    var b: mat2 = mat2_from_columns(vec2(1.0, 2.0), vec2(3.0, 4.0));
+    var bt: mat2 = transpose2(b);
+    var bt_col0: vec2 = bt * vec2(1.0, 0.0);
+    var bb: mat2 = b * b;
+    var bb_col1: vec2 = bb * vec2(0.0, 1.0);
+    var scaled: mat2 = 2.0 * b;
+    var scaled_col1: vec2 = scaled * vec2(0.0, 1.0);
+    var negI: mat2 = -ident;
+    var negI_col0: vec2 = negI * vec2(1.0, 0.0);
+    var total: float = iv.x + iv.y + bt_col0.x + bt_col0.y + bb_col1.x + bb_col1.y +
+                        scaled_col1.x + scaled_col1.y + negI_col0.x;
+    if (b == mat2_from_columns(vec2(1.0, 2.0), vec2(3.0, 4.0))) {
+        total += 100.0;
+    }
+    return total;
+}

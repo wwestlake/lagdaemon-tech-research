@@ -1,0 +1,49 @@
+Program
+  GlobalVarDecl radius: float
+    FloatLiteral 4.000000
+  GlobalVarDecl speed: float
+    FloatLiteral 1.500000
+  FuncDecl on_start(self: entity) -> void
+    Block
+      ExprStmt
+        Call
+          Identifier log
+          StringLiteral "orbit start"
+  FuncDecl on_tick(self: entity, dt: float) -> void
+    Block
+      VarDecl t: float
+        Call
+          Identifier world_time
+      VarDecl p: vec3
+        Call
+          Identifier get_position
+          Identifier self
+      Assign =
+        Target
+          Member .x
+            Identifier p
+        Value
+          Binary *
+            Call
+              Identifier cos
+              Binary *
+                Identifier t
+                Identifier speed
+            Identifier radius
+      Assign =
+        Target
+          Member .z
+            Identifier p
+        Value
+          Binary *
+            Call
+              Identifier sin
+              Binary *
+                Identifier t
+                Identifier speed
+            Identifier radius
+      ExprStmt
+        Call
+          Identifier set_position
+          Identifier self
+          Identifier p

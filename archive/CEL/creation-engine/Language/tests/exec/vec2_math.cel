@@ -1,0 +1,27 @@
+// Every value chosen to be exactly representable and exactly computed
+// in float, no rounding ambiguity -- v1 has a single nonzero component
+// specifically so normalize2(v1) lands on an exact (0.0, 1.0) rather
+// than a non-power-of-2 fraction:
+//   length2(v1) = sqrt(0^2+4^2) = 4.0
+//   dot2(v1, v2) = 0*1 + 4*0 = 0.0
+//   v3 = v1 + v2 = (1.0, 4.0) -> v3.x = 1.0
+//   v4 = v1 * 2.0 = (0.0, 8.0) -> v4.y = 8.0
+//   normalize2(v1) = (0.0, 4.0)/4.0 = (0.0, 1.0) -> n.y = 1.0
+//   neg = -v2 = (-1.0, 0.0) -> neg.x = -1.0
+// Subtotal: 4.0 + 0.0 + 1.0 + 8.0 + 1.0 - 1.0 = 13.0
+// Plus the equality-branch bonus (100.0) since v2 == vec2(1.0, 0.0).
+// Total: 113.0. Exercises vec2 construction, +, scalar *, dot2,
+// length2, normalize2, unary -, member access, and == together.
+func main() -> float {
+    var v1: vec2 = vec2(0.0, 4.0);
+    var v2: vec2 = vec2(1.0, 0.0);
+    var v3: vec2 = v1 + v2;
+    var v4: vec2 = v1 * 2.0;
+    var n: vec2 = normalize2(v1);
+    var neg: vec2 = -v2;
+    var total: float = length2(v1) + dot2(v1, v2) + v3.x + v4.y + n.y + neg.x;
+    if (v2 == vec2(1.0, 0.0)) {
+        total += 100.0;
+    }
+    return total;
+}

@@ -1,0 +1,7 @@
+func Foo() {
+    log("first");
+}
+
+func Foo() {
+    log("second");
+}

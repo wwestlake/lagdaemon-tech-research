@@ -1,0 +1,22 @@
+Program
+  FuncDecl Classify(x: int) -> int
+    Block
+      If
+        Condition
+          Binary >
+            Identifier x
+            IntLiteral 0
+        Then
+          If
+            Condition
+              Binary >
+                Identifier x
+                IntLiteral 10
+            Then
+              Return
+                IntLiteral 2
+            Else
+              Return
+                IntLiteral 1
+      Return
+        IntLiteral 0

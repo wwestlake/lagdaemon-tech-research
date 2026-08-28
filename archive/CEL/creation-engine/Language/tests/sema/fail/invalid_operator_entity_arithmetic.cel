@@ -1,0 +1,3 @@
+func Bad(a: entity, b: entity) {
+    var sum: entity = a + b;
+}

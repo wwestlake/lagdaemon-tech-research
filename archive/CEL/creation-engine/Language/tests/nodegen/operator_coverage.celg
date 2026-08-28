@@ -1,0 +1,89 @@
+celg 1
+graph OperatorCoverage
+node 1 OnTick event 0 0
+pin 1 out 1 execOut exec
+pin 1 out 2 self data entity
+pin 1 out 3 dt data float default float 0
+node 2 GetPosition core 0 0
+pin 2 in 1 entity data entity
+pin 2 out 2 value data vec3 default vec3 0 0 0
+node 3 SetPosition core 0 0
+pin 3 in 1 execIn exec
+pin 3 in 2 entity data entity
+pin 3 in 3 value data vec3 default vec3 0 0 0
+pin 3 out 4 execOut exec
+node 4 Sub core 0 0
+pin 4 in 1 a data float default float 10
+pin 4 in 2 b data float default float 3
+pin 4 out 3 result data float default float 0
+node 5 SetVariable core 0 0
+pin 5 in 1 execIn exec
+pin 5 in 2 name data string default string x
+pin 5 in 3 value data float default float 0
+pin 5 out 4 execOut exec
+node 6 Div core 0 0
+pin 6 in 1 a data float default float 10
+pin 6 in 2 b data float default float 3
+pin 6 out 3 result data float default float 0
+node 7 SetVariable core 0 0
+pin 7 in 1 execIn exec
+pin 7 in 2 name data string default string y
+pin 7 in 3 value data float default float 0
+pin 7 out 4 execOut exec
+node 8 Branch core 0 0
+pin 8 in 1 execIn exec
+pin 8 in 2 condition data bool default bool false
+pin 8 out 3 execTrue exec
+pin 8 out 4 execFalse exec
+node 9 CompareLe core 0 0
+pin 9 in 1 a data float default float 1
+pin 9 in 2 b data float default float 2
+pin 9 out 3 result data bool default bool false
+node 10 Branch core 0 0
+pin 10 in 1 execIn exec
+pin 10 in 2 condition data bool default bool false
+pin 10 out 3 execTrue exec
+pin 10 out 4 execFalse exec
+node 11 CompareGt core 0 0
+pin 11 in 1 a data float default float 1
+pin 11 in 2 b data float default float 2
+pin 11 out 3 result data bool default bool false
+node 12 Branch core 0 0
+pin 12 in 1 execIn exec
+pin 12 in 2 condition data bool default bool false
+pin 12 out 3 execTrue exec
+pin 12 out 4 execFalse exec
+node 13 CompareEq core 0 0
+pin 13 in 1 a data float default float 1
+pin 13 in 2 b data float default float 2
+pin 13 out 3 result data bool default bool false
+node 14 Branch core 0 0
+pin 14 in 1 execIn exec
+pin 14 in 2 condition data bool default bool false
+pin 14 out 3 execTrue exec
+pin 14 out 4 execFalse exec
+node 15 CompareNeq core 0 0
+pin 15 in 1 a data float default float 1
+pin 15 in 2 b data float default float 2
+pin 15 out 3 result data bool default bool false
+node 16 CallFunction core 0 0
+pin 16 in 1 execIn exec
+pin 16 in 2 function data string default string SomeHelper
+pin 16 out 3 execOut exec
+connection 1 1 2 2 1
+connection 2 1 1 3 1
+connection 3 1 2 3 2
+connection 4 2 2 3 3
+connection 5 3 4 5 1
+connection 6 4 3 5 3
+connection 7 5 4 7 1
+connection 8 6 3 7 3
+connection 9 7 4 8 1
+connection 10 9 3 8 2
+connection 11 8 3 10 1
+connection 12 11 3 10 2
+connection 13 10 3 12 1
+connection 14 13 3 12 2
+connection 15 12 3 14 1
+connection 16 15 3 14 2
+connection 17 14 3 16 1

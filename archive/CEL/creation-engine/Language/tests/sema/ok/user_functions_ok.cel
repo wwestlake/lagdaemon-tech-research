@@ -1,0 +1,17 @@
+func Square(x: float) -> float {
+    return x * x;
+}
+
+func DistanceSquared(a: vec3, b: vec3) -> float {
+    var d: vec3 = a - b;
+    return Square(d.x) + Square(d.y) + Square(d.z);
+}
+
+func on_tick(self: entity, dt: float) {
+    var p: vec3 = get_position(self);
+    var origin: vec3 = vec3(0.0, 0.0, 0.0);
+    var distSq: float = DistanceSquared(p, origin);
+    if (distSq > 100.0) {
+        destroy(self);
+    }
+}

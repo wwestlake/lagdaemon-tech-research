@@ -1,0 +1,14 @@
+var radius: float = 4.0;
+var speed: float = 1.5;
+
+func on_start(self: entity) {
+    log("orbit start");
+}
+
+func on_tick(self: entity, dt: float) {
+    var t: float = world_time();
+    var p: vec3 = get_position(self);
+    p.x = cos(t * speed) * radius;
+    p.z = sin(t * speed) * radius;
+    set_position(self, p);
+}

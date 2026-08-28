@@ -1,0 +1,143 @@
+// CEL v1's intrinsic surface -- the ONE source of truth for every
+// built-in callable function. Consumed by sema (GS3, for signature/type
+// checking) and, from GS5 onward, by IR-gen/JIT registration (host ABI
+// dispatch + LLVM function attributes) and `celc --dump-intrinsics`
+// (docs/SCRIPTING_ABI.md generation) -- see the GS scripting plan
+// (~/.claude/plans/partitioned-singing-galaxy.md).
+//
+// Deliberately NOT include-guarded: designed to be included multiple
+// times, once per consumer, each defining CEL_INTRINSIC0..4 (arity 0
+// through 4 -- vec4's constructor is the one arity-4 intrinsic, added
+// for CEL-M1) before inclusion and #undef-ing them after.
+//
+//   CEL_INTRINSICn(name, cSymbol, purity, domain, returnType, param1Type, ..., paramNType)
+//
+// - name: the CEL-visible identifier.
+// - cSymbol: the real extern "C" trampoline symbol
+//   (Language/src/jit/intrinsic_trampolines.cpp) registered via ORC's
+//   absoluteSymbols for genuine host-ABI calls. For the 14 "pure
+//   computation" math/vec3 intrinsics that GS4 already lowers directly
+//   to LLVM IR (no external call at all -- see module_builder.cpp's
+//   CodegenBuiltinIntrinsic), this column is inert/never dereferenced;
+//   it's just set to the intrinsic's own name for a harmless,
+//   documentation-consistent placeholder rather than an empty token.
+// - purity: Pure (no memory access at all -- only true math, e.g.
+//   atan2), ReadsWorld (may read the World/registry but never mutate
+//   it -- gets the LLVM `readonly` attribute), or Mutates (may write --
+//   gets no memory-access attribute at all). Getting this wrong for a
+//   ReadsWorld/Mutates function (e.g. marking get_position as Pure)
+//   would let the optimizer illegally hoist/reorder it above a
+//   set_position call and silently corrupt game behavior -- see
+//   docs/SCRIPTING_ABI.md.
+// - domain: GS-Interop's cross-app capability tag (Core or World --
+//   see lang/type.h's IntrinsicDomain). What lets a host (celc, or
+//   eventually another app in the Creation suite) restrict which
+//   intrinsics a compiled script can actually call/link against --
+//   see docs/CROSS_APP_LANGUAGE_DOMAINS.md.
+//
+// Names/types are plain identifiers (Int, Float, Bool, Vec3, Entity,
+// Void, String) -- each consumer's own macro expansion prefixes them
+// with whatever its local Type/Purity/IntrinsicDomain scope needs.
+
+// Math (float) -- pure IR, no real ABI call (see cSymbol note above),
+// except atan2, which has no direct LLVM intrinsic and is a real
+// trampoline call. Domain Core: no World access, available to every
+// app regardless of capability profile.
+CEL_INTRINSIC1(sqrt, sqrt, Pure, Core, Float, Float)
+CEL_INTRINSIC1(abs, abs, Pure, Core, Float, Float)
+CEL_INTRINSIC2(min, min, Pure, Core, Float, Float, Float)
+CEL_INTRINSIC2(max, max, Pure, Core, Float, Float, Float)
+CEL_INTRINSIC1(floor, floor, Pure, Core, Float, Float)
+CEL_INTRINSIC1(sin, sin, Pure, Core, Float, Float)
+CEL_INTRINSIC1(cos, cos, Pure, Core, Float, Float)
+CEL_INTRINSIC2(atan2, ce_atan2, Pure, Core, Float, Float, Float)
+CEL_INTRINSIC3(clamp, clamp, Pure, Core, Float, Float, Float, Float)
+CEL_INTRINSIC3(lerp, lerp, Pure, Core, Float, Float, Float, Float)
+
+// Vec2/Vec3/Vec4 -- pure IR, no real ABI call. Domain Core. dot/length/
+// normalize are size-suffixed (dot2/length2/normalize2, dot4/length4/
+// normalize4) rather than overloaded, since CEL has no function
+// overloading yet (sema.cpp's function table is a flat name->signature
+// map) -- see module_builder.cpp's CodegenBuiltinIntrinsic for why.
+// cross is Vec3-only; there is no 2D or 4D cross product in the
+// mathematical sense this operation means (2D "cross" degenerates to a
+// scalar, 4D has no single well-defined analogue), so it isn't
+// generalized here.
+CEL_INTRINSIC2(vec2, vec2, Pure, Core, Vec2, Float, Float)
+CEL_INTRINSIC2(dot2, dot2, Pure, Core, Float, Vec2, Vec2)
+CEL_INTRINSIC1(length2, length2, Pure, Core, Float, Vec2)
+CEL_INTRINSIC1(normalize2, normalize2, Pure, Core, Vec2, Vec2)
+
+CEL_INTRINSIC3(vec3, vec3, Pure, Core, Vec3, Float, Float, Float)
+CEL_INTRINSIC2(dot, dot, Pure, Core, Float, Vec3, Vec3)
+CEL_INTRINSIC2(cross, cross, Pure, Core, Vec3, Vec3, Vec3)
+CEL_INTRINSIC1(length, length, Pure, Core, Float, Vec3)
+CEL_INTRINSIC1(normalize, normalize, Pure, Core, Vec3, Vec3)
+
+CEL_INTRINSIC4(vec4, vec4, Pure, Core, Vec4, Float, Float, Float, Float)
+CEL_INTRINSIC2(dot4, dot4, Pure, Core, Float, Vec4, Vec4)
+CEL_INTRINSIC1(length4, length4, Pure, Core, Float, Vec4)
+CEL_INTRINSIC1(normalize4, normalize4, Pure, Core, Vec4, Vec4)
+
+// Mat2/Mat3/Mat4 -- pure IR, no real ABI call. Domain Core. Column-major
+// storage (matching juce::Matrix3D<float>/cgltf_node_transform_local's
+// convention already used elsewhere in Creation Engine -- see
+// AnimationSampler.cpp's ComposeTRS). Arithmetic (+, -, scalar *,
+// matrix * matrix, matrix * vector, ==, unary -) goes through the
+// ordinary operators, same as vecN -- only construction (identity,
+// from-columns) and transpose need named intrinsics here, since there's
+// no operator syntax for them. A flat-explicit-component-list
+// constructor (mat4(16 floats)) was deliberately NOT added -- it would
+// need CEL_INTRINSIC9/CEL_INTRINSIC16 macro arities added just for this,
+// for a call-site ergonomics net loss (16 positional floats is exactly
+// the kind of easy-to-transpose-by-accident interface this milestone
+// should avoid); from-columns is both sufficient and safer.
+CEL_INTRINSIC0(mat2_identity, mat2_identity, Pure, Core, Mat2)
+CEL_INTRINSIC2(mat2_from_columns, mat2_from_columns, Pure, Core, Mat2, Vec2, Vec2)
+CEL_INTRINSIC1(transpose2, transpose2, Pure, Core, Mat2, Mat2)
+
+CEL_INTRINSIC0(mat3_identity, mat3_identity, Pure, Core, Mat3)
+CEL_INTRINSIC3(mat3_from_columns, mat3_from_columns, Pure, Core, Mat3, Vec3, Vec3, Vec3)
+CEL_INTRINSIC1(transpose3, transpose3, Pure, Core, Mat3, Mat3)
+
+CEL_INTRINSIC0(mat4_identity, mat4_identity, Pure, Core, Mat4)
+CEL_INTRINSIC4(mat4_from_columns, mat4_from_columns, Pure, Core, Mat4, Vec4, Vec4, Vec4, Vec4)
+CEL_INTRINSIC1(transpose4, transpose4, Pure, Core, Mat4, Mat4)
+
+// World -- real ABI, read-only. Domain World: only a host whose
+// capability profile includes World (Creation Engine's own gameplay
+// use, today) may call these.
+CEL_INTRINSIC0(world_tick, ce_world_tick, ReadsWorld, World, Int)
+CEL_INTRINSIC0(world_time, ce_world_time, ReadsWorld, World, Float)
+
+// Entity -- real ABI. Domain World.
+CEL_INTRINSIC0(spawn, ce_spawn, Mutates, World, Entity)
+CEL_INTRINSIC1(spawn_at, ce_spawn_at, Mutates, World, Entity, Vec3)
+CEL_INTRINSIC1(destroy, ce_destroy, Mutates, World, Void, Entity)
+CEL_INTRINSIC1(is_valid, ce_is_valid, ReadsWorld, World, Bool, Entity)
+CEL_INTRINSIC0(entity_count, ce_entity_count, ReadsWorld, World, Int)
+CEL_INTRINSIC1(find_by_name, ce_find_by_name, ReadsWorld, World, Entity, String)
+
+// Transform -- real ABI. Domain World.
+CEL_INTRINSIC1(get_position, ce_get_position, ReadsWorld, World, Vec3, Entity)
+CEL_INTRINSIC2(set_position, ce_set_position, Mutates, World, Void, Entity, Vec3)
+CEL_INTRINSIC1(get_rotation, ce_get_rotation, ReadsWorld, World, Vec3, Entity)
+CEL_INTRINSIC2(set_rotation, ce_set_rotation, Mutates, World, Void, Entity, Vec3)
+CEL_INTRINSIC1(get_scale, ce_get_scale, ReadsWorld, World, Vec3, Entity)
+CEL_INTRINSIC2(set_scale, ce_set_scale, Mutates, World, Void, Entity, Vec3)
+
+// Color -- real ABI. Domain World. Reads/writes ce::engine::Tint, a
+// per-entity runtime multiplier over whatever Material the entity's
+// MeshRenderer references -- never the shared Material asset itself
+// (see Tint's own doc comment in core_components.h for why).
+CEL_INTRINSIC1(get_color, ce_get_color, ReadsWorld, World, Vec3, Entity)
+CEL_INTRINSIC2(set_color, ce_set_color, Mutates, World, Void, Entity, Vec3)
+
+// Debug -- real ABI; writes to stdout, so Mutates even though it never
+// touches the World itself (purity here is about the JIT-visible memory
+// contract, not specifically "touches World"). Domain Core: logging is
+// a universal capability, available regardless of an app's World access.
+CEL_INTRINSIC1(log, ce_log, Mutates, Core, Void, String)
+CEL_INTRINSIC2(log_int, ce_log_int, Mutates, Core, Void, String, Int)
+CEL_INTRINSIC2(log_float, ce_log_float, Mutates, Core, Void, String, Float)
+CEL_INTRINSIC2(log_vec3, ce_log_vec3, Mutates, Core, Void, String, Vec3)

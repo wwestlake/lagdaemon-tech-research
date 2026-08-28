@@ -1,0 +1,23 @@
+// First i (starting from 0) where i*i > 50: 7*7=49 (no), 8*8=64 (yes)
+// -> 8. Exercises break out of a while loop plus a value carried past
+// the loop in a local variable (not a `while(true)` with the return
+// buried inside the loop body -- sema's return-on-all-paths analysis is
+// deliberately conservative about loops that might execute zero times,
+// so the answer is threaded out through `result` and returned after the
+// loop, a pattern real CEL scripts will want anyway).
+func FindFirstOver(threshold: int) -> int {
+    var result: int = -1;
+    var i: int = 0;
+    while (i < 100) {
+        if (i * i > threshold) {
+            result = i;
+            break;
+        }
+        i += 1;
+    }
+    return result;
+}
+
+func main() -> int {
+    return FindFirstOver(50);
+}

@@ -1,0 +1,21 @@
+var radius: float = 4.0;
+var count: int = 3;
+var enabled: bool = true;
+
+func Compute(self: entity, dt: float) -> vec3 {
+    var p: vec3 = get_position(self);
+    var scaled: vec3 = p * dt;
+    var combined: vec3 = scaled + p;
+    var d: float = dot(p, combined);
+    var n: vec3 = normalize(combined);
+    log_float("dot", d);
+    log_vec3("normalized", n);
+    return n;
+}
+
+func CheckEntity(a: entity, b: entity) -> bool {
+    if (a == b) {
+        return true;
+    }
+    return is_valid(a);
+}

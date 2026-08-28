@@ -1,0 +1,33 @@
+// Every value chosen to be exactly representable and exactly computed
+// in float. b is diagonal(1,2,3,4) specifically so its transpose is
+// trivially itself and its square is diagonal(1,4,9,16).
+//
+//   b * v where v=(1,1,1,1) -> bv = (1,2,3,4)
+//   b*b (real matrix multiply) = diagonal(1,4,9,16) -> column 3 = (0,0,0,16)
+//   2.0*b*v = (2,4,6,8)
+//   -identity, column 0 = (-1,0,0,0)
+//   (b+identity)*v = diagonal(2,3,4,5)*v = (2,3,4,5)
+// Subtotal: (1+2+3+4) + 16 + (2+4+6+8) + (-1) + (2+3+4+5) = 59
+// Plus the equality-branch bonus (100.0) since transpose4(b) == b.
+// Total: 159.
+func main() -> float {
+    var ident: mat4 = mat4_identity();
+    var b: mat4 = mat4_from_columns(vec4(1.0, 0.0, 0.0, 0.0), vec4(0.0, 2.0, 0.0, 0.0), vec4(0.0, 0.0, 3.0, 0.0),
+                                     vec4(0.0, 0.0, 0.0, 4.0));
+    var v: vec4 = vec4(1.0, 1.0, 1.0, 1.0);
+    var bv: vec4 = b * v;
+    var bb: mat4 = b * b;
+    var bb_col3: vec4 = bb * vec4(0.0, 0.0, 0.0, 1.0);
+    var scaled: mat4 = 2.0 * b;
+    var scaled_v: vec4 = scaled * v;
+    var neg: mat4 = -ident;
+    var neg_col0: vec4 = neg * vec4(1.0, 0.0, 0.0, 0.0);
+    var sum_m: mat4 = b + ident;
+    var sum_v: vec4 = sum_m * v;
+    var total: float = bv.x + bv.y + bv.z + bv.w + bb_col3.w + scaled_v.x + scaled_v.y + scaled_v.z + scaled_v.w +
+                        neg_col0.x + sum_v.x + sum_v.y + sum_v.z + sum_v.w;
+    if (transpose4(b) == b) {
+        total += 100.0;
+    }
+    return total;
+}

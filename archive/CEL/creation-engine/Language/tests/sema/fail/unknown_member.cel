@@ -1,0 +1,3 @@
+func Bad(v: vec3) -> float {
+    return v.w;
+}

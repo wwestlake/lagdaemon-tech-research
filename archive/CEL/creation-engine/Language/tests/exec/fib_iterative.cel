@@ -1,0 +1,17 @@
+// Fib(0)=0, Fib(1)=1, standard iterative doubling -- hand-computed: Fib(20) = 6765.
+func FibIter(n: int) -> int {
+    var a: int = 0;
+    var b: int = 1;
+    var i: int = 0;
+    while (i < n) {
+        var t: int = a + b;
+        a = b;
+        b = t;
+        i += 1;
+    }
+    return a;
+}
+
+func main() -> int {
+    return FibIter(20);
+}

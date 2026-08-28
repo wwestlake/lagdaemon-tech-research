@@ -1,0 +1,12 @@
+// Same sequence as fib_iterative.cel, computed recursively instead --
+// hand-computed: Fib(15) = 610. Exercises function calls/recursion.
+func FibRec(n: int) -> int {
+    if (n < 2) {
+        return n;
+    }
+    return FibRec(n - 1) + FibRec(n - 2);
+}
+
+func main() -> int {
+    return FibRec(15);
+}

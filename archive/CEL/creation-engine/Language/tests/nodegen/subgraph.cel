@@ -1,0 +1,25 @@
+// GS11: hand-written reference for Language/tests/nodegen/subgraph.celg
+// (built programmatically by ce::lang::tools::BuildSubgraphGraph, see
+// Language/tools/celc/nodegen_fixtures.cpp) -- must describe EXACTLY
+// the same behavior as the graph's SubgraphEntry("Helper") called twice
+// via two CallSubgraph nodes. Verified two ways: `celc --run-graph`
+// on the graph vs `celc --run-simulation` on this file must produce
+// byte-identical output (run_nodegen_parity_test.cmake), AND
+// `celc --graph-to-source` on the graph must emit exactly one
+// `func Helper() { ... }` plus two `Helper();` call sites
+// (run_graph_to_source_test.cmake, diffed against subgraph.expected.cel) --
+// the flagship "a subgraph called twice emits one func + two call
+// sites" claim, checked both as generated text AND as real behavior
+// (final position (2,0,0) only if Helper genuinely ran twice).
+var counter: float = 0.0;
+
+func Helper() {
+    counter = counter + 1.0;
+}
+
+func on_start(self: entity) {
+    counter = 0.0;
+    Helper();
+    Helper();
+    set_position(self, vec3(counter, 0.0, 0.0));
+}

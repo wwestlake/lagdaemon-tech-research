@@ -1,0 +1,26 @@
+// GS6's real production-path counterpart to GS5's
+// Language/tests/world/orbit_steps.cel: this one runs through
+// ce::engine::Simulation::Step + ce::engine::ScriptComponent + a real
+// ce::lang::jit::CelScriptRuntime (celc --run-simulation), not celc's
+// own --run-world (Runtime::RunWorldProgram directly). Uses the fixed
+// on_start/on_tick(self, dt) lifecycle convention CelScriptRuntime
+// requires, rather than run-world's init()/tick(self) self-threading
+// pattern -- Simulation::Step already gives every ScriptComponent a
+// stable `self` (the entity it's attached to), so there's no need to
+// thread an entity handle through return values here.
+//
+// Verification is the same geometric invariant as orbit_steps.cel: a
+// radius-4 circle means x^2 + z^2 == 16.0 at every tick, checked
+// host-side (celc/CreationEngineServer round it via floor(...+0.5) and
+// print it, rather than the script computing and returning it) --
+// proves get_position/set_position round-trip through the real,
+// shared ce::engine::Transform component the editor's own Views/
+// TransformPanel.cpp and ViewportComponent.cpp read and write too.
+func on_start(self: entity) {
+    set_position(self, vec3(4.0, 0.0, 0.0));
+}
+
+func on_tick(self: entity, dt: float) {
+    var t: float = world_time();
+    set_position(self, vec3(4.0 * cos(t), 0.0, 4.0 * sin(t)));
+}
