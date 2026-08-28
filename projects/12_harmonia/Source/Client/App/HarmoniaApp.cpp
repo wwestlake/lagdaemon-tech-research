@@ -1,6 +1,7 @@
 #include "HarmoniaApp.h"
 #include "Client/UI/DesignTokens.h"
 #include "Shared/Network/HarpSerializer.h"
+#include <thread>
 
 namespace Harmonia {
 HarmoniaApp::HarmoniaApp() {
@@ -31,7 +32,8 @@ void HarmoniaApp::resized() {
 }
 
 void HarmoniaApp::paint(juce::Graphics& g) {
-    g.fillAll(UI::kBgDeep);
+    // We don't fill the background here because the OpenGL context clears it.
+    // If we fill here, we paint a solid 2D rectangle OVER the 3D world!
 }
 
 void HarmoniaApp::onConnected(uint32_t playerID, const juce::String& serverName) {
@@ -74,11 +76,19 @@ void HarmoniaApp::showServerBrowser() {
     browser_ = std::make_unique<ServerBrowser>();
     addAndMakeVisible(*browser_);
     browser_->onConnect = [this](juce::String host, int port, juce::String name, juce::String session) {
-        net_->connect(host, port, name, session);
+        // Run connect on a background thread so the "Connecting..." UI can render
+        std::thread([this, host, port, name, session]() {
+            if (!net_->connect(host, port, name, session)) {
+                juce::MessageManager::getInstance()->callAsync([this]() {
+                    // Connection failed, restore UI state if needed
+                });
+            }
+        }).detach();
     };
     browser_->onSolo = [this]() { spawnLocalServer(); };
     resized();
 }
+
 
 bool HarmoniaApp::keyPressed(const juce::KeyPress& key, juce::Component*) {
     // Simple piano mapping for testing: z x c v b n m
