@@ -7,6 +7,7 @@ namespace Harmonia {
 
 class ServerBrowser : public juce::Component, private juce::Button::Listener {
 public:
+    void setConnectionStatusText(const juce::String& text) { statusLabel_.setText(text, juce::dontSendNotification); }
     ServerBrowser();
     ~ServerBrowser() override;
 

@@ -80,7 +80,7 @@ void HarmoniaApp::showServerBrowser() {
         std::thread([this, host, port, name, session]() {
             if (!net_->connect(host, port, name, session)) {
                 juce::MessageManager::getInstance()->callAsync([this]() {
-                    // Connection failed, restore UI state if needed
+                    if (browser_) browser_->setConnectionStatusText("Connection failed.");
                 });
             }
         }).detach();
@@ -120,7 +120,16 @@ void HarmoniaApp::mouseDrag(const juce::MouseEvent& e) {
     if (glCtx_) glCtx_->camera().mouseDrag(e);
 }
 
-void HarmoniaApp::spawnLocalServer() {}
+void HarmoniaApp::spawnLocalServer() {
+    juce::File exe = juce::File::getSpecialLocation(juce::File::currentExecutableFile).getSiblingFile("HarmoniaServer.exe");
+    if (exe.existsAsFile()) {
+        exe.startAsProcess();
+        juce::Timer::callAfterDelay(1000, [this]() {
+            if (browser_) browser_->setConnectionStatusText("Connecting to local server...");
+            if (browser_) browser_->onConnect("127.0.0.1", 4440, "Traveller", "main");
+        });
+    }
+}
 
 } // namespace Harmonia
 
