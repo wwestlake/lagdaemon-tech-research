@@ -9,6 +9,9 @@ Archived on 2026-08-27 as part of the Creation Suite CEL retirement.
 | `shared-CEL/` | `CreationSuite-Codex/shared/CEL/` | `30bf9f81e42d1db1d9a629507a4cfb72861e5c40` |
 | `creation-engine/Language/` | `CreationEngine/Language/` | `33b4560f1f9b852eb1fe0c0ca467fba2c58ff40b` |
 | `creation-engine/cmake/CelGrammar.cmake` | `CreationEngine/cmake/CelGrammar.cmake` | `33b4560f1f9b852eb1fe0c0ca467fba2c58ff40b` |
+| `creation-engine/EngineCore/` | `CreationEngine/EngineCore/{include,src}/` CEL script integration | `a2bcda3b7e4a376a943a1540633510e2404bb4b5` |
+| `creation-engine/Source/Views/` | `CreationEngine/Source/Views/{ScriptPanel,CelCodeTokeniser,NodeEditor}/` | `a2bcda3b7e4a376a943a1540633510e2404bb4b5` |
+| `creation-engine/Source/Import/Importers/ScriptAssetImporter.*` | `CreationEngine/Source/Import/Importers/ScriptAssetImporter.*` | `a2bcda3b7e4a376a943a1540633510e2404bb4b5` |
 | `creation-station/Source/Language/` | `CreationStation/Source/Language/` | `121023d97eabfcbb4e0c2278b5050f2b23d7285b` |
 | `creation-station/Source/Views/` | `CreationStation/Source/Views/{DslPanel,FoleyPanel}.{h,cpp}` | `121023d97eabfcbb4e0c2278b5050f2b23d7285b` |
 
