@@ -123,7 +123,7 @@ void AdditiveVoice::renderNextBlock(juce::AudioBuffer<float>& output,
             if (phase_[h] > twoPi) phase_[h] -= twoPi;
         }
 
-        const float out = sample * level_ * envelope_ * 0.12f; // 0.12 keeps 16 voices safe
+        const float out = sample * level_ * envelope_ * 0.8f; 
         for (int ch = 0; ch < output.getNumChannels(); ++ch)
             output.addSample(ch, startSample + i, out);
     }

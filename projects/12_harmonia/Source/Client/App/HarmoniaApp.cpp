@@ -5,6 +5,9 @@
 
 namespace Harmonia {
 HarmoniaApp::HarmoniaApp() {
+    juce::File logFile = juce::File::getSpecialLocation(juce::File::currentExecutableFile).getSiblingFile("harmonia_client.log");
+    juce::Logger::setCurrentLogger(juce::FileLogger::createDateStampedLogger(logFile.getParentDirectory().getFullPathName(), "harmonia", ".log", "Harmonia Client"));
+    
     audio_ = std::make_unique<AudioEngine>();
     audio_->initialise();
     midi_ = std::make_unique<MidiEngine>();
@@ -18,6 +21,7 @@ HarmoniaApp::HarmoniaApp() {
     net_->addListener(this);
     
     showSplash();
+    setWantsKeyboardFocus(true);
     addKeyListener(this);
 }
 
@@ -113,6 +117,7 @@ bool HarmoniaApp::keyStateChanged(bool /*isKeyDown*/, juce::Component*) {
             w.writeU8((uint8_t)note);
             w.writeF32(0.8f);
             if (net_) net_->send(Net::MsgType::NoteOn, w.getPayload());
+            juce::Logger::writeToLog("App: Sent NoteOn " + juce::String(note));
         }
     }
     
@@ -122,6 +127,7 @@ bool HarmoniaApp::keyStateChanged(bool /*isKeyDown*/, juce::Component*) {
             Net::HarpWriter w;
             w.writeU8((uint8_t)note);
             if (net_) net_->send(Net::MsgType::NoteOff, w.getPayload());
+            juce::Logger::writeToLog("App: Sent NoteOff " + juce::String(note));
         }
     }
     
