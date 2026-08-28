@@ -106,7 +106,10 @@ void SplashScreen::timerCallback() {
         fadeOut_ += 0.04f;
         if (fadeOut_ >= 1.f) {
             stopTimer();
-            if (onComplete) onComplete();
+            if (onComplete) {
+                juce::MessageManager::getInstance()->callAsync(onComplete);
+            }
+            return; // Important: do not call repaint() as we are being deleted
         }
     }
     repaint();
