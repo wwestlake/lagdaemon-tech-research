@@ -1,5 +1,6 @@
 #include "OpenGLContext.h"
 #include "VoxelRenderer.h"
+#include "Client/World/OpenWorld.h"
 #include <glm/gtc/type_ptr.hpp>
 
 using namespace juce::gl;
@@ -96,7 +97,12 @@ void HarmoniaGLContext::renderOpenGL() {
         voxelRenderer_->draw(*shaders_->voxel(), vp, camPos, time_);
     }
 
-    // ── 3. Particles ─────────────────────────────────────────────────────────
+    // ── 3. Particles ─────────────────────────────────────────────────────────    // 3. OpenWorld (Ground, etc.)
+    if (openWorld_) {
+        openWorld_->render(view, proj, glCtx_);
+    }
+
+    // 4. Particles
     if (particles_) {
         glEnable(GL_PROGRAM_POINT_SIZE);
         particles_->render(view, proj);

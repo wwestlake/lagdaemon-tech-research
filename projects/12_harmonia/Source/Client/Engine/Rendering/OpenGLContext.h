@@ -27,6 +27,7 @@ public:
     // Thread-safe: called from network thread when new grid arrives
     void setVoxelGrid(std::shared_ptr<VoxelGrid> grid);
     void setWorldState(WorldState* state);
+    void setOpenWorld(class OpenWorld* world) { openWorld_ = world; }
 
     Camera& camera();
     juce::OpenGLContext& glContext() { return glCtx_; }
@@ -42,6 +43,7 @@ private:
 
     Camera      camera_;
     WorldState* worldState_ = nullptr;
+    class OpenWorld* openWorld_ = nullptr;
 
     // Grid update double-buffer (network → GL thread)
     juce::ReadWriteLock          gridLock_;

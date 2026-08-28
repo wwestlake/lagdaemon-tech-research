@@ -2,7 +2,9 @@
 
 namespace Harmonia {
 OpenWorld::OpenWorld(WorldState* state, AudioEngine* audio, MidiEngine* midi, Net::NetworkClient* net, juce::OpenGLContext* ctx)
-    : worldState_(state), audio_(audio), net_(net) {}
+    : worldState_(state), audio_(audio), net_(net) {
+    ground_ = std::make_unique<GroundPlane>();
+}
 
 void OpenWorld::update(float dt, const std::set<int>& keysDown, float mouseDx, float mouseDy) {
     localPlayer_.mouseMove(mouseDx, mouseDy);
@@ -11,6 +13,11 @@ void OpenWorld::update(float dt, const std::set<int>& keysDown, float mouseDx, f
 }
 
 void OpenWorld::render(const glm::mat4& view, const glm::mat4& proj) {
+    if (currentRegion_) currentRegion_->render(view, proj);
+}
+
+void OpenWorld::render(const glm::mat4& view, const glm::mat4& proj, juce::OpenGLContext& ctx) {
+    ground_->render(view, proj, ctx);
     if (currentRegion_) currentRegion_->render(view, proj);
 }
 

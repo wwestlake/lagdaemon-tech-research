@@ -11,6 +11,7 @@
 #include "Client/Engine/Rendering/StarField.h"
 #include "Client/Engine/Rendering/ParticleSystem.h"
 #include "Client/Engine/Rendering/PostProcess.h"
+#include "Client/Engine/Rendering/GroundPlane.h"
 #include "Client/Engine/Audio/AudioEngine.h"
 #include "Client/Engine/Audio/MidiEngine.h"
 #include "Shared/World/WorldState.h"
@@ -25,6 +26,7 @@ public:
     
     void update(float dt, const std::set<int>& keysDown, float mouseDx, float mouseDy);
     void render(const glm::mat4& view, const glm::mat4& proj);
+    void render(const glm::mat4& view, const glm::mat4& proj, juce::OpenGLContext& ctx);
     
     void onPlayerJoined(uint32_t id, const juce::String& name, float hue, glm::vec3 pos);
     void onPlayerLeft(uint32_t id);
@@ -53,5 +55,6 @@ private:
     std::unique_ptr<StarField> starField_;
     std::unique_ptr<ParticleSystem> particles_;
     std::unique_ptr<PostProcess> postProcess_;
+    std::unique_ptr<GroundPlane> ground_;
 };
 }

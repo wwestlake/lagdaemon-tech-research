@@ -123,6 +123,7 @@ target_sources(Harmonia PRIVATE
     Source/Client/Engine/Rendering/AvatarRenderer.cpp
     Source/Client/Engine/Rendering/StarField.cpp
     Source/Client/Engine/Rendering/PostProcess.cpp
+    Source/Client/Engine/Rendering/GroundPlane.cpp
 
     # Audio engine
     Source/Client/Engine/Audio/AudioEngine.cpp
