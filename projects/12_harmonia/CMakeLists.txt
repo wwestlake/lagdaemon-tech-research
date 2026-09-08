@@ -19,13 +19,12 @@ FetchContent_MakeAvailable(glm)
 
 # ─────────────────────────────────────────────────────────────────────────────
 # HarmoniaShared — static lib compiled into BOTH Harmonia and HarmoniaServer
-# Contains: Network protocol, Music theory, Voxel grid (no graphics, no audio)
+# Contains: Network protocol and music theory (no graphics, no audio)
 # ─────────────────────────────────────────────────────────────────────────────
 add_library(HarmoniaShared STATIC
     Source/Shared/Network/HarpSerializer.cpp
     Source/Shared/Music/MusicTheory.cpp
     Source/Shared/Music/CircleOfFifths.cpp
-    Source/Shared/World/VoxelGrid.cpp
 )
 
 target_include_directories(HarmoniaShared PUBLIC Source)
@@ -60,7 +59,6 @@ target_sources(HarmoniaServer PRIVATE
     Source/Server/ClientConnection.cpp
     Source/Server/SessionManager.cpp
     Source/Server/MessageRouter.cpp
-    Source/Server/WorldTickThread.cpp
 )
 
 target_compile_definitions(HarmoniaServer PRIVATE
@@ -106,25 +104,22 @@ target_sources(Harmonia PRIVATE
     Source/Client/Network/HarpFramer.cpp
     Source/Client/Network/NetworkClient.cpp
     Source/Client/Network/MessageHandler.cpp
-    Source/Client/Network/StateSyncer.cpp
 
     # World
     Source/Client/World/OpenWorld.cpp
     Source/Client/World/PlayerController.cpp
     Source/Client/World/RemotePlayer.cpp
-    Source/Client/World/Regions/LivingGridRegion.cpp
 
     # Rendering engine
     Source/Client/Engine/Rendering/OpenGLContext.cpp
     Source/Client/Engine/Rendering/Camera.cpp
     Source/Client/Engine/Rendering/ShaderLibrary.cpp
-    Source/Client/Engine/Rendering/VoxelRenderer.cpp
     Source/Client/Engine/Rendering/ParticleSystem.cpp
     Source/Client/Engine/Rendering/AvatarRenderer.cpp
     Source/Client/Engine/Rendering/StarField.cpp
     Source/Client/Engine/Rendering/PostProcess.cpp
     Source/Client/Engine/Rendering/GroundPlane.cpp
-    Source/Client/Engine/Rendering/ufbx.c
+    Source/Client/World/BlockCharacter.cpp
 
     # Audio engine
     Source/Client/Engine/Audio/AudioEngine.cpp

@@ -63,13 +63,6 @@ enum class MsgType : uint16_t
     NoteOn           = 0x0020,  // C→S & S→All  playerID(u32), midiNote(u8), velocity(u8), channel(u8)
     NoteOff          = 0x0021,  // C→S & S→All  playerID(u32), midiNote(u8), channel(u8)
 
-    // ── Living Grid (World 1 — 3D Cellular Automaton) ───────
-    VoxelSeedRequest = 0x0030,  // C→S  x(u8),y(u8),z(u8), state(f32) — request to seed a voxel
-    VoxelDelta       = 0x0031,  // S→All  count(u16), [x(u8),y(u8),z(u8),state(f32)]×count
-    VoxelFullSync    = 0x0032,  // S→C  gridW(u8),gridH(u8),gridD(u8), [state(f32)]×W×H×D
-    CAParamChange    = 0x0033,  // C→S  ruleType(u8), paramID(u8), value(f32)
-    CAAdvance        = 0x0034,  // S→All  generationNumber(u32) — server stepped the CA
-
     // ── Chord Architect (World 3) ────────────────────────────
     ChordStackChange = 0x0040,  // S→All  count(u8), [midiNote(u8)]×count
     ChordNoteAdd     = 0x0041,  // C→S  playerID(u32), midiNote(u8)
@@ -106,37 +99,6 @@ struct PacketHeader {
 
 inline constexpr int kHandshakeHeaderSize = sizeof(HandshakeHeader); // 11
 inline constexpr int kPacketHeaderSize    = sizeof(PacketHeader);    //  7
-
-//── CA Rule Types (for CAParamChange.ruleType) ────────────────────────────────
-enum class CARuleType : uint8_t
-{
-    GameOfLife3D    = 0,
-    GrayScott       = 1,
-    Lenia           = 2,
-};
-
-//── CA Parameter IDs (for CAParamChange.paramID) ─────────────────────────────
-enum class CAParamID : uint8_t
-{
-    // Game of Life 3D
-    GoL_SurvivalMin = 0,
-    GoL_SurvivalMax = 1,
-    GoL_BirthMin    = 2,
-    GoL_BirthMax    = 3,
-    GoL_MutationRate= 4,
-
-    // Gray-Scott
-    GS_FeedRate     = 10,
-    GS_KillRate     = 11,
-    GS_DiffU        = 12,
-    GS_DiffV        = 13,
-
-    // Lenia
-    Lenia_R         = 20,
-    Lenia_Mu        = 21,
-    Lenia_Sigma     = 22,
-    Lenia_DeltaT    = 23,
-};
 
 //── Error Codes ───────────────────────────────────────────────────────────────
 enum class ErrorCode : uint16_t

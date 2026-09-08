@@ -16,8 +16,6 @@ private:
     void handlePlayerPosition(uint32_t playerID, const juce::MemoryBlock& payload);
     void handleNoteOn(uint32_t playerID, const juce::MemoryBlock& payload);
     void handleNoteOff(uint32_t playerID, const juce::MemoryBlock& payload);
-    void handleVoxelSeedRequest(uint32_t playerID, const juce::MemoryBlock& payload);
-    void handleCAParamChange(uint32_t playerID, const juce::MemoryBlock& payload);
     void handleChordNoteAdd(uint32_t playerID, const juce::MemoryBlock& payload);
     void handleChordNoteRemove(uint32_t playerID, const juce::MemoryBlock& payload);
     void handleChordClear(uint32_t playerID, const juce::MemoryBlock& payload);

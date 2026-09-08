@@ -1,30 +1,30 @@
 #include "OpenWorld.h"
 
 namespace Harmonia {
-OpenWorld::OpenWorld(WorldState* state, AudioEngine* audio, MidiEngine* midi, Net::NetworkClient* net, juce::OpenGLContext* ctx)
-    : worldState_(state), audio_(audio), net_(net) {
+OpenWorld::OpenWorld(WorldState* state, AudioEngine* audio, MidiEngine* midi, Net::NetworkClient* net, Camera& camera)
+    : worldState_(state), audio_(audio), net_(net), camera_(camera) {
     ground_ = std::make_unique<GroundPlane>();
-    
-    playerMesh_ = std::make_unique<Mesh>();
-    modelRenderer_ = std::make_unique<ModelRenderer>();
-    
-    // Determine path to project root
-    juce::File exe = juce::File::getSpecialLocation(juce::File::currentExecutableFile);
-    juce::File root = exe.getParentDirectory().getParentDirectory();
-    juce::File fbx = root.getChildFile("female.fbx");
-    if (!fbx.existsAsFile()) fbx = root.getChildFile("female.FBX");
-    if (!fbx.existsAsFile()) fbx = root.getChildFile("David_Idle.FBX");
-    
-    if (fbx.existsAsFile()) {
-        playerMesh_->loadFBX(fbx.getFullPathName().toStdString());
-    } else {
-        juce::Logger::writeToLog("Could not find FBX at: " + root.getFullPathName());
-    }
+    playerChar_ = std::make_unique<BlockCharacter>();
+    camera_.setFirstPersonPosition(localPlayer_.position() + glm::vec3(0.f, 1.6f, 0.f));
 }
 
-void OpenWorld::update(float dt, const std::set<int>& keysDown, float mouseDx, float mouseDy) {
+void OpenWorld::update(float dt, float mouseDx, float mouseDy) {
     localPlayer_.mouseMove(mouseDx, mouseDy);
-    localPlayer_.update(dt, keysDown);
+    
+    glm::vec3 oldPos = localPlayer_.position();
+    localPlayer_.update(dt, camera_.azimuth);
+    glm::vec3 velocity = (localPlayer_.position() - oldPos) / dt;
+    
+    if (playerChar_) {
+        playerChar_->update(dt, velocity);
+    }
+    
+    if (cameraMode_ == CameraMode::FirstPerson) {
+        camera_.setFirstPersonPosition(localPlayer_.position() + glm::vec3(0.f, 1.6f, 0.f));
+    } else {
+        camera_.setPivot(localPlayer_.position());
+    }
+    
     for (auto& [id, player] : remotePlayers_) player->update(dt);
 }
 
@@ -36,17 +36,49 @@ void OpenWorld::render(const glm::mat4& view, const glm::mat4& proj, juce::OpenG
     ground_->render(view, proj, ctx);
     
     // Lazy init mesh GL buffers
-    static bool meshSetup = false;
-    if (!meshSetup && playerMesh_) {
-        playerMesh_->setupGL(ctx);
-        meshSetup = true;
+    static bool charSetup = false;
+    if (!charSetup && playerChar_) {
+        playerChar_->initialise(ctx);
+        charSetup = true;
     }
     
-    if (playerMesh_ && modelRenderer_) {
-        // Draw player at origin (scaled down if UE4 uses cm)
+    if (playerChar_) {
         glm::mat4 model = glm::mat4(1.0f);
-        model = glm::scale(model, glm::vec3(0.01f)); // UE4 is cm, OpenGL is m usually
-        modelRenderer_->render(*playerMesh_, model, view, proj, ctx);
+        model = glm::translate(model, localPlayer_.position());
+        model = glm::rotate(model, camera_.azimuth, glm::vec3(0, 1, 0));
+        
+        // Use the existing solid colour shader if we have one, or create a simple one.
+        // Wait, BlockCharacter expects a shader passed in! 
+        // We need a basic shader.
+        // Let's create one inline just for the character.
+        static std::unique_ptr<juce::OpenGLShaderProgram> charShader;
+        if (!charShader) {
+            charShader = std::make_unique<juce::OpenGLShaderProgram>(ctx);
+            const char* vsh = R"(
+                #version 330 core
+                layout(location=0) in vec3 aPos;
+                uniform mat4 uVP;
+                uniform mat4 uModel;
+                void main() {
+                    gl_Position = uVP * uModel * vec4(aPos, 1.0);
+                }
+            )";
+            const char* fsh = R"(
+                #version 330 core
+                out vec4 fragColor;
+                uniform vec4 uColor;
+                void main() {
+                    fragColor = uColor;
+                }
+            )";
+            charShader->addVertexShader(vsh);
+            charShader->addFragmentShader(fsh);
+            charShader->link();
+        }
+        
+        if (cameraMode_ != CameraMode::FirstPerson) {
+            playerChar_->render(*charShader, view, proj, model, camera_.position());
+        }
     }
     
     if (currentRegion_) currentRegion_->render(view, proj);
@@ -73,4 +105,4 @@ Camera& OpenWorld::camera() { return camera_; }
 PlayerController& OpenWorld::localPlayer() { return localPlayer_; }
 
 void OpenWorld::detectRegion() {}
-}
+} // namespace Harmonia

@@ -5,7 +5,9 @@
 
 namespace Harmonia {
 HarmoniaApp::HarmoniaApp() {
-    juce::File logFile = juce::File::getSpecialLocation(juce::File::currentExecutableFile).getSiblingFile("harmonia_client.log");
+    juce::File logDir = juce::File::getSpecialLocation(juce::File::currentExecutableFile).getSiblingFile("logs");
+    logDir.createDirectory();
+    juce::File logFile = logDir.getChildFile("harmonia_client.log");
     juce::Logger::setCurrentLogger(juce::FileLogger::createDateStampedLogger(logFile.getParentDirectory().getFullPathName(), "harmonia", ".log", "Harmonia Client"));
     
     audio_ = std::make_unique<AudioEngine>();
@@ -16,7 +18,7 @@ HarmoniaApp::HarmoniaApp() {
     glCtx_ = std::make_unique<HarmoniaGLContext>();
     glCtx_->attachTo(*this);
     
-    world_ = std::make_unique<OpenWorld>(worldState_.get(), audio_.get(), midi_.get(), net_.get(), &glCtx_->glContext());
+    world_ = std::make_unique<OpenWorld>(worldState_.get(), audio_.get(), midi_.get(), net_.get(), glCtx_->camera());
     glCtx_->setOpenWorld(world_.get());
     msgHandler_ = std::make_unique<MessageHandler>(worldState_.get(), audio_.get(), world_.get());
     net_->addListener(this);
@@ -50,16 +52,12 @@ void HarmoniaApp::onConnected(uint32_t playerID, const juce::String& serverName)
 
 void HarmoniaApp::onDisconnected(const juce::String& reason) {
     if (msgHandler_) msgHandler_->onDisconnected(reason);
+    if (browser_)
+        browser_->setStatus("Cannot reach server: " + reason, true);
 }
 
 void HarmoniaApp::onMessage(Net::MsgType type, const juce::MemoryBlock& payload) {
     if (msgHandler_) msgHandler_->onMessage(type, payload);
-    
-    if (type == Net::MsgType::VoxelFullSync) {
-        if (glCtx_ && worldState_) {
-            glCtx_->setVoxelGrid(worldState_->livingGrid);
-        }
-    }
 }
 
 void HarmoniaApp::enterWorld() {
@@ -85,7 +83,8 @@ void HarmoniaApp::showServerBrowser() {
         std::thread([this, host, port, name, session]() {
             if (!net_->connect(host, port, name, session)) {
                 juce::MessageManager::getInstance()->callAsync([this]() {
-                    if (browser_) browser_->setConnectionStatusText("Connection failed.");
+                    if (browser_)
+                        browser_->setStatus("Cannot reach server. Check the address and port.", true);
                 });
             }
         }).detach();
@@ -145,14 +144,33 @@ void HarmoniaApp::mouseDrag(const juce::MouseEvent& e) {
 }
 
 void HarmoniaApp::spawnLocalServer() {
-    juce::File exe = juce::File::getSpecialLocation(juce::File::currentExecutableFile).getSiblingFile("HarmoniaServer.exe");
-    if (exe.existsAsFile()) {
-        exe.startAsProcess();
-        juce::Timer::callAfterDelay(1000, [this]() {
-            if (browser_) browser_->setConnectionStatusText("Connecting to local server...");
-            if (browser_) browser_->onConnect("127.0.0.1", 4440, "Traveller", "main");
-        });
+    const juce::File clientExe = juce::File::getSpecialLocation(juce::File::currentExecutableFile);
+    const juce::File clientDir = clientExe.getParentDirectory();
+    juce::File serverExe = clientDir.getChildFile("HarmoniaServer.exe");
+
+    // CMake keeps the client and server in sibling artefact directories.
+    if (!serverExe.existsAsFile())
+        serverExe = clientDir.getParentDirectory()
+                        .getSiblingFile("HarmoniaServer_artefacts")
+                        .getChildFile("Debug")
+                        .getChildFile("HarmoniaServer.exe");
+
+    if (!serverExe.existsAsFile()) {
+        if (browser_)
+            browser_->setStatus("Local server executable was not found.", true);
+        return;
     }
+
+    if (!serverExe.startAsProcess()) {
+        if (browser_)
+            browser_->setStatus("Could not start the local server.", true);
+        return;
+    }
+
+    juce::Timer::callAfterDelay(1000, [this]() {
+        if (browser_) browser_->setStatus("Connecting to local server...");
+        if (browser_) browser_->onConnect("127.0.0.1", 4440, "Traveller", "main");
+    });
 }
 
 } // namespace Harmonia

@@ -1,4 +1,4 @@
-﻿#include <juce_core/juce_core.h>
+#include <juce_core/juce_core.h>
 #include "Logger.h"
 #include "ServerApp.h"
 #include <csignal>
@@ -23,6 +23,10 @@ int main(int argc, char** argv) {
     if (argc > 1) cfgFile = juce::File(argv[1]);
     
     auto config = ServerApp::loadConfig(cfgFile);
+    
+    juce::File logDir = juce::File::getCurrentWorkingDirectory().getChildFile("logs");
+    logDir.createDirectory();
+    config.logFilePath = logDir.getChildFile("harmonia_server.log").getFullPathName();
     
     Logger::info("=== Harmonia Server v0.1.0 ===");
     Logger::info("Port: " + juce::String(config.port) + " (A440)");

@@ -6,72 +6,6 @@ namespace Harmonia {
 // GLSL Sources — OpenGL 3.3 Core Profile
 // ─────────────────────────────────────────────────────────────────────────────
 
-// Instanced voxel cube — each instance has: world pos (vec3), colour (vec4), glow (float)
-static const char* kVoxelVert = R"(
-#version 330 core
-layout(location=0) in vec3 aPos;        // unit cube vertex
-layout(location=1) in vec3 aNorm;       // cube face normal
-layout(location=2) in vec3 iOffset;     // instance: world position
-layout(location=3) in vec4 iColour;     // instance: RGBA colour
-layout(location=4) in float iGlow;      // instance: activation 0-1
-
-uniform mat4 uVP;
-uniform float uVoxelSize;
-uniform vec3 uCamPos;
-
-out vec3 vWorldPos;
-out vec3 vNormal;
-out vec4 vColour;
-out float vGlow;
-out float vFresnel;
-
-void main() {
-    vec3 worldPos = iOffset + aPos * uVoxelSize;
-    vWorldPos = worldPos;
-    vNormal   = aNorm;
-    vColour   = iColour;
-    vGlow     = iGlow;
-
-    // Fresnel rim for glow effect
-    vec3 viewDir = normalize(uCamPos - worldPos);
-    vFresnel = 1.0 - max(dot(aNorm, viewDir), 0.0);
-
-    gl_Position = uVP * vec4(worldPos, 1.0);
-}
-)";
-
-static const char* kVoxelFrag = R"(
-#version 330 core
-in vec3 vWorldPos;
-in vec3 vNormal;
-in vec4 vColour;
-in float vGlow;
-in float vFresnel;
-
-out vec4 fragColour;
-
-uniform vec3 uSunDir;
-uniform float uTime;
-
-void main() {
-    // Directional light
-    float ndl = max(dot(normalize(vNormal), normalize(uSunDir)), 0.1);
-
-    // Ambient + diffuse
-    vec3 col = vColour.rgb * (0.3 + 0.7 * ndl);
-
-    // Glow rim — activation brightness + pulsing
-    float pulse = 0.5 + 0.5 * sin(uTime * 6.28 * 2.0 + vWorldPos.x * 0.5);
-    float glow  = vGlow * (0.6 + 0.4 * pulse);
-    col += vColour.rgb * glow * vFresnel * 2.0;
-
-    // Emission from core when highly active
-    col += vColour.rgb * vGlow * 0.4;
-
-    fragColour = vec4(col, vColour.a * (0.4 + 0.6 * max(vGlow, 0.05)));
-}
-)";
-
 // Particle billboard
 static const char* kParticleVert = R"(
 #version 330 core
@@ -205,23 +139,18 @@ static std::unique_ptr<juce::OpenGLShaderProgram> makeShader(
 }
 
 void ShaderLibrary::initialise(juce::OpenGLContext& ctx) {
-    voxelShader_     = makeShader(ctx, kVoxelVert,    kVoxelFrag,    "voxel");
     particleShader_  = makeShader(ctx, kParticleVert, kParticleFrag, "particle");
     starfieldShader_ = makeShader(ctx, kStarVert,     kStarFrag,     "starfield");
     bloomShader_     = makeShader(ctx, kQuadVert,      kBloomFrag,    "bloom");
     groundShader_    = makeShader(ctx, kGroundVert,   kGroundFrag,   "ground");
-    // sweep + avatar shaders reuse voxel/particle for now
-    sweepShader_  = makeShader(ctx, kVoxelVert, kVoxelFrag, "sweep");
     avatarShader_ = makeShader(ctx, kParticleVert, kParticleFrag, "avatar");
 }
 
 void ShaderLibrary::shutdown() {
-    voxelShader_.reset();
     particleShader_.reset();
     starfieldShader_.reset();
     bloomShader_.reset();
     groundShader_.reset();
-    sweepShader_.reset();
     avatarShader_.reset();
 }
 

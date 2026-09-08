@@ -15,8 +15,8 @@ public:
     
 private:
     void acceptConnection(juce::StreamingSocket* newSocket);
-    bool performHandshake(ClientConnection& conn, Session& session,
-                          uint32_t playerID, const juce::String& sessionName);
+    bool performHandshake(ClientConnection& conn, uint32_t playerID,
+                          const juce::String& sessionName);
     
     int               port_;
     SessionManager&   sessions_;

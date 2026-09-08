@@ -4,7 +4,6 @@
 #include "SessionManager.h"
 #include "MessageRouter.h"
 #include "ListenerThread.h"
-#include "WorldTickThread.h"
 
 namespace Harmonia { namespace Server {
 
@@ -33,7 +32,6 @@ private:
     std::unique_ptr<SessionManager>  sessions_;
     std::unique_ptr<MessageRouter>   router_;
     std::unique_ptr<ListenerThread>  listener_;
-    std::unique_ptr<WorldTickThread> ticker_;
     
     std::atomic<bool> running_;
 };

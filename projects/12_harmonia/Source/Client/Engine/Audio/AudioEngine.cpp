@@ -14,7 +14,16 @@ AudioEngine::AudioEngine() {
 AudioEngine::~AudioEngine() { shutdown(); }
 
 bool AudioEngine::initialise() {
-    deviceManager_.initialiseWithDefaultDevices(0, 2);
+    juce::String err = deviceManager_.initialiseWithDefaultDevices(0, 2);
+    if (err.isNotEmpty()) {
+        juce::Logger::writeToLog("AUDIO INIT ERROR: " + err);
+    } else {
+        if (auto* dev = deviceManager_.getCurrentAudioDevice())
+            juce::Logger::writeToLog("Audio device initialized successfully: " + dev->getName());
+        else
+            juce::Logger::writeToLog("Audio device initialized but getCurrentAudioDevice returned null!");
+    }
+    
     player_.setSource(this);
     deviceManager_.addAudioCallback(&player_);
     return true;

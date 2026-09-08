@@ -24,10 +24,7 @@ bool ServerApp::start(const Config& cfg) {
     }
     
     listener_ = std::make_unique<ListenerThread>(config_.port, *sessions_, *router_);
-    ticker_ = std::make_unique<WorldTickThread>(*sessions_);
-    
     listener_->startThread();
-    ticker_->startThread();
     
     running_ = true;
     Logger::info("Server started successfully.");
@@ -36,7 +33,6 @@ bool ServerApp::start(const Config& cfg) {
 
 void ServerApp::stop() {
     if (listener_) listener_->stop();
-    if (ticker_) ticker_->stop();
     running_ = false;
 }
 

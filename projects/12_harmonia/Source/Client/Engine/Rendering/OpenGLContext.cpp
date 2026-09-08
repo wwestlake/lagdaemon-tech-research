@@ -1,5 +1,4 @@
 #include "OpenGLContext.h"
-#include "VoxelRenderer.h"
 #include "Client/World/OpenWorld.h"
 #include <glm/gtc/type_ptr.hpp>
 
@@ -32,9 +31,6 @@ void HarmoniaGLContext::newOpenGLContextCreated() {
     shaders_ = std::make_unique<ShaderLibrary>();
     shaders_->initialise(glCtx_);
 
-    voxelRenderer_ = std::make_unique<VoxelRenderer>();
-    voxelRenderer_->initialise(glCtx_);
-
     particles_ = std::make_unique<ParticleSystem>();
     particles_->initialise(glCtx_);
 
@@ -62,12 +58,14 @@ void HarmoniaGLContext::renderOpenGL() {
     time_ += dt;
 
     camera_.update(dt);
+    if (openWorld_) {
+        openWorld_->update(dt, 0.0f, 0.0f);
+    }
     particles_->update(dt);
 
     const glm::mat4 view = camera_.viewMatrix();
     const glm::mat4 proj = camera_.projectionMatrix(aspect);
     const glm::mat4 vp   = proj * view;
-    const glm::vec3 camPos = camera_.position();
 
     // ── 1. Star field ────────────────────────────────────────────────────────
     if (shaders_->starfield()) {
@@ -75,29 +73,8 @@ void HarmoniaGLContext::renderOpenGL() {
         stars_->draw(*shaders_->starfield(), vp);
     }
 
-    // ── 2. Voxel grid ────────────────────────────────────────────────────────
     glEnable(GL_DEPTH_TEST);
-    if (shaders_->voxel() && voxelRenderer_) {
-        // Upload updated instance data to GPU
-        {
-            juce::ScopedReadLock sl(gridLock_);
-            if (pendingGrid_) {
-                voxelRenderer_->update(*pendingGrid_);
-
-                // Upload to GPU instance VBO
-                glCtx_.extensions.glBindVertexArray(0); // unbind first
-                // Re-bind and upload instance buffer
-                // (VoxelRenderer's VAO is already set up; we just update the VBO data)
-                if (voxelRenderer_->activeVoxelCount() > 0) {
-                    // This upload happens in draw() context — bind the VAO
-                }
-            }
-        }
-
-        voxelRenderer_->draw(*shaders_->voxel(), vp, camPos, time_);
-    }
-
-    // ── 3. Particles ─────────────────────────────────────────────────────────    // 3. OpenWorld (Ground, etc.)
+    // ── 2. Open world (ground and character) ─────────────────────────────────
     if (openWorld_) {
         openWorld_->render(view, proj, glCtx_);
     }
@@ -114,20 +91,9 @@ void HarmoniaGLContext::openGLContextClosing() {
     if (shaders_)        shaders_->shutdown();
     if (particles_)      particles_->shutdown();
     if (stars_)          stars_->shutdown();
-    voxelRenderer_.reset();
     shaders_.reset();
     particles_.reset();
     stars_.reset();
-}
-
-// ─── Called from network/world thread — thread-safe ──────────────────────────
-void HarmoniaGLContext::setVoxelGrid(std::shared_ptr<VoxelGrid> grid) {
-    juce::ScopedWriteLock sl(gridLock_);
-    pendingGrid_ = grid;
-}
-
-void HarmoniaGLContext::setWorldState(WorldState* state) {
-    worldState_ = state;
 }
 
 Camera& HarmoniaGLContext::camera() { return camera_; }

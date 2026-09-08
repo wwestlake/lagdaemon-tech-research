@@ -16,6 +16,7 @@ public:
     void writeU64(uint64_t val);
     void writeF32(float val);
     void writeString(const juce::String& str);
+    void writeRaw(const void* data, size_t size);
 
     bool sendPacket(juce::StreamingSocket& socket, MsgType type);
     bool sendHandshake(juce::StreamingSocket& socket, MsgType type);

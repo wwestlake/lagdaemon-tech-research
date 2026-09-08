@@ -19,7 +19,11 @@ void Camera::mouseDrag(const juce::MouseEvent& e) {
 
     const float sensitivity = 0.005f;
 
-    if (e.mods.isRightButtonDown()) {
+    if (firstPerson_) {
+        targetAzimuth_   -= delta.x * sensitivity;
+        targetElevation_ += delta.y * sensitivity;
+        targetElevation_  = juce::jlimit(-1.4f, 1.4f, targetElevation_);
+    } else if (e.mods.isRightButtonDown()) {
         // Right drag: pan pivot
         glm::vec3 right = glm::normalize(glm::cross(
             glm::vec3(0, 1, 0),
@@ -37,12 +41,22 @@ void Camera::mouseDrag(const juce::MouseEvent& e) {
 }
 
 void Camera::mouseWheelMove(const juce::MouseWheelDetails& w) {
+    if (firstPerson_) return;
+
     targetDistance_ *= (1.0f - w.deltaY * 0.15f);
     targetDistance_  = juce::jlimit(2.f, 200.f, targetDistance_);
     animating_ = false;
 }
 
 void Camera::update(float dt) {
+    if (firstPerson_) {
+        const float speed = 18.f;
+        const float alpha = 1.f - std::exp(-speed * dt);
+        azimuth += (targetAzimuth_ - azimuth) * alpha;
+        elevation += (targetElevation_ - elevation) * alpha;
+        return;
+    }
+
     if (animating_) {
         animT_ = juce::jmin(animT_ + dt / animDur_, 1.f);
         float t = animT_ * animT_ * (3.f - 2.f * animT_); // smoothstep
@@ -63,6 +77,8 @@ void Camera::update(float dt) {
 }
 
 glm::vec3 Camera::position() const {
+    if (firstPerson_) return firstPersonPosition_;
+
     float cosEl = std::cos(elevation);
     return pivot + glm::vec3(
         std::cos(azimuth) * cosEl,
@@ -70,8 +86,24 @@ glm::vec3 Camera::position() const {
         std::sin(azimuth) * cosEl) * distance;
 }
 
+glm::vec3 Camera::forward() const {
+    return glm::normalize(glm::vec3(
+        -std::sin(azimuth) * std::cos(elevation),
+         std::sin(elevation),
+         std::cos(azimuth) * std::cos(elevation)));
+}
+
 glm::mat4 Camera::viewMatrix() const {
+    if (firstPerson_)
+        return glm::lookAt(firstPersonPosition_, firstPersonPosition_ + forward(), glm::vec3(0, 1, 0));
+
     return glm::lookAt(position(), pivot, glm::vec3(0, 1, 0));
+}
+
+void Camera::setFirstPersonPosition(const glm::vec3& p) {
+    firstPerson_ = true;
+    firstPersonPosition_ = p;
+    animating_ = false;
 }
 
 glm::mat4 Camera::projectionMatrix(float aspectRatio) const {
@@ -86,6 +118,7 @@ void Camera::setOrientation(float az, float el, float dist) {
 }
 
 void Camera::flyTo(glm::vec3 target, float distFromTarget, float durationSec) {
+    firstPerson_ = false;
     animStartPos_  = pivot;
     animEndTarget_ = target;
     animStartDist_ = distance;

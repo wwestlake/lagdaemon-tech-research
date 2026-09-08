@@ -2,7 +2,6 @@
 #include <juce_gui_basics/juce_gui_basics.h>
 #include "Client/Network/NetworkClient.h"
 #include "Client/Network/MessageHandler.h"
-#include "Client/Network/StateSyncer.h"
 #include "Shared/World/WorldState.h"
 #include "Client/Engine/Audio/AudioEngine.h"
 #include "Client/Engine/Audio/MidiEngine.h"
@@ -42,7 +41,6 @@ private:
     std::unique_ptr<MidiEngine> midi_;
     std::unique_ptr<Net::NetworkClient> net_;
     std::unique_ptr<MessageHandler> msgHandler_;
-    std::unique_ptr<StateSyncer> syncer_;
     std::unique_ptr<WorldState> worldState_;
     std::unique_ptr<OpenWorld> world_;
     std::unique_ptr<HarmoniaGLContext> glCtx_;

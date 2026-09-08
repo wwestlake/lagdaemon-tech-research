@@ -40,18 +40,19 @@ bool NetworkClient::connect(const juce::String& host, int port,
 
     framer_.reset();
 
-    // Build Hello payload: playerName(str) + sessionName(str)
     HarpWriter writer;
     writer.writeString(playerName);
     writer.writeString(session);
-    writer.writeU16(kProtocolVersion);  // client version
+    writer.writeU16(kProtocolVersion);
 
-    // Send handshake (includes HARP magic header)
+    DBG("NetworkClient: Sending Hello handshake...");
     if (!writer.sendHandshake(socket_, MsgType::Hello)) {
+        DBG("NetworkClient: sendHandshake failed!");
         socket_.close();
         return false;
     }
 
+    DBG("NetworkClient: Hello sent, starting receive thread...");
     startThread();
     return true;
 }

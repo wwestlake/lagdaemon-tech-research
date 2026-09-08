@@ -4,11 +4,6 @@
 
 namespace Harmonia { namespace Server {
 
-// Grid dimensions for the main world
-static constexpr int kGridW = 24;  // 2 octaves × 12 pitch classes
-static constexpr int kGridH = 8;   // 8 octaves
-static constexpr int kGridD = 16;  // 16 beat slots
-
 ListenerThread::ListenerThread(int port, SessionManager& sessions, MessageRouter& router)
     : juce::Thread("Listener"), port_(port), sessions_(sessions), router_(router), running_(false)
 {
@@ -79,19 +74,7 @@ void ListenerThread::acceptConnection(juce::StreamingSocket* newSocket) {
     juce::String sessionName = "main";
     Session* session = sessions_.getOrCreateSession(sessionName);
 
-    // Ensure the world grid exists and is seeded
-    {
-        juce::ScopedLock sl(session->lock);
-        if (!session->world.livingGrid) {
-            session->world.livingGrid = std::make_shared<VoxelGrid>(kGridW, kGridH, kGridD);
-            session->world.livingGrid->seedRandom(0.12f);  // ~12% sparse seed
-            session->world.generation = 0;
-            Logger::info("Seeded world grid " + juce::String(kGridW) + "×"
-                        + juce::String(kGridH) + "×" + juce::String(kGridD));
-        }
-    }
-
-    if (!performHandshake(*conn, *session, playerID, sessionName)) {
+    if (!performHandshake(*conn, playerID, sessionName)) {
         Logger::warn("Handshake failed for playerID=" + juce::String(playerID));
         return;
     }
@@ -114,8 +97,7 @@ void ListenerThread::acceptConnection(juce::StreamingSocket* newSocket) {
     Logger::info("Player " + juce::String(playerID) + " joined session \"" + sessionName + "\"");
 }
 
-bool ListenerThread::performHandshake(ClientConnection& conn, Session& session,
-                                      uint32_t playerID,
+bool ListenerThread::performHandshake(ClientConnection& conn, uint32_t playerID,
                                       const juce::String& sessionName) {
     // ── 1. Read Hello (handshake packet) ─────────────────────────────────────
     Net::HandshakeHeader helloHdr{};
@@ -157,28 +139,6 @@ bool ListenerThread::performHandshake(ClientConnection& conn, Session& session,
         if (!welcome.sendHandshake(*conn.socket(), Net::MsgType::Welcome)) {
             Logger::warn("Failed to send Welcome");
             return false;
-        }
-    }
-
-    // ── 3. Send VoxelFullSync ────────────────────────────────────────────────
-    {
-        juce::ScopedLock sl(session.lock);
-        if (session.world.livingGrid) {
-            juce::MemoryBlock syncData = session.world.livingGrid->serialiseFull();
-            Net::HarpWriter syncMsg;
-            // Prefix with dimensions
-            syncMsg.writeU8((uint8_t)session.world.livingGrid->width());
-            syncMsg.writeU8((uint8_t)session.world.livingGrid->height());
-            syncMsg.writeU8((uint8_t)session.world.livingGrid->depth());
-            // Append raw voxel data
-            const uint8_t* raw = static_cast<const uint8_t*>(syncData.getData());
-            for (size_t i = 0; i < syncData.getSize(); ++i)
-                syncMsg.writeU8(raw[i]);
-
-            if (!syncMsg.sendPacket(*conn.socket(), Net::MsgType::VoxelFullSync)) {
-                Logger::warn("Failed to send VoxelFullSync");
-                return false;
-            }
         }
     }
 

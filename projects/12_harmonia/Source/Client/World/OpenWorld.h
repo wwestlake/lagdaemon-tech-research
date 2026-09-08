@@ -12,6 +12,7 @@
 #include "Client/Engine/Rendering/ParticleSystem.h"
 #include "Client/Engine/Rendering/PostProcess.h"
 #include "Client/Engine/Rendering/GroundPlane.h"
+#include "Client/World/BlockCharacter.h"
 #include "Client/Engine/Audio/AudioEngine.h"
 #include "Client/Engine/Audio/MidiEngine.h"
 #include "Shared/World/WorldState.h"
@@ -22,9 +23,9 @@ namespace Net { class NetworkClient; }
 class OpenWorld {
 public:
     OpenWorld(WorldState* state, AudioEngine* audio, MidiEngine* midi,
-              Net::NetworkClient* net, juce::OpenGLContext* ctx);
+              Net::NetworkClient* net, Camera& camera);
     
-    void update(float dt, const std::set<int>& keysDown, float mouseDx, float mouseDy);
+    void update(float dt, float mouseDx, float mouseDy);
     void render(const glm::mat4& view, const glm::mat4& proj);
     void render(const glm::mat4& view, const glm::mat4& proj, juce::OpenGLContext& ctx);
     
@@ -45,7 +46,7 @@ private:
     Net::NetworkClient* net_;
     
     PlayerController localPlayer_;
-    Camera camera_;
+    Camera& camera_;
     
     std::map<uint32_t, std::unique_ptr<RemotePlayer>> remotePlayers_;
     std::vector<std::unique_ptr<IRegion>> regions_;
@@ -56,5 +57,10 @@ private:
     std::unique_ptr<ParticleSystem> particles_;
     std::unique_ptr<PostProcess> postProcess_;
     std::unique_ptr<GroundPlane> ground_;
+    
+    std::unique_ptr<BlockCharacter> playerChar_;
+    
+    enum class CameraMode { ThirdPerson, FirstPerson, TopDown };
+    CameraMode cameraMode_ = CameraMode::FirstPerson;
 };
 }

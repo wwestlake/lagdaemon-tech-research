@@ -4,7 +4,6 @@
 #include <map>
 #include <vector>
 #include <memory>
-#include "VoxelGrid.h"
 
 namespace Harmonia {
 
@@ -17,11 +16,9 @@ struct PlayerState {
 };
 
 struct WorldState {
-    std::shared_ptr<VoxelGrid>       livingGrid;   // World 1
     std::vector<int>                 chordStack;   // World 3 — current shared chord (midi notes)
     int                              currentInterval[2]; // World 2 — root, semitones
     std::map<uint32_t, PlayerState>  players;
-    uint32_t                         generation;   // CA generation counter
     juce::CriticalSection            lock;
 };
 

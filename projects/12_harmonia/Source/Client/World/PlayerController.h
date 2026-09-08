@@ -6,7 +6,7 @@ namespace Harmonia {
 class PlayerController {
 public:
     PlayerController();
-    void update(float dt, const std::set<int>& keysDown);
+    void update(float dt, float cameraAzimuth);
     void mouseMove(float dx, float dy);
     
     glm::vec3 position() const;
