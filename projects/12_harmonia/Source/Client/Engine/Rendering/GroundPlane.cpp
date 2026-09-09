@@ -191,6 +191,8 @@ void GroundPlane::init(juce::OpenGLContext& ctx) {
         in vec3 worldPos;
         in vec3 normal;
         out vec4 FragColor;
+        uniform vec3 sunDir;
+        uniform vec3 sunColor;
 
         void main() {
             // Checkerboard pattern
@@ -198,11 +200,16 @@ void GroundPlane::init(juce::OpenGLContext& ctx) {
             float checker = mod(c.x + c.y, 2.0);
             vec3 col = mix(vec3(0.1, 0.1, 0.15), vec3(0.15, 0.15, 0.2), checker);
 
-            // Cheap directional shading so the hills actually read as
-            // hills instead of a flat-shaded checker plane.
-            vec3 lightDir = normalize(vec3(0.4, 1.0, 0.3));
-            float diffuse = 0.6 + 0.4 * max(dot(normalize(normal), lightDir), 0.0);
+            // Real directional shading from the actual sun, not a fixed
+            // hardcoded light - so hills read as hills AND the ground
+            // picks up a subtle wash of the sun's current seasonal colour.
+            float diffuse = 0.6 + 0.4 * max(dot(normalize(normal), normalize(sunDir)), 0.0);
             col *= diffuse;
+            // Subtle seasonal wash: desaturate the sun colour toward white
+            // before tinting, so a fully-saturated hue (e.g. pure red)
+            // doesn't crush the ground's green/blue channels to zero.
+            vec3 softTint = mix(sunColor, vec3(1.0), 0.6);
+            col = mix(col, col * softTint, 0.25);
 
             // Fog fade-out based on distance
             float dist = length(worldPos.xz);
@@ -218,7 +225,8 @@ void GroundPlane::init(juce::OpenGLContext& ctx) {
     shader_->link();
 }
 
-void GroundPlane::render(const glm::mat4& view, const glm::mat4& proj, juce::OpenGLContext& ctx) {
+void GroundPlane::render(const glm::mat4& view, const glm::mat4& proj, juce::OpenGLContext& ctx,
+                          const glm::vec3& sunDir, const glm::vec3& sunColor) {
     if (!vao_) init(ctx);
     if (!shader_) return;
 
@@ -229,8 +237,11 @@ void GroundPlane::render(const glm::mat4& view, const glm::mat4& proj, juce::Ope
     glEnable(GL_DEPTH_TEST);
 
     shader_->use();
-    ext.glUniformMatrix4fv(ext.glGetUniformLocation(shader_->getProgramID(), "view"), 1, GL_FALSE, glm::value_ptr(view));
-    ext.glUniformMatrix4fv(ext.glGetUniformLocation(shader_->getProgramID(), "proj"), 1, GL_FALSE, glm::value_ptr(proj));
+    GLint progId = (GLint)shader_->getProgramID();
+    ext.glUniformMatrix4fv(ext.glGetUniformLocation(progId, "view"), 1, GL_FALSE, glm::value_ptr(view));
+    ext.glUniformMatrix4fv(ext.glGetUniformLocation(progId, "proj"), 1, GL_FALSE, glm::value_ptr(proj));
+    ext.glUniform3f(ext.glGetUniformLocation(progId, "sunDir"), sunDir.x, sunDir.y, sunDir.z);
+    ext.glUniform3f(ext.glGetUniformLocation(progId, "sunColor"), sunColor.x, sunColor.y, sunColor.z);
 
     ext.glBindVertexArray(vao_);
     glDrawElements(GL_TRIANGLES, indexCount_, GL_UNSIGNED_INT, (void*)0);

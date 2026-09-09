@@ -5,23 +5,27 @@
 namespace Harmonia {
 PlayerController::PlayerController() {}
 
-void PlayerController::update(float dt, float cameraAzimuth) {
-    glm::vec3 forward = glm::vec3(-std::sin(cameraAzimuth), 0.0f, std::cos(cameraAzimuth));
-    glm::vec3 right = glm::vec3(std::cos(cameraAzimuth), 0.0f, std::sin(cameraAzimuth));
-    
+glm::vec3 PlayerController::computeMoveDir(float cameraFacingAngle) const {
+    glm::vec3 forward = glm::vec3(-std::sin(cameraFacingAngle), 0.0f, std::cos(cameraFacingAngle));
+    glm::vec3 right = glm::vec3(std::cos(cameraFacingAngle), 0.0f, std::sin(cameraFacingAngle));
+
     glm::vec3 move(0.0f);
     if (juce::KeyPress::isKeyCurrentlyDown('W')) move += forward;
     if (juce::KeyPress::isKeyCurrentlyDown('S')) move -= forward;
     if (juce::KeyPress::isKeyCurrentlyDown('A')) move -= right;
     if (juce::KeyPress::isKeyCurrentlyDown('D')) move += right;
-    if (juce::KeyPress::isKeyCurrentlyDown('E') || juce::KeyPress::isKeyCurrentlyDown(juce::KeyPress::spaceKey)) move.y += 1.0f;
-    if (juce::KeyPress::isKeyCurrentlyDown('Q') || juce::KeyPress::isKeyCurrentlyDown(juce::ModifierKeys::shiftModifier)) move.y -= 1.0f;
-    
-    if (glm::length(move) > 0.0f) {
-        move = glm::normalize(move);
-        pos_ += move * speed_ * dt;
-        dirty_ = true;
-    }
+
+    if (glm::length(move) > 0.0f) move = glm::normalize(move);
+    return move;
+}
+
+bool PlayerController::jumpHeld() const {
+    return juce::KeyPress::isKeyCurrentlyDown('E') || juce::KeyPress::isKeyCurrentlyDown(juce::KeyPress::spaceKey);
+}
+
+void PlayerController::setPosition(const glm::vec3& p) {
+    pos_ = p;
+    dirty_ = true;
 }
 
 void PlayerController::mouseMove(float dx, float dy) {

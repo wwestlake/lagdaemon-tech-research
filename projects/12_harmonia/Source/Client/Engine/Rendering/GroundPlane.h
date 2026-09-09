@@ -10,7 +10,8 @@ public:
     GroundPlane();
     ~GroundPlane();
 
-    void render(const glm::mat4& view, const glm::mat4& proj, juce::OpenGLContext& ctx);
+    void render(const glm::mat4& view, const glm::mat4& proj, juce::OpenGLContext& ctx,
+                const glm::vec3& sunDir, const glm::vec3& sunColor);
 
     // Terrain height at a world (x, z) position - the same layered-noise
     // function the mesh itself is built from. Static and pure so movement/

@@ -17,7 +17,18 @@ public:
     glm::vec3 position() const;
     glm::vec3 forward() const;
     void setPivot(const glm::vec3& p) { firstPerson_ = false; targetPivot_ = pivot = p; }
+    // Spring-arm style follow (UE4-esque): moves only the TARGET, letting
+    // Camera::update()'s existing exponential damping lag smoothly behind
+    // it every frame - unlike setPivot() above, which snaps both the
+    // live position and the target together instantly (no lag possible).
+    void setPivotTarget(const glm::vec3& p) { firstPerson_ = false; targetPivot_ = p; }
     void setFirstPersonPosition(const glm::vec3& p);
+    // Continuous FPS/industry-standard mouse-look: applies a raw mouse
+    // delta directly to azimuth/elevation, regardless of first/third-
+    // person mode and regardless of any mouse button being held. This is
+    // the PRIMARY way azimuth/elevation change now - mouseDown/mouseDrag
+    // (click-drag orbit) are a separate, not-default input path.
+    void applyLookDelta(float dx, float dy);
     void flyTo(glm::vec3 target, float distanceFromTarget, float durationSec);
     void setOrientation(float az, float el, float dist);  // instant, no animation
     

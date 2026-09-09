@@ -49,12 +49,13 @@ layout(location=0) in vec3 aPos;
 layout(location=1) in float aBrightness;
 
 uniform mat4 uVP;
+uniform mat4 uSkyRotation;
 
 out float vBright;
 
 void main() {
     vBright = aBrightness;
-    gl_Position  = uVP * vec4(aPos, 1.0);
+    gl_Position  = uVP * uSkyRotation * vec4(aPos, 1.0);
     gl_PointSize = 1.5 + aBrightness * 2.0;
 }
 )";

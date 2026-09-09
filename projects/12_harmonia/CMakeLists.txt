@@ -17,6 +17,26 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(glm)
 
+# ── Jolt Physics (real character controller + collision, replacing the
+# hand-rolled "snap Y to GroundPlane::heightAt() every frame" placeholder) ────
+set(DOUBLE_PRECISION OFF CACHE BOOL "" FORCE)
+set(GENERATE_DEBUG_SYMBOLS OFF CACHE BOOL "" FORCE)
+set(CROSS_PLATFORM_DETERMINISTIC OFF CACHE BOOL "" FORCE)
+set(INTERPROCEDURAL_OPTIMIZATION OFF CACHE BOOL "" FORCE)
+# Jolt defaults to the STATIC MSVC runtime (/MT, /MTd) - everything else
+# in this project (JUCE included) uses the DYNAMIC runtime (/MD, /MDd).
+# Mixing the two is a real, well-known linker error (multiply-defined
+# CRT symbols), not a warning to ignore - this option is Jolt's own
+# supported way to match the rest of the project instead.
+set(USE_STATIC_MSVC_RUNTIME_LIBRARY OFF CACHE BOOL "" FORCE)
+FetchContent_Declare(
+    JoltPhysics
+    GIT_REPOSITORY https://github.com/jrouwe/JoltPhysics.git
+    GIT_TAG        v5.2.0
+    SOURCE_SUBDIR  Build
+)
+FetchContent_MakeAvailable(JoltPhysics)
+
 # ─────────────────────────────────────────────────────────────────────────────
 # HarmoniaShared — static lib compiled into BOTH Harmonia and HarmoniaServer
 # Contains: Network protocol and music theory (no graphics, no audio)
@@ -108,6 +128,7 @@ target_sources(Harmonia PRIVATE
     # World
     Source/Client/World/OpenWorld.cpp
     Source/Client/World/PlayerController.cpp
+    Source/Client/Physics/PhysicsWorld.cpp
     Source/Client/World/RemotePlayer.cpp
 
     # Rendering engine
@@ -117,6 +138,8 @@ target_sources(Harmonia PRIVATE
     Source/Client/Engine/Rendering/ParticleSystem.cpp
     Source/Client/Engine/Rendering/AvatarRenderer.cpp
     Source/Client/Engine/Rendering/StarField.cpp
+    Source/Client/Engine/Rendering/Sun.cpp
+    Source/Client/Engine/Rendering/GltfCharacter.cpp
     Source/Client/Engine/Rendering/PostProcess.cpp
     Source/Client/Engine/Rendering/GroundPlane.cpp
     Source/Client/World/BlockCharacter.cpp
@@ -159,6 +182,7 @@ target_link_libraries(Harmonia PRIVATE
     juce::juce_gui_extra
     juce::juce_opengl
     glm::glm
+    Jolt
     PUBLIC
     juce::juce_recommended_config_flags
     juce::juce_recommended_lto_flags

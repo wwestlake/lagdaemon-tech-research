@@ -64,6 +64,11 @@ void HarmoniaApp::enterWorld() {
     if (browser_) browser_.reset();
     grabKeyboardFocus();
     resized();
+
+    // Captured mouse for real game look, now that we're past the connect
+    // menu (which needs a normal visible, clickable cursor for its text
+    // fields/buttons).
+    setMouseCaptured(true);
 }
 
 void HarmoniaApp::showSplash() {
@@ -94,7 +99,13 @@ void HarmoniaApp::showServerBrowser() {
 }
 
 
-bool HarmoniaApp::keyPressed(const juce::KeyPress&, juce::Component*) { return false; }
+bool HarmoniaApp::keyPressed(const juce::KeyPress& key, juce::Component*) {
+    if (key == juce::KeyPress::escapeKey) {
+        setMouseCaptured(!mouseCaptured_);
+        return true;
+    }
+    return false;
+}
 
 bool HarmoniaApp::keyStateChanged(bool /*isKeyDown*/, juce::Component*) {
     // Simple piano mapping for testing: z x c v b n m
@@ -135,12 +146,44 @@ bool HarmoniaApp::keyStateChanged(bool /*isKeyDown*/, juce::Component*) {
     return false;
 }
 
-void HarmoniaApp::mouseDown(const juce::MouseEvent& e) {
-    if (glCtx_) glCtx_->camera().mouseDown(e);
+void HarmoniaApp::mouseDown(const juce::MouseEvent&) {
+    // Click-drag orbit is intentionally NOT the default control scheme -
+    // continuous mouseMove below (industry-standard FPS/third-person
+    // look, no button required) is. Camera::mouseDown/mouseDrag still
+    // exist for a possible future special-case mode (e.g. photo mode),
+    // just not wired here.
 }
 
-void HarmoniaApp::mouseDrag(const juce::MouseEvent& e) {
-    if (glCtx_) glCtx_->camera().mouseDrag(e);
+void HarmoniaApp::mouseDrag(const juce::MouseEvent&) {
+}
+
+void HarmoniaApp::mouseMove(const juce::MouseEvent& e) {
+    if (!glCtx_ || !mouseCaptured_) return;
+
+    // Standard "warp to centre" game mouse capture: measure the delta
+    // from the window's centre (not from wherever the last event left
+    // off), then snap the OS cursor back to centre so it can never run
+    // out of screen and every subsequent move measures cleanly again.
+    // This never touches Camera directly - it only accumulates into the
+    // atomic handoff, which the GL thread alone drains and applies.
+    juce::Point<float> centre((float)getWidth() * 0.5f, (float)getHeight() * 0.5f);
+    auto delta = e.position - centre;
+    if (delta.x != 0.0f || delta.y != 0.0f) {
+        glCtx_->addMouseDelta(delta.x, delta.y);
+        auto globalCentre = localPointToGlobal(centre.toInt());
+        juce::Desktop::getInstance().getMainMouseSource().setScreenPosition(globalCentre.toFloat());
+    }
+}
+
+void HarmoniaApp::setMouseCaptured(bool captured) {
+    mouseCaptured_ = captured;
+    if (captured) {
+        juce::Point<float> centre((float)getWidth() * 0.5f, (float)getHeight() * 0.5f);
+        juce::Desktop::getInstance().getMainMouseSource().setScreenPosition(localPointToGlobal(centre.toInt()).toFloat());
+        setMouseCursor(juce::MouseCursor::NoCursor);
+    } else {
+        setMouseCursor(juce::MouseCursor::NormalCursor);
+    }
 }
 
 void HarmoniaApp::spawnLocalServer() {
@@ -161,9 +204,18 @@ void HarmoniaApp::spawnLocalServer() {
         return;
     }
 
-    if (!serverExe.startAsProcess()) {
+    // ChildProcess (unlike File::startAsProcess()) launches with
+    // CREATE_NO_WINDOW on Windows - the server console window no longer
+    // pops up over the game and steals focus/input.
+    localServer_ = std::make_unique<juce::ChildProcess>();
+    // The StringArray overload (not the raw command-line String one)
+    // quotes each argument itself - needed since this path has spaces
+    // ("...\000 Tech Research\..."), which a bare unquoted command-line
+    // string would fail to parse correctly.
+    if (!localServer_->start(juce::StringArray(serverExe.getFullPathName()))) {
         if (browser_)
             browser_->setStatus("Could not start the local server.", true);
+        localServer_.reset();
         return;
     }
 

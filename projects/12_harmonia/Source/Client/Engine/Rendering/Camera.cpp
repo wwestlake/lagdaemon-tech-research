@@ -67,11 +67,18 @@ void Camera::update(float dt) {
         if (animT_ >= 1.f) animating_ = false;
     }
 
-    // Smooth damp toward targets
+    // Azimuth/elevation now come from continuous mouse-look
+    // (applyLookDelta) most of the time, not slow click-drag orbiting -
+    // damp those two quickly (matches firstPerson's own responsiveness)
+    // so aim doesn't feel laggy. Distance/pivot stay on the slower damp;
+    // those are camera-catching-up-to-player-position concerns, not aim.
+    const float lookSpeed = 18.f;
+    float lookAlpha = 1.f - std::exp(-lookSpeed * dt);
+    azimuth   += (targetAzimuth_   - azimuth)   * lookAlpha;
+    elevation += (targetElevation_ - elevation) * lookAlpha;
+
     const float speed = 10.f;
     float alpha = 1.f - std::exp(-speed * dt);
-    azimuth   += (targetAzimuth_   - azimuth)   * alpha;
-    elevation += (targetElevation_ - elevation) * alpha;
     distance  += (targetDistance_  - distance)  * alpha;
     pivot     += (targetPivot_     - pivot)     * alpha;
 }
@@ -98,6 +105,14 @@ glm::mat4 Camera::viewMatrix() const {
         return glm::lookAt(firstPersonPosition_, firstPersonPosition_ + forward(), glm::vec3(0, 1, 0));
 
     return glm::lookAt(position(), pivot, glm::vec3(0, 1, 0));
+}
+
+void Camera::applyLookDelta(float dx, float dy) {
+    const float sensitivity = 0.005f;
+    targetAzimuth_   -= dx * sensitivity;
+    targetElevation_ += dy * sensitivity;
+    targetElevation_  = juce::jlimit(-1.4f, 1.4f, targetElevation_);
+    animating_ = false;
 }
 
 void Camera::setFirstPersonPosition(const glm::vec3& p) {

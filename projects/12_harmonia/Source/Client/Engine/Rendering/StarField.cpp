@@ -55,12 +55,14 @@ void StarField::shutdown() {
     count_ = 0;
 }
 
-void StarField::draw(juce::OpenGLShaderProgram& shader, const glm::mat4& vp) {
+void StarField::draw(juce::OpenGLShaderProgram& shader, const glm::mat4& vp, const glm::mat4& skyRotation) {
     if (!count_ || !vao_) return;
 
     shader.use();
     juce::OpenGLShaderProgram::Uniform uVP(shader, "uVP");
     uVP.setMatrix4(glm::value_ptr(vp), 1, GL_FALSE);
+    juce::OpenGLShaderProgram::Uniform uSkyRotation(shader, "uSkyRotation");
+    uSkyRotation.setMatrix4(glm::value_ptr(skyRotation), 1, GL_FALSE);
 
     glEnable(GL_PROGRAM_POINT_SIZE);
     ctx_->extensions.glBindVertexArray(vao_);

@@ -30,12 +30,19 @@ public:
     bool keyStateChanged(bool isKeyDown, juce::Component* originatingComponent) override;
     void mouseDown(const juce::MouseEvent& e) override;
     void mouseDrag(const juce::MouseEvent& e) override;
+    void mouseMove(const juce::MouseEvent& e) override;
     
 private:
     void showSplash();
     void showServerBrowser();
     void enterWorld();
     void spawnLocalServer();
+    // Standard game mouse capture (hide cursor, warp back to window
+    // centre every move so it never runs out of screen) - captured
+    // during play; release this to interact with a popup/panel with a
+    // visible pointer, per JUCE's actual role here (input + hosting the
+    // GL context, not UI widgets).
+    void setMouseCaptured(bool captured);
     
     std::unique_ptr<AudioEngine> audio_;
     std::unique_ptr<MidiEngine> midi_;
@@ -53,5 +60,8 @@ private:
     
     std::unique_ptr<juce::ChildProcess> localServer_;
     std::set<int> keysDown_;
+
+    // Standard game mouse capture state - see setMouseCaptured().
+    bool mouseCaptured_ = false;
 };
 }

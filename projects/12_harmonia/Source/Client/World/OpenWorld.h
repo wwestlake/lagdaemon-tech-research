@@ -1,6 +1,7 @@
 #pragma once
 #include <map>
 #include <set>
+#include <string>
 #include <vector>
 #include <memory>
 #include "Client/Engine/Rendering/Camera.h"
@@ -12,7 +13,8 @@
 #include "Client/Engine/Rendering/ParticleSystem.h"
 #include "Client/Engine/Rendering/PostProcess.h"
 #include "Client/Engine/Rendering/GroundPlane.h"
-#include "Client/World/BlockCharacter.h"
+#include "Client/Engine/Rendering/GltfCharacter.h"
+#include "Client/Physics/PhysicsWorld.h"
 #include "Client/Engine/Audio/AudioEngine.h"
 #include "Client/Engine/Audio/MidiEngine.h"
 #include "Shared/World/WorldState.h"
@@ -25,9 +27,10 @@ public:
     OpenWorld(WorldState* state, AudioEngine* audio, MidiEngine* midi,
               Net::NetworkClient* net, Camera& camera);
     
-    void update(float dt, float mouseDx, float mouseDy);
+    void update(float dt);
     void render(const glm::mat4& view, const glm::mat4& proj);
-    void render(const glm::mat4& view, const glm::mat4& proj, juce::OpenGLContext& ctx);
+    void render(const glm::mat4& view, const glm::mat4& proj, juce::OpenGLContext& ctx,
+                const glm::vec3& sunDir, const glm::vec3& sunColor);
     
     void onPlayerJoined(uint32_t id, const juce::String& name, float hue, glm::vec3 pos);
     void onPlayerLeft(uint32_t id);
@@ -58,9 +61,14 @@ private:
     std::unique_ptr<PostProcess> postProcess_;
     std::unique_ptr<GroundPlane> ground_;
     
-    std::unique_ptr<BlockCharacter> playerChar_;
+    std::unique_ptr<GltfCharacter> playerChar_;
+    std::string currentCharClip_;
+    std::unique_ptr<PhysicsWorld> physics_;
     
     enum class CameraMode { ThirdPerson, FirstPerson, TopDown };
-    CameraMode cameraMode_ = CameraMode::FirstPerson;
+    // ThirdPerson by default - nothing currently lets the player switch
+    // modes at runtime, and FirstPerson hides the character entirely,
+    // which would make the whole animated-character feature invisible.
+    CameraMode cameraMode_ = CameraMode::ThirdPerson;
 };
 }

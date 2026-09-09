@@ -1,28 +1,83 @@
 #include "OpenWorld.h"
+#include <iostream>
+#include <cmath>
 
 namespace Harmonia {
 OpenWorld::OpenWorld(WorldState* state, AudioEngine* audio, MidiEngine* midi, Net::NetworkClient* net, Camera& camera)
     : worldState_(state), audio_(audio), net_(net), camera_(camera) {
     ground_ = std::make_unique<GroundPlane>();
-    playerChar_ = std::make_unique<BlockCharacter>();
+
+    playerChar_ = std::make_unique<GltfCharacter>();
+    // Dev-build asset resolution: Builds/Harmonia_artefacts/Debug/Harmonia.exe
+    // -> up 3 to the project root -> Characters/Human.gltf. Not meant to
+    // survive a packaged release, fine for this research build.
+    juce::File exeFile = juce::File::getSpecialLocation(juce::File::currentExecutableFile);
+    juce::File projectRoot = exeFile.getParentDirectory().getParentDirectory().getParentDirectory().getParentDirectory();
+    juce::File charFile = projectRoot.getChildFile("Characters").getChildFile("Human.gltf");
+    if (playerChar_->load(charFile)) {
+        playerChar_->playClip("Idle");
+    } else {
+        std::cerr << "Harmonia: failed to load character from " << charFile.getFullPathName() << "\n";
+    }
+
+    physics_ = std::make_unique<PhysicsWorld>();
+    physics_->initialise(localPlayer_.position());
+    localPlayer_.setPosition(physics_->characterPosition());
+
     camera_.setFirstPersonPosition(localPlayer_.position() + glm::vec3(0.f, 1.6f, 0.f));
 }
 
-void OpenWorld::update(float dt, float mouseDx, float mouseDy) {
-    localPlayer_.mouseMove(mouseDx, mouseDy);
-    
+namespace {
+// Camera::position()'s own orbit formula places the camera at world
+// offset (cos(az), sin(el), sin(az))*distance from the pivot and looks
+// back AT the pivot - so its horizontal look direction (camera->pivot)
+// sits at angle (az + pi) in that same (cos, sin) parameterization.
+// PlayerController's forward-vector formula uses a DIFFERENT, 90-degree-
+// rotated parameterization ((-sin, cos) instead of (cos, sin)), so
+// feeding it the SAME azimuth value directly produces a forward vector
+// 90 degrees off from where the camera is actually looking - which is
+// exactly why the camera was sitting beside the character instead of
+// behind it. Adding pi/2 here corrects the phase so "forward" (movement)
+// and the camera's real look direction agree. Derived directly from
+// both formulas, not guessed.
+constexpr float kAzimuthToFacing = 1.57079633f; // pi/2
+}
+
+void OpenWorld::update(float dt) {
     glm::vec3 oldPos = localPlayer_.position();
-    localPlayer_.update(dt, camera_.azimuth);
-    glm::vec3 velocity = (localPlayer_.position() - oldPos) / dt;
-    
-    if (playerChar_) {
-        playerChar_->update(dt, velocity);
+
+    glm::vec3 moveDir = localPlayer_.computeMoveDir(camera_.azimuth + kAzimuthToFacing);
+    if (physics_) {
+        physics_->update(dt, moveDir, localPlayer_.jumpHeld());
+        localPlayer_.setPosition(physics_->characterPosition());
     }
-    
+    glm::vec3 velocity = (localPlayer_.position() - oldPos) / dt;
+
+    // Minecraft-style scheme: mouse look sets the facing continuously
+    // (camera_.azimuth, driven by real mouse deltas - see
+    // HarmoniaGLContext::renderOpenGL), the character always matches
+    // that same facing, and W moves in that direction. The camera trails
+    // the player's POSITION only; it does not derive its own orientation
+    // from movement the way an over-the-shoulder "chase cam" would.
+    bool moving = glm::length(glm::vec2(velocity.x, velocity.z)) > 0.1f;
+
+    if (playerChar_) {
+        const char* wantClip = moving ? "Walk" : "Idle";
+        if (currentCharClip_ != wantClip) {
+            playerChar_->playClip(wantClip);
+            currentCharClip_ = wantClip;
+        }
+        playerChar_->update(dt);
+    }
+
     if (cameraMode_ == CameraMode::FirstPerson) {
         camera_.setFirstPersonPosition(localPlayer_.position() + glm::vec3(0.f, 1.6f, 0.f));
     } else {
-        camera_.setPivot(localPlayer_.position());
+        // Look at roughly chest/head height, not the character's feet
+        // (localPlayer_.position() is ground level, since the character
+        // is grounded there) - otherwise the camera ends up staring at
+        // its knees.
+        camera_.setPivotTarget(localPlayer_.position() + glm::vec3(0.f, 1.4f, 0.f));
     }
     
     for (auto& [id, player] : remotePlayers_) player->update(dt);
@@ -32,55 +87,27 @@ void OpenWorld::render(const glm::mat4& view, const glm::mat4& proj) {
     if (currentRegion_) currentRegion_->render(view, proj);
 }
 
-void OpenWorld::render(const glm::mat4& view, const glm::mat4& proj, juce::OpenGLContext& ctx) {
-    ground_->render(view, proj, ctx);
-    
-    // Lazy init mesh GL buffers
-    static bool charSetup = false;
-    if (!charSetup && playerChar_) {
-        playerChar_->initialise(ctx);
-        charSetup = true;
-    }
-    
-    if (playerChar_) {
+void OpenWorld::render(const glm::mat4& view, const glm::mat4& proj, juce::OpenGLContext& ctx,
+                        const glm::vec3& sunDir, const glm::vec3& sunColor) {
+    ground_->render(view, proj, ctx, sunDir, sunColor);
+
+    if (playerChar_ && cameraMode_ != CameraMode::FirstPerson) {
         glm::mat4 model = glm::mat4(1.0f);
         model = glm::translate(model, localPlayer_.position());
-        model = glm::rotate(model, camera_.azimuth, glm::vec3(0, 1, 0));
-        
-        // Use the existing solid colour shader if we have one, or create a simple one.
-        // Wait, BlockCharacter expects a shader passed in! 
-        // We need a basic shader.
-        // Let's create one inline just for the character.
-        static std::unique_ptr<juce::OpenGLShaderProgram> charShader;
-        if (!charShader) {
-            charShader = std::make_unique<juce::OpenGLShaderProgram>(ctx);
-            const char* vsh = R"(
-                #version 330 core
-                layout(location=0) in vec3 aPos;
-                uniform mat4 uVP;
-                uniform mat4 uModel;
-                void main() {
-                    gl_Position = uVP * uModel * vec4(aPos, 1.0);
-                }
-            )";
-            const char* fsh = R"(
-                #version 330 core
-                out vec4 fragColor;
-                uniform vec4 uColor;
-                void main() {
-                    fragColor = uColor;
-                }
-            )";
-            charShader->addVertexShader(vsh);
-            charShader->addFragmentShader(fsh);
-            charShader->link();
-        }
-        
-        if (cameraMode_ != CameraMode::FirstPerson) {
-            playerChar_->render(*charShader, view, proj, model, camera_.position());
-        }
+        // The character always faces the same direction the mouse-look
+        // camera is aimed (industry-standard third-person: look and
+        // heading are the same thing) - same kAzimuthToFacing correction
+        // as movement above, so the model's facing actually matches the
+        // direction W walks in and the direction the camera looks.
+        model = glm::rotate(model, -(camera_.azimuth + kAzimuthToFacing), glm::vec3(0, 1, 0));
+
+        // A rich, deep "polished car paint" blue - stylistic placeholder
+        // colour, no texture yet. The shine itself (specular + fresnel)
+        // comes from GltfCharacter's own shader, not from this value.
+        const glm::vec3 kCharacterBlue(0.05f, 0.22f, 0.55f);
+        playerChar_->render(ctx, view, proj, model, sunDir, sunColor, kCharacterBlue);
     }
-    
+
     if (currentRegion_) currentRegion_->render(view, proj);
 }
 
