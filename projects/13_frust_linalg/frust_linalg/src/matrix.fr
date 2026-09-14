@@ -34,6 +34,47 @@ pub fn mat4f_scale(x: f32, y: f32, z: f32) -> Mat4f = {
     Mat4f { data: data }
 }
 
+pub fn mat4f_diagonal(x: f32, y: f32, z: f32, w: f32) -> Mat4f = {
+    let mut data: Array<f32, 16> = Array::new();
+    data[0] = x;
+    data[5] = y;
+    data[10] = z;
+    data[15] = w;
+    Mat4f { data: data }
+}
+
+pub fn mat4f_get_translation(m: Mat4f) -> Vec3f = {
+    vec3f(m.data[12], m.data[13], m.data[14])
+}
+
+pub fn mat4f_inverse_translation_scale(m: Mat4f) -> Mat4f = {
+    let md: Array<f32, 16> = m.data;
+    let sx: f32 = 1.0 / md[0];
+    let sy: f32 = 1.0 / md[5];
+    let sz: f32 = 1.0 / md[10];
+    let mut data: Array<f32, 16> = Array::new();
+    data[0] = sx;
+    data[5] = sy;
+    data[10] = sz;
+    data[12] = -md[12] * sx;
+    data[13] = -md[13] * sy;
+    data[14] = -md[14] * sz;
+    data[15] = 1.0;
+    Mat4f { data: data }
+}
+
+pub fn mat4f_orthographic(left: f32, right: f32, bottom: f32, top: f32, near_z: f32, far_z: f32) -> Mat4f = {
+    let mut data: Array<f32, 16> = Array::new();
+    data[0] = 2.0 / (right - left);
+    data[5] = 2.0 / (top - bottom);
+    data[10] = -2.0 / (far_z - near_z);
+    data[12] = -(right + left) / (right - left);
+    data[13] = -(top + bottom) / (top - bottom);
+    data[14] = -(far_z + near_z) / (far_z - near_z);
+    data[15] = 1.0;
+    Mat4f { data: data }
+}
+
 pub fn mat4f_mul(a: Mat4f, b: Mat4f) -> Mat4f = {
     let ad: Array<f32, 16> = a.data;
     let bd: Array<f32, 16> = b.data;

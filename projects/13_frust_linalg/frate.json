@@ -10,7 +10,9 @@
       "frust_linalg",
       "tests/vector_smoke",
       "tests/matrix_smoke",
-      "tests/audio_buffer_smoke"
+      "tests/audio_buffer_smoke",
+      "tests/transform_smoke",
+      "tests/geometry_smoke"
     ]
   }
 }
