@@ -32,6 +32,9 @@ This library is about simulation numerics and physical systems:
 - constraints
 - scalar/vector fields
 - simple PDE stepping patterns
+- statistical physics
+- stochastic processes
+- Monte Carlo simulation
 - linear and nonlinear equation solving
 - diagnostics and validation
 
@@ -84,6 +87,9 @@ frust_physics/
     particles.fr
     springs.fr
     fields.fr
+    stochastic.fr
+    statphys.fr
+    monte_carlo.fr
     diagnostics.fr
 ```
 
@@ -341,6 +347,86 @@ Capabilities:
 These should use `Array<f32, N>` once the sizes are known. This is a good
 second-wave feature because it tests fixed arrays in real numerical code.
 
+### Statistical Physics
+
+Types:
+
+- `EnsembleSample`
+- `ThermoSample`
+- `Histogram1f`
+- `RunningStats1f`
+
+Capabilities:
+
+- mean
+- variance
+- standard deviation
+- covariance for paired samples
+- running statistics
+- histogram binning
+- Boltzmann factor
+- partition-function helpers for small discrete systems
+- expectation value over weighted states
+- entropy for discrete probability distributions
+- temperature / beta conversion helpers
+- heat capacity estimate from energy variance
+
+Statistical physics should be a first-class part of the pack because many
+physical systems are too large or too noisy to model as a single clean
+trajectory.
+
+### Stochastic Processes
+
+Types:
+
+- `RandomWalk1f`
+- `RandomWalk3f`
+- `BrownianState1f`
+- `LangevinState1f`
+
+Capabilities:
+
+- 1D and 3D random walk step
+- Brownian motion step
+- Langevin dynamics step
+- Ornstein-Uhlenbeck process
+- white-noise sample scaling by timestep
+- diffusion coefficient helpers
+- mean-squared displacement
+- autocorrelation helper later
+
+This layer should build on `core` random support where possible. If the
+existing random API is not enough, add small deterministic PRNG helpers as
+library code rather than treating it as a language blocker.
+
+### Monte Carlo Methods
+
+Types:
+
+- `MonteCarloResult`
+- `MetropolisState`
+
+Capabilities:
+
+- direct Monte Carlo averaging
+- rejection sampling helper
+- Metropolis accept/reject probability
+- Metropolis step over a scalar state
+- simple simulated annealing schedule
+- estimate integral over an interval
+- estimate expectation over a discrete weighted ensemble
+
+Future:
+
+- Markov-chain diagnostics
+- burn-in/thinning helpers
+- autocorrelation time estimate
+- bootstrap resampling
+- replica exchange
+
+Monte Carlo support is important for statistical mechanics, integration,
+uncertainty estimation, and optimization-style physical models.
+
 ### Diagnostics
 
 Types:
@@ -359,6 +445,10 @@ Capabilities:
 - max absolute error
 - RMS error
 - drift over time
+- sample mean/variance
+- histogram sanity checks
+- ensemble expectation checks
+- autocorrelation estimates later
 
 Diagnostics are first-class. A physics pack without error, energy, and
 momentum checks is just a pile of steppers.
@@ -377,6 +467,10 @@ momentum checks is just a pile of steppers.
 - SHAKE/RATTLE for many-particle systems
 - variational integrators
 - stochastic integrators
+- Langevin and Brownian dynamics
+- Monte Carlo and Metropolis-Hastings helpers
+- statistical ensemble tooling
+- bootstrap/jackknife error estimates
 - Kalman/filtering helpers
 - optimization/minimization helpers
 - nondimensionalization helpers
@@ -403,6 +497,15 @@ current Frust/Frate smoke-test convention:
   validates uniform and radial field sampling
 - PDE smoke test:
   validates one diffusion/wave step on a tiny fixed array
+- statistical physics smoke test:
+  validates running mean/variance, Boltzmann weights, expectation values,
+  and entropy on tiny hand-computed distributions
+- stochastic smoke test:
+  validates deterministic seeded random-walk/Brownian/Langevin paths where
+  the generated samples are known
+- Monte Carlo smoke test:
+  validates accept/reject logic, simple integration estimates with fixed
+  samples, and weighted discrete expectations
 
 Floating-point checks should use exact values when possible and
 `approx_eq_f32` from `frust_linalg` for iterative cases.
@@ -423,7 +526,10 @@ Recommended implementation order:
 9. Add particle/N-body helpers.
 10. Add distance constraints and projection.
 11. Add first tiny PDE/fixed-array stepping example.
-12. Package/install and run smoke tests from the direct development
+12. Add running statistics, histograms, and small ensemble helpers.
+13. Add deterministic stochastic-process helpers.
+14. Add first Monte Carlo helpers.
+15. Package/install and run smoke tests from the direct development
     `frate.exe` path.
 
 ## Known Frust/Frate Considerations
@@ -447,5 +553,10 @@ Recommended implementation order:
   patterns.
 - Molecular dynamics literature: velocity Verlet, leapfrog, constraints,
   SHAKE/RATTLE, and energy drift diagnostics.
+- Statistical mechanics literature: ensembles, partition functions,
+  Boltzmann weights, entropy, fluctuations, and response estimates.
+- Monte Carlo literature: direct sampling, Metropolis methods, Markov
+  chains, sampling error, and ensemble averages.
 - Computational physics teaching literature: oscillators, N-body systems,
-  diffusion, wave equations, and finite difference stepping.
+  diffusion, wave equations, random walks, Monte Carlo integration, and
+  finite difference stepping.
