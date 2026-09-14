@@ -1,8 +1,0 @@
-use core;
-use self::scalar;
-use self::vector;
-use self::matrix;
-use self::quat;
-use self::transform;
-use self::geometry;
-use self::audio;
