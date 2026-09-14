@@ -32,9 +32,9 @@ public:
     void flyTo(glm::vec3 target, float distanceFromTarget, float durationSec);
     void setOrientation(float az, float el, float dist);  // instant, no animation
     
-    float azimuth = 0.3f;
-    float elevation = 0.4f;
-    float distance = 5.0f;
+    float azimuth = 0.0f;
+    float elevation = 0.0f;
+    float distance = 3.0f;
     glm::vec3 pivot = {0,0,0};
     
 private:

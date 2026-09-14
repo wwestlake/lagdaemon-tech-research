@@ -1,0 +1,28 @@
+use frust_linalg;
+
+fn pass_if(cond: bool) -> i64 = {
+    if cond == true { 1 } else { 0 }
+}
+
+fn main() -> i64 = {
+    let a: Vec3f = vec3f(1.0, 2.0, 3.0);
+    let b: Vec3f = vec3f(4.0, 5.0, 6.0);
+    let dot: f32 = vec3f_dot(a, b);
+
+    let c: Vec3f = vec3f_cross(a, b);
+    let add: Vec3f = vec3f_add(a, b);
+    let scaled: Vec3f = vec3f_scale(a, 2.0);
+    let lerped: Vec3f = vec3f_lerp(vec3f_zero(), vec3f(10.0, 20.0, 30.0), 0.5);
+    let clamped: Vec3f = vec3f_clamp(vec3f(-2.0, 5.0, 20.0), vec3f_zero(), vec3f(10.0, 10.0, 10.0));
+    let dist_sq: f32 = vec3f_distance_sq(a, b);
+
+    pass_if(dot == 32.0) +
+    pass_if(c.x == -3.0) +
+    pass_if(c.y == 6.0) +
+    pass_if(c.z == -3.0) +
+    pass_if(add.x == 5.0) + pass_if(add.y == 7.0) + pass_if(add.z == 9.0) +
+    pass_if(scaled.x == 2.0) + pass_if(scaled.y == 4.0) + pass_if(scaled.z == 6.0) +
+    pass_if(lerped.x == 5.0) + pass_if(lerped.y == 10.0) + pass_if(lerped.z == 15.0) +
+    pass_if(clamped.x == 0.0) + pass_if(clamped.y == 5.0) + pass_if(clamped.z == 10.0) +
+    pass_if(dist_sq == 27.0)
+}

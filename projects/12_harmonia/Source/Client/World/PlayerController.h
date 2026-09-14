@@ -11,8 +11,9 @@ public:
     // now happens inside PhysicsWorld (gravity, ground collision, slope
     // handling). cameraFacingAngle is the same angle OpenWorld already
     // derives for the character's own facing.
-    glm::vec3 computeMoveDir(float cameraFacingAngle) const;
-    bool jumpHeld() const;
+    glm::vec3 computeMoveDir(float cameraAzimuth, bool inputEnabled) const;
+    bool jumpHeld(bool inputEnabled) const;
+    bool runHeld(bool inputEnabled) const;
 
     void mouseMove(float dx, float dy);
 

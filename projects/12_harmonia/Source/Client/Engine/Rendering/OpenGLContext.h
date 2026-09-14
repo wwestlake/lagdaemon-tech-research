@@ -23,6 +23,7 @@ public:
     void openGLContextClosing() override;
 
     void setOpenWorld(class OpenWorld* world) { openWorld_ = world; }
+    void setAnimTestWorld(class AnimTestWorld* world) { animTestWorld_ = world; }
 
     Camera& camera();
     juce::OpenGLContext& glContext() { return glCtx_; }
@@ -37,6 +38,10 @@ public:
         pendingMouseDx_.fetch_add(dx, std::memory_order_relaxed);
         pendingMouseDy_.fetch_add(dy, std::memory_order_relaxed);
     }
+    
+    void addMouseWheel(float deltaY) {
+        pendingMouseWheel_.fetch_add(deltaY, std::memory_order_relaxed);
+    }
 
 private:
     juce::OpenGLContext glCtx_;
@@ -44,6 +49,7 @@ private:
 
     std::atomic<float> pendingMouseDx_{0.0f};
     std::atomic<float> pendingMouseDy_{0.0f};
+    std::atomic<float> pendingMouseWheel_{0.0f};
 
     std::unique_ptr<ShaderLibrary>  shaders_;
     std::unique_ptr<ParticleSystem> particles_;
@@ -52,6 +58,7 @@ private:
 
     Camera      camera_;
     class OpenWorld* openWorld_ = nullptr;
+    class AnimTestWorld* animTestWorld_ = nullptr;
 
     float  time_            = 0.f;
     double lastRenderTime_  = 0.0;

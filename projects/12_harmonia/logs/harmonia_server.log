@@ -1,0 +1,10 @@
+[2026-08-30 12:07:00] [INFO]  Server started successfully.
+[2026-08-30 12:07:00] [INFO]  Listening on TCP port 4440 (A440)
+[2026-08-30 12:07:00] [INFO]  Accepted connection from 127.0.0.1 → playerID=1
+[2026-08-30 12:07:00] [INFO]  Created new session: main
+[2026-08-30 12:07:00] [INFO]  Hello from "Traveller" → session="main"
+[2026-08-30 12:07:00] [INFO]  Added player 1 to session main
+[2026-08-30 12:07:00] [INFO]  Player 1 joined session "main"
+[2026-08-30 12:07:05] [INFO]  Status: Players=1
+[2026-08-30 12:07:10] [INFO]  Status: Players=1
+[2026-08-30 12:07:14] [INFO]  Player 1 disconnected

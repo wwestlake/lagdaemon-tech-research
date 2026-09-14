@@ -127,12 +127,14 @@ target_sources(Harmonia PRIVATE
 
     # World
     Source/Client/World/OpenWorld.cpp
+    Source/Client/World/AnimTestWorld.cpp
     Source/Client/World/PlayerController.cpp
     Source/Client/Physics/PhysicsWorld.cpp
     Source/Client/World/RemotePlayer.cpp
 
     # Rendering engine
     Source/Client/Engine/Rendering/OpenGLContext.cpp
+    Source/Client/Engine/Input/RawMouseDevice.cpp
     Source/Client/Engine/Rendering/Camera.cpp
     Source/Client/Engine/Rendering/ShaderLibrary.cpp
     Source/Client/Engine/Rendering/ParticleSystem.cpp
@@ -141,7 +143,15 @@ target_sources(Harmonia PRIVATE
     Source/Client/Engine/Rendering/Sun.cpp
     Source/Client/Engine/Rendering/GltfCharacter.cpp
     Source/Client/Engine/Rendering/PostProcess.cpp
-    Source/Client/Engine/Rendering/GroundPlane.cpp
+    
+    Source/Client/Engine/Rendering/BakedTerrain.cpp
+    Source/Client/Engine/Rendering/TerrainHeight.cpp
+    Source/Client/Engine/Rendering/Terrain.cpp
+    Source/Client/Engine/Rendering/TerrainChunk.cpp
+    Source/Client/Engine/Animation/IKSolver.cpp
+    Source/Client/Engine/Animation/LocomotionController.cpp
+    Source/Client/Engine/Animation/MotionDatabase.cpp
+    Source/Client/Engine/Animation/MotionMatcher.cpp
     Source/Client/World/BlockCharacter.cpp
 
     # Audio engine

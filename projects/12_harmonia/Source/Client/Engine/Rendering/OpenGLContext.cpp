@@ -1,5 +1,8 @@
 #include "OpenGLContext.h"
-#include "Client/World/OpenWorld.h"
+#include "../../World/OpenWorld.h"
+#include "Client/Engine/Rendering/TerrainHeight.h"
+#include "Client/Engine/Rendering/BakedTerrain.h"
+#include "Client/World/AnimTestWorld.h"
 #include <glm/gtc/type_ptr.hpp>
 
 using namespace juce::gl;
@@ -39,11 +42,9 @@ void HarmoniaGLContext::newOpenGLContextCreated() {
 
     sun_ = std::make_unique<Sun>();
 
-    // A close chase-cam distance, not the far establishing-shot distance
-    // this had before (55 units) - azimuth here is a throwaway starting
-    // value, immediately overridden every frame by the character-follow
-    // logic in OpenWorld::update() once the world exists.
-    camera_.setOrientation(0.4f, 0.3f, 10.f);
+    // Start with a 3.0 meter distance, raised slightly and looking downward.
+    // The azimuth is a throwaway starting value, immediately overridden every frame.
+    camera_.setOrientation(0.4f, 0.6f, 3.0f);
 }
 
 // ─── Main render callback — called 60Hz on the GL thread ─────────────────────
@@ -55,7 +56,11 @@ void HarmoniaGLContext::renderOpenGL() {
     const float aspect = (h > 0.f) ? w / h : 1.f;
 
     glViewport(0, 0, (GLsizei)w, (GLsizei)h);
-    glClearColor(0.01f, 0.01f, 0.06f, 1.f);   // deep space blue-black
+    if (animTestWorld_) {
+        glClearColor(0.2f, 0.2f, 0.2f, 1.f);
+    } else {
+        glClearColor(0.01f, 0.01f, 0.06f, 1.f);   // deep space blue-black
+    }
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
     double now = juce::Time::getMillisecondCounterHiRes() * 0.001;
@@ -68,10 +73,18 @@ void HarmoniaGLContext::renderOpenGL() {
     // by mouse input, kept exclusively on this (the GL) thread.
     float mdx = pendingMouseDx_.exchange(0.0f, std::memory_order_relaxed);
     float mdy = pendingMouseDy_.exchange(0.0f, std::memory_order_relaxed);
+    
     if (mdx != 0.0f || mdy != 0.0f) camera_.applyLookDelta(mdx, mdy);
+    
+    float mw = pendingMouseWheel_.exchange(0.0f, std::memory_order_relaxed);
+    if (mw != 0.0f) {
+        juce::MouseWheelDetails wheel;
+        wheel.deltaY = mw;
+        camera_.mouseWheelMove(wheel);
+    }
 
     camera_.update(dt);
-    if (openWorld_) {
+    if (openWorld_ && !animTestWorld_) {
         openWorld_->update(dt);
     }
     particles_->update(dt);
@@ -82,7 +95,7 @@ void HarmoniaGLContext::renderOpenGL() {
     const glm::mat4 vp   = proj * view;
 
     // ── 1. Star field - rotates in sync with the sun's own day arc ──────────
-    if (shaders_->starfield()) {
+    if (shaders_->starfield() && !animTestWorld_) {
         glDisable(GL_DEPTH_TEST);
         glm::mat4 skyRotation = sun_ ? sun_->skyRotation() : glm::mat4(1.0f);
         stars_->draw(*shaders_->starfield(), vp, skyRotation);
@@ -90,15 +103,23 @@ void HarmoniaGLContext::renderOpenGL() {
 
     // ── 1.5 Sun - a sky object like the stars, drawn before depth-tested
     // world geometry so nearby ground/characters correctly occlude it ────────
-    if (sun_) {
+    if (sun_ && !animTestWorld_) {
         glDisable(GL_DEPTH_TEST);
         sun_->render(view, proj, glCtx_);
     }
 
     glEnable(GL_DEPTH_TEST);
+    
+    // Draw AnimTestWorld
+    if (animTestWorld_) {
+        glm::vec3 sunDir = sun_ ? sun_->direction() : glm::vec3(0.4f, 1.0f, 0.3f);
+        glm::vec3 sunColor = sun_ ? sun_->color() : glm::vec3(1.0f);
+        animTestWorld_->render(aspect, glCtx_, sunDir, sunColor);
+    }
+
     // ── 2. Open world (ground and character) - lit by the real sun's
     // direction/colour, not a fixed hardcoded light ──────────────────────────
-    if (openWorld_) {
+    if (openWorld_ && !animTestWorld_) {
         glm::vec3 sunDir = sun_ ? sun_->direction() : glm::vec3(0.4f, 1.0f, 0.3f);
         glm::vec3 sunColor = sun_ ? sun_->color() : glm::vec3(1.0f);
         openWorld_->render(view, proj, glCtx_, sunDir, sunColor);

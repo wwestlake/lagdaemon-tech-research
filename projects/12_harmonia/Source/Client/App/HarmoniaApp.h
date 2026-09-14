@@ -49,8 +49,12 @@ private:
     std::unique_ptr<Net::NetworkClient> net_;
     std::unique_ptr<MessageHandler> msgHandler_;
     std::unique_ptr<WorldState> worldState_;
-    std::unique_ptr<OpenWorld> world_;
+    std::unique_ptr<class AnimTestWorld> world_;
     std::unique_ptr<HarmoniaGLContext> glCtx_;
+    
+    std::thread gameThread_;
+    std::atomic<bool> gameThreadRunning_{false};
+    void gameLoop();
     
     std::unique_ptr<SplashScreen> splash_;
     std::unique_ptr<ServerBrowser> browser_;

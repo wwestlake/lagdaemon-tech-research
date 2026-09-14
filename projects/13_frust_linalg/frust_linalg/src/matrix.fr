@@ -1,0 +1,103 @@
+struct Mat4f {
+    data: Array<f32, 16>
+}
+
+pub fn mat4f_zero() -> Mat4f = {
+    let data: Array<f32, 16> = Array::new();
+    Mat4f { data: data }
+}
+
+pub fn mat4f_identity() -> Mat4f = {
+    let mut data: Array<f32, 16> = Array::new();
+    data[0] = 1.0;
+    data[5] = 1.0;
+    data[10] = 1.0;
+    data[15] = 1.0;
+    Mat4f { data: data }
+}
+
+pub fn mat4f_translation(x: f32, y: f32, z: f32) -> Mat4f = {
+    let base: Mat4f = mat4f_identity();
+    let mut data: Array<f32, 16> = base.data;
+    data[12] = x;
+    data[13] = y;
+    data[14] = z;
+    Mat4f { data: data }
+}
+
+pub fn mat4f_scale(x: f32, y: f32, z: f32) -> Mat4f = {
+    let base: Mat4f = mat4f_identity();
+    let mut data: Array<f32, 16> = base.data;
+    data[0] = x;
+    data[5] = y;
+    data[10] = z;
+    Mat4f { data: data }
+}
+
+pub fn mat4f_mul(a: Mat4f, b: Mat4f) -> Mat4f = {
+    let ad: Array<f32, 16> = a.data;
+    let bd: Array<f32, 16> = b.data;
+    let mut data: Array<f32, 16> = Array::new();
+
+    data[0] = ad[0] * bd[0] + ad[4] * bd[1] + ad[8] * bd[2] + ad[12] * bd[3];
+    data[1] = ad[1] * bd[0] + ad[5] * bd[1] + ad[9] * bd[2] + ad[13] * bd[3];
+    data[2] = ad[2] * bd[0] + ad[6] * bd[1] + ad[10] * bd[2] + ad[14] * bd[3];
+    data[3] = ad[3] * bd[0] + ad[7] * bd[1] + ad[11] * bd[2] + ad[15] * bd[3];
+
+    data[4] = ad[0] * bd[4] + ad[4] * bd[5] + ad[8] * bd[6] + ad[12] * bd[7];
+    data[5] = ad[1] * bd[4] + ad[5] * bd[5] + ad[9] * bd[6] + ad[13] * bd[7];
+    data[6] = ad[2] * bd[4] + ad[6] * bd[5] + ad[10] * bd[6] + ad[14] * bd[7];
+    data[7] = ad[3] * bd[4] + ad[7] * bd[5] + ad[11] * bd[6] + ad[15] * bd[7];
+
+    data[8] = ad[0] * bd[8] + ad[4] * bd[9] + ad[8] * bd[10] + ad[12] * bd[11];
+    data[9] = ad[1] * bd[8] + ad[5] * bd[9] + ad[9] * bd[10] + ad[13] * bd[11];
+    data[10] = ad[2] * bd[8] + ad[6] * bd[9] + ad[10] * bd[10] + ad[14] * bd[11];
+    data[11] = ad[3] * bd[8] + ad[7] * bd[9] + ad[11] * bd[10] + ad[15] * bd[11];
+
+    data[12] = ad[0] * bd[12] + ad[4] * bd[13] + ad[8] * bd[14] + ad[12] * bd[15];
+    data[13] = ad[1] * bd[12] + ad[5] * bd[13] + ad[9] * bd[14] + ad[13] * bd[15];
+    data[14] = ad[2] * bd[12] + ad[6] * bd[13] + ad[10] * bd[14] + ad[14] * bd[15];
+    data[15] = ad[3] * bd[12] + ad[7] * bd[13] + ad[11] * bd[14] + ad[15] * bd[15];
+
+    Mat4f { data: data }
+}
+
+pub fn mat4f_transform_point(m: Mat4f, p: Vec3f) -> Vec3f = {
+    let data: Array<f32, 16> = m.data;
+    vec3f(
+        data[0] * p.x + data[4] * p.y + data[8] * p.z + data[12],
+        data[1] * p.x + data[5] * p.y + data[9] * p.z + data[13],
+        data[2] * p.x + data[6] * p.y + data[10] * p.z + data[14]
+    )
+}
+
+pub fn mat4f_transform_direction(m: Mat4f, v: Vec3f) -> Vec3f = {
+    let data: Array<f32, 16> = m.data;
+    vec3f(
+        data[0] * v.x + data[4] * v.y + data[8] * v.z,
+        data[1] * v.x + data[5] * v.y + data[9] * v.z,
+        data[2] * v.x + data[6] * v.y + data[10] * v.z
+    )
+}
+
+pub fn mat4f_transpose(m: Mat4f) -> Mat4f = {
+    let md: Array<f32, 16> = m.data;
+    let mut data: Array<f32, 16> = Array::new();
+    data[0] = md[0];
+    data[1] = md[4];
+    data[2] = md[8];
+    data[3] = md[12];
+    data[4] = md[1];
+    data[5] = md[5];
+    data[6] = md[9];
+    data[7] = md[13];
+    data[8] = md[2];
+    data[9] = md[6];
+    data[10] = md[10];
+    data[11] = md[14];
+    data[12] = md[3];
+    data[13] = md[7];
+    data[14] = md[11];
+    data[15] = md[15];
+    Mat4f { data: data }
+}

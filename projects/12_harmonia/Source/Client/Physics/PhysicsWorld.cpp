@@ -1,5 +1,5 @@
 #include "PhysicsWorld.h"
-#include "Client/Engine/Rendering/GroundPlane.h"
+#include "Client/Engine/Rendering/BakedTerrain.h"
 
 #include <Jolt/Jolt.h>
 #include <Jolt/RegisterTypes.h>
@@ -10,6 +10,7 @@
 #include <Jolt/Physics/PhysicsSystem.h>
 #include <Jolt/Physics/Collision/Shape/HeightFieldShape.h>
 #include <Jolt/Physics/Collision/Shape/CapsuleShape.h>
+#include <Jolt/Physics/Collision/Shape/BoxShape.h>
 #include <Jolt/Physics/Body/BodyCreationSettings.h>
 #include <Jolt/Physics/Character/Character.h>
 
@@ -64,8 +65,15 @@ public:
     }
 };
 
-constexpr float kHalfExtent = 500.0f; // matches GroundPlane's own visual mesh extent
-constexpr int   kHeightSamples = 129; // Jolt wants (power-of-two)+1-ish grids; close enough here
+// Must cover at LEAST as far as Terrain's own streaming radius (see
+// Terrain.cpp's kUnloadRadius, 750) - otherwise the player could walk
+// onto visually-loaded terrain with no collision under it and fall
+// through. 800 gives a margin. Sample resolution stays the same as
+// before the chunking rewrite, so this trades a coarser physics grid
+// (~12.5 units/sample vs ~7.8) for covering the real playable area -
+// fine for capsule-vs-gently-rolling-hills collision.
+constexpr float kHalfExtent = 800.0f;
+constexpr int   kHeightSamples = 129;
 
 }
 
@@ -106,77 +114,101 @@ PhysicsWorld::~PhysicsWorld() {
     JPH::Factory::sInstance = nullptr;
 }
 
-void PhysicsWorld::initialise(const glm::vec3& characterStartPos) {
-    // Sample the SAME heightAt() the visible ground mesh is built from,
-    // over the same world extent - what you see is exactly what you
-    // stand on, no separately-authored collision geometry to keep in
-    // sync by hand.
-    std::vector<float> heights((size_t)kHeightSamples * kHeightSamples);
-    float step = (kHalfExtent * 2.0f) / (float)(kHeightSamples - 1);
-    for (int z = 0; z < kHeightSamples; ++z) {
-        for (int x = 0; x < kHeightSamples; ++x) {
-            float wx = -kHalfExtent + x * step;
-            float wz = -kHalfExtent + z * step;
-            heights[(size_t)z * kHeightSamples + x] = GroundPlane::heightAt(wx, wz);
-        }
-    }
-
-    JPH::HeightFieldShapeSettings hfSettings(
-        heights.data(),
-        JPH::Vec3(-kHalfExtent, 0.0f, -kHalfExtent),
-        JPH::Vec3(step, 1.0f, step),
-        (JPH::uint32)kHeightSamples);
-    JPH::ShapeSettings::ShapeResult hfResult = hfSettings.Create();
+void PhysicsWorld::initialise(const glm::vec3& characterStartPos, bool useFlatFloor) {
     JPH::BodyInterface& bodyInterface = system_->GetBodyInterface();
-    if (hfResult.IsValid()) {
-        JPH::BodyCreationSettings terrainSettings(hfResult.Get(), JPH::RVec3::sZero(), JPH::Quat::sIdentity(),
+
+    if (useFlatFloor) {
+        // Create a simple flat box for the floor (30x30m room, centered at origin)
+        JPH::BoxShapeSettings floorShapeSettings(JPH::Vec3(15.0f, 1.0f, 15.0f));
+        JPH::ShapeSettings::ShapeResult floorResult = floorShapeSettings.Create();
+        if (floorResult.IsValid()) {
+            JPH::BodyCreationSettings floorSettings(floorResult.Get(), JPH::RVec3(0.0f, -1.0f, 0.0f), JPH::Quat::sIdentity(),
                                                     JPH::EMotionType::Static, Layers::NON_MOVING);
-        JPH::BodyID terrainId = bodyInterface.CreateAndAddBody(terrainSettings, JPH::EActivation::DontActivate);
-        (void)terrainId;
+            JPH::BodyID floorId = bodyInterface.CreateAndAddBody(floorSettings, JPH::EActivation::DontActivate);
+            (void)floorId;
+        }
     } else {
-        std::cerr << "Harmonia: failed to build terrain collision shape: " << hfResult.GetError() << "\n";
+        // Sample the SAME heightAt() the visible ground mesh is built from,
+        // over the same world extent - what you see is exactly what you
+        // stand on, no separately-authored collision geometry to keep in
+        // sync by hand.
+        std::vector<float> heights((size_t)kHeightSamples * kHeightSamples);
+        float step = (kHalfExtent * 2.0f) / (float)(kHeightSamples - 1);
+        for (int z = 0; z < kHeightSamples; ++z) {
+            for (int x = 0; x < kHeightSamples; ++x) {
+                float wx = -kHalfExtent + x * step;
+                float wz = -kHalfExtent + z * step;
+                heights[(size_t)z * kHeightSamples + x] = BakedTerrain::get().heightAt(wx, wz);
+            }
+        }
+
+        JPH::HeightFieldShapeSettings hfSettings(
+            heights.data(),
+            JPH::Vec3(-kHalfExtent, 0.0f, -kHalfExtent),
+            JPH::Vec3(step, 1.0f, step),
+            (JPH::uint32)kHeightSamples);
+        JPH::ShapeSettings::ShapeResult hfResult = hfSettings.Create();
+        if (hfResult.IsValid()) {
+            JPH::BodyCreationSettings terrainSettings(hfResult.Get(), JPH::RVec3::sZero(), JPH::Quat::sIdentity(),
+                                                        JPH::EMotionType::Static, Layers::NON_MOVING);
+            JPH::BodyID terrainId = bodyInterface.CreateAndAddBody(terrainSettings, JPH::EActivation::DontActivate);
+            (void)terrainId;
+        } else {
+            std::cerr << "Harmonia: failed to build terrain collision shape: " << hfResult.GetError() << "\n";
+        }
     }
 
     // A simple capsule character - real gravity, real ground detection,
     // real collision response against the terrain above, via Jolt's own
     // Character class (not a hand-rolled height snap).
-    const float radius = 0.35f;
-    const float halfHeight = 0.7f; // ~1.4m tall capsule cylinder + caps
-    JPH::RefConst<JPH::Shape> capsule = new JPH::CapsuleShape(halfHeight, radius);
+    JPH::RefConst<JPH::Shape> capsule = new JPH::CapsuleShape(kCapsuleHalfHeight, kCapsuleRadius);
 
     JPH::CharacterSettings settings;
     settings.mShape = capsule;
     settings.mLayer = Layers::MOVING;
     settings.mGravityFactor = 1.0f;
-    settings.mFriction = 0.6f;
+    settings.mFriction = 0.0f;
     settings.mMaxSlopeAngle = JPH::DegreesToRadians(50.0f);
-    settings.mSupportingVolume = JPH::Plane(JPH::Vec3::sAxisY(), -radius);
 
-    JPH::RVec3 startPos(characterStartPos.x, characterStartPos.y + halfHeight + radius + 0.1f, characterStartPos.z);
+
+    JPH::RVec3 startPos(characterStartPos.x, characterStartPos.y + kCapsuleHalfHeight + kCapsuleRadius + 0.1f, characterStartPos.z);
     character_ = new JPH::Character(&settings, startPos, JPH::Quat::sIdentity(), 0, system_);
     character_->AddToPhysicsSystem(JPH::EActivation::Activate);
+    
+    system_->OptimizeBroadPhase();
 }
 
-void PhysicsWorld::update(float dt, const glm::vec3& moveDir, bool jump) {
+void PhysicsWorld::update(float dt, const glm::vec3& moveDir, bool jump, bool run) {
     if (!character_ || !system_) return;
+    dt = std::min(dt, 1.0f / 15.0f);
 
     const float walkSpeed = 5.0f;
-    const float jumpSpeed = 6.0f;
+    const float runSpeed = 12.0f;
+    const float currentTargetSpeed = run ? runSpeed : walkSpeed;
+    const float jumpSpeed = 10.0f;
 
     JPH::Vec3 currentVel = character_->GetLinearVelocity();
-    JPH::Vec3 desiredHorizontal = JPH::Vec3(moveDir.x, 0.0f, moveDir.z) * walkSpeed;
+    JPH::Vec3 desiredHorizontal = JPH::Vec3(moveDir.x, 0.0f, moveDir.z) * currentTargetSpeed;
 
     bool grounded = character_->GetGroundState() == JPH::Character::EGroundState::OnGround;
-    float verticalVel = currentVel.GetY();
-    if (grounded) {
-        verticalVel = jump ? jumpSpeed : 0.0f;
-    } else {
-        verticalVel += system_->GetGravity().GetY() * dt; // free fall
+    
+    // Jolt's Character is dynamic and already experiences gravity natively.
+    // We only need to override the horizontal velocity for movement, and
+    // the vertical velocity ONLY when jumping.
+    JPH::Vec3 desiredVel(desiredHorizontal.GetX(), currentVel.GetY(), desiredHorizontal.GetZ());
+    if (jump && grounded) {
+        desiredVel.SetY(jumpSpeed);
     }
 
-    character_->SetLinearVelocity(JPH::Vec3(desiredHorizontal.GetX(), verticalVel, desiredHorizontal.GetZ()));
+    // Wake the character's physics body in case it went to sleep while standing still
+    system_->GetBodyInterface().ActivateBody(character_->GetBodyID());
+    
+    character_->SetLinearVelocity(desiredVel);
 
-    const int collisionSteps = 1;
+    // Use multiple collision steps to prevent high-speed tunneling through the thin heightfield
+    int collisionSteps = std::max(1, (int)(dt * 60.0f) + 1);
+    if (collisionSteps > 10) collisionSteps = 10;
+    
     system_->Update(dt, collisionSteps, tempAllocator_, jobSystem_);
     character_->PostSimulation(0.05f); // max separation distance for ground detection
 }
@@ -186,9 +218,16 @@ glm::vec3 PhysicsWorld::characterPosition() const {
     JPH::RVec3 p = character_->GetPosition();
     // Character::GetPosition() is the CAPSULE CENTRE, not the feet -
     // shift down by half-height+radius so callers get a feet-on-the-
-    // ground position, matching what GroundPlane::heightAt() and the
+    // ground position, matching what TerrainHeight::heightAt() and the
     // rendered character model both expect.
-    return glm::vec3((float)p.GetX(), (float)p.GetY() - (0.7f + 0.35f), (float)p.GetZ());
+    return glm::vec3((float)p.GetX(), (float)p.GetY() - (kCapsuleHalfHeight + kCapsuleRadius), (float)p.GetZ());
+}
+
+void PhysicsWorld::teleportCharacter(const glm::vec3& feetPos) {
+    if (!character_) return;
+    JPH::RVec3 centrePos(feetPos.x, feetPos.y + kCapsuleHalfHeight + kCapsuleRadius + 0.1f, feetPos.z);
+    character_->SetPosition(centrePos);
+    character_->SetLinearVelocity(JPH::Vec3::sZero());
 }
 
 bool PhysicsWorld::isGrounded() const {

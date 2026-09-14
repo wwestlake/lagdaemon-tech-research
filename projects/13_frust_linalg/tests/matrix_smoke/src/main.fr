@@ -1,0 +1,28 @@
+use frust_linalg;
+
+fn pass_if(cond: bool) -> i64 = {
+    if cond == true { 1 } else { 0 }
+}
+
+fn main() -> i64 = {
+    let p: Vec3f = vec3f(1.0, 2.0, 3.0);
+    let id: Mat4f = mat4f_identity();
+    let idp: Vec3f = mat4f_transform_point(id, p);
+
+    let t: Mat4f = mat4f_translation(10.0, 20.0, 30.0);
+    let tp: Vec3f = mat4f_transform_point(t, p);
+
+    let s: Mat4f = mat4f_scale(2.0, 3.0, 4.0);
+    let sd: Vec3f = mat4f_transform_direction(s, p);
+
+    let combo: Mat4f = mat4f_mul(t, s);
+    let cp: Vec3f = mat4f_transform_point(combo, p);
+
+    pass_if(idp.x == 1.0) + pass_if(idp.y == 2.0) + pass_if(idp.z == 3.0) +
+    pass_if(tp.x == 11.0) + pass_if(tp.y == 22.0) + pass_if(tp.z == 33.0) +
+    pass_if(sd.x == 2.0) + pass_if(sd.y == 6.0) + pass_if(sd.z == 12.0) +
+    pass_if(cp.x == 12.0) + pass_if(cp.y == 26.0) + pass_if(cp.z == 42.0) +
+    pass_if(combo.data[0] == 2.0) +
+    pass_if(combo.data[5] == 3.0) +
+    pass_if(combo.data[10] == 4.0)
+}

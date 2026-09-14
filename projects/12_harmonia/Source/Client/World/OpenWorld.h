@@ -12,12 +12,14 @@
 #include "Client/Engine/Rendering/StarField.h"
 #include "Client/Engine/Rendering/ParticleSystem.h"
 #include "Client/Engine/Rendering/PostProcess.h"
-#include "Client/Engine/Rendering/GroundPlane.h"
+#include "Client/Engine/Rendering/Terrain.h"
 #include "Client/Engine/Rendering/GltfCharacter.h"
 #include "Client/Physics/PhysicsWorld.h"
 #include "Client/Engine/Audio/AudioEngine.h"
 #include "Client/Engine/Audio/MidiEngine.h"
 #include "Shared/World/WorldState.h"
+
+namespace djehuti { namespace animation { class LocomotionController; } }
 
 namespace Harmonia {
 namespace Net { class NetworkClient; }
@@ -26,6 +28,7 @@ class OpenWorld {
 public:
     OpenWorld(WorldState* state, AudioEngine* audio, MidiEngine* midi,
               Net::NetworkClient* net, Camera& camera);
+    ~OpenWorld();
     
     void update(float dt);
     void render(const glm::mat4& view, const glm::mat4& proj);
@@ -40,7 +43,10 @@ public:
     
     Camera& camera();
     PlayerController& localPlayer();
-    
+    // Tab-toggle between first and third person, per the user's request -
+    // just flips the mode; render()/update() already branch on it.
+    void toggleFirstPerson();
+
 private:
     void detectRegion();
     
@@ -59,10 +65,11 @@ private:
     std::unique_ptr<StarField> starField_;
     std::unique_ptr<ParticleSystem> particles_;
     std::unique_ptr<PostProcess> postProcess_;
-    std::unique_ptr<GroundPlane> ground_;
-    
+    std::unique_ptr<Terrain> ground_;
     std::unique_ptr<GltfCharacter> playerChar_;
+    std::unique_ptr<djehuti::animation::LocomotionController> procAnim_;
     std::string currentCharClip_;
+    float characterYaw_ = 0.0f; // Smoothed facing direction
     std::unique_ptr<PhysicsWorld> physics_;
     
     enum class CameraMode { ThirdPerson, FirstPerson, TopDown };

@@ -19,12 +19,19 @@ int main(int argc, char** argv) {
     std::signal(SIGINT, handleSignal);
     std::signal(SIGTERM, handleSignal);
     
-    juce::File cfgFile = juce::File::getCurrentWorkingDirectory().getChildFile("server.cfg");
+    // Relative to the server's OWN executable, not the current working
+    // directory - a process spawned via juce::ChildProcess inherits
+    // whatever CWD the launching client happened to have at that moment
+    // (which varies by how/where the client itself was started from),
+    // so logs/config were landing in a different, unpredictable place
+    // on different launches instead of one reliable location.
+    juce::File exeDir = juce::File::getSpecialLocation(juce::File::currentExecutableFile).getParentDirectory();
+    juce::File cfgFile = exeDir.getChildFile("server.cfg");
     if (argc > 1) cfgFile = juce::File(argv[1]);
-    
+
     auto config = ServerApp::loadConfig(cfgFile);
-    
-    juce::File logDir = juce::File::getCurrentWorkingDirectory().getChildFile("logs");
+
+    juce::File logDir = exeDir.getChildFile("logs");
     logDir.createDirectory();
     config.logFilePath = logDir.getChildFile("harmonia_server.log").getFullPathName();
     

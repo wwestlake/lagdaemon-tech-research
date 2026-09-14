@@ -1,41 +1,76 @@
 #include "HarmoniaApp.h"
 #include "Client/UI/DesignTokens.h"
+#include "../Network/MessageHandler.h"
+#include "../World/AnimTestWorld.h"
 #include "Shared/Network/HarpSerializer.h"
 #include <thread>
 
 namespace Harmonia {
+
+bool g_MouseCaptured = false;
+
 HarmoniaApp::HarmoniaApp() {
     juce::File logDir = juce::File::getSpecialLocation(juce::File::currentExecutableFile).getSiblingFile("logs");
     logDir.createDirectory();
     juce::File logFile = logDir.getChildFile("harmonia_client.log");
     juce::Logger::setCurrentLogger(juce::FileLogger::createDateStampedLogger(logFile.getParentDirectory().getFullPathName(), "harmonia", ".log", "Harmonia Client"));
     
+    net_ = std::make_unique<Net::NetworkClient>();
     audio_ = std::make_unique<AudioEngine>();
     audio_->initialise();
     midi_ = std::make_unique<MidiEngine>();
-    net_ = std::make_unique<Net::NetworkClient>();
     worldState_ = std::make_unique<WorldState>();
+    
     glCtx_ = std::make_unique<HarmoniaGLContext>();
     glCtx_->attachTo(*this);
     
-    world_ = std::make_unique<OpenWorld>(worldState_.get(), audio_.get(), midi_.get(), net_.get(), glCtx_->camera());
-    glCtx_->setOpenWorld(world_.get());
-    msgHandler_ = std::make_unique<MessageHandler>(worldState_.get(), audio_.get(), world_.get());
+    world_ = std::make_unique<AnimTestWorld>(glCtx_->camera());
+    glCtx_->setAnimTestWorld(world_.get());
+    // msgHandler_ = std::make_unique<MessageHandler>(worldState_.get(), audio_.get(), world_.get());
     net_->addListener(this);
     
-    showSplash();
+    // Bypass splash and server browser directly into test world
+    juce::MessageManager::getInstance()->callAsync([this]() { 
+        enterWorld(); 
+    });
     setWantsKeyboardFocus(true);
     addKeyListener(this);
+    
+    gameThreadRunning_ = true;
+    gameThread_ = std::thread(&HarmoniaApp::gameLoop, this);
 }
 
 HarmoniaApp::~HarmoniaApp() {
+    gameThreadRunning_ = false;
+    if (gameThread_.joinable()) {
+        gameThread_.join();
+    }
+    
     glCtx_->detach();
     net_->removeListener(this);
+}
+
+void HarmoniaApp::gameLoop() {
+    auto lastTime = std::chrono::high_resolution_clock::now();
+    while (gameThreadRunning_) {
+        auto now = std::chrono::high_resolution_clock::now();
+        float dt = std::chrono::duration<float>(now - lastTime).count();
+        if (dt < 1.0f / 144.0f) {
+            std::this_thread::yield();
+            continue;
+        }
+        lastTime = now;
+        
+        if (world_) {
+            world_->update(dt);
+        }
+    }
 }
 
 void HarmoniaApp::resized() {
     if (splash_) splash_->setBounds(getLocalBounds());
     if (browser_) browser_->setBounds(getLocalBounds());
+    if (hud_) hud_->setBounds(getLocalBounds());
 }
 
 void HarmoniaApp::paint(juce::Graphics& g) {
@@ -62,6 +97,12 @@ void HarmoniaApp::onMessage(Net::MsgType type, const juce::MemoryBlock& payload)
 
 void HarmoniaApp::enterWorld() {
     if (browser_) browser_.reset();
+
+    if (!hud_) {
+        hud_ = std::make_unique<HudOverlay>();
+        addAndMakeVisible(*hud_);
+    }
+
     grabKeyboardFocus();
     resized();
 
@@ -147,11 +188,9 @@ bool HarmoniaApp::keyStateChanged(bool /*isKeyDown*/, juce::Component*) {
 }
 
 void HarmoniaApp::mouseDown(const juce::MouseEvent&) {
-    // Click-drag orbit is intentionally NOT the default control scheme -
-    // continuous mouseMove below (industry-standard FPS/third-person
-    // look, no button required) is. Camera::mouseDown/mouseDrag still
-    // exist for a possible future special-case mode (e.g. photo mode),
-    // just not wired here.
+    if (!mouseCaptured_) {
+        setMouseCaptured(true);
+    }
 }
 
 void HarmoniaApp::mouseDrag(const juce::MouseEvent&) {
@@ -177,6 +216,8 @@ void HarmoniaApp::mouseMove(const juce::MouseEvent& e) {
 
 void HarmoniaApp::setMouseCaptured(bool captured) {
     mouseCaptured_ = captured;
+    g_MouseCaptured = captured;
+    
     if (captured) {
         juce::Point<float> centre((float)getWidth() * 0.5f, (float)getHeight() * 0.5f);
         juce::Desktop::getInstance().getMainMouseSource().setScreenPosition(localPointToGlobal(centre.toInt()).toFloat());

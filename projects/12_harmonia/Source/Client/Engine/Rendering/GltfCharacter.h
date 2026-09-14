@@ -8,6 +8,8 @@
 #include <unordered_map>
 #include <vector>
 
+namespace djehuti { namespace animation { struct MotionRecord; } }
+
 namespace Harmonia {
 
 // Loads a single skinned/animated glTF character (GLTF_SEPARATE - one
@@ -27,9 +29,20 @@ public:
 
     void playClip(const std::string& name); // no-op if the clip isn't loaded
     void update(float dt);
-    void render(juce::OpenGLContext& ctx, const glm::mat4& view, const glm::mat4& proj,
+    
+    // Procedural Animation Support
+    int findNodeIndex(const std::string& name) const;
+    void setNodeOverride(int nodeIndex, const glm::quat& rotation);
+    void clearOverrides();
+    void applyOverrides(); // Triggers skinVertices() without needing a clip
+    
+    const std::vector<float>& getSkinnedVertexData() const { return skinnedVertexData_; }
+    
+    void render(juce::OpenGLContext& ctx, const std::vector<float>& vertexData, const glm::mat4& view, const glm::mat4& proj,
                 const glm::mat4& modelTransform, const glm::vec3& sunDir, const glm::vec3& sunColor,
                 const glm::vec3& color);
+                
+    bool extractMotionRecord(const std::string& clipName, djehuti::animation::MotionRecord& outRecord) const;
 
 private:
     struct Node {
@@ -54,6 +67,22 @@ private:
         float duration = 0.0f;
     };
 
+    struct Texture {
+        GLuint id = 0;
+        juce::Image image; // Temporarily hold until initGL
+    };
+
+    struct Material {
+        glm::vec4 baseColorFactor{1.0f};
+        int baseColorTextureIndex = -1; // Index into textures_
+    };
+
+    struct Primitive {
+        int materialIndex = -1;
+        size_t indexOffset = 0; // Number of indices before this primitive
+        size_t indexCount = 0;
+    };
+
     void initGL(juce::OpenGLContext& ctx);
     glm::mat4 localTransform(int nodeIndex, const Clip* clip, float t) const;
     void computeGlobalTransforms(std::vector<glm::mat4>& outGlobal, const Clip* clip, float t) const;
@@ -64,11 +93,21 @@ private:
     std::vector<int> rootNodes_;
     std::vector<int> jointNodes_;              // skins[0].joints
     std::vector<glm::mat4> inverseBindMatrices_;
+
+    std::vector<Texture> textures_;
+    std::vector<Material> materials_;
+    std::vector<Primitive> primitives_;
+
+    // Auto-scale to 1.7m tall
+    float autoScale_ = 1.0f;
+    float autoOffset_ = 0.0f;
+
     std::unordered_map<std::string, Clip> clips_;
 
     // Mesh data (bind pose, read once)
     std::vector<glm::vec3> bindPositions_;
     std::vector<glm::vec3> bindNormals_;
+    std::vector<glm::vec2> bindTexCoords_;
     std::vector<glm::ivec4> jointIndices_;
     std::vector<glm::vec4> jointWeights_;
     std::vector<uint32_t> indices_;
@@ -78,6 +117,7 @@ private:
 
     std::string currentClip_;
     float playTime_ = 0.0f;
+    std::unordered_map<int, glm::quat> nodeOverrides_;
 
     GLuint vao_ = 0;
     GLuint vbo_ = 0;

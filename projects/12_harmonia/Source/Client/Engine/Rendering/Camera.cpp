@@ -17,7 +17,7 @@ void Camera::mouseDrag(const juce::MouseEvent& e) {
     juce::Point<float> delta = e.position - lastMousePos_;
     lastMousePos_ = e.position;
 
-    const float sensitivity = 0.005f;
+    const float sensitivity = 0.002f;
 
     if (firstPerson_) {
         targetAzimuth_   -= delta.x * sensitivity;
@@ -44,7 +44,7 @@ void Camera::mouseWheelMove(const juce::MouseWheelDetails& w) {
     if (firstPerson_) return;
 
     targetDistance_ *= (1.0f - w.deltaY * 0.15f);
-    targetDistance_  = juce::jlimit(2.f, 200.f, targetDistance_);
+    targetDistance_  = juce::jlimit(0.5f, 200.f, targetDistance_);
     animating_ = false;
 }
 
@@ -77,7 +77,9 @@ void Camera::update(float dt) {
     azimuth   += (targetAzimuth_   - azimuth)   * lookAlpha;
     elevation += (targetElevation_ - elevation) * lookAlpha;
 
-    const float speed = 10.f;
+    // Looser spring-arm feel - the pivot visibly trails the character
+    // instead of snapping to it almost instantly.
+    const float speed = 4.f;
     float alpha = 1.f - std::exp(-speed * dt);
     distance  += (targetDistance_  - distance)  * alpha;
     pivot     += (targetPivot_     - pivot)     * alpha;
@@ -108,9 +110,9 @@ glm::mat4 Camera::viewMatrix() const {
 }
 
 void Camera::applyLookDelta(float dx, float dy) {
-    const float sensitivity = 0.005f;
-    targetAzimuth_   -= dx * sensitivity;
-    targetElevation_ += dy * sensitivity;
+    const float sensitivity = 0.002f;
+    targetAzimuth_   += dx * sensitivity; // Flipped X-axis (User approved)
+    targetElevation_ -= dy * sensitivity; // Standard FPS Y axis (Mouse forward = look up)
     targetElevation_  = juce::jlimit(-1.4f, 1.4f, targetElevation_);
     animating_ = false;
 }

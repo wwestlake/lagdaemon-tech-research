@@ -1,0 +1,29 @@
+pub fn abs_f32(x: f32) -> f32 = {
+    if (x < 0.0) { -x } else { x }
+}
+
+pub fn min_f32(a: f32, b: f32) -> f32 = {
+    if (a < b) { a } else { b }
+}
+
+pub fn max_f32(a: f32, b: f32) -> f32 = {
+    if (a > b) { a } else { b }
+}
+
+pub fn clamp_f32(x: f32, lo: f32, hi: f32) -> f32 = {
+    if (x < lo) { lo } else {
+        if (x > hi) { hi } else { x }
+    }
+}
+
+pub fn lerp_f32(a: f32, b: f32, t: f32) -> f32 = {
+    a + (b - a) * t
+}
+
+pub fn near_zero_f32(x: f32, eps: f32) -> bool = {
+    abs_f32(x) <= eps
+}
+
+pub fn approx_eq_f32(a: f32, b: f32, eps: f32) -> bool = {
+    abs_f32(a - b) <= eps
+}
