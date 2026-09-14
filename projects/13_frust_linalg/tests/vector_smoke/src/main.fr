@@ -1,3 +1,4 @@
+use core;
 use frust_linalg;
 
 fn pass_if(cond: bool) -> i64 = {
@@ -18,6 +19,10 @@ fn main() -> i64 = {
     let reflected: Vec3f = vec3f_reflect_unit(vec3f(1.0, -2.0, 0.0), vec3f(0.0, 1.0, 0.0));
     let projected: Vec3f = vec3f_project_onto_unit(vec3f(3.0, 4.0, 5.0), vec3f(0.0, 0.0, 1.0));
     let hadamard: Vec3f = vec3f_hadamard(vec3f(2.0, 3.0, 4.0), vec3f(5.0, 6.0, 7.0));
+    let len2: f32 = vec2f_length(vec2f(3.0, 4.0));
+    let len3: f32 = vec3f_length(vec3f(2.0, 3.0, 6.0));
+    let dist2: f32 = vec2f_distance(vec2f(1.0, 1.0), vec2f(4.0, 5.0));
+    let norm: Vec3f = vec3f_normalize(vec3f(0.0, 3.0, 4.0));
 
     pass_if(dot == 32.0) +
     pass_if(c.x == -3.0) +
@@ -30,5 +35,7 @@ fn main() -> i64 = {
     pass_if(dist_sq == 27.0) +
     pass_if(reflected.x == 1.0) + pass_if(reflected.y == 2.0) +
     pass_if(projected.x == 0.0) + pass_if(projected.y == 0.0) + pass_if(projected.z == 5.0) +
-    pass_if(hadamard.x == 10.0) + pass_if(hadamard.y == 18.0) + pass_if(hadamard.z == 28.0)
+    pass_if(hadamard.x == 10.0) + pass_if(hadamard.y == 18.0) + pass_if(hadamard.z == 28.0) +
+    pass_if(len2 == 5.0) + pass_if(len3 == 7.0) + pass_if(dist2 == 5.0) +
+    pass_if(norm.x == 0.0) + pass_if(norm.y == 0.6) + pass_if(norm.z == 0.8)
 }

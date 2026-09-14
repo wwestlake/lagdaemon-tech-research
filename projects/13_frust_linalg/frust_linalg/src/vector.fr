@@ -108,6 +108,18 @@ pub fn vec4f_length_sq(v: Vec4f) -> f32 = {
     vec4f_dot(v, v)
 }
 
+pub fn vec2f_length(v: Vec2f) -> f32 = {
+    sqrt(vec2f_length_sq(v))
+}
+
+pub fn vec3f_length(v: Vec3f) -> f32 = {
+    sqrt(vec3f_length_sq(v))
+}
+
+pub fn vec4f_length(v: Vec4f) -> f32 = {
+    sqrt(vec4f_length_sq(v))
+}
+
 pub fn vec3f_distance_sq(a: Vec3f, b: Vec3f) -> f32 = {
     vec3f_length_sq(vec3f_sub(a, b))
 }
@@ -118,6 +130,33 @@ pub fn vec2f_distance_sq(a: Vec2f, b: Vec2f) -> f32 = {
 
 pub fn vec4f_distance_sq(a: Vec4f, b: Vec4f) -> f32 = {
     vec4f_length_sq(vec4f_sub(a, b))
+}
+
+pub fn vec2f_distance(a: Vec2f, b: Vec2f) -> f32 = {
+    vec2f_length(vec2f_sub(a, b))
+}
+
+pub fn vec3f_distance(a: Vec3f, b: Vec3f) -> f32 = {
+    vec3f_length(vec3f_sub(a, b))
+}
+
+pub fn vec4f_distance(a: Vec4f, b: Vec4f) -> f32 = {
+    vec4f_length(vec4f_sub(a, b))
+}
+
+pub fn vec2f_normalize(v: Vec2f) -> Vec2f = {
+    let len: f32 = vec2f_length(v);
+    if (near_zero_f32(len, 0.000001)) { vec2f_zero() } else { vec2f_scale(v, 1.0 / len) }
+}
+
+pub fn vec3f_normalize(v: Vec3f) -> Vec3f = {
+    let len: f32 = vec3f_length(v);
+    if (near_zero_f32(len, 0.000001)) { vec3f_zero() } else { vec3f_scale(v, 1.0 / len) }
+}
+
+pub fn vec4f_normalize(v: Vec4f) -> Vec4f = {
+    let len: f32 = vec4f_length(v);
+    if (near_zero_f32(len, 0.000001)) { vec4f_zero() } else { vec4f_scale(v, 1.0 / len) }
 }
 
 pub fn vec3f_lerp(a: Vec3f, b: Vec3f, t: f32) -> Vec3f = {

@@ -21,6 +21,23 @@ use frust_linalg;
 The dependency version belongs in `frate.json`, not in source. Fine-grained
 imports such as `use frust_linalg::Vec3f;` are future language work.
 
+`frust_linalg` depends on the standard `core` pod for C/libm-backed math
+functions such as `sqrt`, `sin`, `cos`, `tan`, and `pi`. Consumers should
+declare both pods while Frate's cross-pod imports remain deliberately
+non-transitive:
+
+```json
+"dependencies": [
+  { "name": "core", "version": "1.0.1" },
+  { "name": "frust_linalg", "version": "0.1.0" }
+]
+```
+
+```frust
+use core;
+use frust_linalg;
+```
+
 ## V1 Capability Set
 
 ### Scalar Helpers
@@ -50,15 +67,14 @@ Capabilities:
 - dot product
 - cross product for `Vec3f`
 - squared length
+- length
+- distance
 - distance squared
+- normalization with zero-vector guard
 - component-wise min/max/clamp
 - linear interpolation
 - reflection/projection against unit axes
 - component-wise multiply
-
-Length/normalize are intentionally deferred until the math pod cleanly
-depends on the standard `core` math functions or the compiler exposes
-`sqrt` in a stable import path.
 
 ### Matrices
 
@@ -80,9 +96,11 @@ Capabilities:
 - translation extraction
 - translation-scale inverse
 - orthographic projection
+- X/Y/Z rotations
+- perspective projection
+- look-at view matrix
 
-Perspective, look-at, determinant, and general inverse are planned for
-later. They need trig/sqrt or larger numerics than v1 should demand.
+Determinant and general inverse are planned for later.
 
 ### Quaternions and Transforms
 
@@ -95,11 +113,10 @@ Capabilities:
 
 - identity/conjugate/dot/length-squared/multiply
 - rotate `Vec3f` by a unit quaternion
+- construct from axis-angle
 - fixed 180-degree axis rotations for tests and common flips
 - transform point/direction by translate-rotate-scale
 - convert transform to `Mat4f`
-
-Full angle constructors are deferred until stable sin/cos exposure.
 
 ### Geometry Primitives
 
@@ -145,7 +162,6 @@ the exact fixed-buffer feature needed for audio/DSP and realtime code.
 - `Transform3f`
 - `Ray3f`, `Plane3f`, `Aabb3f`, `Spheref`
 - matrix inverse/determinant
-- projection and camera helpers
 - `Vector<T, N>` and `Matrix<T, R, C>` once const-generic arithmetic is
   strong enough
 - window functions and simple DSP filters
@@ -156,12 +172,15 @@ the exact fixed-buffer feature needed for audio/DSP and realtime code.
 Every test pod is executable and returns a hand-predicted integer summary:
 
 - vector smoke test: validates vector constructors, dot/cross, add/sub,
-  scalar multiply, lerp, clamp, reflection/projection
+  scalar multiply, lerp, clamp, reflection/projection, length, distance,
+  normalization
 - matrix smoke test: validates identity, translation, scale, multiply,
-  point/direction transforms, inverse translation-scale, orthographic
+  point/direction transforms, inverse translation-scale, orthographic,
+  rotation, perspective, look-at
 - audio buffer smoke test: validates fixed array storage, bounds-safe
   indexed writes, gain/mix/dot/sum-of-squares/peak/add-scaled/mean
 - transform smoke test: validates quaternion rotation and TRS matrix output
+  including axis-angle construction
 - geometry smoke test: validates ray/plane/AABB/sphere helpers
 
 Floating-point tests use integer-exact values where possible so the result

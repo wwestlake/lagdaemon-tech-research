@@ -1,3 +1,4 @@
+use core;
 use frust_linalg;
 
 fn pass_if(cond: bool) -> i64 = {

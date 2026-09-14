@@ -44,6 +44,12 @@ pub fn quatf_from_axis_scaled(axis_unit: Vec3f, sin_half: f32, cos_half: f32) ->
     quatf(axis_unit.x * sin_half, axis_unit.y * sin_half, axis_unit.z * sin_half, cos_half)
 }
 
+pub fn quatf_from_axis_angle(axis: Vec3f, radians: f32) -> Quatf = {
+    let unit_axis: Vec3f = vec3f_normalize(axis);
+    let half: f32 = radians * 0.5;
+    quatf_from_axis_scaled(unit_axis, sin(half), cos(half))
+}
+
 pub fn quatf_x_180() -> Quatf = {
     quatf(1.0, 0.0, 0.0, 0.0)
 }

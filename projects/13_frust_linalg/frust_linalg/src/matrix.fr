@@ -34,6 +34,45 @@ pub fn mat4f_scale(x: f32, y: f32, z: f32) -> Mat4f = {
     Mat4f { data: data }
 }
 
+pub fn mat4f_rotation_x(radians: f32) -> Mat4f = {
+    let c: f32 = cos(radians);
+    let s: f32 = sin(radians);
+    let mut data: Array<f32, 16> = Array::new();
+    data[0] = 1.0;
+    data[5] = c;
+    data[6] = s;
+    data[9] = -s;
+    data[10] = c;
+    data[15] = 1.0;
+    Mat4f { data: data }
+}
+
+pub fn mat4f_rotation_y(radians: f32) -> Mat4f = {
+    let c: f32 = cos(radians);
+    let s: f32 = sin(radians);
+    let mut data: Array<f32, 16> = Array::new();
+    data[0] = c;
+    data[2] = -s;
+    data[5] = 1.0;
+    data[8] = s;
+    data[10] = c;
+    data[15] = 1.0;
+    Mat4f { data: data }
+}
+
+pub fn mat4f_rotation_z(radians: f32) -> Mat4f = {
+    let c: f32 = cos(radians);
+    let s: f32 = sin(radians);
+    let mut data: Array<f32, 16> = Array::new();
+    data[0] = c;
+    data[1] = s;
+    data[4] = -s;
+    data[5] = c;
+    data[10] = 1.0;
+    data[15] = 1.0;
+    Mat4f { data: data }
+}
+
 pub fn mat4f_diagonal(x: f32, y: f32, z: f32, w: f32) -> Mat4f = {
     let mut data: Array<f32, 16> = Array::new();
     data[0] = x;
@@ -71,6 +110,38 @@ pub fn mat4f_orthographic(left: f32, right: f32, bottom: f32, top: f32, near_z: 
     data[12] = -(right + left) / (right - left);
     data[13] = -(top + bottom) / (top - bottom);
     data[14] = -(far_z + near_z) / (far_z - near_z);
+    data[15] = 1.0;
+    Mat4f { data: data }
+}
+
+pub fn mat4f_perspective_fov_y(fov_y_radians: f32, aspect: f32, near_z: f32, far_z: f32) -> Mat4f = {
+    let f: f32 = 1.0 / tan(fov_y_radians * 0.5);
+    let mut data: Array<f32, 16> = Array::new();
+    data[0] = f / aspect;
+    data[5] = f;
+    data[10] = (far_z + near_z) / (near_z - far_z);
+    data[11] = -1.0;
+    data[14] = (2.0 * far_z * near_z) / (near_z - far_z);
+    Mat4f { data: data }
+}
+
+pub fn mat4f_look_at(eye: Vec3f, target: Vec3f, up: Vec3f) -> Mat4f = {
+    let f: Vec3f = vec3f_normalize(vec3f_sub(target, eye));
+    let s: Vec3f = vec3f_normalize(vec3f_cross(f, up));
+    let u: Vec3f = vec3f_cross(s, f);
+    let mut data: Array<f32, 16> = Array::new();
+    data[0] = s.x;
+    data[1] = u.x;
+    data[2] = -f.x;
+    data[4] = s.y;
+    data[5] = u.y;
+    data[6] = -f.y;
+    data[8] = s.z;
+    data[9] = u.z;
+    data[10] = -f.z;
+    data[12] = -vec3f_dot(s, eye);
+    data[13] = -vec3f_dot(u, eye);
+    data[14] = vec3f_dot(f, eye);
     data[15] = 1.0;
     Mat4f { data: data }
 }

@@ -5,6 +5,7 @@
   "description": "Smoke tests for Frust linalg geometry primitives.",
   "exports": [],
   "dependencies": [
+    { "name": "core", "version": "1.0.1" },
     { "name": "frust_linalg", "version": "0.1.0" }
   ]
 }
