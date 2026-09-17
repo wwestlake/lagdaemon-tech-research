@@ -1,0 +1,7 @@
+Type,Name,Value
+CNAME,i4i7tokn2ceqibi46fo3mltyvmr4bm46._domainkey.lagdaemon.com,i4i7tokn2ceqibi46fo3mltyvmr4bm46.dkim.amazonses.com
+CNAME,qgg2t7ndskszuyvy7ai237jhqcivrhsn._domainkey.lagdaemon.com,qgg2t7ndskszuyvy7ai237jhqcivrhsn.dkim.amazonses.com
+CNAME,nxwx76nptuj5kwsru6ykcgf56oozkews._domainkey.lagdaemon.com,nxwx76nptuj5kwsru6ykcgf56oozkews.dkim.amazonses.com
+MX,services.lagdaemon.com,10 feedback-smtp.us-east-2.amazonses.com
+TXT,services.lagdaemon.com,"v=spf1 include:amazonses.com ~all"
+TXT,_dmarc.lagdaemon.com,"v=DMARC1; p=none;"

@@ -1,0 +1,547 @@
+﻿Total pages: 17
+=== PAGE 6 ===
+Title Suppressed Due to Excessive Length 5
+3.1 Graph Structure
+Fig.2. Example of the multi-layer heterogeneous semantic graph index
+We define a multi-layer heterogeneous semantic graph as G=(V,E), where
+the node set is defined as V =DΓê¬CΓê¬SΓê¬T. The node types are defined as:
+ΓÇô Document nodes (D): each represents a document in the corpus.
+ΓÇô Chunk nodes (C): each represents a text chunk derived from a document.
+ΓÇô Semanticnodes(S):eachrepresentsaspecificsemanticmeaningofatoken
+node.
+ΓÇô Token nodes(T):eachrepresentsauniquesurfacetextualelement(entity,
+phrase, or token).
+The edge set E consists of bidirectional edges of three types:
+ΓÇô DocumentΓÇôChunk edges: indicating that a chunk belongs to a document.
+ΓÇô ChunkΓÇôSemantic edges: indicating that a semantic meaning appears in a
+chunk.
+ΓÇô SemanticΓÇôToken edges: linking each semantic node to its corresponding sur-
+face token.
+3.2 Heterogeneous Semantic Graph Index
+Givenadocumentcollection,LiteSemRAGfirstsplitseachdocumentintochunks.
+Fromeachchunk,importanttextualelements(entities,phrases,andtokens)are
+extracted by NLP tools. These elements are filtered and encoded using a token-
+leveltextencodertoobtaincontextualsemanticembeddings.Semanticnodesare
+dynamicallyconstructedtorepresentdistinctcontextualmeaningsbasedoncon-
+textualsemanticembeddings.Thefinalindexgraphisorganizedasamulti-layer
+heterogeneous semantic graph connecting documents, chunks, semantic nodes,
+and token nodes.
+=== PAGE 7 ===
+6 X.Yue et al.
+Dynamic semantic node creation A key component of LiteSemRAG is the
+dynamic construction of semantic nodes from contextual semantic embeddings.
+Instead of assigning a fixed representation to each surface token element, Lite-
+SemRAGcreatesdistinctsemanticnodesthatcapturecontext-dependentmean-
+ingsofthesametokenelement.Thisenablesexplicitmodelingofpolysemywith-
+out using LLM-based parsing. For each extracted token t, we collect its contex-
+tualsemanticembeddingsacrossallchunkoccurrences.LetE ={e ,e ,...,e }
+t 1 2 n
+denote the set of normalized contextual semantic embeddings for a token node
+t. To determine whether a token exhibits multiple semantic meanings, we mea-
+suretheconcentrationofitsembeddingdistributionbycomputingthedispersion
+score (S-mean) which is defined as
+n
+1 (cid:88)
+S-mean(t)= cos(e ,e┬»).
+n i t
+i=1
+where e┬» = 1 (cid:80)n e . A high S-mean value indicates that embeddings are
+t n i=1 i
+tightly concentrated around a single semantic direction, while a low S-mean
+suggests multiple contextual clusters. To avoid unnecessary splitting of highly
+frequent tokens, we jointly consider the inverse document frequency (IDF). We
+conduct clustering-based semantic induction on a token t only if IDF(t) >
+╧ä and S-mean(t)<╧ä , where ╧ä and ╧ä are predefined thresholds.
+idf disp idf disp
+Clustering-Based Semantic Induction. If a token is identified as possi-
+ble to be multi-semantic, we apply density-based clustering algorithms, such as
+HDBSCAN, on E to determine the number of semantic clusters. Each cluster
+t
+corresponds to one semantic node. For cluster C Γèé E , its semantic anchor
+k t
+embedding is defined as:
+1 (cid:88)
+e = e .
+sk |C | i
+k
+eiΓêêCk
+If the token is determined as single-semantic by either the threshold criteria or
+clustering algorithm, only one semantic node is created. The semantic anchor
+embedding for this node is computed by averaging all contextual embeddings
+associated with the token. After semantic nodes are formed, chunk nodes previ-
+ously connected to this token node are re-linked to the corresponding semantic
+nodes. The token node remains connected to all of its semantic nodes, serving
+as a lexical anchor. Once the semantic nodes are generated, raw contextual se-
+mantic embeddings assigned to semantic nodes are discarded to save memory
+space while the averaged semantic representations are retained to ensure that
+semantic information is preserved.
+Chunk-Level Context Aggregation for Robust Semantic Discovery In
+practice,weobservethatcontextualsemanticembeddingsofpolysemoustokens
+maynotformclearlyseparableclustersintheembeddingspace,especiallywhen
+local contextual information is weak. For example, the token apple may appear
+=== PAGE 8 ===
+Title Suppressed Due to Excessive Length 7
+inbothtechnologicalandfruit-relatedcontexts.Althoughaseparatingboundary
+existsinprinciple,unsupervisedclusteringmayfailtoidentifyitwhenindividual
+token embeddings contain limited contextual information,as shownin Figure 3.
+Fig.3.Embeddingdistributionofstrongcontextualinformation(left),weakcontextual
+information (middle), and after aggregation (right)
+To mitigate this issue, we introduce a chunk-level context aggregation strat-
+egy prior to clustering. Specifically, for token t, suppose its contextual semantic
+embeddings are E = {e ,e ,...,e }, where each embedding e is associated
+t 1 2 n i
+with a particular chunk. If the initial clustering attempt does not produce sta-
+ble or meaningful clusters, we perform aggregation at the chunk level. Let C
+t
+denote the set of chunks containing token t. For each chunk cΓêêC , we compute
+t
+a chunk-level embedding:
+1 (cid:88)
+e╦£ = e ,
+c |E | i
+t,c
+eiΓêêEt,c
+where E denotes the embeddings of token t in chunk c. These aggregated em-
+t,c
+beddings replace the original embeddings for clustering. Averaging embeddings
+within same chunk reduces intra-chunk variance while preserving inter-chunk
+semantic differences. This aggregation enhances cluster separability by amplify-
+ing consistent contextual signals, as shown in Figure 3. This strategy improves
+therobustnessofdynamicsemanticnodecreation,particularlyfortokenswhose
+individual contextual information is weak.
+Adaptive Anomaly Handling To support evolving semantic distributions
+duringincrementalindexing,LiteSemRAGintroducesananomalyhandlingmech-
+anism. When a new contextual semantic embedding e is derived for token t
+new
+who already has any semantic nodes, it is compared against anchor embeddings
+of existing semantic nodes. The embedding is temporarily stored in an anomaly
+setifmax cos(e ,e )<╧ä .Insteadofusingafixedsimilaritythresh-
+sΓêêS(t) new s anomaly
+oldtodetectemergingmeanings,weadoptapercentile-basedadaptivestrategy.
+=== PAGE 9 ===
+8 X.Yue et al.
+We define the adaptive anomaly threshold ╧ä of token t as the n-th per-
+anomaly
+centile of S , where n is a user-selected hyperparameter. The n-th percentile
+t
+refers to the similarity value below which n% of the elements in S fall. In other
+t
+words, it represents a threshold such that only a small portion of the lowest-
+similarity embeddings are considered anomalous. This percentile-based strategy
+allowsthethresholdtoadapttotheintrinsicdispersionofeachtokenΓÇÖssemantic
+distribution, avoiding rigid global cutoffs. Additionally, certain clustering algo-
+rithms may generate outlier points that do not belong to any cluster. These
+outliers are also considered anomalies and added to the anomaly set. When the
+anomaly set size exceeds a preset threshold, reclustering is performed. If a new
+cluster is identified, a new corresponding semantic node is created; otherwise,
+all anomaly embeddings are assigned to their nearest semantic nodes.
+Design Rationale This dynamic semantic node creation process allows Lite-
+SemRAG to: 1)Explicitly model polysemy without using LLM, 2) Adapt to se-
+mantic drift during incremental indexing, 3) Maintain computational and mem-
+ory efficiency. LiteSemRAG separates surface lexical representation from con-
+textual semantic representation. Token nodes act as lexical anchor points, while
+semantic nodes capture contextual meanings derived from contextual semantic
+embeddings.
+3.3 Co-occurrence Graph Semantic Retrieval
+At query stage, we first extract token elements from the query text using the
+same preprocessing pipeline in the index stage. Each extracted token element t
+q
+is encoded into a contextual semantic embedding e using the same token-level
+q
+text encoder.
+Multi-Level Semantic Matching For each query token t with embedding
+q
+e ,LiteSemRAGdirectlyretrievescandidatesemantic nodes.Matchingisper-
+q
+formed at three levels, defined by the textual properties of the corresponding
+token nodes:
+ΓÇô Exact match: Semantic nodes whose associated token node is identical to
+t .
+q
+ΓÇô Partial match:Semanticnodeswhoseassociatedtokennodecontainst as
+q
+a substring.
+ΓÇô Similarity match: Semantic nodes whose embeddings are similar to e
+q
+according to cosine similarity.
+Eachmatchinglevelisassignedapredefinednode-levelweight:╬▒ >╬▒ >
+exact partial
+╬▒ . For exact and partial matching, candidate semantic nodes are first
+similarity
+identifiedthroughtheirlinkedtokennodes.Specifically,exactmatchingretrieves
+thetokennodewhosesurfaceformisidenticaltothequerytokent ,whilepartial
+q
+matching retrieves token nodes whose surface forms contain t as a substring.
+q
+=== PAGE 10 ===
+Title Suppressed Due to Excessive Length 9
+Foreachmatchedtokennodet,onlyitsbestsemanticnodeisretainedbasedon
+embedding similarity: sΓêù(t) = argmax cos(e ,e ), where S(t) denotes the
+sΓêêS(t) q s
+set of semantic nodes linked to token node t, e is the embedding of the query
+q
+token,ande istheanchorembeddingofsemanticnodes.Sinceexactmatching
+s
+corresponds to a unique token node, it yields a single semantic node. In con-
+trast, partial matching may retrieve multiple token nodes, each contributing its
+best semantic node. To control the number of candidates, we retain at most the
+top-k semantic nodes ranked by similarity, where k is a user-specified hyperpa-
+rameter. For similarity matching, the search is performed directly over semantic
+nodes without requiring token-level constraints. Semantic nodes are also ranked
+according to cosine similarity, and the top-k most similar semantic nodes are
+retained. This design allows retrieval to operate directly at the semantic level
+while preserving lexical precision through token-level constraints.
+Co-occurrencegraphnodeweighting Tocapturerelationshipsamongmatched
+semanticnodes,weconstructaquery-specificsemanticco-occurrencegraph.For
+semantic nodes i and j, the edge weight is defined as:
+|C(i)Γê⌐C(j)|
+w = ,
+ij (cid:112)
+|C(i)|┬╖|C(j)|
+where C(i) denotes the set of chunks containing semantic node i. This cosine-
+style normalized co-occurrence metric suppresses globally frequent semantics
+while emphasizing meaningful associations. For each semantic node s, we com-
+pute its node weight:
+∩ú½ ∩ú╢
+(cid:88)
+W(s)=∩ú¡ w sj∩ú╕┬╖╬▒
+level(s)
+┬╖cos(e
+q
+,e
+s
+),
+jΓêêN(s)
+whereN(s)denotesneighboringsemanticnodesintheco-occurrencegraph,and
+╬▒ is the node-level weight corresponding to its semantic matching level.
+level(s)
+This formulation integrates co-occurrence graph structural information, lexical
+matching confidence, and semantic similarity.
+Chunk Scoring Chunks connected to the selected semantic nodes are ranked
+by using a BM25-style semantic-level score:
+Score(c)= (cid:88) W(s)┬╖G(s)┬╖ f(s,c)(k 1 +1) ,
+(cid:16) (cid:17)
+f(s,c)+k 1ΓêÆb+b |c|
+sΓêêS(c) 1 avgcl
+In the above formulation, S(c) denotes the set of semantic nodes that appear in
+chunkc.ThetermW(s)representstheweightofsemanticnodes.Thequantity
+G(s)denotesthechunk-leveldiscriminativeweightofsemanticnodes,computed
+based on its distribution across chunks (such as Inverse Document Frequency).
+=== PAGE 11 ===
+10 X.Yue et al.
+The term f(s,c) denotes the frequency of semantic node s in chunk c. The sym-
+bol |c| represents the length of chunk c, and avgcl denotes the average chunk
+length across the corpus. The hyperparameters k and b follow the standard
+1
+BM25formulationandcontrolterm-frequencysaturationandlengthnormaliza-
+tion,respectively.Notethateachsemanticnodecontributesatmostoncetothe
+semantic-level score, even if it appears multiple times within the same chunk.
+3.4 Isolated Semantic Recovery
+While co-occurrence graph semantic retrieval captures structurally supported
+semantic relationships, certain matched semantic nodes may remain isolated
+from the co-occurrence graph. This occurs when a semantic node matches the
+querybutdoesnotparticipateinanysignificantco-occurrencerelationshipwith
+other matched semantic nodes. To avoid missing potential relevant evidence, we
+introduceanIsolated Semantic Recovery stage.Notethateachisolatedsemantic
+nodesΓêêS(iso) correspondstoexactlyonequery-matchedsemanticmeaningbut
+q
+does not share co-occurrence edges with other semantic nodes.
+Token-Family Weight Propagation Token elements serve as lexical anchors
+atthemulti-levelsemanticmatchingphase.Asaresult,multiplesemanticnodes
+in the co-occurrence graph may correspond to the same original token element.
+For an isolated semantic node s, if there exist semantic nodes {sΓÇ▓} in the co-
+i
+occurrence graph that share the same original token as s, we propagate their
+nodeweightsto s.Specifically,thepropagated weight assignedto sis definedas
+the sum of the co-occurrence graph node weights of all such matching nodes:
+(cid:88)
+W (s)= W(sΓÇ▓),
+prop i
+sΓÇ▓ΓêêM(s)
+i
+where M(s) denotes the set of semantic nodes in the co-occurrence graph that
+share the same original token as s. If M(s) is empty, no weight is propagated
+and s does not receive any co-occurrence node weight.
+Isolated Node Ranking We divide isolated semantic nodes into two groups:
+Upper Group: Semantic nodes receiving propagated co-occurrence weight;
+LowerGroup:Semanticnodeswithoutpropagatedco-occurrenceweight.Nodes
+in Upper Group are ranked by Score(s) = W (s) ┬╖ cos(e ,e ), where e is
+prop q s q
+the embedding of query token and e is the anchor embedding of semantic
+s
+node, while nodes in Lower Group are ranked solely by semantic similarity
+Score = cos(e ,e ). Two groups are combined while Upper Group is ranked
+q s
+aheadofLowergroup,reflectingtheassumptionthatnodesinheritingstructural
+importance are more likely to be relevant.
+=== PAGE 12 ===
+Title Suppressed Due to Excessive Length 11
+Chunk Ranking and Retrieval For each ranked isolated semantic node s
+in the combined group, we collect its associated chunks and rank them inde-
+pendently using the same BM25-style semantic-level scoring function in section
+3.3. To promote semantic diversity in the final retrieval results, we employ a
+round-robin selection strategy across the ranked semantic nodes. Specifically,
+we iteratively traverse the ordered list of semantic nodes and select the next K
+highest-ranked chunk from each node in turn. After reaching the last node, the
+process cycles back to the first node and continues in the same manner. This
+cyclicretrievalprocedurerepeatsuntilthedesirednumberofchunksisobtained
+or all candidate chunks have been exhausted.
+Isolated Semantic Recovery serves as a structured fallback mechanism. It
+leveragestoken-levelrelationshipstopropagatesemanticimportanceinco-occurrence
+graph within token families. This allows the framework to recover semantically
+relevant but structurally unsupported evidence, particularly in cases where co-
+occurrence relationships are sparse or incomplete.
+3.5 Extensibility of the Index Graph
+In the current framework, we restrict retrieval to co-occurrence-aware semantic
+rankingandisolatedsemanticrecoverytomaintaincomputationalefficiencyand
+robustness. However, the underlying structure of LiteSemRAGΓÇÖs heterogeneous
+semantic index graph naturally supports more complex graph-based reasoning
+operations. The heterogeneous graph structure connects documents, chunks, se-
+mantic nodes, and token nodes in a bidirectional manner. This design enables
+flexible traversal across different elements and levels, allowing more advanced
+operations, including multi-hop semantic expansion, constrained subgraph ex-
+traction, and path-based relevance scoring. Therefore, LiteSemRAG should be
+viewednotonlyasaretrievalalgorithmbutalsoasastructuredsemanticindex-
+ingframework.Theindexgraphprovidesafoundationforfutureextensionsthat
+incorporate deeper graph traversal strategies or reasoning mechanisms without
+requiring LLM-based graph construction.
+4 Experiments
+We evaluate LiteSemRAG against representative LLM-based graph RAG sys-
+tems in terms of retrieval effectiveness and computational efficiency. Our exper-
+iments aim to answer the following questions:
+ΓÇô Does LiteSemRAG achieve competitive retrieval performance compared to
+LLM-based graph RAG systems?
+ΓÇô How does LiteSemRAG compare in indexing and querying efficiency?
+4.1 Experimental Setup
+Dataset We conduct experiments on three widely used retrieval benchmarks
+from the BEIR dataset [13]: HotpotQA [15]: A multi-hop question answering
+=== PAGE 13 ===
+12 X.Yue et al.
+datasetrequiringreasoningacrossmultipledocuments;SciFact[14]:Ascientific
+fact verification dataset focusing on evidence retrieval; FEVER: A large-scale
+fact verification dataset where claims must be supported or refuted using evi-
+dence sentences retrieved from Wikipedia. For all datasets, documents are split
+into fixed-length chunks using the same preprocessing strategy across all com-
+pared methods to ensure fairness.
+BaselineandSetup WecompareLiteSemRAGwithtwostate-of-the-artLLM-
+based graph RAG systems: GraphRAG and LightRAG. Since they require
+LLMs for indexing and querying, we evaluate them under two LLM settings:
+GPT-4o-mini(API-based)andLLaMA3-8B-Instruct(locallydeployed).The
+two LLM-based RAG systems use identical LLM configurations within each
+setting. Both GraphRAG and LightRAG utilize text-embedding-3-small as
+the text embedding encoder. While LiteSemRAG uses deberta-v3-large as
+the token-level text encoder. The encoder difference arises because LiteSem-
+RAGrequirestoken-levelcontextualembeddingsfromatoken-leveltextencoder,
+whereas the compared systems rely on sentence-level embeddings derived from
+sentence-levelencoders.Allexperimentsareconductedonaserverequippedwith
+two AMD EPYC 9354 CPUs and one AMD MI210 GPU.
+Evaluation Scope LiteSemRAG is designed as a retrieval framework rather
+than an end-to-end RAG system. Therefore, we evaluate only the quality of
+retrieved chunks. For fair comparison, we directly measure retrieval effective-
+ness using Recall@10 and MRR@10 based on ground-truth relevant chunks. We
+do not compare final answer quality obtained by feeding retrieved chunks into
+LLMs,sincesuchevaluationwouldintroduceadditionalvariabilityfromgenera-
+tionmodelsandobscuredifferencesinretrievalperformance.Thisdesignisolates
+theretrievalcomponentandensuresthatperformancedifferencesreflectretrieval
+capability rather than downstream LLM reasoning or generation quality.
+Evaluation Metrics We evaluate retrieval quality by using Recall@10 and
+MRR@10.ForeachqueryqinaquerydatasetQ,letR(10)denotetherankedtop-
+q
+10 retrieved chunks, and let G denote the set of chunks of gold (ground-truth)
+q
+documents associated with q. In HotpotQA dataset, each query has exactly two
+golddocuments.InSciFactandFeverdatasets,eachqueryhasbetweenoneand
+fivegolddocuments.WecomputeRecall@10usingamicro-averagedformulation:
+(cid:80) |R(10)Γê⌐G |
+Recall@10= qΓêêQ q q .
+(cid:80)
+|G |
+qΓêêQ q
+This measures the proportion of gold documents that are successfully retrieved
+within the top 10 results across the entire dataset.
+For each query q in a query dataset Q, let rank denote the rank position of
+q
+the first retrieved document that belongs to G within the top 10 results. If no
+q
+=== PAGE 14 ===
+Title Suppressed Due to Excessive Length 13
+gold document appears in the top 10, the reciprocal rank is defined as 0. The
+reciprocal rank is:
+(cid:40)
+1 , if a gold document appears in top 10,
+RR@10(q)= rankq
+0, otherwise.
+The Mean Reciprocal Rank at 10 is computed as:
+1 (cid:88)
+MRR@10= RR@10(q).
+|Q|
+qΓêêQ
+Recall@10 measures how completely the required evidence documents are re-
+trieved, while MRR@10 evaluates how early at least one relevant document
+appears in the ranked chunk list. In addition, we report four efficiency met-
+rics: Average Indexing Time per document (AIT), Average Query Time (AQT),
+average Index Token Consumption per document (ITC), average Query Token
+Consumption (QTC). These metrics quantify both computational and cost effi-
+ciency.
+4.2 Retrieval Performance
+Table 1. Retrieval results on three datasets
+HotpotQA SciFact Fever
+Model
+Recall@10MRR@10Recall@10MRR@10Recall@10MRR@10
+GraphRAG (GPT) 55.9% N/A 87.4% N/A 45.8% N/A
+GraphRAG (LLaMA) ETL N/A ETL N/A ETL N/A
+LightRAG (GPT) 71.5% 0.419 95.2% 0.427 84.6% 0.511
+LightRAG (LLaMA) 69.3% 0.359 93.5% 0.361 86.2% 0.422
+LiteSemRAG 73.5% 0.694 92.3% 0.692 88.3% 0.806
+Table1reportsRecall@10andMRR@10onthreedatasets.SinceGraphRAG
+does not provide explicit ranking of retrieved chunks, MRR@10 cannot be com-
+putedforGraphRAG.Therefore,wereportonlyRecall@10forGraphRAG.Ad-
+ditionally,whenusingLLaMA3-8B-InstructastheunderlyingLLM,GraphRAG
+consistentlyencounteredExceed maximum Token Limitation(ETL)errors
+across all datasets, even though the chunk size was very small and contained
+only a few sentences (the maximum context length of LLaMA3-8B-Instruct is
+8192 tokens). This error occurs not only during the indexing stage but also
+when querying databases that were already indexed using GPT. It prevented
+successful evaluation under this setting. Consequently, we mark these entries as
+ETL and exclude them from the comparison. This behavior reflects the heavy
+reliance of GraphRAG on LLM-based operations during indexing and query-
+ing. Experimental results show that LiteSemRAG achieves the best MRR@10
+=== PAGE 15 ===
+14 X.Yue et al.
+Table 2. Indexing and query time efficiency comparison across datasets
+HotpotQA SciFact Fever
+Method AIT AQT AIT AQT AIT AQT
+GraphRAG (GPT) 3.55s 29.8s 4.35s 48.76s 3.08s 30.66s
+GraphRAG (LLaMA) ETL ETL ETL ETL ETL ETL
+LightRAG (GPT) 7.98s 0.58s 10.31s 1.57s 7.71s 1.45s
+LightRAG (LLaMA) 8.06s 1.72s 10.39s 1.33s 8.12s 1.13s
+LiteSemRAG 0.24s0.11s 0.69s 0.13s 0.47s 0.09s
+Table 3. LLM token consumption comparison across datasets
+HotpotQA SciFact Fever
+Method ITC QTC ITC QTC ITC QTC
+GraphRAG (GPT) 8.07K10.85K9.92K11.24K7.11K4.06K
+GraphRAG (LLaMA) ETL ETL ETL ETL ETL ETL
+LightRAG (GPT) 7.30K 0.43K 9.32K 0.59K 8.58K0.44K
+LightRAG (LLaMA) 8.17K 0.47K 8.85K 0.56K 8.23K0.45K
+LiteSemRAG 0 0 0 0 0 0
+across all three datasets. In terms of Recall@10, LiteSemRAG achieves the top
+performance on HotpotQA and FEVER, and remains competitive on SciFact.
+These results demonstrate that LiteSemRAG provides strong retrieval effective-
+ness while operating without LLM-dependent indexing and querying.
+4.3 Efficiency Analysis
+WereportindexingandqueryefficiencyonthethreedatasetsinTable2andTa-
+ble 3. The experimental results show that LiteSemRAG substantially improves
+both indexing and query efficiency compared to LightRAG and GraphRAG.
+In particular, GraphRAG exhibits significantly higher query latency and token
+consumption, largely due to its LLM-dependent reasoning and graph traver-
+salprocess.Acrosstheevaluateddatasets,LiteSemRAGachievesapproximately
+20├ù faster indexing speed and 10├ù faster querying speed compared to Ligh-
+tRAG. When compared with GraphRAG, LiteSemRAG achieves approximately
+10├ù faster indexing speed and 100├ù faster querying speed. In terms of token
+consumption,bothLLM-basedRAGsystemsrequireapproximately10K tokens
+toindexasingledocumentonaverage,indicatingsubstantialcomputationaland
+monetaryresourcecost.Incontrast,LiteSemRAGdoesnotrelyonLLMsduring
+indexing or querying, eliminating LLM-related overhead entirely.
+4.4 Ablation Study
+To evaluate the contribution of the two-step semantic-aware retrieval strategy,
+we conduct an ablation study using a broad search and reranking retrieval vari-
+ant. In this setting, we first retrieve all semantic nodes matched by the query.
+=== PAGE 16 ===
+Title Suppressed Due to Excessive Length 15
+All chunks connected to these semantic nodes are then collected, and a jina-
+reranker-v3 reranker is applied to rank the candidate chunks. If the number
+of candidate chunks becomes extremely large, we randomly sample 100 chunks
+as reranking candidates. The top-10 chunks are selected as the final results.
+This ablation removes the two-step semantic-aware retrieval mechanism while
+preserving the same semantic index graph and matching process. In particular,
+both methods use the identical index graph constructed during the indexing
+stage and rely on the same token-level text encoder to generate contextual em-
+beddings.Theonlydifferenceliesintheretrievalstrategyappliedatquerytime.
+Table4comparesthestandardLiteSemRAGandthebroadsearchandreranking
+variant in terms of Recall@10 (R@10), MRR@10 (M@10), and Average Query
+Time(AQT).Sincebothmethodsoperateonthesameindexgraph,thecompar-
+ison isolates the effect of the retrieval strategy itself. The results show that the
+proposed two-step semantic-aware retrieval significantly outperforms the broad
+retrievalbaseline,demonstratingthattheperformancegainsofLiteSemRAGpri-
+marily arise from the semantic-aware co-occurrence graph retrieval mechanism
+rather than the use of the token-level text encoder alone.
+Table 4. Ablation study on two-step semantic-aware retrieval
+HotpotQA SciFact Fever
+Method
+R@10 M@10AQT R@10 M@10AQT R@10 M@10AQT
+Broad search and reranking32.5% 0.197 2.85s 14.9% 0.056 2.97s 46.7% 0.251 3.24s
+Two-step semantic-aware 73.5% 0.694 0.24s 92.3% 0.692 0.69s 88.3% 0.806 0.47s
+5 Conclusion
+In this paper, we proposed LiteSemRAG, a lightweight and fully LLM-free
+semantic-awaregraphretrievalframework forRetrieval-AugmentedGeneration.
+LiteSemRAG constructs a heterogeneous semantic graph from contextual em-
+beddings, explicitly separating surface lexical forms from context-dependent se-
+mantic meanings to model token polysemy without LLM-based indexing or rea-
+soning. The framework introduces dynamic semantic node construction with
+chunk-level context aggregation and adaptive anomaly handling, together with
+a two-step semantic-aware retrieval strategy. Experiments on three benchmark
+datasets show that LiteSemRAG achieves competitive or superior retrieval per-
+formance compared to LLM-based graph RAG systems while substantially im-
+proving indexing and querying efficiency and eliminating LLM token consump-
+tion.
+References
+1. Borgeaud, S., Mensch, A., Hoffmann, J., Cai, T., Rutherford, E., Millican, K.,
+Van Den Driessche, G.B., Lespiau, J.B., Damoc, B., Clark, A., et al.: Improving
+=== PAGE 17 ===
+16 X.Yue et al.
+languagemodelsbyretrievingfromtrillionsoftokens.In:Internationalconference
+on machine learning. pp. 2206ΓÇô2240. PMLR (2022)
+2. Brown, T., Mann, B., Ryder, N., Subbiah, M., Kaplan, J.D., Dhariwal, P., Nee-
+lakantan,A.,Shyam,P.,Sastry,G.,Askell,A.,etal.:Languagemodelsarefew-shot
+learners.Advancesinneuralinformationprocessingsystems33,1877ΓÇô1901(2020)
+3. Devlin, J., Chang, M.W., Lee, K., Toutanova, K.: Bert: Pre-training of deep bidi-
+rectional transformers for language understanding. In: Proceedings of the 2019
+conference of the North American chapter of the association for computational
+linguistics: human language technologies, volume 1 (long and short papers). pp.
+4171ΓÇô4186 (2019)
+4. Edge, D., Trinh, H., Cheng, N., Bradley, J., Chao, A., Mody, A., Truitt, S.,
+Metropolitansky, D., Ness, R.O., Larson, J.: From local to global: A graph rag
+approachtoquery-focusedsummarization.arXivpreprintarXiv:2404.16130(2024)
+5. Guo, Z., Xia, L., Yu, Y., Ao, T., Huang, C.: Lightrag: Simple and fast retrieval-
+augmented generation. arXiv preprint arXiv:2410.05779 2(3) (2024)
+6. Guti├⌐rrez, B.J., Shu, Y., Gu, Y., Yasunaga, M., Su, Y.: Hipporag: Neurobiolog-
+ically inspired long-term memory for large language models. Advances in neural
+information processing systems 37, 59532ΓÇô59569 (2024)
+7. Guu,K.,Lee,K.,Tung,Z.,Pasupat,P.,Chang,M.:Retrievalaugmentedlanguage
+model pre-training. In: International conference on machine learning. pp. 3929ΓÇô
+3938. PMLR (2020)
+8. Izacard, G., Grave, E.: Leveraging passage retrieval with generative models for
+open domain question answering. In: Proceedings of the 16th conference of the
+european chapter of the association for computational linguistics: main volume.
+pp. 874ΓÇô880 (2021)
+9. Karpukhin, V., Oguz, B., Min, S., Lewis, P., Wu, L., Edunov, S., Chen, D., Yih,
+W.t.: Dense passage retrieval for open-domain question answering. In: Proceed-
+ings of the 2020 conference on empirical methods in natural language processing
+(EMNLP). pp. 6769ΓÇô6781 (2020)
+10. Khattab, O., Zaharia, M.: Colbert: Efficient and effective passage search via con-
+textualized late interaction over bert. In: Proceedings of the 43rd International
+ACM SIGIR conference on research and development in Information Retrieval.
+pp. 39ΓÇô48 (2020)
+11. Lewis,P.,Perez,E.,Piktus,A.,Petroni,F.,Karpukhin,V.,Goyal,N.,K├╝ttler,H.,
+Lewis, M., Yih, W.t., Rockt├ñschel, T., et al.: Retrieval-augmented generation for
+knowledge-intensive nlptasks.Advancesinneural information processing systems
+33, 9459ΓÇô9474 (2020)
+12. Sarthi, P., Abdullah, S., Tuli, A., Khanna, S., Goldie, A., Manning, C.D.: Rap-
+tor: Recursive abstractive processing for tree-organized retrieval. In: The Twelfth
+International Conference on Learning Representations (2024)
+13. Thakur,N.,Reimers,N.,R├╝ckl├⌐,A.,Srivastava,A.,Gurevych,I.:Beir:Aheteroge-
+nous benchmark for zero-shot evaluation of information retrieval models. arXiv
+preprint arXiv:2104.08663 (2021)
+14. Wadden, D., Lin, S., Lo, K., Wang, L.L., van Zuylen, M., Cohan, A., Hajishirzi,
+H.: Fact or fiction: Verifying scientific claims. In: EMNLP (2020)
+15. Yang, Z., Qi, P., Zhang, S., Bengio, Y., Cohen, W., Salakhutdinov, R., Manning,
+C.D.: Hotpotqa: A dataset for diverse, explainable multi-hop question answering.
+In: Proceedings of the 2018 conference on empirical methods in natural language
+processing. pp. 2369ΓÇô2380 (2018)
+16. Yu,C.,Su,F.:Nollmrag:Llm-freemakesgraph-basedraghighlyefficient,effective
+and generalizable
+=== PAGE 18 ===
+Title Suppressed Due to Excessive Length 17
+17. Zhao,P.,Zhang,H.,Yu,Q.,Wang,Z.,Geng,Y.,Fu,F.,Yang,L.,Zhang,W.,Jiang,
+J., Cui, B.: Retrieval-augmented generation for ai-generated content: A survey.
+Data Science and Engineering pp. 1ΓÇô29 (2026)
