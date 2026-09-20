@@ -1,0 +1,32 @@
+{
+  "$schema": "../schemas/help-inventory.schema.json",
+  "schemaVersion": "1.0",
+  "product": "DjehutiSuite",
+  "buildVersion": "research-prototype",
+  "sourceRevision": "research-fixture",
+  "generatedAt": "2026-09-20T12:00:00Z",
+  "items": [
+    {
+      "helpId": "example.djehuti.help.context",
+      "kind": "command",
+      "label": "Help for this view",
+      "owner": "DjehutiSuite UX",
+      "documentation": "required",
+      "behaviorSignature": "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+      "sourceRef": "research fixture: application command registry",
+      "route": "/help/context",
+      "uiPath": ["Help", "Help for this view"],
+      "since": "prototype"
+    },
+    {
+      "helpId": "example.djehuti.help.browser",
+      "kind": "view",
+      "label": "Help browser",
+      "owner": "DjehutiSuite UX",
+      "documentation": "recommended",
+      "behaviorSignature": "sha256:abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789",
+      "sourceRef": "research fixture: application view registry",
+      "route": "/help"
+    }
+  ]
+}

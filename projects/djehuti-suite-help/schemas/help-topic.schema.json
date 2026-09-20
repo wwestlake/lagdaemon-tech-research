@@ -1,0 +1,292 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://djehuti.example/schemas/help-topic.schema.json",
+  "title": "DjehutiSuite authored help topic",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "id",
+    "locale",
+    "type",
+    "title",
+    "summary",
+    "product",
+    "status",
+    "owners",
+    "contexts",
+    "keywords",
+    "relations",
+    "blocks",
+    "verification"
+  ],
+  "properties": {
+    "$schema": { "type": "string", "format": "uri-reference" },
+    "schemaVersion": { "const": "1.0" },
+    "id": { "$ref": "#/$defs/stableId" },
+    "locale": { "type": "string", "pattern": "^[a-z]{2,3}(?:-[A-Z]{2})?$" },
+    "type": {
+      "enum": ["tutorial", "how-to", "reference", "explanation", "troubleshooting"]
+    },
+    "title": { "type": "string", "minLength": 1 },
+    "summary": { "type": "string", "minLength": 1 },
+    "product": { "type": "string", "minLength": 1 },
+    "status": { "enum": ["proposed", "draft", "verified", "deprecated"] },
+    "audiences": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 },
+      "uniqueItems": true
+    },
+    "owners": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 },
+      "minItems": 1,
+      "uniqueItems": true
+    },
+    "appliesTo": { "$ref": "#/$defs/appliesTo" },
+    "contexts": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/context" }
+    },
+    "keywords": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 },
+      "uniqueItems": true
+    },
+    "alternateQueries": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 },
+      "uniqueItems": true
+    },
+    "entities": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/stableId" },
+      "uniqueItems": true
+    },
+    "relations": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/relation" }
+    },
+    "blocks": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/block" },
+      "minItems": 1
+    },
+    "verification": { "$ref": "#/$defs/verification" },
+    "replacedBy": { "$ref": "#/$defs/stableId" }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": { "status": { "const": "deprecated" } },
+        "required": ["status"]
+      },
+      "then": { "required": ["replacedBy"] }
+    }
+  ],
+  "$defs": {
+    "stableId": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9]*(?:[.-][a-z0-9]+)+$"
+    },
+    "appliesTo": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "since": { "type": "string", "minLength": 1 },
+        "until": { "type": "string", "minLength": 1 },
+        "platforms": {
+          "type": "array",
+          "items": { "enum": ["windows", "web"] },
+          "uniqueItems": true
+        },
+        "editions": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 },
+          "uniqueItems": true
+        },
+        "featureFlags": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 },
+          "uniqueItems": true
+        }
+      }
+    },
+    "context": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["helpId", "verifiedBehaviorSignature"],
+      "properties": {
+        "helpId": { "$ref": "#/$defs/stableId" },
+        "anchorBlockId": { "$ref": "#/$defs/localId" },
+        "verifiedBehaviorSignature": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        }
+      }
+    },
+    "relation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "topicId"],
+      "properties": {
+        "type": {
+          "enum": [
+            "prerequisite",
+            "next",
+            "related",
+            "explains",
+            "reference",
+            "troubleshoots",
+            "replaces"
+          ]
+        },
+        "topicId": { "$ref": "#/$defs/stableId" },
+        "anchorBlockId": { "$ref": "#/$defs/localId" }
+      }
+    },
+    "verification": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["contentRevision", "reviewedAt", "reviewedBy", "evidence"],
+      "properties": {
+        "contentRevision": { "type": "integer", "minimum": 1 },
+        "reviewedAt": { "type": "string", "format": "date" },
+        "reviewedBy": { "type": "string", "minLength": 1 },
+        "sourceRevision": { "type": "string", "minLength": 1 },
+        "evidence": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["kind", "ref"],
+            "properties": {
+              "kind": { "enum": ["source", "test", "manual-check", "issue", "design"] },
+              "ref": { "type": "string", "minLength": 1 }
+            }
+          },
+          "minItems": 1
+        }
+      }
+    },
+    "localId": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$"
+    },
+    "step": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "instruction"],
+      "properties": {
+        "id": { "$ref": "#/$defs/localId" },
+        "instruction": { "type": "string", "minLength": 1 },
+        "uiTarget": { "$ref": "#/$defs/stableId" },
+        "expectedResult": { "type": "string", "minLength": 1 }
+      }
+    },
+    "chapter": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["startSeconds", "title"],
+      "properties": {
+        "startSeconds": { "type": "number", "minimum": 0 },
+        "title": { "type": "string", "minLength": 1 },
+        "relatedBlockIds": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/localId" },
+          "uniqueItems": true
+        }
+      }
+    },
+    "block": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "kind"],
+      "properties": {
+        "id": { "$ref": "#/$defs/localId" },
+        "kind": {
+          "enum": [
+            "paragraph",
+            "steps",
+            "note",
+            "warning",
+            "code",
+            "image",
+            "video",
+            "definition",
+            "troubleshooting"
+          ]
+        },
+        "title": { "type": "string", "minLength": 1 },
+        "text": { "type": "string", "minLength": 1 },
+        "intro": { "type": "string", "minLength": 1 },
+        "steps": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/step" },
+          "minItems": 1
+        },
+        "language": { "type": "string", "minLength": 1 },
+        "code": { "type": "string", "minLength": 1 },
+        "url": { "type": "string", "format": "uri", "pattern": "^https://" },
+        "alt": { "type": "string", "minLength": 1 },
+        "caption": { "type": "string", "minLength": 1 },
+        "term": { "type": "string", "minLength": 1 },
+        "definition": { "type": "string", "minLength": 1 },
+        "symptoms": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 },
+          "minItems": 1
+        },
+        "cause": { "type": "string", "minLength": 1 },
+        "resolution": { "type": "string", "minLength": 1 },
+        "provider": { "type": "string", "minLength": 1 },
+        "pageUrl": { "type": "string", "format": "uri", "pattern": "^https://" },
+        "embedUrl": { "type": "string", "format": "uri", "pattern": "^https://" },
+        "thumbnailUrl": { "type": "string", "format": "uri", "pattern": "^https://" },
+        "captionsUrl": { "type": "string", "format": "uri", "pattern": "^https://.*\\.vtt(?:[?#].*)?$" },
+        "transcriptUrl": { "type": "string", "format": "uri", "pattern": "^https://" },
+        "durationSeconds": { "type": "number", "exclusiveMinimum": 0 },
+        "chapters": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/chapter" }
+        }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "kind": { "enum": ["paragraph", "note", "warning"] } } },
+          "then": { "required": ["text"] }
+        },
+        {
+          "if": { "properties": { "kind": { "const": "steps" } } },
+          "then": { "required": ["steps"] }
+        },
+        {
+          "if": { "properties": { "kind": { "const": "code" } } },
+          "then": { "required": ["language", "code"] }
+        },
+        {
+          "if": { "properties": { "kind": { "const": "image" } } },
+          "then": { "required": ["url", "alt"] }
+        },
+        {
+          "if": { "properties": { "kind": { "const": "definition" } } },
+          "then": { "required": ["term", "definition"] }
+        },
+        {
+          "if": { "properties": { "kind": { "const": "troubleshooting" } } },
+          "then": { "required": ["symptoms", "resolution"] }
+        },
+        {
+          "if": { "properties": { "kind": { "const": "video" } } },
+          "then": {
+            "required": ["title", "provider", "pageUrl", "durationSeconds", "chapters"],
+            "anyOf": [
+              { "required": ["captionsUrl"] },
+              { "required": ["transcriptUrl"] }
+            ]
+          }
+        }
+      ]
+    }
+  }
+}

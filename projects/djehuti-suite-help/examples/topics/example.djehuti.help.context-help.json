@@ -1,0 +1,108 @@
+{
+  "$schema": "../../schemas/help-topic.schema.json",
+  "schemaVersion": "1.0",
+  "id": "example.djehuti.help.context-help",
+  "locale": "en-US",
+  "type": "how-to",
+  "title": "Open help for the current view",
+  "summary": "Open the help topic associated with the DjehutiSuite view or command currently in use.",
+  "product": "DjehutiSuite",
+  "status": "proposed",
+  "audiences": ["user", "support", "virtual-engineer"],
+  "owners": ["DjehutiSuite UX"],
+  "appliesTo": {
+    "since": "prototype",
+    "platforms": ["windows", "web"]
+  },
+  "contexts": [
+    {
+      "helpId": "example.djehuti.help.context",
+      "anchorBlockId": "open-context-help",
+      "verifiedBehaviorSignature": "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+    },
+    {
+      "helpId": "example.djehuti.help.browser",
+      "anchorBlockId": "find-related-help",
+      "verifiedBehaviorSignature": "sha256:abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"
+    }
+  ],
+  "keywords": ["context help", "help browser", "documentation"],
+  "alternateQueries": [
+    "How do I get help for this screen?",
+    "Where is the manual for this command?"
+  ],
+  "entities": ["djehuti.help-system", "djehuti.virtual-engineer"],
+  "relations": [],
+  "blocks": [
+    {
+      "id": "purpose",
+      "kind": "paragraph",
+      "text": "Context help resolves a stable application help ID to a specific topic and block. The label and screen position may change without breaking the link."
+    },
+    {
+      "id": "open-context-help",
+      "kind": "steps",
+      "title": "Open context help",
+      "steps": [
+        {
+          "id": "focus-view",
+          "instruction": "Move focus to the view or command you need help with.",
+          "expectedResult": "The intended application context is active."
+        },
+        {
+          "id": "invoke-help",
+          "instruction": "Invoke Help for this view.",
+          "uiTarget": "example.djehuti.help.context",
+          "expectedResult": "The help browser opens at the topic and block registered for the active context."
+        }
+      ]
+    },
+    {
+      "id": "find-related-help",
+      "kind": "paragraph",
+      "title": "Continue through related help",
+      "text": "Use explicit prerequisite, next, reference, and troubleshooting links to move between related topics without depending on search ranking."
+    },
+    {
+      "id": "video-walkthrough",
+      "kind": "video",
+      "title": "Context help walkthrough",
+      "provider": "DjehutiSuite website",
+      "pageUrl": "https://example.invalid/help/videos/context-help",
+      "embedUrl": "https://example.invalid/embed/context-help",
+      "thumbnailUrl": "https://example.invalid/media/context-help.jpg",
+      "captionsUrl": "https://example.invalid/media/context-help.en-US.vtt",
+      "transcriptUrl": "https://example.invalid/help/videos/context-help/transcript",
+      "durationSeconds": 92,
+      "chapters": [
+        {
+          "startSeconds": 0,
+          "title": "Choose the current context",
+          "relatedBlockIds": ["open-context-help"]
+        },
+        {
+          "startSeconds": 42,
+          "title": "Follow related topics",
+          "relatedBlockIds": ["find-related-help"]
+        }
+      ]
+    },
+    {
+      "id": "prototype-warning",
+      "kind": "note",
+      "text": "This topic is a research fixture. Its example namespace, URLs, labels, and interaction details must be replaced by generated DjehutiSuite inventory data before production use."
+    }
+  ],
+  "verification": {
+    "contentRevision": 1,
+    "reviewedAt": "2026-09-20",
+    "reviewedBy": "research prototype",
+    "sourceRevision": "research-fixture",
+    "evidence": [
+      {
+        "kind": "design",
+        "ref": "docs/ARCHITECTURE.md"
+      }
+    ]
+  }
+}
