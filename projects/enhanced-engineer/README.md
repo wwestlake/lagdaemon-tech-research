@@ -10,10 +10,22 @@ It is a research implementation. It deliberately contains no Station code, no MI
 - Deterministic ingestion of the help compiler's `semantic-cards.jsonl`.
 - Full-text, exact-token, co-occurrence, and explicit-relation retrieval with evidence.
 - Context assembly that places mandatory policies and active process state ahead of retrieved knowledge.
+- Deterministic tool access levels and exact, expiring, single-use approvals.
 - A press-on/press-off Engineer Voice Mode controller.
 - Abstract audio-route, speech-input, agent, and speech-output contracts.
 - Route restoration after normal exit, cancellation, or failure.
 - Tests with fake audio and agent adapters; no hardware is required.
+
+## Tool access
+
+The Engineer framework separates standing access from per-call approval:
+
+- `OBSERVE` reads project material and diagnostics.
+- `WORKSPACE` creates and edits content inside an explicitly granted project root.
+- `ENGINEER` adds builds, tests, compiler checks, and debugger sessions.
+- `SYSTEM` covers broader filesystem, process, network, device, and application control.
+
+Every tool declares its minimum level, risk class, and path scope. The runtime makes the authorization decision before invoking the tool; the LLM cannot grant itself access. Destructive and privileged calls always require an exact approval. Approvals are argument-bound, path-bound, expiring, and single-use. A forbidden capability cannot be approved.
 
 ## Run
 

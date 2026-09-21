@@ -178,6 +178,21 @@ voice/text request
 
 STT confidence does not establish target confidence. A perfect transcript of "turn down the guitar" may still identify multiple tracks. Target resolution and confirmation belong to the Engineer/tool layer, not the speech layer.
 
+## Access and approval boundary
+
+Tool authorization is deterministic host code and is evaluated after the model proposes a typed call but before any adapter runs. The model cannot change its access level, approve its own call, widen a project root, or mark a capability safe.
+
+Standing access levels are cumulative:
+
+- **Observe:** project reads, search, help, LiteSemRAG evidence, and diagnostics.
+- **Workspace:** Observe plus file and directory creation or modification inside explicit workspace roots.
+- **Engineer:** Workspace plus builds, tests, compiler checks, controlled execution, and debugger sessions.
+- **System:** broader filesystem, process, network, application, installation, and device adapters.
+
+The host also sets a maximum level. Calls above that ceiling are denied. Calls above the standing level but not above the ceiling may request approval when the session policy permits it. Destructive and privileged calls require approval even when their nominal level is already granted.
+
+An approval names one canonical tool-call fingerprint containing the tool, complete arguments, and resolved target. It expires quickly and is consumed once. Changing an argument or target requires a new approval. Forbidden tool declarations remain denied even when presented with an otherwise valid approval.
+
 ## IDE adapter
 
 The first operational adapter should remain deliberately small:
