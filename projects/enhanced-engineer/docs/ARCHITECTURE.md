@@ -160,9 +160,9 @@ voice session state        transient runtime state
 
 The Enhanced Engineer never writes answers, embeddings, or runtime process state back into canonical help files.
 
-## Relationship to future tools
+## Tool execution path
 
-The current implementation has no application tools. When tools are introduced, the same turn remains:
+The reference implementation now includes governed project inspection, file creation and editing, and controlled build, test, compiler, and diagnostic process tools. Product-specific tools follow the same turn:
 
 ```text
 voice/text request
@@ -193,6 +193,14 @@ The host also sets a maximum level. Calls above that ceiling are denied. Calls a
 
 An approval names one canonical tool-call fingerprint containing the tool, complete arguments, and resolved target. It expires quickly and is consumed once. Changing an argument or target requires a new approval. Forbidden tool declarations remain denied even when presented with an otherwise valid approval.
 
+## Typed tool registry
+
+The tool registry is the only execution path. Each registration combines a provider-facing JSON argument schema, human purpose and usage guidance, deterministic access declaration, target resolver, and host implementation. Calls are rejected before the implementation runs when the tool is unknown, the path is out of scope, approval is missing, or the session ceiling is too low.
+
+Workspace creation and edits are deliberately separated. New-file creation refuses to overwrite. Focused editing requires exact old text and rejects ambiguous matches. Complete replacement is a separate tool that always requires an exact approval. Process execution accepts an argument array rather than shell text, limits working directories to the granted workspace, enforces a host executable allow-list and timeout, and captures exit code, standard output, and standard error.
+
+LiteSemRAG tool cards are generated from these same registrations. Tool name, purpose, usage guidance, argument schema, access level, scope, risk, and approval behavior therefore have one source of truth. The cards teach selection and procedure; provider schemas constrain the actual call; the access controller remains authoritative over execution.
+
 ## IDE adapter
 
 The first operational adapter should remain deliberately small:
@@ -206,14 +214,15 @@ The first operational adapter should remain deliberately small:
 - A `SpeechOutput` implementation speaks the response.
 - Typed and spoken turns share the same transcript and context diagnostics.
 
-This validates the complete mental/context loop before Station audio routing or application tools are added.
+This validates the complete mental/context loop before a FrustIDE adapter or Station audio and application tools are connected.
 
 ## What is not implemented here
 
 - MIDI or control-surface protocols;
 - Station's audio graph or route adapter;
 - real microphone capture or TTS engines;
-- application tools;
+- product-specific FrustIDE and Station tool adapters;
+- an LLVM source-level breakpoint and debugger service;
 - automatic track selection;
 - unrestricted shell or filesystem access;
 - ISD trajectory metrics.
