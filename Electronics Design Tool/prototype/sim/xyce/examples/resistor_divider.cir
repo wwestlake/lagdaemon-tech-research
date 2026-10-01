@@ -1,0 +1,10 @@
+* Djehuti Electronics Lab Xyce smoke test
+* 10V source into 10k/10k divider. V(out) should settle at 5V.
+
+V1 in 0 DC 10
+R1 in out 10k
+R2 out 0 10k
+
+.OP
+.PRINT DC V(in) V(out)
+.END
