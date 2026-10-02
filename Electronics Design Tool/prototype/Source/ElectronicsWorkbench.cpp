@@ -417,12 +417,189 @@ public:
         repaint();
     }
 
+    void clearCircuit()
+    {
+        clearModel();
+        if (onStatus) onStatus("New electronics research project initialized.");
+    }
+
+    bool loadCircuitJson(const juce::String& json, juce::String& error)
+    {
+        const auto parsed = juce::JSON::parse(json);
+        const auto* root = parsed.getDynamicObject();
+        if (root == nullptr)
+        {
+            error = "Project file is not valid JSON.";
+            return false;
+        }
+
+        const auto* componentArray = root->getProperty("components").getArray();
+        if (componentArray == nullptr)
+        {
+            error = "Project file has no components array.";
+            return false;
+        }
+
+        std::vector<Instance> loadedInstances;
+        std::vector<juce::Point<float>> loadedJunctions;
+        std::vector<Wire> loadedWires;
+        std::vector<Probe> loadedProbes;
+        int highestRefNumber = 0;
+
+        for (const auto& entry : *componentArray)
+        {
+            const auto* object = entry.getDynamicObject();
+            if (object == nullptr)
+                continue;
+
+            Instance instance;
+            instance.symbolId = stringProperty(*object, "symbol", "resistor");
+            instance.refdes = stringProperty(*object, "id", "U" + juce::String((int)loadedInstances.size() + 1));
+            instance.value = stringProperty(*object, "value", defaultValueFor(instance.symbolId));
+            instance.frequency = stringProperty(*object, "frequency", defaultFrequencyFor(instance.symbolId));
+            instance.busName = stringProperty(*object, "busName", defaultBusNameFor(instance.symbolId));
+            instance.position = { floatProperty(*object, "x", 120.0f), floatProperty(*object, "y", 120.0f) };
+            instance.rotation = (int)floatProperty(*object, "rotation", 0.0f);
+            instance.busLength = floatProperty(*object, "length", isRailBus(instance.symbolId) ? 420.0f : 0.0f);
+
+            if (const auto* component = object->getProperty("component").getDynamicObject())
+            {
+                instance.family = stringProperty(*component, "family", familyFor(instance.symbolId));
+                instance.manufacturerPart = stringProperty(*component, "manufacturerPart", {});
+            }
+            else
+            {
+                instance.family = familyFor(instance.symbolId);
+            }
+
+            highestRefNumber = std::max(highestRefNumber, trailingNumber(instance.refdes));
+            loadedInstances.push_back(std::move(instance));
+        }
+
+        if (const auto* junctionArray = root->getProperty("junctions").getArray())
+        {
+            for (const auto& entry : *junctionArray)
+            {
+                const auto* object = entry.getDynamicObject();
+                if (object == nullptr)
+                    continue;
+                loadedJunctions.push_back({ floatProperty(*object, "x", 0.0f),
+                                            floatProperty(*object, "y", 0.0f) });
+            }
+        }
+
+        auto nodeForLabel = [&](const juce::String& label, WireNode& result) -> bool {
+            if (label.startsWith("J"))
+            {
+                const auto index = label.substring(1).getIntValue() - 1;
+                if (index >= 0 && index < (int)loadedJunctions.size())
+                {
+                    result = WireNode::forJunction(index);
+                    return true;
+                }
+                return false;
+            }
+
+            const auto dot = label.lastIndexOfChar('.');
+            if (dot <= 0 || dot >= label.length() - 1)
+                return false;
+
+            const auto refdes = label.substring(0, dot);
+            const auto pinName = label.substring(dot + 1);
+            for (int i = 0; i < (int)loadedInstances.size(); ++i)
+            {
+                if (loadedInstances[(size_t)i].refdes != refdes)
+                    continue;
+
+                const auto symbol = symbolFor(loadedInstances[(size_t)i].symbolId);
+                for (int p = 0; p < (int)symbol.pins.size(); ++p)
+                {
+                    if (symbol.pins[(size_t)p].name == pinName)
+                    {
+                        result = WireNode::forPin({ i, p });
+                        return true;
+                    }
+                }
+                return false;
+            }
+            return false;
+        };
+
+        if (const auto* wireArray = root->getProperty("wires").getArray())
+        {
+            for (const auto& entry : *wireArray)
+            {
+                const auto* object = entry.getDynamicObject();
+                if (object == nullptr)
+                    continue;
+
+                Wire wire;
+                const auto a = stringProperty(*object, "a", {});
+                const auto b = stringProperty(*object, "b", {});
+                if (!nodeForLabel(a, wire.a) || !nodeForLabel(b, wire.b))
+                {
+                    error = "Project wire references an unknown node: " + a + " -> " + b;
+                    return false;
+                }
+                loadedWires.push_back(wire);
+            }
+        }
+
+        if (const auto* probeArray = root->getProperty("probes").getArray())
+        {
+            for (const auto& entry : *probeArray)
+            {
+                const auto* object = entry.getDynamicObject();
+                if (object == nullptr)
+                    continue;
+
+                const auto id = stringProperty(*object, "id", {});
+                const auto label = probeLabel(id);
+                if (id.isEmpty() || label.isEmpty())
+                    continue;
+
+                WireNode target;
+                const auto targetLabel = stringProperty(*object, "target", {});
+                if (!nodeForLabel(targetLabel, target))
+                {
+                    error = "Project probe references an unknown node: " + targetLabel;
+                    return false;
+                }
+
+                loadedProbes.push_back({ id, label, probeRole(id), target, probeColour(id) });
+            }
+        }
+
+        const auto previousProbes = probes;
+        instances = std::move(loadedInstances);
+        junctions = std::move(loadedJunctions);
+        wires = std::move(loadedWires);
+        probes = std::move(loadedProbes);
+        selectedInstance = instances.empty() ? -1 : 0;
+        nextRef = std::max(1, highestRefNumber + 1);
+        wireDragging = false;
+        draggingInstance = false;
+        resizingRail = false;
+        notifySelection();
+
+        if (onProbeChanged)
+        {
+            for (const auto& probe : previousProbes)
+                onProbeChanged(probe.id, probe.label, {});
+            for (const auto& probe : probes)
+                onProbeChanged(probe.id, probe.label, nodeLabel(probe.node));
+        }
+
+        repaint();
+        return true;
+    }
+
     juce::String buildCircuitJson() const
     {
         const auto netNames = computeNetNames();
         juce::String text;
         text << "{\n";
-        text << "  \"schemaVersion\": 1,\n";
+        text << "  \"schemaVersion\": 2,\n";
         text << "  \"kind\": \"electronics_circuit\",\n";
         text << "  \"components\": [\n";
         for (size_t i = 0; i < instances.size(); ++i)
@@ -445,6 +622,8 @@ public:
             if (isRailBus(instance.symbolId))
                 text << "      \"length\": " << instance.busLength << ",\n";
             text << "      \"value\": " << quote(instance.value) << ",\n";
+            text << "      \"frequency\": " << quote(instance.frequency) << ",\n";
+            text << "      \"busName\": " << quote(instance.busName) << ",\n";
             text << "      \"parameters\": " << parametersJsonFor(instance) << ",\n";
             text << "      \"pins\": {\n";
             for (size_t p = 0; p < symbol.pins.size(); ++p)
@@ -464,6 +643,16 @@ public:
             if (i != 0) text << ",\n";
             text << "    { \"a\": " << quote(nodeLabel(wire.a))
                  << ", \"b\": " << quote(nodeLabel(wire.b)) << " }";
+        }
+        text << "\n  ],\n";
+        text << "  \"junctions\": [\n";
+        for (size_t i = 0; i < junctions.size(); ++i)
+        {
+            const auto& junction = junctions[i];
+            if (i != 0) text << ",\n";
+            text << "    { \"id\": " << quote("J" + juce::String((int)i + 1))
+                 << ", \"x\": " << junction.x
+                 << ", \"y\": " << junction.y << " }";
         }
         text << "\n  ],\n";
         text << "  \"probes\": [\n";
@@ -918,6 +1107,71 @@ private:
     static juce::String nullableQuote(const juce::String& text)
     {
         return text.isEmpty() ? juce::String("null") : quote(text);
+    }
+
+    static juce::String stringProperty(const juce::DynamicObject& object,
+                                       const char* name,
+                                       const juce::String& fallback)
+    {
+        const auto property = juce::Identifier(name);
+        if (!object.hasProperty(property))
+            return fallback;
+
+        const auto value = object.getProperty(property);
+        if (value.isVoid() || value.isUndefined())
+            return fallback;
+
+        return value.toString();
+    }
+
+    static float floatProperty(const juce::DynamicObject& object, const char* name, float fallback)
+    {
+        const auto property = juce::Identifier(name);
+        if (!object.hasProperty(property))
+            return fallback;
+
+        const auto value = object.getProperty(property);
+        if (value.isVoid() || value.isUndefined())
+            return fallback;
+
+        return (float)(double)value;
+    }
+
+    static int trailingNumber(const juce::String& text)
+    {
+        auto start = text.length();
+        const auto end = start;
+        while (start > 0)
+        {
+            const auto c = text[start - 1];
+            if (c < '0' || c > '9')
+                break;
+            --start;
+        }
+
+        return start == end ? 0 : text.substring(start, end).getIntValue();
+    }
+
+    void clearModel()
+    {
+        const auto previousProbes = probes;
+        instances.clear();
+        wires.clear();
+        junctions.clear();
+        probes.clear();
+        selectedInstance = -1;
+        nextRef = 1;
+        wireDragging = false;
+        draggingInstance = false;
+        resizingRail = false;
+        resizingRailInstance = -1;
+        notifySelection();
+
+        if (onProbeChanged)
+            for (const auto& probe : previousProbes)
+                onProbeChanged(probe.id, probe.label, {});
+
+        repaint();
     }
 
     void drawGrid(juce::Graphics& g)
@@ -2927,9 +3181,13 @@ ElectronicsWorkbench::ElectronicsWorkbench()
     schematicPanel->setProbeListener([instrumentPanel](juce::String id, juce::String, juce::String target) {
         instrumentPanel->setProbeTarget(id, target);
     });
+    resetCircuit = [panel = schematic.get()] { panel->clearCircuit(); };
     getCircuitJson = [panel = schematic.get()] { return panel->buildCircuitJson(); };
     getXyceNetlist = [panel = schematic.get()] { return panel->buildXyceNetlist(); };
     getLabInstrumentsJson = [instrumentPanel] { return instrumentPanel->buildInstrumentJson(); };
+    loadCircuitJson = [panel = schematic.get()](const juce::String& json, juce::String& error) {
+        return panel->loadCircuitJson(json, error);
+    };
     dockManager->registerPanel("schematic", "Schematic", std::move(schematic), CreationDock::DockTargetZone::CenterTab);
     dockManager->registerPanel("simulation", "Simulation", std::make_unique<SimulationPanel>(), CreationDock::DockTargetZone::CenterTab);
     dockManager->registerPanel("console", "Frust Math Console", std::make_unique<ConsolePanel>(logConsole), CreationDock::DockTargetZone::Bottom);
@@ -3025,8 +3283,8 @@ void ElectronicsWorkbench::menuItemSelected(int menuItemID, int)
     switch (menuItemID)
     {
         case newProject: resetResearchState(); break;
-        case saveProject: exportCircuitArtifacts(); break;
-        case openProject: appendLog("Open project stub: project loader pending."); break;
+        case saveProject: saveProjectFile(); break;
+        case openProject: openProjectFile(); break;
         case resetLayout:
             if (dockManager != nullptr) dockManager->resetLayout();
             appendLog("Dock layout reset.");
@@ -3047,6 +3305,17 @@ juce::File ElectronicsWorkbench::layoutFile() const
     return juce::File::getSpecialLocation(juce::File::userApplicationDataDirectory)
         .getChildFile("DjehutiElectronicsLab")
         .getChildFile("layout.json");
+}
+
+juce::File ElectronicsWorkbench::savedProjectFile() const
+{
+    return juce::File::getSpecialLocation(juce::File::currentExecutableFile)
+        .getParentDirectory()
+        .getParentDirectory()
+        .getParentDirectory()
+        .getChildFile("projects")
+        .getChildFile("current")
+        .getChildFile("circuit.json");
 }
 
 juce::File ElectronicsWorkbench::generatedRunDirectory() const
@@ -3070,7 +3339,59 @@ void ElectronicsWorkbench::appendLog(const juce::String& text)
 
 void ElectronicsWorkbench::resetResearchState()
 {
-    appendLog("New electronics research project initialized.");
+    if (resetCircuit != nullptr)
+        resetCircuit();
+    else
+        appendLog("New electronics research project initialized.");
+}
+
+void ElectronicsWorkbench::saveProjectFile()
+{
+    if (getCircuitJson == nullptr)
+    {
+        appendLog("No schematic exporter is available.");
+        return;
+    }
+
+    const auto file = savedProjectFile();
+    if (!file.getParentDirectory().createDirectory())
+    {
+        appendLog("Could not create project directory: " + file.getParentDirectory().getFullPathName());
+        return;
+    }
+
+    if (!file.replaceWithText(getCircuitJson()))
+    {
+        appendLog("Could not save project file: " + file.getFullPathName());
+        return;
+    }
+
+    appendLog("Saved project circuit to " + file.getFullPathName());
+}
+
+void ElectronicsWorkbench::openProjectFile()
+{
+    if (loadCircuitJson == nullptr)
+    {
+        appendLog("No project loader is available.");
+        return;
+    }
+
+    const auto file = savedProjectFile();
+    if (!file.existsAsFile())
+    {
+        appendLog("No saved project found yet: " + file.getFullPathName());
+        return;
+    }
+
+    juce::String error;
+    if (!loadCircuitJson(file.loadFileAsString(), error))
+    {
+        appendLog("Could not open project: " + error);
+        return;
+    }
+
+    appendLog("Opened project circuit from " + file.getFullPathName());
 }
 
 void ElectronicsWorkbench::exportCircuitArtifacts()

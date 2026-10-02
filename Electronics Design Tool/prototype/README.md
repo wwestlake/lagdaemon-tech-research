@@ -39,6 +39,17 @@ The app output is:
 D:\000 Tech Research\Electronics Design Tool\prototype\bin\Debug\djehuti_electronics_lab.exe
 ```
 
+## Project State
+
+`File > Save Project` writes the editable circuit model to:
+
+```text
+D:\000 Tech Research\Electronics Design Tool\prototype\projects\current\circuit.json
+```
+
+`File > Open Project...` loads that same circuit JSON back into the schematic.
+Simulation commands still export run artifacts under `sim/xyce/runs/generated`.
+
 ## Frust And LLVM
 
 This prototype may embed Frust for the math console, compiled circuit previews,

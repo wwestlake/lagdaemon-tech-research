@@ -1,4 +1,5 @@
 build/
 bin/
 config/*.local.json
+projects/current/
 sim/xyce/runs/
