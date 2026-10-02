@@ -31,6 +31,7 @@ private:
         runTransient,
         runCompiledPreview,
         openAgentSettings,
+        exportAgentTools,
         openResearchSpec
     };
 
@@ -42,6 +43,9 @@ private:
     void saveProjectFile();
     void openProjectFile();
     void runElectricalRuleCheck();
+    void openInstrumentWindow(juce::String refdes, juce::String symbolId);
+    void exportAssistantToolManifest();
+    juce::String buildAssistantToolManifestJson() const;
     void showSpecDocument();
     void exportCircuitArtifacts();
 
@@ -58,6 +62,7 @@ private:
 
     juce::TextEditor* logConsole = nullptr;
     juce::String selectedSymbolId = "resistor";
+    juce::OwnedArray<juce::DocumentWindow> floatingInstrumentWindows;
     std::function<void()> resetCircuit;
     std::function<juce::String()> getCircuitJson;
     std::function<juce::String()> getXyceNetlist;

@@ -50,6 +50,13 @@ D:\000 Tech Research\Electronics Design Tool\prototype\projects\current\circuit.
 `File > Open Project...` loads that same circuit JSON back into the schematic.
 Simulation commands still export run artifacts under `sim/xyce/runs/generated`.
 `Circuit > Run ERC` writes `erc_report.md` in that generated run folder.
+It also writes `erc_tool_result.json` for the BYOK agent tool surface.
+`Agent > Export Tool Manifest` writes `assistant_tools.json` in the same folder.
+
+Instrument placement is moving toward schematic nodes instead of a fixed bench.
+The component library includes a two-channel oscilloscope and a digital
+multimeter. Place them on the diagram, wire their pins like components, and
+double-click an instrument node to open a floating instrument window.
 
 ## Frust And LLVM
 

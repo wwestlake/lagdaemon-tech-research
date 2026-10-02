@@ -27,6 +27,11 @@ void showCursorForEvent(const juce::MouseEvent& event, juce::MouseCursor cursor)
         source.showMouseCursor(cursor);
 }
 
+juce::String jsonQuote(const juce::String& text)
+{
+    return "\"" + text.replace("\\", "\\\\").replace("\"", "\\\"") + "\"";
+}
+
 class NotesPanel : public juce::Component
 {
 public:
@@ -298,6 +303,8 @@ private:
         add({ "opamp_741", "741 Op Amp - provisional", "Analog IC" });
         add({ "npn", "NPN Transistor - generic", "Discrete" });
         add({ "logic_not", "Logic Inverter - behavioral", "Digital" });
+        add({ "oscilloscope_2ch", "2-Channel Oscilloscope", "Instrument" });
+        add({ "digital_multimeter", "Digital Multimeter", "Instrument" });
     }
 
     void refreshFilter()
@@ -344,6 +351,7 @@ private:
         g.setColour(item.category == "Source" ? juce::Colour(0xfff4d35e)
                     : item.category == "Bus" ? juce::Colour(0xff78dcca)
                     : item.category == "Analog IC" ? juce::Colour(0xffffc857)
+                    : item.category == "Instrument" ? juce::Colour(0xffff6b6b)
                     : juce::Colour(0xff5aa7c8));
         g.fillRoundedRectangle(swatch.toFloat(), 3.0f);
 
@@ -381,6 +389,11 @@ public:
     void setProbeListener(std::function<void(juce::String, juce::String, juce::String)> listener)
     {
         onProbeChanged = std::move(listener);
+    }
+
+    void setInstrumentOpenListener(std::function<void(juce::String, juce::String)> listener)
+    {
+        onInstrumentOpen = std::move(listener);
     }
 
     void updateSelectedProperties(const juce::String& value,
@@ -999,6 +1012,23 @@ public:
         }
     }
 
+    void mouseDoubleClick(const juce::MouseEvent& event) override
+    {
+        if (const auto instanceIndex = hitTestInstance(event.position); instanceIndex >= 0)
+        {
+            selectedInstance = instanceIndex;
+            notifySelection();
+
+            const auto& instance = instances[(size_t)instanceIndex];
+            if (isInstrumentNode(instance.symbolId) && onInstrumentOpen)
+            {
+                onInstrumentOpen(instance.refdes, instance.symbolId);
+                if (onStatus) onStatus("Opened instrument panel for " + instance.refdes + ".");
+            }
+            repaint();
+        }
+    }
+
     void resized() override {}
 
     void mouseDrag(const juce::MouseEvent& event) override
@@ -1234,6 +1264,7 @@ private:
     std::function<bool()> getStampPlacementEnabled;
     std::function<void(juce::String)> onStatus;
     std::function<void(juce::String, juce::String, juce::String)> onProbeChanged;
+    std::function<void(juce::String, juce::String)> onInstrumentOpen;
     std::function<void(int, juce::String, juce::String, juce::String, juce::String, juce::String, juce::String, juce::String)> onSelectionChanged;
 
     static juce::String quote(const juce::String& text)
@@ -1332,6 +1363,11 @@ private:
         return symbolId == "power_bus" || symbolId == "ground_bus";
     }
 
+    static bool isInstrumentNode(const juce::String& symbolId)
+    {
+        return symbolId == "oscilloscope_2ch" || symbolId == "digital_multimeter";
+    }
+
     SymbolDef symbolFor(const juce::String& id) const
     {
         if (id == "capacitor")
@@ -1360,6 +1396,10 @@ private:
             return { id, "NPN", { -30, -36, 60, 72 }, { { "B", { -54, 0 } }, { "C", { 28, -48 } }, { "E", { 28, 48 } } } };
         if (id == "logic_not")
             return { id, "NOT", { -42, -30, 84, 60 }, { { "A", { -66, 0 } }, { "Y", { 66, 0 } } } };
+        if (id == "oscilloscope_2ch")
+            return { id, "SCOPE", { -58, -42, 116, 84 }, { { "CH1", { -82, -22 } }, { "CH2", { -82, 22 } }, { "REF", { 82, 0 } } } };
+        if (id == "digital_multimeter")
+            return { id, "DMM", { -48, -36, 96, 72 }, { { "HI", { -72, -18 } }, { "LO", { -72, 18 } } } };
         return { "resistor", "R", { -36, -14, 72, 28 }, { { "1", { -54, 0 } }, { "2", { 54, 0 } } } };
     }
 
@@ -1377,6 +1417,8 @@ private:
         if (symbolId == "signal_source") return "1";
         if (symbolId == "opamp_741") return "uA741";
         if (symbolId == "npn") return "generic_npn";
+        if (symbolId == "oscilloscope_2ch") return "2ch";
+        if (symbolId == "digital_multimeter") return "DCV";
         return "";
     }
 
@@ -1395,6 +1437,8 @@ private:
         if (symbolId == "opamp_741") return "analog.op_amp";
         if (symbolId == "npn") return "discrete.bjt.npn";
         if (symbolId == "logic_not") return "digital.logic.not";
+        if (symbolId == "oscilloscope_2ch") return "instrument.oscilloscope";
+        if (symbolId == "digital_multimeter") return "instrument.multimeter";
         return "unknown";
     }
 
@@ -1441,6 +1485,10 @@ private:
             return "{ \"amplitude\": { \"value\": " + quote(instance.value) + ", \"unit\": \"V\" }, \"frequency\": { \"value\": " + quote(instance.frequency) + ", \"unit\": \"Hz\" }, \"offset\": { \"value\": \"0\", \"unit\": \"V\" } }";
         if (symbolId == "signal_source")
             return "{ \"waveform\": \"sine\", \"amplitude\": { \"value\": " + quote(instance.value) + ", \"unit\": \"V\" }, \"frequency\": { \"value\": " + quote(instance.frequency) + ", \"unit\": \"Hz\" } }";
+        if (symbolId == "oscilloscope_2ch")
+            return "{ \"instrumentType\": \"digital_oscilloscope\", \"channels\": [\"CH1\", \"CH2\"], \"reference\": \"REF\", \"windowMode\": \"floating_preferred\" }";
+        if (symbolId == "digital_multimeter")
+            return "{ \"instrumentType\": \"digital_multimeter\", \"function\": " + quote(instance.value) + ", \"connections\": [\"HI\", \"LO\"], \"windowMode\": \"floating_preferred\" }";
         return "{}";
     }
 
@@ -2116,6 +2164,8 @@ private:
                             symbolId == "resistor" ? juce::String("R") :
                             symbolId == "opamp_741" ? juce::String("U") :
                             symbolId == "npn" ? juce::String("Q") :
+                            symbolId == "oscilloscope_2ch" ? juce::String("SCOPE") :
+                            symbolId == "digital_multimeter" ? juce::String("DMM") :
                             juce::String("U");
         instances.push_back({ symbol.id,
                               prefix + juce::String(nextRef++),
@@ -2356,6 +2406,50 @@ private:
             g.strokePath(tri, juce::PathStrokeType(1.8f));
             g.drawEllipse(body.getRight() - 12.0f, -6.0f, 12.0f, 12.0f, 1.8f);
             g.drawLine(body.getRight(), 0.0f, 66.0f, 0.0f, 1.8f);
+        }
+        else if (symbol.id == "oscilloscope_2ch")
+        {
+            g.setColour(juce::Colour(0xff17212b));
+            g.fillRoundedRectangle(body, 6.0f);
+            g.setColour(juce::Colour(0xffff6b6b));
+            g.drawRoundedRectangle(body, 6.0f, 2.0f);
+            g.setColour(juce::Colour(0xff26323d));
+            g.fillRoundedRectangle(body.reduced(12.0f, 14.0f), 4.0f);
+            g.setColour(juce::Colour(0xff78dcca));
+            juce::Path trace;
+            const auto graph = body.reduced(16.0f, 22.0f);
+            for (int i = 0; i <= 28; ++i)
+            {
+                const auto t = (float)i / 28.0f;
+                const auto x = graph.getX() + t * graph.getWidth();
+                const auto y = graph.getCentreY() - std::sin(t * juce::MathConstants<float>::twoPi * 2.0f) * graph.getHeight() * 0.32f;
+                if (i == 0) trace.startNewSubPath(x, y); else trace.lineTo(x, y);
+            }
+            g.strokePath(trace, juce::PathStrokeType(1.5f));
+            g.setFont(juce::Font(12.0f, juce::Font::bold));
+            g.drawText("SCOPE", body.toNearestInt(), juce::Justification::centredTop);
+            g.setColour(juce::Colour(0xffe8f1f2));
+            g.drawLine(-82.0f, -22.0f, body.getX(), -22.0f, 1.8f);
+            g.drawLine(-82.0f, 22.0f, body.getX(), 22.0f, 1.8f);
+            g.drawLine(body.getRight(), 0.0f, 82.0f, 0.0f, 1.8f);
+        }
+        else if (symbol.id == "digital_multimeter")
+        {
+            g.setColour(juce::Colour(0xff17212b));
+            g.fillRoundedRectangle(body, 6.0f);
+            g.setColour(juce::Colour(0xffffc857));
+            g.drawRoundedRectangle(body, 6.0f, 2.0f);
+            auto display = body.reduced(12.0f, 12.0f).withHeight(24.0f);
+            g.setColour(juce::Colour(0xff0e141a));
+            g.fillRoundedRectangle(display, 4.0f);
+            g.setColour(juce::Colour(0xff78dcca));
+            g.setFont(juce::Font(13.0f, juce::Font::bold));
+            g.drawText(instance.value.isNotEmpty() ? instance.value : "DCV", display.toNearestInt(), juce::Justification::centred);
+            g.setColour(juce::Colour(0xffe8f1f2));
+            g.drawLine(-72.0f, -18.0f, body.getX(), -18.0f, 1.8f);
+            g.drawLine(-72.0f, 18.0f, body.getX(), 18.0f, 1.8f);
+            g.setFont(juce::Font(12.0f, juce::Font::bold));
+            g.drawText("DMM", body.withTrimmedTop(32.0f).toNearestInt(), juce::Justification::centred);
         }
 
         g.restoreState();
@@ -3023,6 +3117,26 @@ private:
     juce::Rectangle<int> scopeZone;
 };
 
+class FloatingInstrumentWindow final : public juce::DocumentWindow
+{
+public:
+    explicit FloatingInstrumentWindow(const juce::String& name)
+        : DocumentWindow(name, juce::Colour(0xff171b20), juce::DocumentWindow::allButtons)
+    {
+        setUsingNativeTitleBar(true);
+        setResizable(true, true);
+        setResizeLimits(680, 480, 2200, 1400);
+    }
+
+    void closeButtonPressed() override
+    {
+        setVisible(false);
+    }
+
+private:
+    JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(FloatingInstrumentWindow)
+};
+
 class ConsolePanel final : public juce::Component
 {
 public:
@@ -3182,14 +3296,13 @@ class AgentPanel final : public NotesPanel
 public:
     AgentPanel()
         : NotesPanel("BYOK Electronics Agent",
-                     "Agent shell placeholder.\n\n"
-                     "Planned responsibilities:\n"
-                     "- component acquisition\n"
-                     "- datasheet extraction\n"
-                     "- circuit inspection\n"
-                     "- simulation setup\n"
-                     "- Frust console/script execution with approval\n"
-                     "- LiteSemRAG cards and process memory")
+                     "Agent tool surface:\n"
+                     "- circuit.run_erc writes erc_report.md and erc_tool_result.json\n"
+                     "- schematic.place_symbol is planned for diagram creation\n"
+                     "- schematic.place_instrument_node is planned for scope/DMM nodes\n"
+                     "- simulation.export_artifacts writes circuit/netlist/instrument JSON\n"
+                     "- instruments should be schematic nodes that open floating panels\n\n"
+                     "Use Agent > Export Tool Manifest to write assistant_tools.json.")
     {
     }
 };
@@ -3318,6 +3431,9 @@ ElectronicsWorkbench::ElectronicsWorkbench()
     schematicPanel->setProbeListener([instrumentPanel](juce::String id, juce::String, juce::String target) {
         instrumentPanel->setProbeTarget(id, target);
     });
+    schematicPanel->setInstrumentOpenListener([this](juce::String refdes, juce::String symbolId) {
+        openInstrumentWindow(refdes, symbolId);
+    });
     resetCircuit = [panel = schematic.get()] { panel->clearCircuit(); };
     getCircuitJson = [panel = schematic.get()] { return panel->buildCircuitJson(); };
     getXyceNetlist = [panel = schematic.get()] { return panel->buildXyceNetlist(); };
@@ -3404,6 +3520,7 @@ juce::PopupMenu ElectronicsWorkbench::getMenuForIndex(int, const juce::String& m
     else if (menuName == "Agent")
     {
         menu.addItem(openAgentSettings, "BYOK Agent Settings...");
+        menu.addItem(exportAgentTools, "Export Tool Manifest");
     }
     else if (menuName == "View")
     {
@@ -3433,6 +3550,7 @@ void ElectronicsWorkbench::menuItemSelected(int menuItemID, int)
         case runTransient: exportCircuitArtifacts(); break;
         case runCompiledPreview: appendLog("Compiled preview stub: circuit IR -> Frust backend pending."); break;
         case openAgentSettings: appendLog("BYOK agent settings stub: provider/key/model UI pending."); break;
+        case exportAgentTools: exportAssistantToolManifest(); break;
         case openResearchSpec: showSpecDocument(); break;
         default: break;
     }
@@ -3532,6 +3650,82 @@ void ElectronicsWorkbench::openProjectFile()
     appendLog("Opened project circuit from " + file.getFullPathName());
 }
 
+juce::String ElectronicsWorkbench::buildAssistantToolManifestJson() const
+{
+    const auto runDir = generatedRunDirectory();
+    juce::String text;
+    text << "{\n";
+    text << "  \"schemaVersion\": 1,\n";
+    text << "  \"kind\": \"djehuti_assistant_tool_manifest\",\n";
+    text << "  \"toolSurface\": \"prototype-local\",\n";
+    text << "  \"artifactDirectory\": " << jsonQuote(runDir.getFullPathName()) << ",\n";
+    text << "  \"tools\": [\n";
+    text << "    {\n";
+    text << "      \"name\": \"circuit.run_erc\",\n";
+    text << "      \"description\": \"Run Electrical Rule Check on the current schematic model.\",\n";
+    text << "      \"mode\": \"read_only_analysis\",\n";
+    text << "      \"inputs\": {},\n";
+    text << "      \"outputs\": {\n";
+    text << "        \"markdownReport\": " << jsonQuote(runDir.getChildFile("erc_report.md").getFullPathName()) << ",\n";
+    text << "        \"jsonResult\": " << jsonQuote(runDir.getChildFile("erc_tool_result.json").getFullPathName()) << "\n";
+    text << "      }\n";
+    text << "    },\n";
+    text << "    {\n";
+    text << "      \"name\": \"simulation.export_artifacts\",\n";
+    text << "      \"description\": \"Export circuit.json, generated.cir, and lab_instruments.json for solver/dataset work.\",\n";
+    text << "      \"mode\": \"write_generated_artifacts\",\n";
+    text << "      \"outputs\": {\n";
+    text << "        \"circuitJson\": " << jsonQuote(runDir.getChildFile("circuit.json").getFullPathName()) << ",\n";
+    text << "        \"xyceNetlist\": " << jsonQuote(runDir.getChildFile("generated.cir").getFullPathName()) << ",\n";
+    text << "        \"instrumentJson\": " << jsonQuote(runDir.getChildFile("lab_instruments.json").getFullPathName()) << "\n";
+    text << "      }\n";
+    text << "    },\n";
+    text << "    {\n";
+    text << "      \"name\": \"schematic.place_symbol\",\n";
+    text << "      \"description\": \"Planned assistant action for creating schematic diagrams by placing symbols on the canvas grid.\",\n";
+    text << "      \"status\": \"planned\",\n";
+    text << "      \"inputs\": {\n";
+    text << "        \"symbolId\": [\"resistor\", \"capacitor\", \"inductor\", \"diode\", \"voltage_source\", \"ground\", \"oscilloscope_2ch\", \"digital_multimeter\"],\n";
+    text << "        \"x\": \"grid coordinate\",\n";
+    text << "        \"y\": \"grid coordinate\"\n";
+    text << "      }\n";
+    text << "    },\n";
+    text << "    {\n";
+    text << "      \"name\": \"instrument.open_panel\",\n";
+    text << "      \"description\": \"Open a floating instrument panel for a schematic instrument node.\",\n";
+    text << "      \"status\": \"ui_available_by_double_click\",\n";
+    text << "      \"inputs\": { \"refdes\": \"instrument reference designator\" }\n";
+    text << "    }\n";
+    text << "  ],\n";
+    text << "  \"instrumentPolicy\": {\n";
+    text << "    \"preferredPlacement\": \"schematic_node\",\n";
+    text << "    \"preferredWindowMode\": \"floating\",\n";
+    text << "    \"dockableLater\": true,\n";
+    text << "    \"supportedNodes\": [\"oscilloscope_2ch\", \"digital_multimeter\"]\n";
+    text << "  }\n";
+    text << "}\n";
+    return text;
+}
+
+void ElectronicsWorkbench::exportAssistantToolManifest()
+{
+    const auto runDir = generatedRunDirectory();
+    if (!runDir.createDirectory())
+    {
+        appendLog("Could not create run directory: " + runDir.getFullPathName());
+        return;
+    }
+
+    const auto file = runDir.getChildFile("assistant_tools.json");
+    if (!file.replaceWithText(buildAssistantToolManifestJson()))
+    {
+        appendLog("Could not write assistant tool manifest: " + file.getFullPathName());
+        return;
+    }
+
+    appendLog("Exported assistant tool manifest to " + file.getFullPathName());
+}
+
 void ElectronicsWorkbench::runElectricalRuleCheck()
 {
     if (getErcReport == nullptr)
@@ -3554,6 +3748,8 @@ void ElectronicsWorkbench::runElectricalRuleCheck()
         appendLog("Could not write ERC report: " + reportFile.getFullPathName());
         return;
     }
+    const auto manifestFile = runDir.getChildFile("assistant_tools.json");
+    manifestFile.replaceWithText(buildAssistantToolManifestJson());
 
     const auto errors = report.fromFirstOccurrenceOf("- Errors: ", false, false)
                              .upToFirstOccurrenceOf("\n", false, false)
@@ -3561,8 +3757,34 @@ void ElectronicsWorkbench::runElectricalRuleCheck()
     const auto warnings = report.fromFirstOccurrenceOf("- Warnings: ", false, false)
                                .upToFirstOccurrenceOf("\n", false, false)
                                .trim();
+    const auto resultFile = runDir.getChildFile("erc_tool_result.json");
+    juce::String result;
+    result << "{\n";
+    result << "  \"schemaVersion\": 1,\n";
+    result << "  \"kind\": \"djehuti_assistant_tool_result\",\n";
+    result << "  \"tool\": \"circuit.run_erc\",\n";
+    result << "  \"status\": " << jsonQuote(errors == "0" ? "passed" : "failed") << ",\n";
+    result << "  \"errors\": " << errors << ",\n";
+    result << "  \"warnings\": " << warnings << ",\n";
+    result << "  \"reportPath\": " << jsonQuote(reportFile.getFullPathName()) << "\n";
+    result << "}\n";
+    resultFile.replaceWithText(result);
 
     appendLog("ERC complete: " + errors + " error(s), " + warnings + " warning(s). Report: " + reportFile.getFullPathName());
+}
+
+void ElectronicsWorkbench::openInstrumentWindow(juce::String refdes, juce::String symbolId)
+{
+    const auto instrumentName = symbolId == "oscilloscope_2ch" ? juce::String("Oscilloscope")
+                              : symbolId == "digital_multimeter" ? juce::String("Digital Multimeter")
+                              : juce::String("Instrument");
+    auto* window = new FloatingInstrumentWindow(refdes + " " + instrumentName);
+    window->setContentOwned(new InstrumentPanel(), true);
+    window->centreWithSize(920, 680);
+    window->setVisible(true);
+    window->toFront(true);
+    floatingInstrumentWindows.add(window);
+    appendLog("Opened floating " + instrumentName + " panel for " + refdes + ".");
 }
 
 void ElectronicsWorkbench::exportCircuitArtifacts()
@@ -3602,6 +3824,7 @@ void ElectronicsWorkbench::exportCircuitArtifacts()
         appendLog("Could not write lab instruments JSON: " + instrumentsFile.getFullPathName());
         return;
     }
+    runDir.getChildFile("assistant_tools.json").replaceWithText(buildAssistantToolManifestJson());
 
     appendLog("Exported circuit JSON, Xyce netlist, and lab instruments to " + runDir.getFullPathName());
 }

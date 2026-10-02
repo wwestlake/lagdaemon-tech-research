@@ -183,14 +183,17 @@ The electronics tool should include its own BYOK agent. The agent uses LiteSemRA
 The agent should be able to:
 
 - place components
+- place instrument nodes
 - inspect circuits
 - explain circuit behavior
 - run checks
+- run ERC as a named tool and read the machine-readable result
 - fetch and ingest specs
 - create or modify components
 - propose simulation setups
 - run simulations with approval when appropriate
 - analyze simulation datasets
+- open or configure instrument panels when the user asks
 - write reports
 - generate Frust scripts for math/analysis tasks
 
@@ -234,6 +237,11 @@ Simulation outputs should be stored as datasets:
 ### 5. Instruments
 
 Instruments are views over simulation datasets, not necessarily realtime physical widgets.
+The preferred interaction model is node-based: instruments are placed directly
+on the schematic and wired like other components. Double-clicking an instrument
+node should open its instrument panel as a floating window, with optional
+docking when the user wants it. This supports multi-monitor lab workflows better
+than a single fixed test bench panel.
 
 Expected instruments:
 

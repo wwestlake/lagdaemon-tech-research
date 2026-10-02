@@ -15,7 +15,9 @@
     { "id": "ground", "name": "Ground", "category": "Reference" },
     { "id": "opamp_741", "name": "741 Op Amp - provisional", "category": "Analog IC" },
     { "id": "npn", "name": "NPN Transistor - generic", "category": "Discrete" },
-    { "id": "logic_not", "name": "Logic Inverter - behavioral", "category": "Digital" }
+    { "id": "logic_not", "name": "Logic Inverter - behavioral", "category": "Digital" },
+    { "id": "oscilloscope_2ch", "name": "2-Channel Oscilloscope", "category": "Instrument" },
+    { "id": "digital_multimeter", "name": "Digital Multimeter", "category": "Instrument" }
   ],
   "archetypes": [
     { "id": "passive.resistor", "defaultSymbol": "resistor", "defaultValue": "10k" },
@@ -30,7 +32,9 @@
     { "id": "net.ground_reference", "defaultSymbol": "ground", "defaultBusName": "0" },
     { "id": "analog.op_amp", "defaultSymbol": "opamp_741" },
     { "id": "discrete.bjt.npn", "defaultSymbol": "npn" },
-    { "id": "digital.logic.not", "defaultSymbol": "logic_not" }
+    { "id": "digital.logic.not", "defaultSymbol": "logic_not" },
+    { "id": "instrument.oscilloscope", "defaultSymbol": "oscilloscope_2ch" },
+    { "id": "instrument.multimeter", "defaultSymbol": "digital_multimeter" }
   ],
   "partFamilies": [
     { "family": "2N2222", "archetype": "discrete.bjt.npn", "notes": "Common hobby NPN transistor family." },
