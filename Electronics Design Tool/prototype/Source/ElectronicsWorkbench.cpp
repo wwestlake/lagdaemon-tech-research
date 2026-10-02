@@ -1174,7 +1174,8 @@ public:
         juce::String result;
         result << "{\n";
         result << "  \"ok\": true,\n";
-        result << "  \"tool\": \"schematic.place_symbol\",\n";
+        result << "  \"tool\": \"schematic_place_symbol\",\n";
+        result << "  \"displayTool\": \"schematic.place_symbol\",\n";
         result << "  \"refdes\": " << quote(instance.refdes) << ",\n";
         result << "  \"symbolId\": " << quote(instance.symbolId) << ",\n";
         result << "  \"x\": " << instance.position.x << ",\n";
@@ -3376,13 +3377,13 @@ public:
 
         ercButton.setButtonText("Run ERC");
         ercButton.onClick = [this] {
-            appendTranscript("tool", executeToolNow(toolCall("circuit.run_erc", "{}")));
+            appendTranscript("tool", executeToolNow(toolCall("circuit_run_erc", "{}")));
         };
         addAndMakeVisible(ercButton);
 
         exportButton.setButtonText("Export");
         exportButton.onClick = [this] {
-            appendTranscript("tool", executeToolNow(toolCall("simulation.export_artifacts", "{}")));
+            appendTranscript("tool", executeToolNow(toolCall("simulation_export_artifacts", "{}")));
         };
         addAndMakeVisible(exportButton);
 
@@ -3724,29 +3725,29 @@ private:
                "for scopes and meters, and remember that floating instrument windows are preferred. "
                "Use filesystem LiteSemRAG cards as retrieved guidance; do not assume Suite VFS storage. "
                "Be concise, report tool results plainly, and do not claim a circuit is ready for solver-backed "
-               "analysis until circuit.run_erc has passed or you have explained the remaining warnings.";
+               "analysis until circuit_run_erc has passed or you have explained the remaining warnings.";
     }
 
     std::vector<ai_provider::ToolDefinition> toolDefinitions() const
     {
         return {
             {
-                "circuit.inspect",
+                "circuit_inspect",
                 "Read the current authoritative circuit JSON without modifying it.",
                 R"({"type":"object","properties":{},"additionalProperties":false})"
             },
             {
-                "circuit.run_erc",
+                "circuit_run_erc",
                 "Run Electrical Rule Check on the current schematic and return machine-readable results.",
                 R"({"type":"object","properties":{},"additionalProperties":false})"
             },
             {
-                "simulation.export_artifacts",
+                "simulation_export_artifacts",
                 "Export circuit JSON, Xyce netlist, lab instruments JSON, and assistant tool manifest.",
                 R"({"type":"object","properties":{},"additionalProperties":false})"
             },
             {
-                "schematic.place_symbol",
+                "schematic_place_symbol",
                 "Place a schematic symbol or instrument node at a grid coordinate.",
                 R"({"type":"object","properties":{"symbolId":{"type":"string","description":"Symbol id such as resistor, capacitor, voltage_source, ground, oscilloscope_2ch, or digital_multimeter."},"x":{"type":"number"},"y":{"type":"number"},"value":{"type":"string"},"frequency":{"type":"string"},"busName":{"type":"string"}},"required":["symbolId","x","y"],"additionalProperties":false})"
             }
@@ -3755,26 +3756,27 @@ private:
 
     juce::String executeToolNow(const ai_provider::ToolCall& call)
     {
-        const auto name = juce::String(call.name);
+        const auto originalName = juce::String(call.name);
+        const auto name = originalName.replaceCharacter('.', '_');
         const auto parsed = juce::JSON::parse(juce::String(call.argumentsJson));
 
-        if (name == "circuit.inspect")
+        if (name == "circuit_inspect")
         {
             const auto circuit = tools.inspectCircuit != nullptr ? tools.inspectCircuit() : "{}";
-            return "{ \"ok\": true, \"tool\": \"circuit.inspect\", \"circuit\": "
+            return "{ \"ok\": true, \"tool\": \"circuit_inspect\", \"displayTool\": \"circuit.inspect\", \"circuit\": "
                 + (circuit.trim().isEmpty() ? juce::String("{}") : circuit.trim()) + " }";
         }
 
-        if (name == "circuit.run_erc")
+        if (name == "circuit_run_erc")
             return tools.runErc != nullptr ? tools.runErc() : "{ \"ok\": false, \"error\": \"ERC tool unavailable.\" }";
 
-        if (name == "simulation.export_artifacts")
+        if (name == "simulation_export_artifacts")
             return tools.exportArtifacts != nullptr ? tools.exportArtifacts() : "{ \"ok\": false, \"error\": \"Export tool unavailable.\" }";
 
-        if (name == "schematic.place_symbol")
+        if (name == "schematic_place_symbol")
         {
             if (!parsed.isObject())
-                return "{ \"ok\": false, \"error\": \"schematic.place_symbol arguments must be a JSON object.\" }";
+                return "{ \"ok\": false, \"error\": \"schematic_place_symbol arguments must be a JSON object.\" }";
 
             const auto symbolId = parsed.getProperty("symbolId", {}).toString().trim();
             const auto x = (float)(double)parsed.getProperty("x", 120.0);
@@ -3789,7 +3791,7 @@ private:
                 : "{ \"ok\": false, \"error\": \"Schematic placement tool unavailable.\" }";
         }
 
-        return "{ \"ok\": false, \"error\": \"Unknown tool: " + name + "\" }";
+        return "{ \"ok\": false, \"error\": \"Unknown tool: " + originalName + "\" }";
     }
 
     juce::String executeToolFromWorker(const ai_provider::ToolCall& call)
@@ -4371,14 +4373,16 @@ juce::String ElectronicsWorkbench::buildAssistantToolManifestJson() const
     text << "  },\n";
     text << "  \"tools\": [\n";
     text << "    {\n";
-    text << "      \"name\": \"circuit.inspect\",\n";
+    text << "      \"name\": \"circuit_inspect\",\n";
+    text << "      \"displayName\": \"circuit.inspect\",\n";
     text << "      \"description\": \"Read the current authoritative circuit JSON from the schematic model.\",\n";
     text << "      \"mode\": \"read_only_analysis\",\n";
     text << "      \"inputs\": {},\n";
     text << "      \"outputs\": { \"circuitJson\": \"inline JSON object\" }\n";
     text << "    },\n";
     text << "    {\n";
-    text << "      \"name\": \"circuit.run_erc\",\n";
+    text << "      \"name\": \"circuit_run_erc\",\n";
+    text << "      \"displayName\": \"circuit.run_erc\",\n";
     text << "      \"description\": \"Run Electrical Rule Check on the current schematic model.\",\n";
     text << "      \"mode\": \"read_only_analysis\",\n";
     text << "      \"inputs\": {},\n";
@@ -4388,7 +4392,8 @@ juce::String ElectronicsWorkbench::buildAssistantToolManifestJson() const
     text << "      }\n";
     text << "    },\n";
     text << "    {\n";
-    text << "      \"name\": \"simulation.export_artifacts\",\n";
+    text << "      \"name\": \"simulation_export_artifacts\",\n";
+    text << "      \"displayName\": \"simulation.export_artifacts\",\n";
     text << "      \"description\": \"Export circuit.json, generated.cir, and lab_instruments.json for solver/dataset work.\",\n";
     text << "      \"mode\": \"write_generated_artifacts\",\n";
     text << "      \"outputs\": {\n";
@@ -4398,7 +4403,8 @@ juce::String ElectronicsWorkbench::buildAssistantToolManifestJson() const
     text << "      }\n";
     text << "    },\n";
     text << "    {\n";
-    text << "      \"name\": \"schematic.place_symbol\",\n";
+    text << "      \"name\": \"schematic_place_symbol\",\n";
+    text << "      \"displayName\": \"schematic.place_symbol\",\n";
     text << "      \"description\": \"Create or extend diagrams by placing symbols and instrument nodes on the schematic grid.\",\n";
     text << "      \"mode\": \"modify_schematic_model\",\n";
     text << "      \"status\": \"active\",\n";
@@ -4412,7 +4418,8 @@ juce::String ElectronicsWorkbench::buildAssistantToolManifestJson() const
     text << "      }\n";
     text << "    },\n";
     text << "    {\n";
-    text << "      \"name\": \"instrument.open_panel\",\n";
+    text << "      \"name\": \"instrument_open_panel\",\n";
+    text << "      \"displayName\": \"instrument.open_panel\",\n";
     text << "      \"description\": \"Open a floating instrument panel for a schematic instrument node.\",\n";
     text << "      \"status\": \"ui_available_by_double_click\",\n";
     text << "      \"inputs\": { \"refdes\": \"instrument reference designator\" }\n";
@@ -4451,13 +4458,13 @@ juce::String ElectronicsWorkbench::runElectricalRuleCheckTool()
 {
     if (getErcReport == nullptr)
     {
-        return "{ \"ok\": false, \"tool\": \"circuit.run_erc\", \"error\": \"No ERC engine is available.\" }";
+        return "{ \"ok\": false, \"tool\": \"circuit_run_erc\", \"displayTool\": \"circuit.run_erc\", \"error\": \"No ERC engine is available.\" }";
     }
 
     const auto runDir = generatedRunDirectory();
     if (!runDir.createDirectory())
     {
-        return "{ \"ok\": false, \"tool\": \"circuit.run_erc\", \"error\": "
+        return "{ \"ok\": false, \"tool\": \"circuit_run_erc\", \"displayTool\": \"circuit.run_erc\", \"error\": "
             + jsonQuote("Could not create run directory: " + runDir.getFullPathName()) + " }";
     }
 
@@ -4465,7 +4472,7 @@ juce::String ElectronicsWorkbench::runElectricalRuleCheckTool()
     const auto reportFile = runDir.getChildFile("erc_report.md");
     if (!reportFile.replaceWithText(report))
     {
-        return "{ \"ok\": false, \"tool\": \"circuit.run_erc\", \"error\": "
+        return "{ \"ok\": false, \"tool\": \"circuit_run_erc\", \"displayTool\": \"circuit.run_erc\", \"error\": "
             + jsonQuote("Could not write ERC report: " + reportFile.getFullPathName()) + " }";
     }
     const auto manifestFile = runDir.getChildFile("assistant_tools.json");
@@ -4483,7 +4490,8 @@ juce::String ElectronicsWorkbench::runElectricalRuleCheckTool()
     result << "  \"ok\": true,\n";
     result << "  \"schemaVersion\": 1,\n";
     result << "  \"kind\": \"djehuti_assistant_tool_result\",\n";
-    result << "  \"tool\": \"circuit.run_erc\",\n";
+    result << "  \"tool\": \"circuit_run_erc\",\n";
+    result << "  \"displayTool\": \"circuit.run_erc\",\n";
     result << "  \"status\": " << jsonQuote(errors == "0" ? "passed" : "failed") << ",\n";
     result << "  \"errors\": " << errors << ",\n";
     result << "  \"warnings\": " << warnings << ",\n";
@@ -4529,13 +4537,13 @@ juce::String ElectronicsWorkbench::exportCircuitArtifactsTool()
 {
     if (getCircuitJson == nullptr || getXyceNetlist == nullptr || getLabInstrumentsJson == nullptr)
     {
-        return "{ \"ok\": false, \"tool\": \"simulation.export_artifacts\", \"error\": \"No schematic exporter is available.\" }";
+        return "{ \"ok\": false, \"tool\": \"simulation_export_artifacts\", \"displayTool\": \"simulation.export_artifacts\", \"error\": \"No schematic exporter is available.\" }";
     }
 
     const auto runDir = generatedRunDirectory();
     if (!runDir.createDirectory())
     {
-        return "{ \"ok\": false, \"tool\": \"simulation.export_artifacts\", \"error\": "
+        return "{ \"ok\": false, \"tool\": \"simulation_export_artifacts\", \"displayTool\": \"simulation.export_artifacts\", \"error\": "
             + jsonQuote("Could not create run directory: " + runDir.getFullPathName()) + " }";
     }
 
@@ -4548,17 +4556,17 @@ juce::String ElectronicsWorkbench::exportCircuitArtifactsTool()
 
     if (!circuitFile.replaceWithText(circuitJson))
     {
-        return "{ \"ok\": false, \"tool\": \"simulation.export_artifacts\", \"error\": "
+        return "{ \"ok\": false, \"tool\": \"simulation_export_artifacts\", \"displayTool\": \"simulation.export_artifacts\", \"error\": "
             + jsonQuote("Could not write circuit JSON: " + circuitFile.getFullPathName()) + " }";
     }
     if (!netlistFile.replaceWithText(netlist))
     {
-        return "{ \"ok\": false, \"tool\": \"simulation.export_artifacts\", \"error\": "
+        return "{ \"ok\": false, \"tool\": \"simulation_export_artifacts\", \"displayTool\": \"simulation.export_artifacts\", \"error\": "
             + jsonQuote("Could not write Xyce netlist: " + netlistFile.getFullPathName()) + " }";
     }
     if (!instrumentsFile.replaceWithText(instrumentsJson))
     {
-        return "{ \"ok\": false, \"tool\": \"simulation.export_artifacts\", \"error\": "
+        return "{ \"ok\": false, \"tool\": \"simulation_export_artifacts\", \"displayTool\": \"simulation.export_artifacts\", \"error\": "
             + jsonQuote("Could not write lab instruments JSON: " + instrumentsFile.getFullPathName()) + " }";
     }
     const auto manifestFile = runDir.getChildFile("assistant_tools.json");
@@ -4569,7 +4577,8 @@ juce::String ElectronicsWorkbench::exportCircuitArtifactsTool()
     result << "  \"ok\": true,\n";
     result << "  \"schemaVersion\": 1,\n";
     result << "  \"kind\": \"djehuti_assistant_tool_result\",\n";
-    result << "  \"tool\": \"simulation.export_artifacts\",\n";
+    result << "  \"tool\": \"simulation_export_artifacts\",\n";
+    result << "  \"displayTool\": \"simulation.export_artifacts\",\n";
     result << "  \"status\": \"exported\",\n";
     result << "  \"artifactDirectory\": " << jsonQuote(runDir.getFullPathName()) << ",\n";
     result << "  \"circuitJson\": " << jsonQuote(circuitFile.getFullPathName()) << ",\n";
