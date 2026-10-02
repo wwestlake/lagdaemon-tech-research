@@ -199,6 +199,18 @@ The agent should be able to:
 
 The agent must know what mode it is in and what tools are available. If a capability exists only in a different mode or requires approval, it should say that plainly.
 
+Initial prototype integration:
+
+- Reuse the FrustIDE BYOK provider layer for profile/API-key/model handling.
+- Expose a Djehuti Electronics Lab local agent API through a loopback discovery
+  file in user app data so outside tools can message the embedded agent.
+- Keep LiteSemRAG/ISD cards as filesystem JSONL under the electronics prototype,
+  not Suite VFS storage.
+- Keep tool cards synchronized with live host tools. A tool should not be taught
+  as available unless the host exposes it.
+- First live tools: inspect the circuit model, run ERC, export solver artifacts,
+  and place schematic symbols/instrument nodes.
+
 ### 4. Simulation System
 
 Simulation should be analysis-first. The tool does not need to simulate everything in realtime while the user edits. The normal model is:

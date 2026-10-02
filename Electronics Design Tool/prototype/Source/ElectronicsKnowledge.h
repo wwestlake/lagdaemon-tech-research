@@ -1,0 +1,33 @@
+#pragma once
+
+#include <JuceHeader.h>
+
+#include <vector>
+
+namespace electronics_knowledge
+{
+struct Card
+{
+    juce::String id;
+    juce::String kind;
+    juce::String title;
+    juce::String source;
+    juce::String text;
+    juce::StringArray tokens;
+    int priority = 50;
+};
+
+struct RetrievalResult
+{
+    juce::String query;
+    juce::StringArray tokens;
+    std::vector<Card> cards;
+    juce::String context;
+};
+
+juce::File getKnowledgeRoot();
+juce::File getCardsDirectory();
+juce::File getProjectMemoryCardsFile();
+RetrievalResult retrieve(const juce::String& query, int maxCards = 8);
+juce::String contextForQuery(const juce::String& query, int maxCards = 8);
+}

@@ -52,6 +52,25 @@ Simulation commands still export run artifacts under `sim/xyce/runs/generated`.
 `Circuit > Run ERC` writes `erc_report.md` in that generated run folder.
 It also writes `erc_tool_result.json` for the BYOK agent tool surface.
 `Agent > Export Tool Manifest` writes `assistant_tools.json` in the same folder.
+The BYOK Agent panel now uses the FrustIDE `ai_provider` library for OpenAI
+profiles, API keys, model selection, and tool-calling. Keys are stored outside
+the repo in user app data.
+
+The app also starts a loopback local agent API and writes its discovery file to:
+
+```text
+%APPDATA%\DjehutiElectronicsLab\agent-api.json
+```
+
+The API exposes message/session/cancel endpoints so external tools can talk to
+the embedded electronics agent with the same UI session and tool surface.
+
+Assistant knowledge uses filesystem cards instead of Suite VFS storage:
+
+```text
+D:\000 Tech Research\Electronics Design Tool\prototype\knowledge\cards
+D:\000 Tech Research\Electronics Design Tool\prototype\projects\current\.djehuti\MEMORY_PROJECT_CARDS.jsonl
+```
 
 Instrument placement is moving toward schematic nodes instead of a fixed bench.
 The component library includes a two-channel oscilloscope and a digital

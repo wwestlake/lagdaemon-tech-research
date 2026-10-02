@@ -22,6 +22,10 @@ if(NOT TARGET CreationDock)
     add_subdirectory("${FRUSTLANG_ROOT}/projects/03_creation_dock" creation_dock_build)
 endif()
 
+if(NOT TARGET ai_provider)
+    add_subdirectory("${FRUSTLANG_ROOT}/projects/04_ai_provider" ai_provider_build)
+endif()
+
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY_DEBUG   "${CMAKE_CURRENT_SOURCE_DIR}/bin/Debug")
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY_RELEASE "${CMAKE_CURRENT_SOURCE_DIR}/bin/Release")
 
@@ -38,6 +42,10 @@ target_sources(DjehutiElectronicsLab PRIVATE
     Source/Main.cpp
     Source/ElectronicsWorkbench.h
     Source/ElectronicsWorkbench.cpp
+    Source/ElectronicsKnowledge.h
+    Source/ElectronicsKnowledge.cpp
+    Source/LocalAgentApi.h
+    Source/LocalAgentApi.cpp
 )
 
 target_compile_definitions(DjehutiElectronicsLab PRIVATE
@@ -50,6 +58,7 @@ target_compile_definitions(DjehutiElectronicsLab PRIVATE
 
 target_link_libraries(DjehutiElectronicsLab PRIVATE
     CreationDock
+    ai_provider
     juce::juce_core
     juce::juce_data_structures
     juce::juce_events

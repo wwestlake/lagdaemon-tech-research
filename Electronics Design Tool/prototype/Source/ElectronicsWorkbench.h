@@ -46,6 +46,8 @@ private:
     void openInstrumentWindow(juce::String refdes, juce::String symbolId);
     void exportAssistantToolManifest();
     juce::String buildAssistantToolManifestJson() const;
+    juce::String runElectricalRuleCheckTool();
+    juce::String exportCircuitArtifactsTool();
     void showSpecDocument();
     void exportCircuitArtifacts();
 
@@ -69,6 +71,9 @@ private:
     std::function<juce::String()> getLabInstrumentsJson;
     std::function<juce::String()> getErcReport;
     std::function<bool(const juce::String&, juce::String&)> loadCircuitJson;
+    std::function<juce::String(const juce::String&, float, float, const juce::String&,
+                               const juce::String&, const juce::String&)> placeSymbolTool;
+    std::function<void()> openAgentSettingsDialog;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(ElectronicsWorkbench)
 };

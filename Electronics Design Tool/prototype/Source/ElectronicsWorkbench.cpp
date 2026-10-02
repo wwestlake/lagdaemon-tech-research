@@ -1,7 +1,14 @@
 #include "ElectronicsWorkbench.h"
+#include "ElectronicsKnowledge.h"
+#include "LocalAgentApi.h"
 
+#include <ai_provider/AiConfig.h>
+
+#include <atomic>
+#include <memory>
 #include <map>
 #include <set>
+#include <thread>
 
 namespace
 {
@@ -1139,6 +1146,41 @@ public:
         const auto symbolId = description.fromFirstOccurrenceOf("symbol:", false, false);
         placeSymbol(symbolId, snap(details.localPosition.toFloat()));
         repaint();
+    }
+
+    juce::String placeSymbolFromTool(const juce::String& symbolId,
+                                     float x,
+                                     float y,
+                                     const juce::String& value,
+                                     const juce::String& frequency,
+                                     const juce::String& busName)
+    {
+        const auto before = instances.size();
+        placeSymbol(symbolId, snap({ x, y }));
+        if (instances.size() == before)
+            return "{ \"ok\": false, \"error\": \"Could not place symbol.\" }";
+
+        auto& instance = instances.back();
+        if (value.trim().isNotEmpty())
+            instance.value = value.trim();
+        if (frequency.trim().isNotEmpty())
+            instance.frequency = frequency.trim();
+        if (busName.trim().isNotEmpty())
+            instance.busName = busName.trim();
+
+        notifySelection();
+        repaint();
+
+        juce::String result;
+        result << "{\n";
+        result << "  \"ok\": true,\n";
+        result << "  \"tool\": \"schematic.place_symbol\",\n";
+        result << "  \"refdes\": " << quote(instance.refdes) << ",\n";
+        result << "  \"symbolId\": " << quote(instance.symbolId) << ",\n";
+        result << "  \"x\": " << instance.position.x << ",\n";
+        result << "  \"y\": " << instance.position.y << "\n";
+        result << "}";
+        return result;
     }
 
 private:
@@ -3291,20 +3333,652 @@ private:
     juce::TextButton rotate;
 };
 
-class AgentPanel final : public NotesPanel
+class AgentPanel final : public juce::Component
 {
 public:
-    AgentPanel()
-        : NotesPanel("BYOK Electronics Agent",
-                     "Agent tool surface:\n"
-                     "- circuit.run_erc writes erc_report.md and erc_tool_result.json\n"
-                     "- schematic.place_symbol is planned for diagram creation\n"
-                     "- schematic.place_instrument_node is planned for scope/DMM nodes\n"
-                     "- simulation.export_artifacts writes circuit/netlist/instrument JSON\n"
-                     "- instruments should be schematic nodes that open floating panels\n\n"
-                     "Use Agent > Export Tool Manifest to write assistant_tools.json.")
+    using ExternalCompletion = LocalAgentApi::Completion;
+
+    struct HostTools
     {
+        std::function<juce::String()> inspectCircuit;
+        std::function<juce::String()> runErc;
+        std::function<juce::String()> exportArtifacts;
+        std::function<juce::String(const juce::String&, float, float, const juce::String&,
+                                   const juce::String&, const juce::String&)> placeSymbol;
+        std::function<juce::String()> toolManifest;
+        std::function<void(const juce::String&)> log;
+    };
+
+    explicit AgentPanel(HostTools hostTools)
+        : tools(std::move(hostTools)),
+          aiConfig(aiConfigFile().getFullPathName().toStdString())
+    {
+        title.setText("BYOK Electronics Agent", juce::dontSendNotification);
+        title.setFont(juce::Font(16.0f, juce::Font::bold));
+        title.setColour(juce::Label::textColourId, juce::Colour(0xff78dcca));
+        addAndMakeVisible(title);
+
+        profileBox.setTooltip("AI account/profile");
+        profileBox.onChange = [this] { refreshModelList(); };
+        addAndMakeVisible(profileBox);
+
+        modelBox.setEditableText(true);
+        modelBox.setTooltip("Model used by the selected BYOK profile");
+        addAndMakeVisible(modelBox);
+
+        settingsButton.setButtonText("Settings");
+        settingsButton.onClick = [this] { showAiSettingsForSelected(); };
+        addAndMakeVisible(settingsButton);
+
+        cardsButton.setButtonText("Cards");
+        cardsButton.onClick = [this] { showRetrievedCardsForDraft(); };
+        addAndMakeVisible(cardsButton);
+
+        ercButton.setButtonText("Run ERC");
+        ercButton.onClick = [this] {
+            appendTranscript("tool", executeToolNow(toolCall("circuit.run_erc", "{}")));
+        };
+        addAndMakeVisible(ercButton);
+
+        exportButton.setButtonText("Export");
+        exportButton.onClick = [this] {
+            appendTranscript("tool", executeToolNow(toolCall("simulation.export_artifacts", "{}")));
+        };
+        addAndMakeVisible(exportButton);
+
+        styleTextEditor(transcript);
+        transcript.setReadOnly(true);
+        transcript.setText("BYOK assistant ready.\n");
+        addAndMakeVisible(transcript);
+
+        styleTextEditor(input);
+        input.setTextToShowWhenEmpty("Ask about the circuit, place an instrument node, run ERC...", juce::Colour(0xff71808c));
+        input.setMultiLine(true);
+        addAndMakeVisible(input);
+
+        sendButton.setButtonText("Send");
+        sendButton.onClick = [this] {
+            if (requestInFlight)
+            {
+                requestStop("Stopped by the user.");
+                return;
+            }
+            const auto text = input.getText().trim();
+            if (text.isEmpty())
+                return;
+            input.clear();
+            startRequest(text, {});
+        };
+        addAndMakeVisible(sendButton);
+
+        apiStatus.setJustificationType(juce::Justification::centredLeft);
+        apiStatus.setColour(juce::Label::textColourId, juce::Colour(0xff93a7b0));
+        addAndMakeVisible(apiStatus);
+
+        refreshProfileList();
+        startLocalApi();
     }
+
+    ~AgentPanel() override
+    {
+        shuttingDown.store(true);
+        if (localApi != nullptr)
+            localApi->stop();
+    }
+
+    void paint(juce::Graphics& g) override
+    {
+        g.fillAll(juce::Colour(0xff151a20));
+    }
+
+    void resized() override
+    {
+        auto area = getLocalBounds().reduced(8);
+        title.setBounds(area.removeFromTop(24));
+        area.removeFromTop(6);
+
+        auto top = area.removeFromTop(28);
+        profileBox.setBounds(top.removeFromLeft(150));
+        top.removeFromLeft(6);
+        modelBox.setBounds(top.removeFromLeft(145));
+        top.removeFromLeft(6);
+        settingsButton.setBounds(top.removeFromLeft(78));
+        top.removeFromLeft(6);
+        cardsButton.setBounds(top.removeFromLeft(62));
+
+        area.removeFromTop(6);
+        auto actions = area.removeFromTop(28);
+        ercButton.setBounds(actions.removeFromLeft(86));
+        actions.removeFromLeft(6);
+        exportButton.setBounds(actions.removeFromLeft(74));
+        actions.removeFromLeft(6);
+        apiStatus.setBounds(actions);
+
+        area.removeFromTop(8);
+        auto bottom = area.removeFromBottom(72);
+        sendButton.setBounds(bottom.removeFromRight(72));
+        bottom.removeFromRight(6);
+        input.setBounds(bottom);
+
+        area.removeFromBottom(8);
+        transcript.setBounds(area);
+    }
+
+    void showAiSettingsForSelected()
+    {
+        auto profileName = profileBox.getText();
+        if (profileName.isEmpty())
+        {
+            juce::AlertWindow::showMessageBoxAsync(juce::AlertWindow::WarningIcon,
+                                                   "BYOK Agent Settings",
+                                                   "Select an AI profile first.");
+            return;
+        }
+
+        juce::String apiKey;
+        juce::String model = modelBox.getText();
+        for (const auto& profile : aiConfig.profiles())
+        {
+            if (profile.name == profileName.toStdString())
+            {
+                apiKey = profile.apiKey;
+                if (model.isEmpty())
+                    model = profile.model;
+                break;
+            }
+        }
+
+        auto* dialog = new juce::AlertWindow(
+            "BYOK Agent Settings",
+            "Profile: " + profileName,
+            juce::AlertWindow::NoIcon);
+        dialog->addTextEditor("apiKey", apiKey, "API key:", true);
+        dialog->addTextEditor("model", model, "Model:");
+        dialog->addButton("Save", 1, juce::KeyPress(juce::KeyPress::returnKey));
+        dialog->addButton("Cancel", 0, juce::KeyPress(juce::KeyPress::escapeKey));
+
+        dialog->enterModalState(true,
+            juce::ModalCallbackFunction::create([this, dialog, profileName](int result) {
+                if (result != 1)
+                    return;
+
+                const auto newKey = dialog->getTextEditorContents("apiKey").trim();
+                const auto newModel = dialog->getTextEditorContents("model").trim();
+                if (newKey.isEmpty() || newModel.isEmpty())
+                {
+                    juce::AlertWindow::showMessageBoxAsync(juce::AlertWindow::WarningIcon,
+                                                           "BYOK Agent Settings",
+                                                           "API key and model are required.");
+                    return;
+                }
+
+                std::string error;
+                if (!aiConfig.updateProfileCredentials(profileName.toStdString(),
+                                                       newKey.toStdString(),
+                                                       newModel.toStdString(),
+                                                       error))
+                {
+                    juce::AlertWindow::showMessageBoxAsync(juce::AlertWindow::WarningIcon,
+                                                           "BYOK Agent Settings",
+                                                           juce::String(error));
+                    return;
+                }
+
+                refreshProfileList();
+                modelBox.setText(newModel, juce::dontSendNotification);
+                appendTranscript("system", "AI settings saved for " + profileName + ".");
+            }),
+            true);
+    }
+
+    bool submitExternalMessage(const juce::String& content, ExternalCompletion completion)
+    {
+        if (requestInFlight || content.trim().isEmpty())
+            return false;
+        startRequest(content.trim(), std::move(completion));
+        return true;
+    }
+
+    bool configureExternalSession(const juce::var& options, juce::String& error)
+    {
+        auto selectComboText = [&error](juce::ComboBox& box, const juce::String& requested, const juce::String& label) {
+            if (requested.isEmpty())
+                return true;
+            for (int index = 0; index < box.getNumItems(); ++index)
+            {
+                if (box.getItemText(index).equalsIgnoreCase(requested))
+                {
+                    box.setSelectedItemIndex(index, juce::sendNotificationSync);
+                    return true;
+                }
+            }
+            if (box.isTextEditable())
+            {
+                box.setText(requested, juce::sendNotificationSync);
+                return true;
+            }
+            error = "Unknown " + label + ": " + requested;
+            return false;
+        };
+
+        if (!selectComboText(profileBox, options.getProperty("profile", {}).toString(), "profile"))
+            return false;
+        if (!selectComboText(modelBox, options.getProperty("model", {}).toString(), "model"))
+            return false;
+        if ((bool)options.getProperty("newConversation", false))
+        {
+            history.clear();
+            transcript.setText("BYOK assistant ready.\n");
+        }
+        return true;
+    }
+
+    juce::var externalSessionSnapshot() const
+    {
+        auto* snapshot = new juce::DynamicObject();
+        snapshot->setProperty("profile", profileBox.getText());
+        snapshot->setProperty("model", modelBox.getText());
+        snapshot->setProperty("busy", requestInFlight);
+        snapshot->setProperty("discoveryFile", LocalAgentApi::getDiscoveryFile().getFullPathName());
+        snapshot->setProperty("knowledgeRoot", electronics_knowledge::getKnowledgeRoot().getFullPathName());
+
+        juce::Array<juce::var> toolNames;
+        for (const auto& definition : toolDefinitions())
+            toolNames.add(juce::String(definition.name));
+        snapshot->setProperty("tools", toolNames);
+        return juce::var(snapshot);
+    }
+
+    bool requestStop(const juce::String& reason)
+    {
+        if (!requestInFlight)
+            return false;
+        stopRequested.store(true);
+        appendTranscript("system", reason);
+        return true;
+    }
+
+private:
+    HostTools tools;
+    ai_provider::AiConfig aiConfig;
+    std::unique_ptr<LocalAgentApi> localApi;
+    std::vector<ai_provider::ChatMessage> history;
+    juce::Label title;
+    juce::Label apiStatus;
+    juce::ComboBox profileBox;
+    juce::ComboBox modelBox;
+    juce::TextButton settingsButton { "Settings" };
+    juce::TextButton cardsButton { "Cards" };
+    juce::TextButton ercButton { "Run ERC" };
+    juce::TextButton exportButton { "Export" };
+    juce::TextEditor transcript;
+    juce::TextEditor input;
+    juce::TextButton sendButton { "Send" };
+    bool requestInFlight = false;
+    std::atomic<bool> stopRequested { false };
+    std::atomic<bool> shuttingDown { false };
+
+    static juce::File aiConfigFile()
+    {
+        return juce::File::getSpecialLocation(juce::File::userApplicationDataDirectory)
+            .getChildFile("DjehutiElectronicsLab")
+            .getChildFile("ai_config.json");
+    }
+
+    static ai_provider::ToolCall toolCall(const std::string& name, const std::string& arguments)
+    {
+        ai_provider::ToolCall call;
+        call.id = name + ".local";
+        call.name = name;
+        call.argumentsJson = arguments;
+        return call;
+    }
+
+    static juce::String compactText(juce::String text, int maxCharacters)
+    {
+        text = text.trim();
+        if (text.length() <= maxCharacters)
+            return text;
+        return text.substring(0, maxCharacters).trim() + "\n...";
+    }
+
+    void refreshProfileList()
+    {
+        const auto previous = profileBox.getText();
+        profileBox.clear();
+        int itemId = 1;
+        for (const auto& profile : aiConfig.profiles())
+            profileBox.addItem(juce::String(profile.name), itemId++);
+
+        if (profileBox.getNumItems() == 0)
+        {
+            profileBox.setTextWhenNoChoicesAvailable("No profiles");
+            return;
+        }
+
+        int selected = 0;
+        for (int index = 0; index < profileBox.getNumItems(); ++index)
+            if (profileBox.getItemText(index) == previous)
+                selected = index;
+        profileBox.setSelectedItemIndex(selected, juce::sendNotificationSync);
+    }
+
+    void refreshModelList()
+    {
+        const auto profileName = profileBox.getText();
+        juce::String selectedModel;
+        for (const auto& profile : aiConfig.profiles())
+            if (profile.name == profileName.toStdString())
+                selectedModel = profile.model;
+
+        modelBox.clear();
+        if (selectedModel.isNotEmpty())
+            modelBox.addItem(selectedModel, 1);
+        modelBox.addItem("gpt-4o-mini", 2);
+        modelBox.setText(selectedModel.isNotEmpty() ? selectedModel : "gpt-4o-mini",
+                         juce::dontSendNotification);
+    }
+
+    void startLocalApi()
+    {
+        localApi = std::make_unique<LocalAgentApi>();
+        localApi->onMessage = [this](const juce::String& content, LocalAgentApi::Completion completion) {
+            if (requestInFlight || content.trim().isEmpty())
+            {
+                completion(false, "The electronics assistant is busy or the message was empty.",
+                           externalSessionSnapshot());
+                return;
+            }
+            submitExternalMessage(content, std::move(completion));
+        };
+        localApi->onSession = [this](const juce::var& options, LocalAgentApi::Completion completion) {
+            juce::String error;
+            if (!configureExternalSession(options, error))
+            {
+                completion(false, error, externalSessionSnapshot());
+                return;
+            }
+            completion(true, "Session configured.", externalSessionSnapshot());
+        };
+        localApi->onCancel = [this] { requestStop("Stop requested through the local agent API."); };
+
+        if (localApi->start())
+            apiStatus.setText("API ready: " + LocalAgentApi::getDiscoveryFile().getFullPathName(),
+                              juce::dontSendNotification);
+        else
+            apiStatus.setText("API unavailable", juce::dontSendNotification);
+    }
+
+    void appendTranscript(const juce::String& speaker, const juce::String& text)
+    {
+        transcript.moveCaretToEnd();
+        transcript.insertTextAtCaret("\n[" + speaker + "]\n" + text.trim() + "\n");
+        transcript.moveCaretToEnd();
+    }
+
+    juce::String systemPrompt() const
+    {
+        return "You are the embedded BYOK assistant for Djehuti Electronics Lab. "
+               "The circuit JSON model is authoritative. Use tools when you need current schematic facts, "
+               "electrical checks, exported artifacts, or diagram edits. Prefer schematic instrument nodes "
+               "for scopes and meters, and remember that floating instrument windows are preferred. "
+               "Use filesystem LiteSemRAG cards as retrieved guidance; do not assume Suite VFS storage. "
+               "Be concise, report tool results plainly, and do not claim a circuit is ready for solver-backed "
+               "analysis until circuit.run_erc has passed or you have explained the remaining warnings.";
+    }
+
+    std::vector<ai_provider::ToolDefinition> toolDefinitions() const
+    {
+        return {
+            {
+                "circuit.inspect",
+                "Read the current authoritative circuit JSON without modifying it.",
+                R"({"type":"object","properties":{},"additionalProperties":false})"
+            },
+            {
+                "circuit.run_erc",
+                "Run Electrical Rule Check on the current schematic and return machine-readable results.",
+                R"({"type":"object","properties":{},"additionalProperties":false})"
+            },
+            {
+                "simulation.export_artifacts",
+                "Export circuit JSON, Xyce netlist, lab instruments JSON, and assistant tool manifest.",
+                R"({"type":"object","properties":{},"additionalProperties":false})"
+            },
+            {
+                "schematic.place_symbol",
+                "Place a schematic symbol or instrument node at a grid coordinate.",
+                R"({"type":"object","properties":{"symbolId":{"type":"string","description":"Symbol id such as resistor, capacitor, voltage_source, ground, oscilloscope_2ch, or digital_multimeter."},"x":{"type":"number"},"y":{"type":"number"},"value":{"type":"string"},"frequency":{"type":"string"},"busName":{"type":"string"}},"required":["symbolId","x","y"],"additionalProperties":false})"
+            }
+        };
+    }
+
+    juce::String executeToolNow(const ai_provider::ToolCall& call)
+    {
+        const auto name = juce::String(call.name);
+        const auto parsed = juce::JSON::parse(juce::String(call.argumentsJson));
+
+        if (name == "circuit.inspect")
+        {
+            const auto circuit = tools.inspectCircuit != nullptr ? tools.inspectCircuit() : "{}";
+            return "{ \"ok\": true, \"tool\": \"circuit.inspect\", \"circuit\": "
+                + (circuit.trim().isEmpty() ? juce::String("{}") : circuit.trim()) + " }";
+        }
+
+        if (name == "circuit.run_erc")
+            return tools.runErc != nullptr ? tools.runErc() : "{ \"ok\": false, \"error\": \"ERC tool unavailable.\" }";
+
+        if (name == "simulation.export_artifacts")
+            return tools.exportArtifacts != nullptr ? tools.exportArtifacts() : "{ \"ok\": false, \"error\": \"Export tool unavailable.\" }";
+
+        if (name == "schematic.place_symbol")
+        {
+            if (!parsed.isObject())
+                return "{ \"ok\": false, \"error\": \"schematic.place_symbol arguments must be a JSON object.\" }";
+
+            const auto symbolId = parsed.getProperty("symbolId", {}).toString().trim();
+            const auto x = (float)(double)parsed.getProperty("x", 120.0);
+            const auto y = (float)(double)parsed.getProperty("y", 120.0);
+            const auto value = parsed.getProperty("value", {}).toString();
+            const auto frequency = parsed.getProperty("frequency", {}).toString();
+            const auto busName = parsed.getProperty("busName", {}).toString();
+            if (symbolId.isEmpty())
+                return "{ \"ok\": false, \"error\": \"symbolId is required.\" }";
+            return tools.placeSymbol != nullptr
+                ? tools.placeSymbol(symbolId, x, y, value, frequency, busName)
+                : "{ \"ok\": false, \"error\": \"Schematic placement tool unavailable.\" }";
+        }
+
+        return "{ \"ok\": false, \"error\": \"Unknown tool: " + name + "\" }";
+    }
+
+    juce::String executeToolFromWorker(const ai_provider::ToolCall& call)
+    {
+        if (juce::MessageManager::getInstance()->isThisTheMessageThread())
+            return executeToolNow(call);
+
+        struct ToolWait
+        {
+            juce::WaitableEvent done;
+            juce::String result;
+        };
+
+        auto wait = std::make_shared<ToolWait>();
+        auto safeThis = juce::Component::SafePointer<AgentPanel>(this);
+        juce::MessageManager::callAsync([safeThis, wait, call] {
+            if (safeThis == nullptr)
+                wait->result = "{ \"ok\": false, \"error\": \"Assistant panel closed.\" }";
+            else
+                wait->result = safeThis->executeToolNow(call);
+            wait->done.signal();
+        });
+
+        while (!wait->done.wait(50))
+        {
+            if (stopRequested.load() || shuttingDown.load())
+                return "{ \"ok\": false, \"error\": \"Tool execution stopped.\" }";
+        }
+        return wait->result;
+    }
+
+    void showRetrievedCardsForDraft()
+    {
+        const auto query = input.getText().trim().isNotEmpty()
+            ? input.getText().trim()
+            : juce::String("erc instruments circuit model");
+        const auto retrieved = electronics_knowledge::retrieve(query);
+        appendTranscript("cards", retrieved.context.isNotEmpty()
+            ? retrieved.context
+            : "No matching cards found in " + electronics_knowledge::getCardsDirectory().getFullPathName());
+    }
+
+    void startRequest(const juce::String& userText, ExternalCompletion completion)
+    {
+        const auto profileName = profileBox.getText();
+        const auto modelName = modelBox.getText().trim();
+        if (profileName.isEmpty())
+        {
+            appendTranscript("system", "No AI profile selected. Open Settings and add your API key/model.");
+            if (completion)
+                completion(false, "No AI profile selected.", externalSessionSnapshot());
+            return;
+        }
+
+        if (modelName.isNotEmpty())
+        {
+            for (const auto& profile : aiConfig.profiles())
+            {
+                if (profile.name != profileName.toStdString() || profile.model == modelName.toStdString())
+                    continue;
+                std::string error;
+                aiConfig.updateProfileCredentials(profile.name, profile.apiKey, modelName.toStdString(), error);
+                break;
+            }
+        }
+
+        auto provider = aiConfig.createProvider(profileName.toStdString());
+        if (provider == nullptr)
+        {
+            appendTranscript("system", "Could not create provider for " + profileName + ".");
+            if (completion)
+                completion(false, "Could not create provider.", externalSessionSnapshot());
+            return;
+        }
+
+        appendTranscript("user", userText);
+        const auto retrieved = electronics_knowledge::retrieve(userText);
+        const auto circuit = tools.inspectCircuit != nullptr ? tools.inspectCircuit() : "{}";
+
+        std::vector<ai_provider::ChatMessage> messages;
+        ai_provider::ChatMessage system;
+        system.role = "system";
+        system.content = systemPrompt().toStdString();
+        messages.push_back(system);
+
+        for (const auto& item : history)
+            messages.push_back(item);
+
+        juce::String content = userText;
+        if (retrieved.context.isNotEmpty())
+            content << "\n\n---\n" << retrieved.context;
+        content << "\n\n---\nCurrent circuit model snapshot:\n"
+                << compactText(circuit, 12000);
+
+        ai_provider::ChatMessage user;
+        user.role = "user";
+        user.content = content.toStdString();
+        messages.push_back(user);
+
+        requestInFlight = true;
+        stopRequested.store(false);
+        sendButton.setButtonText("Stop");
+        appendTranscript("system", retrieved.cards.empty()
+            ? "No card context matched this request."
+            : "Attached " + juce::String((int)retrieved.cards.size()) + " LiteSemRAG card(s).");
+
+        auto toolDefs = toolDefinitions();
+        auto providerPtr = provider.release();
+        auto safeThis = juce::Component::SafePointer<AgentPanel>(this);
+
+        std::thread([safeThis, providerPtr, messages = std::move(messages), toolDefs = std::move(toolDefs),
+                     completion = std::move(completion)]() mutable {
+            std::unique_ptr<ai_provider::AiProvider> owned(providerPtr);
+            ai_provider::ChatResponse response;
+            bool ok = false;
+            juce::String finalText;
+
+            for (int round = 0; round < 12; ++round)
+            {
+                if (safeThis == nullptr || safeThis->stopRequested.load())
+                {
+                    response = { false, {}, "Stopped by the user." };
+                    break;
+                }
+
+                response = owned->sendChat(messages, toolDefs, ai_provider::ToolChoice::autoSelect);
+                if (!response.ok)
+                    break;
+
+                ai_provider::ChatMessage assistant;
+                assistant.role = "assistant";
+                assistant.content = response.content;
+                assistant.toolCalls = response.toolCalls;
+                assistant.providerItemsJson = response.providerItemsJson;
+                messages.push_back(assistant);
+
+                if (response.toolCalls.empty())
+                {
+                    ok = true;
+                    finalText = juce::String(response.content);
+                    break;
+                }
+
+                for (const auto& call : response.toolCalls)
+                {
+                    if (safeThis == nullptr)
+                        break;
+
+                    juce::MessageManager::callAsync([safeThis, name = juce::String(call.name)] {
+                        if (safeThis != nullptr)
+                            safeThis->appendTranscript("tool", "Running " + name + "...");
+                    });
+
+                    const auto result = safeThis->executeToolFromWorker(call);
+                    ai_provider::ChatMessage toolMessage;
+                    toolMessage.role = "tool";
+                    toolMessage.content = result.toStdString();
+                    toolMessage.toolCallId = call.id;
+                    messages.push_back(toolMessage);
+                }
+            }
+
+            if (response.ok && !ok && finalText.isEmpty())
+            {
+                response.ok = false;
+                response.errorMessage = "The assistant used too many tool rounds without producing a final answer.";
+            }
+
+            juce::MessageManager::callAsync([safeThis, messages = std::move(messages), response,
+                                             ok, finalText, completion = std::move(completion)]() mutable {
+                if (safeThis == nullptr)
+                    return;
+
+                safeThis->history.clear();
+                for (size_t index = 1; index < messages.size(); ++index)
+                    safeThis->history.push_back(messages[index]);
+
+                const auto visible = ok ? finalText
+                                        : "Error: " + juce::String(response.errorMessage);
+                safeThis->appendTranscript(ok ? "assistant" : "system", visible);
+                safeThis->requestInFlight = false;
+                safeThis->sendButton.setButtonText("Send");
+                if (completion)
+                    completion(ok, visible, safeThis->externalSessionSnapshot());
+            });
+        }).detach();
+    }
+
+    JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(AgentPanel)
 };
 
 class SimulationPanel final : public NotesPanel
@@ -3442,10 +4116,39 @@ ElectronicsWorkbench::ElectronicsWorkbench()
     loadCircuitJson = [panel = schematic.get()](const juce::String& json, juce::String& error) {
         return panel->loadCircuitJson(json, error);
     };
+    placeSymbolTool = [panel = schematic.get()](const juce::String& symbolId,
+                                                float x,
+                                                float y,
+                                                const juce::String& value,
+                                                const juce::String& frequency,
+                                                const juce::String& busName) {
+        return panel->placeSymbolFromTool(symbolId, x, y, value, frequency, busName);
+    };
+    AgentPanel::HostTools agentTools;
+    agentTools.inspectCircuit = [this] {
+        return getCircuitJson != nullptr ? getCircuitJson() : juce::String("{}");
+    };
+    agentTools.runErc = [this] { return runElectricalRuleCheckTool(); };
+    agentTools.exportArtifacts = [this] { return exportCircuitArtifactsTool(); };
+    agentTools.placeSymbol = [this](const juce::String& symbolId,
+                                    float x,
+                                    float y,
+                                    const juce::String& value,
+                                    const juce::String& frequency,
+                                    const juce::String& busName) {
+        return placeSymbolTool != nullptr
+            ? placeSymbolTool(symbolId, x, y, value, frequency, busName)
+            : juce::String("{ \"ok\": false, \"error\": \"Schematic placement is unavailable.\" }");
+    };
+    agentTools.toolManifest = [this] { return buildAssistantToolManifestJson(); };
+    agentTools.log = [this](const juce::String& text) { appendLog(text); };
+    auto agent = std::make_unique<AgentPanel>(std::move(agentTools));
+    auto* agentPanel = agent.get();
+    openAgentSettingsDialog = [agentPanel] { agentPanel->showAiSettingsForSelected(); };
     dockManager->registerPanel("schematic", "Schematic", std::move(schematic), CreationDock::DockTargetZone::CenterTab);
     dockManager->registerPanel("simulation", "Simulation", std::make_unique<SimulationPanel>(), CreationDock::DockTargetZone::CenterTab);
     dockManager->registerPanel("console", "Frust Math Console", std::make_unique<ConsolePanel>(logConsole), CreationDock::DockTargetZone::Bottom);
-    dockManager->registerPanel("agent", "BYOK Agent", std::make_unique<AgentPanel>(), CreationDock::DockTargetZone::Right);
+    dockManager->registerPanel("agent", "BYOK Agent", std::move(agent), CreationDock::DockTargetZone::Right);
     dockManager->registerPanel("properties", "Properties", std::move(properties), CreationDock::DockTargetZone::Right);
     dockManager->registerPanel("ingestion", "Spec Ingestion", std::make_unique<SpecIngestionPanel>(), CreationDock::DockTargetZone::Right);
     dockManager->registerPanel("sourcing", "Parts Sourcing", std::make_unique<PartsSourcingPanel>(), CreationDock::DockTargetZone::Right);
@@ -3549,7 +4252,10 @@ void ElectronicsWorkbench::menuItemSelected(int menuItemID, int)
         case runOperatingPoint: exportCircuitArtifacts(); break;
         case runTransient: exportCircuitArtifacts(); break;
         case runCompiledPreview: appendLog("Compiled preview stub: circuit IR -> Frust backend pending."); break;
-        case openAgentSettings: appendLog("BYOK agent settings stub: provider/key/model UI pending."); break;
+        case openAgentSettings:
+            if (openAgentSettingsDialog != nullptr) openAgentSettingsDialog();
+            else appendLog("BYOK agent settings are unavailable.");
+            break;
         case exportAgentTools: exportAssistantToolManifest(); break;
         case openResearchSpec: showSpecDocument(); break;
         default: break;
@@ -3659,7 +4365,18 @@ juce::String ElectronicsWorkbench::buildAssistantToolManifestJson() const
     text << "  \"kind\": \"djehuti_assistant_tool_manifest\",\n";
     text << "  \"toolSurface\": \"prototype-local\",\n";
     text << "  \"artifactDirectory\": " << jsonQuote(runDir.getFullPathName()) << ",\n";
+    text << "  \"localAgentApi\": {\n";
+    text << "    \"schema\": \"djehuti-electronics-agent-api\",\n";
+    text << "    \"discoveryFile\": " << jsonQuote(LocalAgentApi::getDiscoveryFile().getFullPathName()) << "\n";
+    text << "  },\n";
     text << "  \"tools\": [\n";
+    text << "    {\n";
+    text << "      \"name\": \"circuit.inspect\",\n";
+    text << "      \"description\": \"Read the current authoritative circuit JSON from the schematic model.\",\n";
+    text << "      \"mode\": \"read_only_analysis\",\n";
+    text << "      \"inputs\": {},\n";
+    text << "      \"outputs\": { \"circuitJson\": \"inline JSON object\" }\n";
+    text << "    },\n";
     text << "    {\n";
     text << "      \"name\": \"circuit.run_erc\",\n";
     text << "      \"description\": \"Run Electrical Rule Check on the current schematic model.\",\n";
@@ -3682,12 +4399,16 @@ juce::String ElectronicsWorkbench::buildAssistantToolManifestJson() const
     text << "    },\n";
     text << "    {\n";
     text << "      \"name\": \"schematic.place_symbol\",\n";
-    text << "      \"description\": \"Planned assistant action for creating schematic diagrams by placing symbols on the canvas grid.\",\n";
-    text << "      \"status\": \"planned\",\n";
+    text << "      \"description\": \"Create or extend diagrams by placing symbols and instrument nodes on the schematic grid.\",\n";
+    text << "      \"mode\": \"modify_schematic_model\",\n";
+    text << "      \"status\": \"active\",\n";
     text << "      \"inputs\": {\n";
     text << "        \"symbolId\": [\"resistor\", \"capacitor\", \"inductor\", \"diode\", \"voltage_source\", \"ground\", \"oscilloscope_2ch\", \"digital_multimeter\"],\n";
     text << "        \"x\": \"grid coordinate\",\n";
-    text << "        \"y\": \"grid coordinate\"\n";
+    text << "        \"y\": \"grid coordinate\",\n";
+    text << "        \"value\": \"optional component value or instrument mode\",\n";
+    text << "        \"frequency\": \"optional source frequency\",\n";
+    text << "        \"busName\": \"optional rail/net label\"\n";
     text << "      }\n";
     text << "    },\n";
     text << "    {\n";
@@ -3726,27 +4447,26 @@ void ElectronicsWorkbench::exportAssistantToolManifest()
     appendLog("Exported assistant tool manifest to " + file.getFullPathName());
 }
 
-void ElectronicsWorkbench::runElectricalRuleCheck()
+juce::String ElectronicsWorkbench::runElectricalRuleCheckTool()
 {
     if (getErcReport == nullptr)
     {
-        appendLog("No ERC engine is available.");
-        return;
+        return "{ \"ok\": false, \"tool\": \"circuit.run_erc\", \"error\": \"No ERC engine is available.\" }";
     }
 
     const auto runDir = generatedRunDirectory();
     if (!runDir.createDirectory())
     {
-        appendLog("Could not create run directory: " + runDir.getFullPathName());
-        return;
+        return "{ \"ok\": false, \"tool\": \"circuit.run_erc\", \"error\": "
+            + jsonQuote("Could not create run directory: " + runDir.getFullPathName()) + " }";
     }
 
     const auto report = getErcReport();
     const auto reportFile = runDir.getChildFile("erc_report.md");
     if (!reportFile.replaceWithText(report))
     {
-        appendLog("Could not write ERC report: " + reportFile.getFullPathName());
-        return;
+        return "{ \"ok\": false, \"tool\": \"circuit.run_erc\", \"error\": "
+            + jsonQuote("Could not write ERC report: " + reportFile.getFullPathName()) + " }";
     }
     const auto manifestFile = runDir.getChildFile("assistant_tools.json");
     manifestFile.replaceWithText(buildAssistantToolManifestJson());
@@ -3760,6 +4480,7 @@ void ElectronicsWorkbench::runElectricalRuleCheck()
     const auto resultFile = runDir.getChildFile("erc_tool_result.json");
     juce::String result;
     result << "{\n";
+    result << "  \"ok\": true,\n";
     result << "  \"schemaVersion\": 1,\n";
     result << "  \"kind\": \"djehuti_assistant_tool_result\",\n";
     result << "  \"tool\": \"circuit.run_erc\",\n";
@@ -3769,8 +4490,25 @@ void ElectronicsWorkbench::runElectricalRuleCheck()
     result << "  \"reportPath\": " << jsonQuote(reportFile.getFullPathName()) << "\n";
     result << "}\n";
     resultFile.replaceWithText(result);
+    return result;
+}
 
-    appendLog("ERC complete: " + errors + " error(s), " + warnings + " warning(s). Report: " + reportFile.getFullPathName());
+void ElectronicsWorkbench::runElectricalRuleCheck()
+{
+    const auto result = runElectricalRuleCheckTool();
+    const auto parsed = juce::JSON::parse(result);
+    if (!parsed.isObject() || !(bool)parsed.getProperty("ok", false))
+    {
+        appendLog("ERC failed: " + parsed.getProperty("error", result).toString());
+        return;
+    }
+
+    appendLog("ERC complete: "
+              + parsed.getProperty("errors", 0).toString()
+              + " error(s), "
+              + parsed.getProperty("warnings", 0).toString()
+              + " warning(s). Report: "
+              + parsed.getProperty("reportPath", {}).toString());
 }
 
 void ElectronicsWorkbench::openInstrumentWindow(juce::String refdes, juce::String symbolId)
@@ -3787,19 +4525,18 @@ void ElectronicsWorkbench::openInstrumentWindow(juce::String refdes, juce::Strin
     appendLog("Opened floating " + instrumentName + " panel for " + refdes + ".");
 }
 
-void ElectronicsWorkbench::exportCircuitArtifacts()
+juce::String ElectronicsWorkbench::exportCircuitArtifactsTool()
 {
     if (getCircuitJson == nullptr || getXyceNetlist == nullptr || getLabInstrumentsJson == nullptr)
     {
-        appendLog("No schematic exporter is available.");
-        return;
+        return "{ \"ok\": false, \"tool\": \"simulation.export_artifacts\", \"error\": \"No schematic exporter is available.\" }";
     }
 
     const auto runDir = generatedRunDirectory();
     if (!runDir.createDirectory())
     {
-        appendLog("Could not create run directory: " + runDir.getFullPathName());
-        return;
+        return "{ \"ok\": false, \"tool\": \"simulation.export_artifacts\", \"error\": "
+            + jsonQuote("Could not create run directory: " + runDir.getFullPathName()) + " }";
     }
 
     const auto circuitFile = runDir.getChildFile("circuit.json");
@@ -3811,22 +4548,50 @@ void ElectronicsWorkbench::exportCircuitArtifacts()
 
     if (!circuitFile.replaceWithText(circuitJson))
     {
-        appendLog("Could not write circuit JSON: " + circuitFile.getFullPathName());
-        return;
+        return "{ \"ok\": false, \"tool\": \"simulation.export_artifacts\", \"error\": "
+            + jsonQuote("Could not write circuit JSON: " + circuitFile.getFullPathName()) + " }";
     }
     if (!netlistFile.replaceWithText(netlist))
     {
-        appendLog("Could not write Xyce netlist: " + netlistFile.getFullPathName());
-        return;
+        return "{ \"ok\": false, \"tool\": \"simulation.export_artifacts\", \"error\": "
+            + jsonQuote("Could not write Xyce netlist: " + netlistFile.getFullPathName()) + " }";
     }
     if (!instrumentsFile.replaceWithText(instrumentsJson))
     {
-        appendLog("Could not write lab instruments JSON: " + instrumentsFile.getFullPathName());
+        return "{ \"ok\": false, \"tool\": \"simulation.export_artifacts\", \"error\": "
+            + jsonQuote("Could not write lab instruments JSON: " + instrumentsFile.getFullPathName()) + " }";
+    }
+    const auto manifestFile = runDir.getChildFile("assistant_tools.json");
+    manifestFile.replaceWithText(buildAssistantToolManifestJson());
+
+    juce::String result;
+    result << "{\n";
+    result << "  \"ok\": true,\n";
+    result << "  \"schemaVersion\": 1,\n";
+    result << "  \"kind\": \"djehuti_assistant_tool_result\",\n";
+    result << "  \"tool\": \"simulation.export_artifacts\",\n";
+    result << "  \"status\": \"exported\",\n";
+    result << "  \"artifactDirectory\": " << jsonQuote(runDir.getFullPathName()) << ",\n";
+    result << "  \"circuitJson\": " << jsonQuote(circuitFile.getFullPathName()) << ",\n";
+    result << "  \"xyceNetlist\": " << jsonQuote(netlistFile.getFullPathName()) << ",\n";
+    result << "  \"instrumentJson\": " << jsonQuote(instrumentsFile.getFullPathName()) << ",\n";
+    result << "  \"toolManifest\": " << jsonQuote(manifestFile.getFullPathName()) << "\n";
+    result << "}\n";
+    return result;
+}
+
+void ElectronicsWorkbench::exportCircuitArtifacts()
+{
+    const auto result = exportCircuitArtifactsTool();
+    const auto parsed = juce::JSON::parse(result);
+    if (!parsed.isObject() || !(bool)parsed.getProperty("ok", false))
+    {
+        appendLog("Export failed: " + parsed.getProperty("error", result).toString());
         return;
     }
-    runDir.getChildFile("assistant_tools.json").replaceWithText(buildAssistantToolManifestJson());
 
-    appendLog("Exported circuit JSON, Xyce netlist, and lab instruments to " + runDir.getFullPathName());
+    appendLog("Exported circuit JSON, Xyce netlist, and lab instruments to "
+              + parsed.getProperty("artifactDirectory", generatedRunDirectory().getFullPathName()).toString());
 }
 
 void ElectronicsWorkbench::showSpecDocument()
