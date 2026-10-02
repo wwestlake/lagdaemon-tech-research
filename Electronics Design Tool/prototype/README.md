@@ -2,6 +2,9 @@
 
 This is a standalone research shell for the electronics design tool.
 
+This app is licensed under GPL-3.0 as part of the SPICE/Xyce-oriented
+electronics tool track. See `../LICENSE`.
+
 It is intentionally outside the FrustLang repository:
 
 ```text

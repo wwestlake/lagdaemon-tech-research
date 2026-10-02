@@ -20,6 +20,13 @@ void styleTextEditor(juce::TextEditor& editor, bool mono = false)
     editor.setColour(juce::TextEditor::textColourId, juce::Colour(0xffdce9ee));
 }
 
+void showCursorForEvent(const juce::MouseEvent& event, juce::MouseCursor cursor)
+{
+    auto source = event.source;
+    if (source.hasMouseCursor())
+        source.showMouseCursor(cursor);
+}
+
 class NotesPanel : public juce::Component
 {
 public:
@@ -73,11 +80,6 @@ public:
             addFallbackLibrary();
         refreshFilter();
 
-        addAndMakeVisible(components);
-        components.setColour(juce::ListBox::backgroundColourId, juce::Colour(0xff10161d));
-        components.setModel(&listModel);
-        components.setRowHeight(42);
-        components.selectRow(0);
         if (onSymbolSelected != nullptr)
             onSymbolSelected("resistor");
     }
@@ -88,6 +90,23 @@ public:
         g.setColour(juce::Colour(0xffdce9ee));
         g.setFont(juce::Font(14.0f, juce::Font::bold));
         g.drawText("Component Library", getLocalBounds().removeFromTop(24).reduced(8, 0), juce::Justification::centredLeft);
+
+        rowBounds.clear();
+        auto listArea = getLocalBounds().reduced(8);
+        listArea.removeFromTop(24);
+        listArea.removeFromTop(28);
+        listArea.removeFromTop(8);
+        g.setColour(juce::Colour(0xff10161d));
+        g.fillRect(listArea);
+
+        int y = listArea.getY() + 4;
+        for (int row = 0; row < (int)listModel.items.size(); ++row)
+        {
+            auto rowArea = juce::Rectangle<int>(listArea.getX() + 4, y, listArea.getWidth() - 8, 42);
+            rowBounds.push_back(rowArea);
+            paintSymbolRow(g, row, rowArea);
+            y += 44;
+        }
     }
 
     void resized() override
@@ -95,8 +114,54 @@ public:
         auto area = getLocalBounds().reduced(8);
         area.removeFromTop(24);
         filter.setBounds(area.removeFromTop(28));
-        area.removeFromTop(8);
-        components.setBounds(area);
+    }
+
+    void mouseMove(const juce::MouseEvent& event) override
+    {
+        const auto row = rowAt(event.getPosition());
+        if (row != hoverRow)
+        {
+            hoverRow = row;
+            repaint();
+        }
+    }
+
+    void mouseExit(const juce::MouseEvent&) override
+    {
+        hoverRow = -1;
+        repaint();
+    }
+
+    void mouseDown(const juce::MouseEvent& event) override
+    {
+        const auto row = rowAt(event.getPosition());
+        if (row < 0 || row >= (int)listModel.items.size())
+            return;
+
+        selectedRow = row;
+        const auto& symbol = listModel.items[(size_t)row];
+        if (onSymbolSelected != nullptr)
+            onSymbolSelected(symbol.id);
+
+        repaint();
+        if (auto* container = juce::DragAndDropContainer::findParentDragContainerFor(this))
+        {
+            showCursorForEvent(event, juce::MouseCursor::DraggingHandCursor);
+            container->startDragging("symbol:" + symbol.id, this);
+        }
+    }
+
+    void mouseDoubleClick(const juce::MouseEvent& event) override
+    {
+        const auto row = rowAt(event.getPosition());
+        if (row < 0 || row >= (int)listModel.items.size())
+            return;
+
+        selectedRow = row;
+        const auto& symbol = listModel.items[(size_t)row];
+        if (onSymbolSelected != nullptr)
+            onSymbolSelected(symbol.id);
+        repaint();
     }
 
 private:
@@ -142,33 +207,27 @@ private:
         {
             juce::ListBox::mouseDown(event);
             dragStartRow = getRowContainingPosition(event.x, event.y);
+            if (dragStartRow < 0 || dragStartRow >= (int)listModel.items.size())
+                return;
+
+            selectRow(dragStartRow);
+            if (auto* container = juce::DragAndDropContainer::findParentDragContainerFor(this))
+            {
+                const auto& symbol = listModel.items[(size_t)dragStartRow];
+                showCursorForEvent(event, juce::MouseCursor::DraggingHandCursor);
+                container->startDragging("symbol:" + symbol.id, this);
+            }
         }
 
         void mouseDrag(const juce::MouseEvent& event) override
         {
             juce::ListBox::mouseDrag(event);
-            if (dragStarted || dragStartRow < 0 || dragStartRow >= (int)listModel.items.size())
-                return;
-            if (event.getDistanceFromDragStart() < 6)
-                return;
-
-            if (auto* container = findParentComponentOfClass<juce::DragAndDropContainer>())
-            {
-                dragStarted = true;
-                const auto& symbol = listModel.items[(size_t)dragStartRow];
-                juce::Image image(juce::Image::ARGB, 150, 38, true);
-                juce::Graphics g(image);
-                g.fillAll(juce::Colour(0xdd23394a));
-                g.setColour(juce::Colour(0xffdce9ee));
-                g.setFont(juce::Font(14.0f, juce::Font::bold));
-                g.drawText(symbol.name, image.getBounds().reduced(8), juce::Justification::centredLeft);
-                container->startDragging("symbol:" + symbol.id, this, image, true);
-            }
         }
 
         void mouseUp(const juce::MouseEvent& event) override
         {
             juce::ListBox::mouseUp(event);
+            showCursorForEvent(event, juce::MouseCursor::NormalCursor);
             dragStarted = false;
             dragStartRow = -1;
         }
@@ -183,7 +242,10 @@ private:
     ComponentList listModel;
     SymbolListBox components { listModel };
     std::vector<SymbolInfo> allSymbols;
+    std::vector<juce::Rectangle<int>> rowBounds;
     std::function<void(juce::String)> onSymbolSelected;
+    int hoverRow = -1;
+    int selectedRow = 0;
 
     void add(SymbolInfo item) { allSymbols.push_back(std::move(item)); }
 
@@ -224,6 +286,8 @@ private:
     {
         add({ "resistor", "Resistor", "Passive" });
         add({ "capacitor", "Capacitor", "Passive" });
+        add({ "inductor", "Inductor", "Passive" });
+        add({ "diode", "Diode", "Discrete" });
         add({ "power_bus", "Power Bus", "Bus" });
         add({ "ground_bus", "Ground Bus", "Bus" });
         add({ "battery", "Battery", "Source" });
@@ -247,9 +311,48 @@ private:
                 listModel.items.push_back(symbol);
         }
         listModel.onSelected = onSymbolSelected;
-        components.updateContent();
-        if (!listModel.items.empty() && components.getSelectedRow() < 0)
-            components.selectRow(0);
+        selectedRow = listModel.items.empty() ? -1 : std::clamp(selectedRow, 0, (int)listModel.items.size() - 1);
+        repaint();
+    }
+
+    int rowAt(juce::Point<int> position) const
+    {
+        for (int i = 0; i < (int)rowBounds.size(); ++i)
+            if (rowBounds[(size_t)i].contains(position))
+                return i;
+        return -1;
+    }
+
+    void paintSymbolRow(juce::Graphics& g, int row, juce::Rectangle<int> area)
+    {
+        if (row < 0 || row >= (int)listModel.items.size())
+            return;
+
+        const auto& item = listModel.items[(size_t)row];
+        if (row == selectedRow)
+        {
+            g.setColour(juce::Colour(0xff23394a));
+            g.fillRoundedRectangle(area.toFloat(), 4.0f);
+        }
+        else if (row == hoverRow)
+        {
+            g.setColour(juce::Colour(0xff202b35));
+            g.fillRoundedRectangle(area.toFloat(), 4.0f);
+        }
+
+        const auto swatch = area.withWidth(10).withHeight(10).withCentre({ area.getX() + 13, area.getCentreY() });
+        g.setColour(item.category == "Source" ? juce::Colour(0xfff4d35e)
+                    : item.category == "Bus" ? juce::Colour(0xff78dcca)
+                    : item.category == "Analog IC" ? juce::Colour(0xffffc857)
+                    : juce::Colour(0xff5aa7c8));
+        g.fillRoundedRectangle(swatch.toFloat(), 3.0f);
+
+        g.setColour(juce::Colour(0xffdce9ee));
+        g.setFont(juce::Font(14.0f, juce::Font::bold));
+        g.drawText(item.name, area.withTrimmedLeft(26).withTrimmedBottom(18), juce::Justification::centredLeft, true);
+        g.setColour(juce::Colour(0xff93a7b0));
+        g.setFont(juce::Font(12.0f));
+        g.drawText(item.category + "  " + item.id, area.withTrimmedLeft(26).withTrimmedTop(20), juce::Justification::centredLeft, true);
     }
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(ComponentLibraryPanel)
@@ -275,6 +378,11 @@ public:
         notifySelection();
     }
 
+    void setProbeListener(std::function<void(juce::String, juce::String, juce::String)> listener)
+    {
+        onProbeChanged = std::move(listener);
+    }
+
     void updateSelectedProperties(const juce::String& value,
                                   const juce::String& frequency,
                                   const juce::String& busName,
@@ -291,6 +399,20 @@ public:
         instance.family = family.trim();
         instance.manufacturerPart = manufacturerPart.trim();
         if (onStatus) onStatus("Updated " + instance.refdes + " properties.");
+        notifySelection();
+        repaint();
+    }
+
+    void rotateSelected()
+    {
+        if (selectedInstance < 0 || selectedInstance >= (int)instances.size())
+            return;
+
+        auto& instance = instances[(size_t)selectedInstance];
+        const auto symbol = symbolFor(instance.symbolId);
+        const auto step = symbol.rotationStepDegrees > 0 ? symbol.rotationStepDegrees : 90;
+        instance.rotation = (instance.rotation + step) % 360;
+        if (onStatus) onStatus("Rotated " + instance.refdes + " to " + juce::String(instance.rotation) + " degrees.");
         notifySelection();
         repaint();
     }
@@ -319,6 +441,9 @@ public:
             text << "      },\n";
             text << "      \"x\": " << instance.position.x << ",\n";
             text << "      \"y\": " << instance.position.y << ",\n";
+            text << "      \"rotation\": " << instance.rotation << ",\n";
+            if (isRailBus(instance.symbolId))
+                text << "      \"length\": " << instance.busLength << ",\n";
             text << "      \"value\": " << quote(instance.value) << ",\n";
             text << "      \"parameters\": " << parametersJsonFor(instance) << ",\n";
             text << "      \"pins\": {\n";
@@ -337,8 +462,21 @@ public:
         {
             const auto& wire = wires[i];
             if (i != 0) text << ",\n";
-            text << "    { \"a\": " << quote(pinLabel(wire.a))
-                 << ", \"b\": " << quote(pinLabel(wire.b)) << " }";
+            text << "    { \"a\": " << quote(nodeLabel(wire.a))
+                 << ", \"b\": " << quote(nodeLabel(wire.b)) << " }";
+        }
+        text << "\n  ],\n";
+        text << "  \"probes\": [\n";
+        for (size_t i = 0; i < probes.size(); ++i)
+        {
+            const auto& probe = probes[i];
+            if (i != 0) text << ",\n";
+            text << "    { \"id\": " << quote(probe.id)
+                 << ", \"label\": " << quote(probe.label)
+                 << ", \"role\": " << quote(probe.role)
+                 << ", \"target\": " << quote(nodeLabel(probe.node))
+                 << ", \"net\": " << quote(netForNode(probe.node, netNames))
+                 << " }";
         }
         text << "\n  ]\n";
         text << "}\n";
@@ -384,6 +522,16 @@ public:
             else if (instance.symbolId == "capacitor")
             {
                 netlist << instance.refdes << " " << pinNet("1") << " " << pinNet("2") << " " << instance.value << "\n";
+            }
+            else if (instance.symbolId == "inductor")
+            {
+                netlist << instance.refdes << " " << pinNet("1") << " " << pinNet("2") << " " << instance.value << "\n";
+            }
+            else if (instance.symbolId == "diode")
+            {
+                netlist << instance.refdes << " " << pinNet("A") << " " << pinNet("K") << " " << instance.value << "\n";
+                netlist << ".MODEL " << instance.value << " D\n";
+                hasProbe = true;
             }
             else if (instance.symbolId == "voltage_source")
             {
@@ -441,43 +589,67 @@ public:
         drawGrid(g);
         drawWires(g);
         drawInstances(g);
+        drawProbes(g);
         drawPendingWire(g);
 
         g.setColour(juce::Colour(0xff93a7b0));
         g.setFont(juce::Font(13.0f));
         const auto stampOn = getStampPlacementEnabled != nullptr && getStampPlacementEnabled();
-        g.drawText(stampOn ? "Stamp mode: click empty canvas to place selected symbols. Click pins to wire."
-                           : "Drag components from the library. Click pins to start/end right-angle wires.",
+        g.drawText(stampOn ? "Stamp mode: click empty canvas to place selected symbols, drag selected parts to move, R rotates."
+                           : "Drag pins/wires/rails to connect. Select a rail and drag its end handles to resize. Delete removes selected parts.",
                    getLocalBounds().reduced(12).removeFromBottom(24),
                    juce::Justification::centredLeft);
 
         if (dragHover)
-        {
-            g.setColour(juce::Colour(0x335aa7c8));
-            g.fillRect(getLocalBounds());
-            g.setColour(juce::Colour(0xff78dcca));
-            g.drawRect(getLocalBounds().reduced(4), 2);
-            g.setFont(juce::Font(15.0f, juce::Font::bold));
-            g.drawText("Drop symbol on schematic", getLocalBounds().reduced(18).removeFromTop(28), juce::Justification::centredRight);
-        }
+            g.drawText(dragMessage, getLocalBounds().reduced(12).removeFromBottom(24), juce::Justification::centredRight);
     }
 
     void mouseDown(const juce::MouseEvent& event) override
     {
+        grabKeyboardFocus();
         const auto p = snap(event.position);
+        if (event.mods.isRightButtonDown())
+        {
+            if (releaseProbeAt(event.position))
+            {
+                repaint();
+                return;
+            }
+            disconnectAt(event.position);
+            repaint();
+            return;
+        }
+
+        if (beginRailResize(event.position))
+        {
+            repaint();
+            return;
+        }
+
+        if (auto rail = hitTestRailBus(event.position); rail >= 0)
+        {
+            beginWireDrag(createRailTap(rail, p), event.position);
+            repaint();
+            return;
+        }
+
         if (auto pin = hitTestPin(event.position); pin.instanceIndex >= 0)
         {
-            if (pendingPin.instanceIndex < 0)
-            {
-                pendingPin = pin;
-                if (onStatus) onStatus("Wire start: " + pinLabel(pin) + ". Click another pin to connect.");
-            }
-            else if (!(pendingPin.instanceIndex == pin.instanceIndex && pendingPin.pinIndex == pin.pinIndex))
-            {
-                wires.push_back({ pendingPin, pin });
-                if (onStatus) onStatus("Connected " + pinLabel(pendingPin) + " to " + pinLabel(pin) + ".");
-                pendingPin = {};
-            }
+            beginWireDrag(WireNode::forPin(pin), event.position);
+            repaint();
+            return;
+        }
+
+        if (auto junction = hitTestJunction(event.position); junction >= 0)
+        {
+            beginWireDrag(WireNode::forJunction(junction), event.position);
+            repaint();
+            return;
+        }
+
+        if (auto wireIndex = hitTestWire(event.position); wireIndex >= 0)
+        {
+            beginWireDrag(createJunctionOnWire(wireIndex, p), event.position);
             repaint();
             return;
         }
@@ -485,6 +657,9 @@ public:
         if (const auto instanceIndex = hitTestInstance(event.position); instanceIndex >= 0)
         {
             selectedInstance = instanceIndex;
+            draggingInstance = true;
+            dragStartMouse = event.position;
+            dragStartPosition = instances[(size_t)selectedInstance].position;
             notifySelection();
             repaint();
             return;
@@ -498,12 +673,62 @@ public:
         }
     }
 
+    void resized() override {}
+
+    void mouseDrag(const juce::MouseEvent& event) override
+    {
+        if (resizingRail)
+        {
+            resizeRail(event.position);
+            repaint();
+            return;
+        }
+
+        if (wireDragging)
+        {
+            wireDragPosition = event.position;
+            repaint();
+            return;
+        }
+
+        if (!draggingInstance || selectedInstance < 0 || selectedInstance >= (int)instances.size())
+            return;
+
+        auto& instance = instances[(size_t)selectedInstance];
+        instance.position = snap(dragStartPosition + (event.position - dragStartMouse));
+        notifySelection();
+        repaint();
+    }
+
+    void mouseUp(const juce::MouseEvent& event) override
+    {
+        if (wireDragging)
+        {
+            finishWireDrag(event.position);
+            repaint();
+        }
+
+        draggingInstance = false;
+        resizingRail = false;
+        resizingRailInstance = -1;
+    }
+
     bool keyPressed(const juce::KeyPress& key) override
     {
         if (key == juce::KeyPress::escapeKey)
         {
-            pendingPin = {};
+            wireDragging = false;
             repaint();
+            return true;
+        }
+        if (key == juce::KeyPress::deleteKey || key == juce::KeyPress::backspaceKey)
+        {
+            deleteSelected();
+            return true;
+        }
+        if (key.getTextCharacter() == 'r' || key.getTextCharacter() == 'R')
+        {
+            rotateSelected();
             return true;
         }
         return false;
@@ -511,25 +736,47 @@ public:
 
     bool isInterestedInDragSource(const SourceDetails& details) override
     {
-        return details.description.toString().startsWith("symbol:");
+        const auto description = details.description.toString();
+        return description.startsWith("symbol:") || description.startsWith("probe:");
     }
 
-    void itemDragEnter(const SourceDetails&) override
+    void itemDragEnter(const SourceDetails& details) override
     {
         dragHover = true;
+        dragMessage = details.description.toString().startsWith("probe:")
+            ? "Drop probe on a pin or wire"
+            : "Drop symbol on schematic";
+        setMouseCursor(juce::MouseCursor::DraggingHandCursor);
         repaint();
     }
 
     void itemDragExit(const SourceDetails&) override
     {
         dragHover = false;
+        setMouseCursor(juce::MouseCursor::NormalCursor);
         repaint();
     }
 
     void itemDropped(const SourceDetails& details) override
     {
         dragHover = false;
+        setMouseCursor(juce::MouseCursor::NormalCursor);
         const auto description = details.description.toString();
+        if (description.startsWith("probe:"))
+        {
+            const auto node = nodeAt(details.localPosition.toFloat(), snap(details.localPosition.toFloat()));
+            if (!node.isValid())
+            {
+                if (onStatus) onStatus("Probe drop needs a pin, junction, or wire.");
+                repaint();
+                return;
+            }
+
+            assignProbe(description.fromFirstOccurrenceOf("probe:", false, false), node);
+            repaint();
+            return;
+        }
+
         if (!description.startsWith("symbol:"))
             return;
 
@@ -551,6 +798,7 @@ private:
         juce::String title;
         juce::Rectangle<float> bounds;
         std::vector<PinDef> pins;
+        int rotationStepDegrees = 90;
     };
 
     struct Instance
@@ -563,6 +811,8 @@ private:
         juce::String family;
         juce::String manufacturerPart;
         juce::Point<float> position;
+        int rotation = 0;
+        float busLength = 420.0f;
     };
 
     struct PinRef
@@ -571,10 +821,43 @@ private:
         int pinIndex = -1;
     };
 
+    struct WireNode
+    {
+        PinRef pin;
+        int junctionIndex = -1;
+
+        static WireNode forPin(PinRef pinRef)
+        {
+            WireNode node;
+            node.pin = pinRef;
+            return node;
+        }
+
+        static WireNode forJunction(int index)
+        {
+            WireNode node;
+            node.junctionIndex = index;
+            return node;
+        }
+
+        bool isPin() const { return pin.instanceIndex >= 0 && pin.pinIndex >= 0; }
+        bool isJunction() const { return junctionIndex >= 0; }
+        bool isValid() const { return isPin() || isJunction(); }
+    };
+
     struct Wire
     {
-        PinRef a;
-        PinRef b;
+        WireNode a;
+        WireNode b;
+    };
+
+    struct Probe
+    {
+        juce::String id;
+        juce::String label;
+        juce::String role;
+        WireNode node;
+        juce::Colour colour;
     };
 
     struct DisjointSet
@@ -605,13 +888,26 @@ private:
 
     std::vector<Instance> instances;
     std::vector<Wire> wires;
-    PinRef pendingPin;
+    std::vector<juce::Point<float>> junctions;
+    std::vector<Probe> probes;
+    WireNode wireDragStart;
     int selectedInstance = -1;
     int nextRef = 1;
     bool dragHover = false;
+    juce::String dragMessage = "Drop symbol on schematic";
+    bool wireDragging = false;
+    bool draggingInstance = false;
+    bool resizingRail = false;
+    bool resizingLeftRailEnd = false;
+    int resizingRailInstance = -1;
+    float fixedRailEndX = 0.0f;
+    juce::Point<float> dragStartMouse;
+    juce::Point<float> dragStartPosition;
+    juce::Point<float> wireDragPosition;
     std::function<juce::String()> getSelectedSymbolId;
     std::function<bool()> getStampPlacementEnabled;
     std::function<void(juce::String)> onStatus;
+    std::function<void(juce::String, juce::String, juce::String)> onProbeChanged;
     std::function<void(int, juce::String, juce::String, juce::String, juce::String, juce::String, juce::String, juce::String)> onSelectionChanged;
 
     static juce::String quote(const juce::String& text)
@@ -640,14 +936,23 @@ private:
         return { std::round(p.x / 24.0f) * 24.0f, std::round(p.y / 24.0f) * 24.0f };
     }
 
+    static bool isRailBus(const juce::String& symbolId)
+    {
+        return symbolId == "power_bus" || symbolId == "ground_bus";
+    }
+
     SymbolDef symbolFor(const juce::String& id) const
     {
         if (id == "capacitor")
             return { id, "C", { -30, -18, 60, 36 }, { { "1", { -42, 0 } }, { "2", { 42, 0 } } } };
+        if (id == "inductor")
+            return { id, "L", { -34, -18, 68, 36 }, { { "1", { -54, 0 } }, { "2", { 54, 0 } } }, 45 };
+        if (id == "diode")
+            return { id, "D", { -28, -24, 56, 48 }, { { "A", { -54, 0 } }, { "K", { 54, 0 } } }, 45 };
         if (id == "power_bus")
-            return { id, "PWR", { -42, -14, 84, 28 }, { { "VBUS", { 0, 28 } } } };
+            return { id, "PWR", { -210, -8, 420, 16 }, { { "VBUS", { 0, 0 } } } };
         if (id == "ground_bus")
-            return { id, "GND BUS", { -48, -14, 96, 28 }, { { "0", { 0, -28 } } } };
+            return { id, "GND BUS", { -210, -8, 420, 16 }, { { "0", { 0, 0 } } } };
         if (id == "battery")
             return { id, "BAT", { -24, -34, 48, 68 }, { { "+", { 0, -52 } }, { "-", { 0, 52 } } } };
         if (id == "voltage_source")
@@ -671,6 +976,8 @@ private:
     {
         if (symbolId == "resistor") return "10k";
         if (symbolId == "capacitor") return "1u";
+        if (symbolId == "inductor") return "10m";
+        if (symbolId == "diode") return "1N4148";
         if (symbolId == "power_bus") return "+V";
         if (symbolId == "ground_bus") return "0";
         if (symbolId == "battery") return "9";
@@ -686,6 +993,8 @@ private:
     {
         if (symbolId == "resistor") return "passive.resistor";
         if (symbolId == "capacitor") return "passive.capacitor";
+        if (symbolId == "inductor") return "passive.inductor";
+        if (symbolId == "diode") return "discrete.diode";
         if (symbolId == "power_bus") return "net.power_bus";
         if (symbolId == "ground" || symbolId == "ground_bus") return "net.ground_reference";
         if (symbolId == "battery") return "source.battery";
@@ -725,6 +1034,10 @@ private:
             return "{ \"resistance\": { \"value\": " + quote(instance.value) + ", \"unit\": \"ohm\" } }";
         if (symbolId == "capacitor")
             return "{ \"capacitance\": { \"value\": " + quote(instance.value) + ", \"unit\": \"F\" } }";
+        if (symbolId == "inductor")
+            return "{ \"inductance\": { \"value\": " + quote(instance.value) + ", \"unit\": \"H\" } }";
+        if (symbolId == "diode")
+            return "{ \"model\": " + quote(instance.value) + " }";
         if (symbolId == "power_bus")
             return "{ \"name\": " + quote(instance.busName) + ", \"voltageHint\": null }";
         if (symbolId == "ground" || symbolId == "ground_bus")
@@ -748,28 +1061,46 @@ private:
         return ordinal + pin.pinIndex;
     }
 
+    int pinCount() const
+    {
+        int count = 0;
+        for (const auto& instance : instances)
+            count += (int)symbolFor(instance.symbolId).pins.size();
+        return count;
+    }
+
+    int nodeOrdinal(const WireNode& node) const
+    {
+        if (node.isPin())
+            return pinOrdinal(node.pin);
+        if (node.isJunction())
+            return pinCount() + node.junctionIndex;
+        return -1;
+    }
+
     std::map<int, juce::String> computeNetNames() const
     {
-        int pinCount = 0;
-        for (const auto& instance : instances)
-            pinCount += (int)symbolFor(instance.symbolId).pins.size();
+        const auto totalPins = pinCount();
+        const auto totalNodes = totalPins + (int)junctions.size();
 
         std::map<int, juce::String> result;
-        if (pinCount <= 0)
+        if (totalNodes <= 0)
             return result;
 
-        DisjointSet sets(pinCount);
+        DisjointSet sets(totalNodes);
         for (const auto& wire : wires)
         {
-            if (wire.a.instanceIndex < 0 || wire.b.instanceIndex < 0)
+            const auto a = nodeOrdinal(wire.a);
+            const auto b = nodeOrdinal(wire.b);
+            if (a < 0 || b < 0)
                 continue;
-            sets.unite(pinOrdinal(wire.a), pinOrdinal(wire.b));
+            sets.unite(a, b);
         }
 
         std::set<int> groundRoots;
         for (size_t i = 0; i < instances.size(); ++i)
         {
-            if (instances[i].symbolId != "ground")
+            if (instances[i].symbolId != "ground" && instances[i].symbolId != "ground_bus")
                 continue;
             const auto symbol = symbolFor(instances[i].symbolId);
             for (size_t p = 0; p < symbol.pins.size(); ++p)
@@ -778,7 +1109,7 @@ private:
 
         std::map<int, int> assigned;
         int nextNet = 1;
-        for (int pin = 0; pin < pinCount; ++pin)
+        for (int pin = 0; pin < totalNodes; ++pin)
         {
             const auto root = sets.find(pin);
             if (groundRoots.count(root) != 0)
@@ -798,6 +1129,15 @@ private:
         if (pin.instanceIndex < 0 || pin.instanceIndex >= (int)instances.size())
             return "floating";
         const auto ordinal = pinOrdinal(pin);
+        const auto found = netNames.find(ordinal);
+        return found != netNames.end() ? found->second : "floating";
+    }
+
+    juce::String netForNode(const WireNode& node, const std::map<int, juce::String>& netNames) const
+    {
+        const auto ordinal = nodeOrdinal(node);
+        if (ordinal < 0)
+            return "floating";
         const auto found = netNames.find(ordinal);
         return found != netNames.end() ? found->second : "floating";
     }
@@ -822,7 +1162,7 @@ private:
         const auto& instance = instances[(size_t)pin.instanceIndex];
         const auto symbol = symbolFor(instance.symbolId);
         if (pin.pinIndex < 0 || pin.pinIndex >= (int)symbol.pins.size()) return instance.position;
-        return instance.position + symbol.pins[(size_t)pin.pinIndex].offset;
+        return instance.position + rotateOffset(symbol.pins[(size_t)pin.pinIndex].offset, instance.rotation);
     }
 
     juce::String pinLabel(const PinRef& pin) const
@@ -834,19 +1174,159 @@ private:
         return instance.refdes + "." + symbol.pins[(size_t)pin.pinIndex].name;
     }
 
+    juce::Point<float> nodePosition(const WireNode& node) const
+    {
+        if (node.isPin())
+            return pinPosition(node.pin);
+        if (node.isJunction() && node.junctionIndex < (int)junctions.size())
+            return junctions[(size_t)node.junctionIndex];
+        return {};
+    }
+
+    juce::String nodeLabel(const WireNode& node) const
+    {
+        if (node.isPin())
+            return pinLabel(node.pin);
+        if (node.isJunction())
+            return "J" + juce::String(node.junctionIndex + 1);
+        return {};
+    }
+
+    static bool sameNode(const WireNode& a, const WireNode& b)
+    {
+        if (a.isPin() && b.isPin())
+            return a.pin.instanceIndex == b.pin.instanceIndex && a.pin.pinIndex == b.pin.pinIndex;
+        if (a.isJunction() && b.isJunction())
+            return a.junctionIndex == b.junctionIndex;
+        return false;
+    }
+
+    bool isRailAnchorNode(const WireNode& node) const
+    {
+        return node.isPin()
+            && node.pin.instanceIndex >= 0
+            && node.pin.instanceIndex < (int)instances.size()
+            && isRailBus(instances[(size_t)node.pin.instanceIndex].symbolId);
+    }
+
+    bool isInternalRailTapWire(const Wire& wire) const
+    {
+        return (isRailAnchorNode(wire.a) && wire.b.isJunction())
+            || (isRailAnchorNode(wire.b) && wire.a.isJunction());
+    }
+
+    juce::Point<float> nodeLeadDirection(const WireNode& node) const
+    {
+        if (!node.isPin() || node.pin.instanceIndex < 0 || node.pin.instanceIndex >= (int)instances.size())
+            return {};
+
+        const auto& instance = instances[(size_t)node.pin.instanceIndex];
+        const auto symbol = symbolFor(instance.symbolId);
+        if (node.pin.pinIndex < 0 || node.pin.pinIndex >= (int)symbol.pins.size())
+            return {};
+
+        const auto offset = rotateOffset(symbol.pins[(size_t)node.pin.pinIndex].offset, instance.rotation);
+        const auto length = std::sqrt(offset.x * offset.x + offset.y * offset.y);
+        if (length <= 0.001f)
+            return {};
+
+        return { offset.x / length, offset.y / length };
+    }
+
+    std::vector<juce::Point<float>> routedWirePoints(const WireNode& a, const WireNode& b) const
+    {
+        return routedWirePoints(a, nodePosition(b), nodeLeadDirection(b));
+    }
+
+    std::vector<juce::Point<float>> routedWirePoints(const WireNode& a,
+                                                     juce::Point<float> b,
+                                                     juce::Point<float> bLead) const
+    {
+        constexpr auto leadLength = 24.0f;
+        const auto start = nodePosition(a);
+        const auto aLead = nodeLeadDirection(a);
+        const auto startRun = aLead == juce::Point<float>() ? start : start + aLead * leadLength;
+        const auto endRun = bLead == juce::Point<float>() ? b : b + bLead * leadLength;
+
+        std::vector<juce::Point<float>> points;
+        points.push_back(start);
+        if (startRun.getDistanceFrom(start) > 0.1f)
+            points.push_back(startRun);
+
+        if (std::abs(startRun.x - endRun.x) <= 0.1f || std::abs(startRun.y - endRun.y) <= 0.1f)
+        {
+            points.push_back(endRun);
+        }
+        else
+        {
+            const auto midX = std::round((startRun.x + endRun.x) * 0.5f / 24.0f) * 24.0f;
+            points.push_back({ midX, startRun.y });
+            points.push_back({ midX, endRun.y });
+            points.push_back(endRun);
+        }
+
+        if (b.getDistanceFrom(endRun) > 0.1f)
+            points.push_back(b);
+
+        return points;
+    }
+
     PinRef hitTestPin(juce::Point<float> p) const
     {
         for (int i = (int)instances.size() - 1; i >= 0; --i)
         {
+            if (isRailBus(instances[(size_t)i].symbolId))
+                continue;
+
             const auto symbol = symbolFor(instances[(size_t)i].symbolId);
             for (int j = 0; j < (int)symbol.pins.size(); ++j)
             {
-                const auto pin = instances[(size_t)i].position + symbol.pins[(size_t)j].offset;
-                if (pin.getDistanceFrom(p) <= 9.0f)
+                const auto pin = pinPosition({ i, j });
+                if (pin.getDistanceFrom(p) <= 14.0f)
                     return { i, j };
             }
         }
         return {};
+    }
+
+    int hitTestJunction(juce::Point<float> p) const
+    {
+        for (int i = (int)junctions.size() - 1; i >= 0; --i)
+            if (junctions[(size_t)i].getDistanceFrom(p) <= 12.0f)
+                return i;
+        return -1;
+    }
+
+    static float distanceToSegment(juce::Point<float> p, juce::Point<float> a, juce::Point<float> b)
+    {
+        const auto ab = b - a;
+        const auto ap = p - a;
+        const auto lengthSquared = ab.x * ab.x + ab.y * ab.y;
+        if (lengthSquared <= 0.001f)
+            return p.getDistanceFrom(a);
+
+        const auto t = std::clamp((ap.x * ab.x + ap.y * ab.y) / lengthSquared, 0.0f, 1.0f);
+        return p.getDistanceFrom({ a.x + ab.x * t, a.y + ab.y * t });
+    }
+
+    float distanceToWire(juce::Point<float> p, const Wire& wire) const
+    {
+        if (isInternalRailTapWire(wire))
+            return std::numeric_limits<float>::max();
+
+        const auto points = routedWirePoints(wire.a, wire.b);
+        auto best = std::numeric_limits<float>::max();
+        for (size_t i = 1; i < points.size(); ++i)
+            best = std::min(best, distanceToSegment(p, points[i - 1], points[i]));
+        return best;
+    }
+
+    int hitTestWire(juce::Point<float> p) const
+    {
+        for (int i = (int)wires.size() - 1; i >= 0; --i)
+            if (distanceToWire(p, wires[(size_t)i]) <= 8.0f)
+                return i;
+        return -1;
     }
 
     int hitTestInstance(juce::Point<float> p) const
@@ -855,10 +1335,362 @@ private:
         {
             const auto& instance = instances[(size_t)i];
             const auto symbol = symbolFor(instance.symbolId);
-            if (symbol.bounds.translated(instance.position.x, instance.position.y).expanded(4.0f).contains(p))
+            if (orientedBounds(instance, symbol).expanded(4.0f).contains(p))
                 return i;
         }
         return -1;
+    }
+
+    WireNode nodeAt(juce::Point<float> rawPosition, juce::Point<float> snappedPosition)
+    {
+        if (auto pin = hitTestPin(rawPosition); pin.instanceIndex >= 0)
+            return WireNode::forPin(pin);
+
+        if (auto junction = hitTestJunction(rawPosition); junction >= 0)
+            return WireNode::forJunction(junction);
+
+        if (auto rail = hitTestRailBus(rawPosition); rail >= 0)
+            return createRailTap(rail, snappedPosition);
+
+        if (auto wireIndex = hitTestWire(rawPosition); wireIndex >= 0)
+            return createJunctionOnWire(wireIndex, snappedPosition);
+
+        return {};
+    }
+
+    static juce::Point<float> rotateOffset(juce::Point<float> offset, int rotation)
+    {
+        switch (((rotation % 360) + 360) % 360)
+        {
+            case 90: return { -offset.y, offset.x };
+            case 180: return { -offset.x, -offset.y };
+            case 270: return { offset.y, -offset.x };
+            default: return offset;
+        }
+    }
+
+    juce::Rectangle<float> orientedBounds(const Instance& instance, const SymbolDef& symbol) const
+    {
+        if (isRailBus(instance.symbolId))
+            return railBounds(instance).expanded(0.0f, 10.0f);
+
+        const auto r = symbol.bounds;
+        const auto rotation = ((instance.rotation % 360) + 360) % 360;
+        if (rotation == 90 || rotation == 270)
+            return { instance.position.x - r.getHeight() * 0.5f,
+                     instance.position.y - r.getWidth() * 0.5f,
+                     r.getHeight(),
+                     r.getWidth() };
+        return r.translated(instance.position.x, instance.position.y);
+    }
+
+    juce::Rectangle<float> railBounds(const Instance& instance) const
+    {
+        const auto length = std::max(120.0f, instance.busLength);
+        return { instance.position.x - length * 0.5f, instance.position.y - 1.5f, length, 3.0f };
+    }
+
+    int hitTestRailBus(juce::Point<float> p) const
+    {
+        for (int i = (int)instances.size() - 1; i >= 0; --i)
+        {
+            const auto& instance = instances[(size_t)i];
+            if (!isRailBus(instance.symbolId))
+                continue;
+
+            if (railBounds(instance).expanded(0.0f, 12.0f).contains(p))
+                return i;
+        }
+        return -1;
+    }
+
+    juce::Rectangle<float> railHandleBounds(const Instance& instance, bool left) const
+    {
+        const auto rail = railBounds(instance);
+        const auto x = left ? rail.getX() : rail.getRight();
+        return { x - 7.0f, instance.position.y - 12.0f, 14.0f, 24.0f };
+    }
+
+    bool beginRailResize(juce::Point<float> p)
+    {
+        if (selectedInstance < 0 || selectedInstance >= (int)instances.size())
+            return false;
+
+        const auto& instance = instances[(size_t)selectedInstance];
+        if (!isRailBus(instance.symbolId))
+            return false;
+
+        if (railHandleBounds(instance, true).contains(p))
+        {
+            resizingRail = true;
+            resizingLeftRailEnd = true;
+            resizingRailInstance = selectedInstance;
+            fixedRailEndX = railBounds(instance).getRight();
+            return true;
+        }
+
+        if (railHandleBounds(instance, false).contains(p))
+        {
+            resizingRail = true;
+            resizingLeftRailEnd = false;
+            resizingRailInstance = selectedInstance;
+            fixedRailEndX = railBounds(instance).getX();
+            return true;
+        }
+
+        return false;
+    }
+
+    void resizeRail(juce::Point<float> p)
+    {
+        if (resizingRailInstance < 0 || resizingRailInstance >= (int)instances.size())
+            return;
+
+        auto& instance = instances[(size_t)resizingRailInstance];
+        if (!isRailBus(instance.symbolId))
+            return;
+
+        constexpr auto minLength = 120.0f;
+        auto movingX = snap(p).x;
+        if (std::abs(movingX - fixedRailEndX) < minLength)
+            movingX = fixedRailEndX + (movingX < fixedRailEndX ? -minLength : minLength);
+
+        const auto left = std::min(movingX, fixedRailEndX);
+        const auto right = std::max(movingX, fixedRailEndX);
+        instance.busLength = right - left;
+        instance.position.x = (left + right) * 0.5f;
+        notifySelection();
+    }
+
+    void beginWireDrag(WireNode node, juce::Point<float> position)
+    {
+        if (!node.isValid())
+            return;
+
+        wireDragStart = node;
+        wireDragPosition = position;
+        wireDragging = true;
+        draggingInstance = false;
+        if (onStatus) onStatus("Wire drag: " + nodeLabel(node) + ". Release on another pin or wire.");
+    }
+
+    void finishWireDrag(juce::Point<float> position)
+    {
+        wireDragging = false;
+        if (!wireDragStart.isValid())
+            return;
+
+        const auto target = nodeAt(position, snap(position));
+        if (!target.isValid())
+        {
+            if (onStatus) onStatus("Wire cancelled.");
+            wireDragStart = {};
+            return;
+        }
+
+        if (sameNode(wireDragStart, target))
+        {
+            if (onStatus) onStatus("Wire cancelled: start and end are the same connector.");
+            wireDragStart = {};
+            return;
+        }
+
+        wires.push_back({ wireDragStart, target });
+        if (onStatus) onStatus("Connected " + nodeLabel(wireDragStart) + " to " + nodeLabel(target) + ".");
+        wireDragStart = {};
+    }
+
+    void disconnectAt(juce::Point<float> position)
+    {
+        if (auto wireIndex = hitTestWire(position); wireIndex >= 0)
+        {
+            const auto removed = wires[(size_t)wireIndex];
+            wires.erase(wires.begin() + wireIndex);
+            if (onStatus) onStatus("Disconnected wire " + nodeLabel(removed.a) + " to " + nodeLabel(removed.b) + ".");
+            return;
+        }
+
+        if (auto pin = hitTestPin(position); pin.instanceIndex >= 0)
+        {
+            disconnectNode(WireNode::forPin(pin));
+            return;
+        }
+
+        if (auto junction = hitTestJunction(position); junction >= 0)
+        {
+            disconnectNode(WireNode::forJunction(junction));
+            return;
+        }
+
+        if (onStatus) onStatus("Nothing to disconnect here.");
+    }
+
+    void disconnectNode(WireNode node)
+    {
+        const auto before = wires.size();
+        wires.erase(std::remove_if(wires.begin(), wires.end(), [&](const Wire& wire) {
+            return sameNode(wire.a, node) || sameNode(wire.b, node);
+        }), wires.end());
+
+        const auto removed = before - wires.size();
+        if (onStatus)
+            onStatus(removed > 0 ? "Disconnected " + juce::String((int)removed) + " wire(s) from " + nodeLabel(node) + "."
+                                 : "No wires connected to " + nodeLabel(node) + ".");
+    }
+
+    void assignProbe(const juce::String& id, WireNode node)
+    {
+        const auto label = probeLabel(id);
+        if (label.isEmpty())
+            return;
+
+        const auto role = probeRole(id);
+        const auto colour = probeColour(id);
+
+        auto found = std::find_if(probes.begin(), probes.end(), [&](const Probe& probe) { return probe.id == id; });
+        if (found != probes.end())
+        {
+            found->node = node;
+            found->colour = colour;
+        }
+        else
+        {
+            probes.push_back({ id, label, role, node, colour });
+        }
+
+        if (onStatus) onStatus("Assigned " + label + " to " + nodeLabel(node) + ".");
+        if (onProbeChanged) onProbeChanged(id, label, nodeLabel(node));
+    }
+
+    bool releaseProbeAt(juce::Point<float> position)
+    {
+        for (int i = (int)probes.size() - 1; i >= 0; --i)
+        {
+            const auto p = nodePosition(probes[(size_t)i].node);
+            if (p.getDistanceFrom(position) > 16.0f)
+                continue;
+
+            const auto id = probes[(size_t)i].id;
+            const auto label = probes[(size_t)i].label;
+            probes.erase(probes.begin() + i);
+            if (onStatus) onStatus("Removed " + label + " from schematic.");
+            if (onProbeChanged) onProbeChanged(id, label, {});
+            return true;
+        }
+        return false;
+    }
+
+    static juce::String probeLabel(const juce::String& id)
+    {
+        if (id == "DMM_HI") return "DMM+";
+        if (id == "DMM_LO") return "DMM-";
+        if (id == "SCOPE_CH1") return "CH1";
+        if (id == "SCOPE_CH2") return "CH2";
+        return {};
+    }
+
+    static juce::String probeRole(const juce::String& id)
+    {
+        if (id == "DMM_HI") return "dmm.high";
+        if (id == "DMM_LO") return "dmm.low";
+        if (id == "SCOPE_CH1") return "scope.channel1";
+        if (id == "SCOPE_CH2") return "scope.channel2";
+        return {};
+    }
+
+    static juce::Colour probeColour(const juce::String& id)
+    {
+        if (id == "DMM_HI") return juce::Colour(0xffffc857);
+        if (id == "DMM_LO") return juce::Colour(0xff93a7b0);
+        if (id == "SCOPE_CH1") return juce::Colour(0xff78dcca);
+        if (id == "SCOPE_CH2") return juce::Colour(0xffff6b6b);
+        return juce::Colour(0xffdce9ee);
+    }
+
+    WireNode createJunctionOnWire(int wireIndex, juce::Point<float> position)
+    {
+        const auto junctionIndex = (int)junctions.size();
+        junctions.push_back(position);
+        const auto junction = WireNode::forJunction(junctionIndex);
+
+        if (wireIndex >= 0 && wireIndex < (int)wires.size())
+        {
+            const auto existing = wires[(size_t)wireIndex];
+            wires.erase(wires.begin() + wireIndex);
+            wires.push_back({ existing.a, junction });
+            wires.push_back({ junction, existing.b });
+        }
+
+        if (onStatus) onStatus("Added junction " + nodeLabel(junction) + ".");
+        return junction;
+    }
+
+    WireNode createRailTap(int instanceIndex, juce::Point<float> position)
+    {
+        if (instanceIndex < 0 || instanceIndex >= (int)instances.size())
+            return {};
+
+        auto& instance = instances[(size_t)instanceIndex];
+        const auto rail = railBounds(instance);
+        position.x = std::clamp(position.x, rail.getX(), rail.getRight());
+        position.y = instance.position.y;
+
+        const auto junctionIndex = (int)junctions.size();
+        junctions.push_back(position);
+        const auto junction = WireNode::forJunction(junctionIndex);
+        wires.push_back({ WireNode::forPin({ instanceIndex, 0 }), junction });
+
+        if (onStatus) onStatus("Added tap on " + instance.refdes + " " + instance.busName + ".");
+        return junction;
+    }
+
+    static bool nodeTouchesInstance(const WireNode& node, int instanceIndex)
+    {
+        return node.isPin() && node.pin.instanceIndex == instanceIndex;
+    }
+
+    static void adjustNodeAfterDeletingInstance(WireNode& node, int instanceIndex)
+    {
+        if (node.isPin() && node.pin.instanceIndex > instanceIndex)
+            --node.pin.instanceIndex;
+    }
+
+    void deleteSelected()
+    {
+        if (selectedInstance < 0 || selectedInstance >= (int)instances.size())
+        {
+            if (onStatus) onStatus("Nothing selected to delete.");
+            return;
+        }
+
+        const auto removedName = instances[(size_t)selectedInstance].refdes;
+        wires.erase(std::remove_if(wires.begin(), wires.end(), [&](const Wire& wire) {
+            return nodeTouchesInstance(wire.a, selectedInstance) || nodeTouchesInstance(wire.b, selectedInstance);
+        }), wires.end());
+
+        juce::StringArray returnedProbes;
+        for (const auto& probe : probes)
+            if (nodeTouchesInstance(probe.node, selectedInstance))
+                returnedProbes.add(probe.id);
+        probes.erase(std::remove_if(probes.begin(), probes.end(), [&](const Probe& probe) {
+            return nodeTouchesInstance(probe.node, selectedInstance);
+        }), probes.end());
+
+        instances.erase(instances.begin() + selectedInstance);
+        for (auto& wire : wires)
+        {
+            adjustNodeAfterDeletingInstance(wire.a, selectedInstance);
+            adjustNodeAfterDeletingInstance(wire.b, selectedInstance);
+        }
+        for (auto& probe : probes)
+            adjustNodeAfterDeletingInstance(probe.node, selectedInstance);
+
+        selectedInstance = -1;
+        notifySelection();
+        for (const auto& probeId : returnedProbes)
+            if (onProbeChanged) onProbeChanged(probeId, {}, {});
+        if (onStatus) onStatus("Deleted " + removedName + ".");
+        repaint();
     }
 
     void notifySelection()
@@ -888,6 +1720,8 @@ private:
                             symbolId == "ac_voltage_source" ? juce::String("VAC") :
                             symbolId == "signal_source" ? juce::String("SIG") :
                             symbolId == "capacitor" ? juce::String("C") :
+                            symbolId == "inductor" ? juce::String("L") :
+                            symbolId == "diode" ? juce::String("D") :
                             symbolId == "resistor" ? juce::String("R") :
                             symbolId == "opamp_741" ? juce::String("U") :
                             symbolId == "npn" ? juce::String("Q") :
@@ -899,25 +1733,58 @@ private:
                               defaultBusNameFor(symbol.id),
                               familyFor(symbol.id),
                               {},
-                              p });
+                              p,
+                              0,
+                              isRailBus(symbol.id) ? 420.0f : 0.0f });
         selectedInstance = (int)instances.size() - 1;
         notifySelection();
         if (onStatus) onStatus("Placed " + symbol.title + " at schematic grid.");
     }
 
+    juce::String displayValueFor(const Instance& instance) const
+    {
+        if (instance.symbolId == "ground" || instance.symbolId == "ground_bus")
+            return instance.busName;
+        if (instance.symbolId == "power_bus")
+            return instance.busName;
+        if (instance.symbolId == "ac_voltage_source" || instance.symbolId == "signal_source")
+            return instance.value + " @ " + instance.frequency;
+        return instance.value;
+    }
+
     void drawSymbolBody(juce::Graphics& g, const Instance& instance, const SymbolDef& symbol)
     {
-        const auto body = symbol.bounds.translated(instance.position.x, instance.position.y);
-        g.setColour(juce::Colour(0xff17212b));
-        g.fillRoundedRectangle(body, 4.0f);
-        g.setColour(juce::Colour(0xff78dcca));
-        g.drawRoundedRectangle(body, 4.0f, 1.6f);
+        const auto selectionBounds = orientedBounds(instance, symbol).expanded(8.0f);
         if (selectedInstance >= 0 && selectedInstance < (int)instances.size()
             && &instance == &instances[(size_t)selectedInstance])
         {
             g.setColour(juce::Colour(0xffffc857));
-            g.drawRoundedRectangle(body.expanded(4.0f), 6.0f, 2.0f);
+            const auto r = selectionBounds;
+            const auto s = 8.0f;
+            g.drawLine(r.getX(), r.getY(), r.getX() + s, r.getY(), 1.5f);
+            g.drawLine(r.getX(), r.getY(), r.getX(), r.getY() + s, 1.5f);
+            g.drawLine(r.getRight(), r.getY(), r.getRight() - s, r.getY(), 1.5f);
+            g.drawLine(r.getRight(), r.getY(), r.getRight(), r.getY() + s, 1.5f);
+            g.drawLine(r.getX(), r.getBottom(), r.getX() + s, r.getBottom(), 1.5f);
+            g.drawLine(r.getX(), r.getBottom(), r.getX(), r.getBottom() - s, 1.5f);
+            g.drawLine(r.getRight(), r.getBottom(), r.getRight() - s, r.getBottom(), 1.5f);
+            g.drawLine(r.getRight(), r.getBottom(), r.getRight(), r.getBottom() - s, 1.5f);
+
+            if (isRailBus(instance.symbolId))
+            {
+                g.setColour(juce::Colour(0xff0e141a));
+                g.fillRoundedRectangle(railHandleBounds(instance, true), 3.0f);
+                g.fillRoundedRectangle(railHandleBounds(instance, false), 3.0f);
+                g.setColour(juce::Colour(0xffffc857));
+                g.drawRoundedRectangle(railHandleBounds(instance, true), 3.0f, 1.5f);
+                g.drawRoundedRectangle(railHandleBounds(instance, false), 3.0f, 1.5f);
+            }
         }
+
+        const auto body = symbol.bounds;
+        g.saveState();
+        g.addTransform(juce::AffineTransform::rotation(juce::degreesToRadians((float)instance.rotation))
+                           .translated(instance.position.x, instance.position.y));
 
         if (symbol.id == "opamp_741")
         {
@@ -926,16 +1793,27 @@ private:
             tri.lineTo(body.getX(), body.getBottom());
             tri.lineTo(body.getRight(), body.getCentreY());
             tri.closeSubPath();
-            g.setColour(juce::Colour(0xff17212b));
-            g.fillPath(tri);
             g.setColour(juce::Colour(0xff78dcca));
             g.strokePath(tri, juce::PathStrokeType(1.8f));
+            g.setColour(juce::Colour(0xffe8f1f2));
+            g.drawLine(-72.0f, -20.0f, body.getX(), -20.0f, 1.8f);
+            g.drawLine(-72.0f, 20.0f, body.getX(), 20.0f, 1.8f);
+            g.drawLine(body.getRight(), 0.0f, 72.0f, 0.0f, 1.8f);
+            g.drawLine(0.0f, -62.0f, 0.0f, body.getY(), 1.8f);
+            g.drawLine(0.0f, body.getBottom(), 0.0f, 62.0f, 1.8f);
+            g.setFont(juce::Font(14.0f, juce::Font::bold));
+            g.drawText("+", -48, -30, 18, 18, juce::Justification::centred);
+            g.drawText("-", -48, 12, 18, 18, juce::Justification::centred);
+            g.setColour(juce::Colour(0xffdce9ee));
+            g.setFont(juce::Font(13.0f, juce::Font::bold));
+            g.drawText("uA741", body.toNearestInt(), juce::Justification::centred);
         }
         else if (symbol.id == "resistor")
         {
             g.setColour(juce::Colour(0xffe8f1f2));
             juce::Path z;
             const auto cy = body.getCentreY();
+            g.drawLine(-54.0f, 0.0f, body.getX(), 0.0f, 1.8f);
             z.startNewSubPath(body.getX(), cy);
             for (int i = 0; i < 6; ++i)
             {
@@ -944,24 +1822,77 @@ private:
             }
             z.lineTo(body.getRight(), cy);
             g.strokePath(z, juce::PathStrokeType(1.8f));
+            g.drawLine(body.getRight(), 0.0f, 54.0f, 0.0f, 1.8f);
         }
         else if (symbol.id == "capacitor")
         {
             g.setColour(juce::Colour(0xffe8f1f2));
+            g.drawLine(-42.0f, 0.0f, -8.0f, 0.0f, 1.8f);
+            g.drawLine(8.0f, 0.0f, 42.0f, 0.0f, 1.8f);
             g.drawVerticalLine((int)(body.getCentreX() - 6), body.getY(), body.getBottom());
             g.drawVerticalLine((int)(body.getCentreX() + 6), body.getY(), body.getBottom());
+        }
+        else if (symbol.id == "inductor")
+        {
+            g.setColour(juce::Colour(0xffe8f1f2));
+            g.drawLine(-54.0f, 0.0f, -34.0f, 0.0f, 1.8f);
+            g.drawLine(34.0f, 0.0f, 54.0f, 0.0f, 1.8f);
+            juce::Path coils;
+            coils.startNewSubPath(-34.0f, 0.0f);
+            for (int i = 0; i < 4; ++i)
+            {
+                const auto x = -34.0f + (float)i * 17.0f;
+                coils.cubicTo(x + 4.0f, -18.0f, x + 13.0f, -18.0f, x + 17.0f, 0.0f);
+            }
+            g.strokePath(coils, juce::PathStrokeType(1.8f));
+        }
+        else if (symbol.id == "diode")
+        {
+            g.setColour(juce::Colour(0xffe8f1f2));
+            g.drawLine(-54.0f, 0.0f, -28.0f, 0.0f, 1.8f);
+            g.drawLine(28.0f, 0.0f, 54.0f, 0.0f, 1.8f);
+            juce::Path tri;
+            tri.startNewSubPath(-28.0f, -20.0f);
+            tri.lineTo(-28.0f, 20.0f);
+            tri.lineTo(18.0f, 0.0f);
+            tri.closeSubPath();
+            g.strokePath(tri, juce::PathStrokeType(1.8f));
+            g.drawLine(22.0f, -22.0f, 22.0f, 22.0f, 1.8f);
         }
         else if (symbol.id == "power_bus")
         {
             g.setColour(juce::Colour(0xffffc857));
-            g.drawLine(body.getX() + 8.0f, body.getCentreY(), body.getRight() - 8.0f, body.getCentreY(), 3.0f);
-            g.drawLine(body.getCentreX(), body.getCentreY(), body.getCentreX(), body.getBottom() + 14.0f, 2.0f);
+            const auto length = std::max(120.0f, instance.busLength);
+            g.drawLine(-length * 0.5f, 0.0f, length * 0.5f, 0.0f, 3.0f);
+            for (float x = -length * 0.5f; x <= length * 0.5f + 0.1f; x += 48.0f)
+            {
+                g.drawLine(x, -7.0f, x, 7.0f, 1.2f);
+            }
+            g.setFont(juce::Font(12.0f, juce::Font::bold));
+            g.drawText(instance.busName.isNotEmpty() ? instance.busName : "PWR",
+                       juce::Rectangle<float>(-length * 0.5f, -24.0f, length, 18.0f).toNearestInt(),
+                       juce::Justification::centredLeft);
         }
-        else if (symbol.id == "ground" || symbol.id == "ground_bus")
+        else if (symbol.id == "ground_bus")
+        {
+            g.setColour(juce::Colour(0xff78dcca));
+            const auto length = std::max(120.0f, instance.busLength);
+            g.drawLine(-length * 0.5f, 0.0f, length * 0.5f, 0.0f, 3.0f);
+            for (float x = -length * 0.5f; x <= length * 0.5f + 0.1f; x += 48.0f)
+            {
+                g.drawLine(x, -7.0f, x, 7.0f, 1.2f);
+            }
+            g.setFont(juce::Font(12.0f, juce::Font::bold));
+            g.drawText(instance.busName.isNotEmpty() ? instance.busName : "0",
+                       juce::Rectangle<float>(-length * 0.5f, 6.0f, length, 18.0f).toNearestInt(),
+                       juce::Justification::centredLeft);
+        }
+        else if (symbol.id == "ground")
         {
             g.setColour(juce::Colour(0xffe8f1f2));
             const auto cx = body.getCentreX();
-            g.drawLine(cx, body.getY(), cx, body.getY() + 10, 2.0f);
+            const auto leadTop = -24.0f;
+            g.drawLine(cx, leadTop, cx, body.getY() + 10, 2.0f);
             g.drawLine(cx - 22, body.getY() + 10, cx + 22, body.getY() + 10, 2.0f);
             g.drawLine(cx - 14, body.getY() + 19, cx + 14, body.getY() + 19, 2.0f);
             g.drawLine(cx - 6, body.getY() + 28, cx + 6, body.getY() + 28, 2.0f);
@@ -969,9 +1900,28 @@ private:
         else if (symbol.id == "voltage_source" || symbol.id == "battery" || symbol.id == "ac_voltage_source" || symbol.id == "signal_source")
         {
             g.setColour(juce::Colour(0xffe8f1f2));
-            g.drawEllipse(body, 2.0f);
-            if (symbol.id == "ac_voltage_source" || symbol.id == "signal_source")
+            if (symbol.id == "signal_source")
             {
+                g.drawLine(-58.0f, 0.0f, body.getX(), 0.0f, 1.8f);
+                g.drawLine(body.getRight(), 0.0f, 58.0f, 0.0f, 1.8f);
+            }
+            else
+            {
+                const auto topPin = symbol.id == "battery" ? -52.0f : symbol.id == "ac_voltage_source" ? -46.0f : -42.0f;
+                const auto bottomPin = -topPin;
+                g.drawLine(0.0f, topPin, 0.0f, body.getY(), 1.8f);
+                g.drawLine(0.0f, body.getBottom(), 0.0f, bottomPin, 1.8f);
+            }
+            if (symbol.id == "battery")
+            {
+                g.drawLine(-14.0f, -10.0f, 14.0f, -10.0f, 2.0f);
+                g.drawLine(-8.0f, 10.0f, 8.0f, 10.0f, 2.0f);
+                g.setFont(juce::Font(12.0f, juce::Font::bold));
+                g.drawText("+", 10, -30, 18, 18, juce::Justification::centred);
+            }
+            else if (symbol.id == "ac_voltage_source" || symbol.id == "signal_source")
+            {
+                g.drawEllipse(body, 2.0f);
                 juce::Path wave;
                 const auto cy = body.getCentreY();
                 for (int i = 0; i <= 24; ++i)
@@ -985,28 +1935,75 @@ private:
             }
             else
             {
+                g.drawEllipse(body, 2.0f);
                 g.drawText("+", body.withHeight(22.0f).toNearestInt(), juce::Justification::centred);
             }
+            g.setFont(juce::Font(12.0f, juce::Font::bold));
+        }
+        else if (symbol.id == "npn")
+        {
+            g.setColour(juce::Colour(0xffe8f1f2));
+            g.drawLine(-54.0f, 0.0f, -10.0f, 0.0f, 1.8f);
+            g.drawLine(-10.0f, -24.0f, -10.0f, 24.0f, 1.8f);
+            g.drawLine(-10.0f, -12.0f, 28.0f, -48.0f, 1.8f);
+            g.drawLine(-10.0f, 12.0f, 28.0f, 48.0f, 1.8f);
+            juce::Path arrow;
+            arrow.startNewSubPath(20.0f, 38.0f);
+            arrow.lineTo(28.0f, 48.0f);
+            arrow.lineTo(15.0f, 46.0f);
+            g.strokePath(arrow, juce::PathStrokeType(1.8f));
+        }
+        else if (symbol.id == "logic_not")
+        {
+            g.setColour(juce::Colour(0xffe8f1f2));
+            g.drawLine(-66.0f, 0.0f, body.getX(), 0.0f, 1.8f);
+            juce::Path tri;
+            tri.startNewSubPath(body.getX(), body.getY());
+            tri.lineTo(body.getX(), body.getBottom());
+            tri.lineTo(body.getRight() - 12.0f, 0.0f);
+            tri.closeSubPath();
+            g.strokePath(tri, juce::PathStrokeType(1.8f));
+            g.drawEllipse(body.getRight() - 12.0f, -6.0f, 12.0f, 12.0f, 1.8f);
+            g.drawLine(body.getRight(), 0.0f, 66.0f, 0.0f, 1.8f);
         }
 
-        g.setColour(juce::Colour(0xffdce9ee));
-        g.setFont(juce::Font(13.0f, juce::Font::bold));
-        g.drawText(symbol.title, body.toNearestInt(), juce::Justification::centred);
+        g.restoreState();
+
         g.setColour(juce::Colour(0xff93a7b0));
         g.setFont(juce::Font(12.0f));
-        g.drawText(instance.refdes, (int)body.getX(), (int)body.getY() - 18, (int)body.getWidth(), 16, juce::Justification::centred);
+        g.drawText(instance.refdes,
+                   (int)selectionBounds.getX(),
+                   (int)selectionBounds.getY() - 18,
+                   (int)selectionBounds.getWidth(),
+                   16,
+                   juce::Justification::centred);
+        const auto valueText = displayValueFor(instance);
+        if (valueText.isNotEmpty())
+        {
+            g.setColour(juce::Colour(0xffdce9ee));
+            g.drawText(valueText,
+                       (int)selectionBounds.getX(),
+                       (int)selectionBounds.getBottom() + 2,
+                       (int)selectionBounds.getWidth(),
+                       16,
+                       juce::Justification::centred);
+        }
     }
 
     void drawInstances(juce::Graphics& g)
     {
-        for (const auto& instance : instances)
+        for (int instanceIndex = 0; instanceIndex < (int)instances.size(); ++instanceIndex)
         {
+            const auto& instance = instances[(size_t)instanceIndex];
             const auto symbol = symbolFor(instance.symbolId);
             drawSymbolBody(g, instance, symbol);
 
+            if (isRailBus(instance.symbolId))
+                continue;
+
             for (size_t i = 0; i < symbol.pins.size(); ++i)
             {
-                const auto pin = instance.position + symbol.pins[i].offset;
+                const auto pin = pinPosition({ instanceIndex, (int)i });
                 g.setColour(juce::Colour(0xffe8f1f2));
                 g.fillEllipse(pin.x - 4, pin.y - 4, 8, 8);
                 g.setColour(juce::Colour(0xff93a7b0));
@@ -1028,18 +2025,65 @@ private:
         g.strokePath(path, juce::PathStrokeType(width));
     }
 
+    void drawRoutedWire(juce::Graphics& g, const std::vector<juce::Point<float>>& points, juce::Colour colour, float width)
+    {
+        if (points.size() < 2)
+            return;
+
+        juce::Path path;
+        path.startNewSubPath(points.front());
+        for (size_t i = 1; i < points.size(); ++i)
+            path.lineTo(points[i]);
+
+        g.setColour(colour);
+        g.strokePath(path, juce::PathStrokeType(width));
+    }
+
     void drawWires(juce::Graphics& g)
     {
         for (const auto& wire : wires)
-            drawRightAngleWire(g, pinPosition(wire.a), pinPosition(wire.b), juce::Colour(0xfff4d35e), 2.0f);
+        {
+            if (isInternalRailTapWire(wire))
+                continue;
+
+            drawRoutedWire(g, routedWirePoints(wire.a, wire.b), juce::Colour(0xfff4d35e), 2.0f);
+        }
+
+        g.setColour(juce::Colour(0xffffc857));
+        for (const auto& junction : junctions)
+            g.fillEllipse(junction.x - 4.0f, junction.y - 4.0f, 8.0f, 8.0f);
+    }
+
+    void drawProbes(juce::Graphics& g)
+    {
+        for (const auto& probe : probes)
+        {
+            const auto p = nodePosition(probe.node);
+            if (p == juce::Point<float>())
+                continue;
+
+            g.setColour(probe.colour.withAlpha(0.24f));
+            g.fillEllipse(p.x - 13.0f, p.y - 13.0f, 26.0f, 26.0f);
+            g.setColour(probe.colour);
+            g.drawEllipse(p.x - 10.0f, p.y - 10.0f, 20.0f, 20.0f, 2.0f);
+            g.fillEllipse(p.x - 3.0f, p.y - 3.0f, 6.0f, 6.0f);
+
+            auto label = juce::Rectangle<int>((int)p.x + 10, (int)p.y - 20, 64, 18);
+            g.setColour(juce::Colour(0xdd0e141a));
+            g.fillRoundedRectangle(label.toFloat(), 3.0f);
+            g.setColour(probe.colour);
+            g.setFont(juce::Font(11.0f, juce::Font::bold));
+            g.drawText(probe.label, label.reduced(4, 0), juce::Justification::centredLeft);
+        }
     }
 
     void drawPendingWire(juce::Graphics& g)
     {
-        if (pendingPin.instanceIndex < 0) return;
-        const auto start = pinPosition(pendingPin);
-        const auto end = getMouseXYRelative().toFloat();
-        drawRightAngleWire(g, start, end, juce::Colour(0x99f4d35e), 1.5f);
+        if (!wireDragging || !wireDragStart.isValid()) return;
+        drawRoutedWire(g,
+                       routedWirePoints(wireDragStart, wireDragPosition, {}),
+                       juce::Colour(0x99f4d35e),
+                       1.5f);
     }
 
     /*
@@ -1082,10 +2126,236 @@ private:
 class InstrumentPanel final : public juce::Component
 {
 public:
+    InstrumentPanel()
+    {
+        title.setText("Lab Bench", juce::dontSendNotification);
+        title.setFont(juce::Font(16.0f, juce::Font::bold));
+        title.setColour(juce::Label::textColourId, juce::Colour(0xff78dcca));
+        addAndMakeVisible(title);
+
+        psuTitle.setText("Programmable Power Supply", juce::dontSendNotification);
+        psuTitle.setFont(juce::Font(14.0f, juce::Font::bold));
+        psuTitle.setColour(juce::Label::textColourId, juce::Colour(0xffdce9ee));
+        addAndMakeVisible(psuTitle);
+
+        mode.addItem("DC", 1);
+        mode.addItem("AC", 2);
+        mode.setSelectedId(1, juce::dontSendNotification);
+        mode.setColour(juce::ComboBox::backgroundColourId, juce::Colour(0xff253341));
+        mode.setColour(juce::ComboBox::textColourId, juce::Colour(0xffdce9ee));
+        addAndMakeVisible(mode);
+
+        for (auto* editor : { &positiveNet, &negativeNet, &voltage, &frequency, &currentLimit, &internalResistance })
+        {
+            styleTextEditor(*editor);
+            editor->setMultiLine(false);
+            addAndMakeVisible(*editor);
+        }
+
+        positiveNet.setText("+9V", juce::dontSendNotification);
+        negativeNet.setText("0", juce::dontSendNotification);
+        voltage.setText("9", juce::dontSendNotification);
+        frequency.setText("60", juce::dontSendNotification);
+        currentLimit.setText("100m", juce::dontSendNotification);
+        internalResistance.setText("0.2", juce::dontSendNotification);
+
+        positiveNet.setTextToShowWhenEmpty("+9V, +12V, +18V", juce::Colour(0xff71808c));
+        negativeNet.setTextToShowWhenEmpty("0", juce::Colour(0xff71808c));
+        voltage.setTextToShowWhenEmpty("9", juce::Colour(0xff71808c));
+        frequency.setTextToShowWhenEmpty("60", juce::Colour(0xff71808c));
+        currentLimit.setTextToShowWhenEmpty("100m", juce::Colour(0xff71808c));
+        internalResistance.setTextToShowWhenEmpty("0.2", juce::Colour(0xff71808c));
+
+        outputEnabled.setButtonText("Output enabled");
+        outputEnabled.setToggleState(true, juce::dontSendNotification);
+        outputEnabled.setColour(juce::ToggleButton::textColourId, juce::Colour(0xffdce9ee));
+        addAndMakeVisible(outputEnabled);
+
+        currentLimited.setButtonText("Current limit active");
+        currentLimited.setToggleState(true, juce::dontSendNotification);
+        currentLimited.setColour(juce::ToggleButton::textColourId, juce::Colour(0xffdce9ee));
+        addAndMakeVisible(currentLimited);
+
+        psuPreset.addItem("9V pedal supply", 1);
+        psuPreset.addItem("12V pedal supply", 2);
+        psuPreset.addItem("18V pedal supply", 3);
+        psuPreset.addItem("Dying 9V battery", 4);
+        psuPreset.setSelectedId(1, juce::dontSendNotification);
+        psuPreset.setColour(juce::ComboBox::backgroundColourId, juce::Colour(0xff253341));
+        psuPreset.setColour(juce::ComboBox::textColourId, juce::Colour(0xffdce9ee));
+        psuPreset.onChange = [this] { applySelectedPreset(); };
+        addAndMakeVisible(psuPreset);
+
+        dmmTitle.setText("Precision Digital Multimeter", juce::dontSendNotification);
+        dmmTitle.setFont(juce::Font(14.0f, juce::Font::bold));
+        dmmTitle.setColour(juce::Label::textColourId, juce::Colour(0xffdce9ee));
+        addAndMakeVisible(dmmTitle);
+
+        for (const auto& item : { "DC Voltage", "AC Voltage", "DC Current", "AC Current", "Resistance",
+                                  "4-Wire Resistance", "Continuity", "Diode", "Capacitance", "Frequency",
+                                  "Period", "Duty Cycle", "Temperature", "AC+DC Voltage", "AC+DC Current",
+                                  "Ratio", "dB", "dBm", "Digitizer Voltage", "Digitizer Current" })
+            dmmFunction.addItem(item, dmmFunction.getNumItems() + 1);
+        dmmFunction.setSelectedId(1, juce::dontSendNotification);
+        dmmFunction.setColour(juce::ComboBox::backgroundColourId, juce::Colour(0xff253341));
+        dmmFunction.setColour(juce::ComboBox::textColourId, juce::Colour(0xffdce9ee));
+        addAndMakeVisible(dmmFunction);
+
+        for (const auto& item : { "Auto", "100 mV", "1 V", "10 V", "100 V", "1000 V",
+                                  "1 uA", "100 uA", "1 mA", "10 mA", "100 mA", "1 A", "10 A",
+                                  "100 Ohm", "1 kOhm", "10 kOhm", "100 kOhm", "1 MOhm", "100 MOhm",
+                                  "1 nF", "10 nF", "100 nF", "1 uF", "100 uF", "Hz" })
+            dmmRange.addItem(item, dmmRange.getNumItems() + 1);
+        dmmRange.setSelectedId(1, juce::dontSendNotification);
+        dmmRange.setColour(juce::ComboBox::backgroundColourId, juce::Colour(0xff253341));
+        dmmRange.setColour(juce::ComboBox::textColourId, juce::Colour(0xffdce9ee));
+        addAndMakeVisible(dmmRange);
+
+        for (auto* editor : { &dmmHighNet, &dmmLowNet, &dmmNplc, &dmmSampleRate })
+        {
+            styleTextEditor(*editor);
+            editor->setMultiLine(false);
+            addAndMakeVisible(*editor);
+        }
+        dmmHighNet.setText("probe", juce::dontSendNotification);
+        dmmLowNet.setText("bench", juce::dontSendNotification);
+        dmmNplc.setText("10", juce::dontSendNotification);
+        dmmSampleRate.setText("1000", juce::dontSendNotification);
+        dmmHighNet.setReadOnly(true);
+        dmmLowNet.setReadOnly(true);
+
+        dmmDisplay.setText("+0.000000 V", juce::dontSendNotification);
+        dmmDisplay.setFont(juce::Font(20.0f, juce::Font::bold));
+        dmmDisplay.setJustificationType(juce::Justification::centredRight);
+        dmmDisplay.setColour(juce::Label::textColourId, juce::Colour(0xff78dcca));
+        dmmDisplay.setColour(juce::Label::backgroundColourId, juce::Colour(0xff0e141a));
+        addAndMakeVisible(dmmDisplay);
+
+        for (auto* toggle : { &dmmTrueRms, &dmmAutoRange, &dmmHold, &dmmRelative, &dmmMinMax,
+                              &dmmPeakMinMax, &dmmLowPass, &dmmLoZ, &dmmContinuityBeep })
+        {
+            toggle->setColour(juce::ToggleButton::textColourId, juce::Colour(0xffdce9ee));
+            addAndMakeVisible(*toggle);
+        }
+        dmmTrueRms.setToggleState(true, juce::dontSendNotification);
+        dmmAutoRange.setToggleState(true, juce::dontSendNotification);
+        dmmContinuityBeep.setToggleState(true, juce::dontSendNotification);
+    }
+
+    void setProbeTarget(const juce::String& id, const juce::String& target)
+    {
+        if (id == "DMM_HI")
+            dmmHighNet.setText(target.isEmpty() ? "bench" : target, juce::dontSendNotification);
+        else if (id == "DMM_LO")
+            dmmLowNet.setText(target.isEmpty() ? "bench" : target, juce::dontSendNotification);
+        else if (id == "SCOPE_CH1")
+            scopeCh1Target = target;
+        else if (id == "SCOPE_CH2")
+            scopeCh2Target = target;
+
+        repaint();
+    }
+
+    juce::String buildInstrumentJson() const
+    {
+        juce::String text;
+        text << "{\n";
+        text << "  \"schemaVersion\": 1,\n";
+        text << "  \"kind\": \"djehuti_lab_instruments\",\n";
+        text << "  \"instruments\": [\n";
+        text << "    {\n";
+        text << "      \"id\": \"PSU1\",\n";
+        text << "      \"type\": \"programmable_power_supply\",\n";
+        text << "      \"mode\": " << quote(mode.getText().toLowerCase()) << ",\n";
+        text << "      \"channels\": [\n";
+        text << "        {\n";
+        text << "          \"name\": \"CH1\",\n";
+        text << "          \"positiveNet\": " << quote(positiveNet.getText().trim()) << ",\n";
+        text << "          \"negativeNet\": " << quote(negativeNet.getText().trim()) << ",\n";
+        text << "          \"voltage\": " << quote(voltage.getText().trim() + "V") << ",\n";
+        text << "          \"frequency\": " << quote(frequency.getText().trim() + "Hz") << ",\n";
+        text << "          \"currentLimit\": " << quote(currentLimit.getText().trim() + "A") << ",\n";
+        text << "          \"currentLimitEnabled\": " << (currentLimited.getToggleState() ? "true" : "false") << ",\n";
+        text << "          \"internalResistance\": " << quote(internalResistance.getText().trim() + "ohm") << ",\n";
+        text << "          \"enabled\": " << (outputEnabled.getToggleState() ? "true" : "false") << "\n";
+        text << "        }\n";
+        text << "      ]\n";
+        text << "    },\n";
+        text << "    {\n";
+        text << "      \"id\": \"DMM1\",\n";
+        text << "      \"type\": \"precision_digital_multimeter\",\n";
+        text << "      \"function\": " << quote(dmmFunction.getText()) << ",\n";
+        text << "      \"range\": " << quote(dmmRange.getText()) << ",\n";
+        text << "      \"connections\": {\n";
+        text << "        \"high\": " << quote(dmmHighNet.getText().trim()) << ",\n";
+        text << "        \"low\": " << quote(dmmLowNet.getText().trim()) << "\n";
+        text << "      },\n";
+        text << "      \"features\": {\n";
+        text << "        \"trueRms\": " << (dmmTrueRms.getToggleState() ? "true" : "false") << ",\n";
+        text << "        \"autoRange\": " << (dmmAutoRange.getToggleState() ? "true" : "false") << ",\n";
+        text << "        \"hold\": " << (dmmHold.getToggleState() ? "true" : "false") << ",\n";
+        text << "        \"relative\": " << (dmmRelative.getToggleState() ? "true" : "false") << ",\n";
+        text << "        \"minMaxRecording\": " << (dmmMinMax.getToggleState() ? "true" : "false") << ",\n";
+        text << "        \"peakMinMax\": " << (dmmPeakMinMax.getToggleState() ? "true" : "false") << ",\n";
+        text << "        \"lowPassFilter\": " << (dmmLowPass.getToggleState() ? "true" : "false") << ",\n";
+        text << "        \"lowImpedanceMode\": " << (dmmLoZ.getToggleState() ? "true" : "false") << ",\n";
+        text << "        \"continuityBeep\": " << (dmmContinuityBeep.getToggleState() ? "true" : "false") << "\n";
+        text << "      },\n";
+        text << "      \"acquisition\": {\n";
+        text << "        \"nplc\": " << quote(dmmNplc.getText().trim()) << ",\n";
+        text << "        \"sampleRate\": " << quote(dmmSampleRate.getText().trim() + "Sa/s") << ",\n";
+        text << "        \"digitizer\": { \"enabled\": true, \"resolutionBits\": 16 },\n";
+        text << "        \"statistics\": [\"min\", \"max\", \"average\", \"peakToPeak\", \"standardDeviation\"],\n";
+        text << "        \"logging\": true,\n";
+        text << "        \"graphing\": true,\n";
+        text << "        \"displayViews\": [\"numeric\", \"trend\", \"histogram\", \"bar\", \"waveform\"]\n";
+        text << "      }\n";
+        text << "    },\n";
+        text << "    {\n";
+        text << "      \"id\": \"SCOPE1\",\n";
+        text << "      \"type\": \"digital_oscilloscope\",\n";
+        text << "      \"channels\": [\n";
+        text << "        { \"name\": \"CH1\", \"target\": " << quote(scopeCh1Target.isEmpty() ? "bench" : scopeCh1Target) << " },\n";
+        text << "        { \"name\": \"CH2\", \"target\": " << quote(scopeCh2Target.isEmpty() ? "bench" : scopeCh2Target) << " }\n";
+        text << "      ],\n";
+        text << "      \"display\": { \"view\": \"waveform\", \"grid\": true }\n";
+        text << "    }\n";
+        text << "  ]\n";
+        text << "}\n";
+        return text;
+    }
+
     void paint(juce::Graphics& g) override
     {
         g.fillAll(juce::Colour(0xff10161d));
         auto area = getLocalBounds().reduced(12);
+        drawZone(g, psuZone, "Power Source");
+        drawZone(g, dmmZone, "Meter Setup");
+        drawZone(g, meterOptionsZone, "Meter Options");
+        drawZone(g, scopeZone, "Scope Preview");
+
+        g.setColour(juce::Colour(0xff93a7b0));
+        g.setFont(juce::Font(11.5f, juce::Font::bold));
+        g.drawText("Mode", 12, 64, 78, 16, juce::Justification::centredLeft);
+        g.drawText("Preset", 380, 64, 150, 16, juce::Justification::centredLeft);
+        g.drawText("+ net", 12, 104, 110, 16, juce::Justification::centredLeft);
+        g.drawText("- net", 130, 104, 110, 16, juce::Justification::centredLeft);
+        g.drawText("Volts", 12, 160, 92, 16, juce::Justification::centredLeft);
+        g.drawText("Freq", 112, 160, 92, 16, juce::Justification::centredLeft);
+        g.drawText("Limit", 212, 160, 92, 16, juce::Justification::centredLeft);
+        g.drawText("Internal R", 312, 160, 92, 16, juce::Justification::centredLeft);
+        g.drawText("Function", 12, 240, 150, 16, juce::Justification::centredLeft);
+        g.drawText("Range", 170, 240, 86, 16, juce::Justification::centredLeft);
+        g.drawText("Leads", 12, 280, 228, 16, juce::Justification::centredLeft);
+        g.drawText("NPLC", 248, 280, 70, 16, juce::Justification::centredLeft);
+        g.drawText("Sa/s", 326, 280, 90, 16, juce::Justification::centredLeft);
+
+        drawProbeLead(g, dmmHiLead, "DMM+", juce::Colour(0xffffc857), dmmHighNet.getText().trim());
+        drawProbeLead(g, dmmLoLead, "DMM-", juce::Colour(0xff93a7b0), dmmLowNet.getText().trim());
+        drawProbeLead(g, scopeCh1Lead, "CH1", juce::Colour(0xff78dcca), scopeCh1Target);
+        drawProbeLead(g, scopeCh2Lead, "CH2", juce::Colour(0xffff6b6b), scopeCh2Target);
+
+        area.removeFromTop(scopeZone.getY() - 12);
         g.setColour(juce::Colour(0xffdce9ee));
         g.setFont(juce::Font(15.0f, juce::Font::bold));
         g.drawText("Oscilloscope / Dataset Viewer", area.removeFromTop(24), juce::Justification::centredLeft);
@@ -1112,6 +2382,254 @@ public:
         g.setColour(juce::Colour(0xff78dcca));
         g.strokePath(wave, juce::PathStrokeType(2.0f));
     }
+
+    void mouseDown(const juce::MouseEvent& event) override
+    {
+        const auto p = event.getPosition();
+        const auto probeId = probeAt(p);
+        if (probeId.isEmpty())
+            return;
+
+        if (probeIsInUse(probeId))
+            return;
+
+        if (auto* container = juce::DragAndDropContainer::findParentDragContainerFor(this))
+        {
+            showCursorForEvent(event, juce::MouseCursor::DraggingHandCursor);
+            container->startDragging("probe:" + probeId, this);
+        }
+    }
+
+    void mouseUp(const juce::MouseEvent& event) override
+    {
+        showCursorForEvent(event, juce::MouseCursor::NormalCursor);
+    }
+
+    void resized() override
+    {
+        auto area = getLocalBounds().reduced(12);
+        title.setBounds(area.removeFromTop(24));
+        area.removeFromTop(6);
+        psuTitle.setBounds(area.removeFromTop(22));
+        psuZone = juce::Rectangle<int>(8, 44, getWidth() - 16, 166);
+
+        auto topRow = area.removeFromTop(28);
+        addField(topRow, mode, 78);
+        topRow.removeFromLeft(8);
+        outputEnabled.setBounds(topRow.removeFromLeft(140));
+        currentLimited.setBounds(topRow.removeFromLeft(150));
+        topRow.removeFromLeft(8);
+        psuPreset.setBounds(topRow.removeFromLeft(170));
+
+        area.removeFromTop(8);
+        auto nets = area.removeFromTop(48);
+        layoutEditor(nets, "Positive net", positiveNet);
+        nets.removeFromLeft(8);
+        layoutEditor(nets, "Negative net", negativeNet);
+
+        area.removeFromTop(8);
+        auto electrical = area.removeFromTop(48);
+        layoutEditor(electrical, "Voltage", voltage);
+        electrical.removeFromLeft(8);
+        layoutEditor(electrical, "Frequency", frequency);
+        electrical.removeFromLeft(8);
+        layoutEditor(electrical, "Current limit", currentLimit);
+        electrical.removeFromLeft(8);
+        layoutEditor(electrical, "Internal R", internalResistance);
+
+        area.removeFromTop(8);
+        area.removeFromTop(18);
+        dmmZone = juce::Rectangle<int>(8, area.getY() - 8, getWidth() - 16, 112);
+        dmmTitle.setBounds(area.removeFromTop(22));
+        auto dmmTop = area.removeFromTop(32);
+        dmmFunction.setBounds(dmmTop.removeFromLeft(150));
+        dmmTop.removeFromLeft(8);
+        dmmRange.setBounds(dmmTop.removeFromLeft(86));
+        dmmTop.removeFromLeft(8);
+        dmmDisplay.setBounds(dmmTop.removeFromLeft(190));
+
+        area.removeFromTop(8);
+        auto dmmNets = area.removeFromTop(32);
+        dmmHiLead = dmmNets.removeFromLeft(52);
+        dmmNets.removeFromLeft(6);
+        dmmLoLead = dmmNets.removeFromLeft(52);
+        dmmNets.removeFromLeft(8);
+        dmmHighNet.setBounds(dmmNets.removeFromLeft(110));
+        dmmNets.removeFromLeft(8);
+        dmmLowNet.setBounds(dmmNets.removeFromLeft(110));
+        dmmNets.removeFromLeft(8);
+        dmmNplc.setBounds(dmmNets.removeFromLeft(70));
+        dmmNets.removeFromLeft(8);
+        dmmSampleRate.setBounds(dmmNets.removeFromLeft(90));
+
+        area.removeFromTop(12);
+        meterOptionsZone = juce::Rectangle<int>(8, area.getY() - 6, getWidth() - 16, 48);
+        auto toggles = area.removeFromTop(58);
+        dmmTrueRms.setBounds(toggles.removeFromLeft(96));
+        dmmAutoRange.setBounds(toggles.removeFromLeft(104));
+        dmmHold.setBounds(toggles.removeFromLeft(72));
+        dmmRelative.setBounds(toggles.removeFromLeft(82));
+        dmmMinMax.setBounds(toggles.removeFromLeft(88));
+        dmmPeakMinMax.setBounds(toggles.removeFromLeft(92));
+        dmmLowPass.setBounds(toggles.removeFromLeft(92));
+        dmmLoZ.setBounds(toggles.removeFromLeft(72));
+        dmmContinuityBeep.setBounds(toggles.removeFromLeft(80));
+        area.removeFromTop(10);
+        scopeZone = juce::Rectangle<int>(8, area.getY(), getWidth() - 16, getHeight() - area.getY() - 8);
+        auto scopeLeads = scopeZone.reduced(10).removeFromTop(34).removeFromRight(126);
+        scopeCh1Lead = scopeLeads.removeFromLeft(58);
+        scopeLeads.removeFromLeft(10);
+        scopeCh2Lead = scopeLeads.removeFromLeft(58);
+    }
+
+private:
+    static juce::String quote(const juce::String& text)
+    {
+        return "\"" + text.replace("\\", "\\\\").replace("\"", "\\\"") + "\"";
+    }
+
+    static void addField(juce::Rectangle<int>& area, juce::Component& component, int width)
+    {
+        component.setBounds(area.removeFromLeft(width));
+    }
+
+    static void layoutEditor(juce::Rectangle<int>& area, const juce::String& label, juce::TextEditor& editor)
+    {
+        auto column = area.removeFromLeft(std::max(92, area.getWidth() / 4));
+        juce::ignoreUnused(label);
+        editor.setBounds(column.removeFromBottom(28));
+    }
+
+    static void drawZone(juce::Graphics& g, juce::Rectangle<int> area, const juce::String& label)
+    {
+        if (area.isEmpty())
+            return;
+
+        auto r = area.toFloat();
+        g.setColour(juce::Colour(0xff121a22));
+        g.fillRoundedRectangle(r, 5.0f);
+        g.setColour(juce::Colour(0xff31404b));
+        g.drawRoundedRectangle(r, 5.0f, 1.0f);
+        g.setColour(juce::Colour(0xff78dcca));
+        g.setFont(juce::Font(11.5f, juce::Font::bold));
+        g.drawText(label, area.reduced(8, 2).removeFromTop(16), juce::Justification::centredLeft);
+    }
+
+    static juce::Colour disabledProbeColour(juce::Colour colour)
+    {
+        return colour.withAlpha(0.22f);
+    }
+
+    void drawProbeLead(juce::Graphics& g,
+                       juce::Rectangle<int> area,
+                       const juce::String& label,
+                       juce::Colour colour,
+                       const juce::String& target)
+    {
+        if (area.isEmpty())
+            return;
+
+        const auto inUse = target.isNotEmpty() && target != "bench" && target != "probe";
+        const auto activeColour = inUse ? disabledProbeColour(colour) : colour;
+        auto body = area.toFloat().reduced(2.0f);
+        g.setColour(juce::Colour(0xff0e141a));
+        g.fillRoundedRectangle(body, 7.0f);
+        g.setColour(activeColour);
+        g.drawRoundedRectangle(body, 7.0f, 1.5f);
+
+        const auto jack = juce::Rectangle<float>(body.getX() + 7.0f, body.getCentreY() - 5.0f, 10.0f, 10.0f);
+        g.setColour(activeColour);
+        g.drawEllipse(jack, 1.6f);
+        if (!inUse)
+            g.fillEllipse(jack.reduced(3.0f));
+
+        g.setFont(juce::Font(11.0f, juce::Font::bold));
+        g.drawText(inUse ? "out" : label, area.withTrimmedLeft(20), juce::Justification::centredLeft, true);
+    }
+
+    juce::String probeAt(juce::Point<int> p) const
+    {
+        if (dmmHiLead.contains(p)) return "DMM_HI";
+        if (dmmLoLead.contains(p)) return "DMM_LO";
+        if (scopeCh1Lead.contains(p)) return "SCOPE_CH1";
+        if (scopeCh2Lead.contains(p)) return "SCOPE_CH2";
+        return {};
+    }
+
+    bool probeIsInUse(const juce::String& id) const
+    {
+        if (id == "DMM_HI") return !isProbeHome(dmmHighNet.getText().trim());
+        if (id == "DMM_LO") return !isProbeHome(dmmLowNet.getText().trim());
+        if (id == "SCOPE_CH1") return scopeCh1Target.isNotEmpty();
+        if (id == "SCOPE_CH2") return scopeCh2Target.isNotEmpty();
+        return true;
+    }
+
+    static bool isProbeHome(const juce::String& target)
+    {
+        return target.isEmpty() || target == "bench" || target == "probe";
+    }
+
+    void applySelectedPreset()
+    {
+        switch (psuPreset.getSelectedId())
+        {
+            case 2: applyPreset("12", "100m", "0.15"); break;
+            case 3: applyPreset("18", "100m", "0.15"); break;
+            case 4: applyPreset("6.8", "35m", "25"); break;
+            default: applyPreset("9", "100m", "0.2"); break;
+        }
+    }
+
+    void applyPreset(const juce::String& volts, const juce::String& amps, const juce::String& resistance)
+    {
+        mode.setSelectedId(1, juce::dontSendNotification);
+        positiveNet.setText("+" + volts + "V", juce::dontSendNotification);
+        negativeNet.setText("0", juce::dontSendNotification);
+        voltage.setText(volts, juce::dontSendNotification);
+        currentLimit.setText(amps, juce::dontSendNotification);
+        internalResistance.setText(resistance, juce::dontSendNotification);
+    }
+
+    juce::Label title;
+    juce::Label psuTitle;
+    juce::ComboBox mode;
+    juce::TextEditor positiveNet;
+    juce::TextEditor negativeNet;
+    juce::TextEditor voltage;
+    juce::TextEditor frequency;
+    juce::TextEditor currentLimit;
+    juce::TextEditor internalResistance;
+    juce::ToggleButton outputEnabled;
+    juce::ToggleButton currentLimited;
+    juce::ComboBox psuPreset;
+    juce::Label dmmTitle;
+    juce::ComboBox dmmFunction;
+    juce::ComboBox dmmRange;
+    juce::Label dmmDisplay;
+    juce::TextEditor dmmHighNet;
+    juce::TextEditor dmmLowNet;
+    juce::TextEditor dmmNplc;
+    juce::TextEditor dmmSampleRate;
+    juce::ToggleButton dmmTrueRms { "True RMS" };
+    juce::ToggleButton dmmAutoRange { "Auto" };
+    juce::ToggleButton dmmHold { "Hold" };
+    juce::ToggleButton dmmRelative { "Rel" };
+    juce::ToggleButton dmmMinMax { "Min/Max" };
+    juce::ToggleButton dmmPeakMinMax { "Peak" };
+    juce::ToggleButton dmmLowPass { "LPF" };
+    juce::ToggleButton dmmLoZ { "LoZ" };
+    juce::ToggleButton dmmContinuityBeep { "Beep" };
+    juce::String scopeCh1Target;
+    juce::String scopeCh2Target;
+    juce::Rectangle<int> dmmHiLead;
+    juce::Rectangle<int> dmmLoLead;
+    juce::Rectangle<int> scopeCh1Lead;
+    juce::Rectangle<int> scopeCh2Lead;
+    juce::Rectangle<int> psuZone;
+    juce::Rectangle<int> dmmZone;
+    juce::Rectangle<int> meterOptionsZone;
+    juce::Rectangle<int> scopeZone;
 };
 
 class ConsolePanel final : public juce::Component
@@ -1183,6 +2701,15 @@ public:
         };
         addAndMakeVisible(apply);
 
+        rotate.setButtonText("Rotate 90");
+        rotate.setColour(juce::TextButton::buttonColourId, juce::Colour(0xff253341));
+        rotate.setColour(juce::TextButton::textColourOffId, juce::Colour(0xffdce9ee));
+        rotate.onClick = [this] {
+            if (onRotate != nullptr && selectedIndex >= 0)
+                onRotate();
+        };
+        addAndMakeVisible(rotate);
+
         setSelection(-1, {}, {}, {}, {}, {}, {}, {});
     }
 
@@ -1207,9 +2734,11 @@ public:
         for (auto* editor : { &value, &frequency, &busName, &family, &manufacturerPart })
             editor->setEnabled(hasSelection);
         apply.setEnabled(hasSelection);
+        rotate.setEnabled(hasSelection);
     }
 
     std::function<void(juce::String, juce::String, juce::String, juce::String, juce::String)> onApply;
+    std::function<void()> onRotate;
 
     void paint(juce::Graphics& g) override { g.fillAll(juce::Colour(0xff151a20)); }
 
@@ -1225,7 +2754,10 @@ public:
         layoutRow(area, familyLabel, family);
         layoutRow(area, manufacturerLabel, manufacturerPart);
         area.removeFromTop(8);
-        apply.setBounds(area.removeFromTop(30).removeFromLeft(90));
+        auto buttons = area.removeFromTop(30);
+        apply.setBounds(buttons.removeFromLeft(90));
+        buttons.removeFromLeft(8);
+        rotate.setBounds(buttons.removeFromLeft(110));
     }
 
 private:
@@ -1251,6 +2783,7 @@ private:
     juce::TextEditor family;
     juce::TextEditor manufacturerPart;
     juce::TextButton apply;
+    juce::TextButton rotate;
 };
 
 class AgentPanel final : public NotesPanel
@@ -1359,7 +2892,7 @@ ElectronicsWorkbench::ElectronicsWorkbench()
                                std::make_unique<ComponentLibraryPanel>(
                                    [this](juce::String id) {
                                        selectedSymbolId = id;
-                                       appendLog("Selected symbol: " + id + ". Drag it to the schematic.");
+                                       appendLog("Selected symbol: " + id + ". Click the schematic to place it, or drag it from the library.");
                                    }),
                                CreationDock::DockTargetZone::Left);
     auto schematic = std::make_unique<SchematicCanvasPanel>(
@@ -1386,16 +2919,25 @@ ElectronicsWorkbench::ElectronicsWorkbench()
                                                 juce::String manufacturerPart) {
         schematicPanel->updateSelectedProperties(value, frequency, busName, family, manufacturerPart);
     };
+    propertiesPanel->onRotate = [schematicPanel] {
+        schematicPanel->rotateSelected();
+    };
+    auto instruments = std::make_unique<InstrumentPanel>();
+    auto* instrumentPanel = instruments.get();
+    schematicPanel->setProbeListener([instrumentPanel](juce::String id, juce::String, juce::String target) {
+        instrumentPanel->setProbeTarget(id, target);
+    });
     getCircuitJson = [panel = schematic.get()] { return panel->buildCircuitJson(); };
     getXyceNetlist = [panel = schematic.get()] { return panel->buildXyceNetlist(); };
+    getLabInstrumentsJson = [instrumentPanel] { return instrumentPanel->buildInstrumentJson(); };
     dockManager->registerPanel("schematic", "Schematic", std::move(schematic), CreationDock::DockTargetZone::CenterTab);
     dockManager->registerPanel("simulation", "Simulation", std::make_unique<SimulationPanel>(), CreationDock::DockTargetZone::CenterTab);
-    dockManager->registerPanel("scope", "Instruments", std::make_unique<InstrumentPanel>(), CreationDock::DockTargetZone::Bottom);
     dockManager->registerPanel("console", "Frust Math Console", std::make_unique<ConsolePanel>(logConsole), CreationDock::DockTargetZone::Bottom);
     dockManager->registerPanel("agent", "BYOK Agent", std::make_unique<AgentPanel>(), CreationDock::DockTargetZone::Right);
     dockManager->registerPanel("properties", "Properties", std::move(properties), CreationDock::DockTargetZone::Right);
     dockManager->registerPanel("ingestion", "Spec Ingestion", std::make_unique<SpecIngestionPanel>(), CreationDock::DockTargetZone::Right);
     dockManager->registerPanel("sourcing", "Parts Sourcing", std::make_unique<PartsSourcingPanel>(), CreationDock::DockTargetZone::Right);
+    dockManager->registerPanel("lab_bench", "Lab Bench", std::move(instruments), CreationDock::DockTargetZone::Right);
 
     dockManager->loadLayoutFromFile(layoutFile());
     appendLog("Electronics research shell initialized.");
@@ -1533,7 +3075,7 @@ void ElectronicsWorkbench::resetResearchState()
 
 void ElectronicsWorkbench::exportCircuitArtifacts()
 {
-    if (getCircuitJson == nullptr || getXyceNetlist == nullptr)
+    if (getCircuitJson == nullptr || getXyceNetlist == nullptr || getLabInstrumentsJson == nullptr)
     {
         appendLog("No schematic exporter is available.");
         return;
@@ -1548,8 +3090,10 @@ void ElectronicsWorkbench::exportCircuitArtifacts()
 
     const auto circuitFile = runDir.getChildFile("circuit.json");
     const auto netlistFile = runDir.getChildFile("generated.cir");
+    const auto instrumentsFile = runDir.getChildFile("lab_instruments.json");
     const auto circuitJson = getCircuitJson();
     const auto netlist = getXyceNetlist();
+    const auto instrumentsJson = getLabInstrumentsJson();
 
     if (!circuitFile.replaceWithText(circuitJson))
     {
@@ -1561,8 +3105,13 @@ void ElectronicsWorkbench::exportCircuitArtifacts()
         appendLog("Could not write Xyce netlist: " + netlistFile.getFullPathName());
         return;
     }
+    if (!instrumentsFile.replaceWithText(instrumentsJson))
+    {
+        appendLog("Could not write lab instruments JSON: " + instrumentsFile.getFullPathName());
+        return;
+    }
 
-    appendLog("Exported circuit JSON and Xyce netlist to " + runDir.getFullPathName());
+    appendLog("Exported circuit JSON, Xyce netlist, and lab instruments to " + runDir.getFullPathName());
 }
 
 void ElectronicsWorkbench::showSpecDocument()

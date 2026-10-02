@@ -4,6 +4,8 @@
   "librarySymbols": [
     { "id": "resistor", "name": "Resistor", "category": "Passive" },
     { "id": "capacitor", "name": "Capacitor", "category": "Passive" },
+    { "id": "inductor", "name": "Inductor", "category": "Passive" },
+    { "id": "diode", "name": "Diode", "category": "Discrete" },
     { "id": "power_bus", "name": "Power Bus", "category": "Bus" },
     { "id": "ground_bus", "name": "Ground Bus", "category": "Bus" },
     { "id": "battery", "name": "Battery", "category": "Source" },
@@ -18,6 +20,8 @@
   "archetypes": [
     { "id": "passive.resistor", "defaultSymbol": "resistor", "defaultValue": "10k" },
     { "id": "passive.capacitor", "defaultSymbol": "capacitor", "defaultValue": "1u" },
+    { "id": "passive.inductor", "defaultSymbol": "inductor", "defaultValue": "10m" },
+    { "id": "discrete.diode", "defaultSymbol": "diode", "defaultValue": "1N4148" },
     { "id": "source.battery", "defaultSymbol": "battery", "defaultValue": "9" },
     { "id": "source.dc_voltage", "defaultSymbol": "voltage_source", "defaultValue": "10" },
     { "id": "source.ac_voltage", "defaultSymbol": "ac_voltage_source", "defaultValue": "1", "defaultFrequency": "1k" },

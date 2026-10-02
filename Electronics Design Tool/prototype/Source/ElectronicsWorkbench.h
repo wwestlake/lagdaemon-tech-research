@@ -56,6 +56,7 @@ private:
     juce::String selectedSymbolId = "resistor";
     std::function<juce::String()> getCircuitJson;
     std::function<juce::String()> getXyceNetlist;
+    std::function<juce::String()> getLabInstrumentsJson;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(ElectronicsWorkbench)
 };
