@@ -49,6 +49,7 @@ D:\000 Tech Research\Electronics Design Tool\prototype\projects\current\circuit.
 
 `File > Open Project...` loads that same circuit JSON back into the schematic.
 Simulation commands still export run artifacts under `sim/xyce/runs/generated`.
+`Circuit > Run ERC` writes `erc_report.md` in that generated run folder.
 
 ## Frust And LLVM
 

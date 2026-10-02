@@ -772,6 +772,143 @@ public:
         return netlist;
     }
 
+    juce::String buildErcReport() const
+    {
+        const auto netNames = computeNetNames();
+        const auto totalPins = pinCount();
+        const auto totalNodes = totalPins + (int)junctions.size();
+        std::vector<int> nodeDegree((size_t)std::max(0, totalNodes), 0);
+
+        for (const auto& wire : wires)
+        {
+            const auto a = nodeOrdinal(wire.a);
+            const auto b = nodeOrdinal(wire.b);
+            if (a >= 0 && a < totalNodes) ++nodeDegree[(size_t)a];
+            if (b >= 0 && b < totalNodes) ++nodeDegree[(size_t)b];
+        }
+
+        int errors = 0;
+        int warnings = 0;
+        int infos = 0;
+        juce::String findings;
+
+        auto addFinding = [&](const juce::String& severity, const juce::String& message) {
+            if (severity == "ERROR") ++errors;
+            else if (severity == "WARN") ++warnings;
+            else ++infos;
+
+            findings << "- [" << severity << "] " << message << "\n";
+        };
+
+        auto pinNet = [&](int instanceIndex, const juce::String& pinName) {
+            const auto symbol = symbolFor(instances[(size_t)instanceIndex].symbolId);
+            for (int p = 0; p < (int)symbol.pins.size(); ++p)
+                if (symbol.pins[(size_t)p].name == pinName)
+                    return netFor({ instanceIndex, p }, netNames);
+            return juce::String("floating");
+        };
+
+        auto unsupportedForXyce = [](const juce::String& symbolId) {
+            return symbolId == "opamp_741" || symbolId == "npn" || symbolId == "logic_not";
+        };
+
+        if (instances.empty())
+            addFinding("ERROR", "No components are placed on the schematic.");
+
+        bool hasGround = false;
+        bool hasLoweredPrimitive = false;
+        for (const auto& instance : instances)
+        {
+            if (instance.symbolId == "ground" || instance.symbolId == "ground_bus")
+                hasGround = true;
+            if (instance.symbolId == "resistor"
+                || instance.symbolId == "capacitor"
+                || instance.symbolId == "inductor"
+                || instance.symbolId == "diode"
+                || instance.symbolId == "voltage_source"
+                || instance.symbolId == "battery"
+                || instance.symbolId == "ac_voltage_source"
+                || instance.symbolId == "signal_source")
+                hasLoweredPrimitive = true;
+        }
+
+        if (!hasGround)
+            addFinding("ERROR", "No ground reference is present. Add a ground or ground bus before running solver-backed analysis.");
+        if (!hasLoweredPrimitive && !instances.empty())
+            addFinding("WARN", "No currently lowered Xyce primitive is present. The generated netlist will be mostly structural.");
+
+        std::set<juce::String> refdesSeen;
+        for (int i = 0; i < (int)instances.size(); ++i)
+        {
+            const auto& instance = instances[(size_t)i];
+            const auto symbol = symbolFor(instance.symbolId);
+
+            if (refdesSeen.count(instance.refdes) != 0)
+                addFinding("ERROR", "Duplicate reference designator found: " + instance.refdes + ".");
+            refdesSeen.insert(instance.refdes);
+
+            if (instance.value.trim().isEmpty()
+                && instance.symbolId != "ground"
+                && instance.symbolId != "ground_bus"
+                && instance.symbolId != "power_bus")
+                addFinding("WARN", instance.refdes + " has no value or model text.");
+
+            if (unsupportedForXyce(instance.symbolId))
+                addFinding("INFO", instance.refdes + " (" + instance.symbolId + ") is captured in the model but not lowered to Xyce yet.");
+
+            for (int p = 0; p < (int)symbol.pins.size(); ++p)
+            {
+                const auto ordinal = pinOrdinal({ i, p });
+                if (ordinal >= 0 && ordinal < (int)nodeDegree.size() && nodeDegree[(size_t)ordinal] == 0)
+                    addFinding("WARN", instance.refdes + "." + symbol.pins[(size_t)p].name + " is not wired.");
+            }
+
+            if (symbol.pins.size() == 2
+                && (instance.symbolId == "resistor"
+                    || instance.symbolId == "capacitor"
+                    || instance.symbolId == "inductor"
+                    || instance.symbolId == "diode"))
+            {
+                const auto a = netFor({ i, 0 }, netNames);
+                const auto b = netFor({ i, 1 }, netNames);
+                if (a == b)
+                    addFinding("WARN", instance.refdes + " has both pins on " + a + ".");
+            }
+
+            if ((instance.symbolId == "voltage_source" || instance.symbolId == "battery" || instance.symbolId == "ac_voltage_source")
+                && pinNet(i, "+") == pinNet(i, "-"))
+                addFinding("ERROR", instance.refdes + " has positive and negative terminals on the same net.");
+            if (instance.symbolId == "signal_source" && pinNet(i, "OUT") == pinNet(i, "REF"))
+                addFinding("ERROR", instance.refdes + " has OUT and REF on the same net.");
+        }
+
+        for (const auto& wire : wires)
+        {
+            if (sameNode(wire.a, wire.b))
+                addFinding("WARN", "A wire loops back to " + nodeLabel(wire.a) + ".");
+        }
+
+        if (probes.empty() && !instances.empty())
+            addFinding("INFO", "No lab probes are assigned yet, so instruments do not have schematic targets.");
+
+        juce::String report;
+        report << "# Electrical Rule Check\n\n";
+        report << "- Components: " << (int)instances.size() << "\n";
+        report << "- Wires: " << (int)wires.size() << "\n";
+        report << "- Junctions: " << (int)junctions.size() << "\n";
+        report << "- Probes: " << (int)probes.size() << "\n";
+        report << "- Errors: " << errors << "\n";
+        report << "- Warnings: " << warnings << "\n";
+        report << "- Info: " << infos << "\n\n";
+
+        if (findings.isEmpty())
+            report << "No ERC findings.\n";
+        else
+            report << "## Findings\n\n" << findings;
+
+        return report;
+    }
+
     void paint(juce::Graphics& g) override
     {
         g.fillAll(juce::Colour(0xff0e141a));
@@ -3135,7 +3272,7 @@ ElectronicsWorkbench::ElectronicsWorkbench()
     addAndMakeVisible(stampModeButton);
 
     newButton.onClick = [this] { resetResearchState(); };
-    ercButton.onClick = [this] { appendLog("ERC research stub: no electrical rule engine wired yet."); };
+    ercButton.onClick = [this] { runElectricalRuleCheck(); };
     transientButton.onClick = [this] { exportCircuitArtifacts(); };
     compileButton.onClick = [this] { appendLog("Compiled Frust preview stub: circuit IR -> Frust lowering pending."); };
 
@@ -3185,6 +3322,7 @@ ElectronicsWorkbench::ElectronicsWorkbench()
     getCircuitJson = [panel = schematic.get()] { return panel->buildCircuitJson(); };
     getXyceNetlist = [panel = schematic.get()] { return panel->buildXyceNetlist(); };
     getLabInstrumentsJson = [instrumentPanel] { return instrumentPanel->buildInstrumentJson(); };
+    getErcReport = [panel = schematic.get()] { return panel->buildErcReport(); };
     loadCircuitJson = [panel = schematic.get()](const juce::String& json, juce::String& error) {
         return panel->loadCircuitJson(json, error);
     };
@@ -3290,7 +3428,7 @@ void ElectronicsWorkbench::menuItemSelected(int menuItemID, int)
             appendLog("Dock layout reset.");
             break;
         case importComponent: appendLog("Component ingestion stub: BYOK agent/provider workflow pending."); break;
-        case runErc: appendLog("ERC research stub: rules pending."); break;
+        case runErc: runElectricalRuleCheck(); break;
         case runOperatingPoint: exportCircuitArtifacts(); break;
         case runTransient: exportCircuitArtifacts(); break;
         case runCompiledPreview: appendLog("Compiled preview stub: circuit IR -> Frust backend pending."); break;
@@ -3392,6 +3530,39 @@ void ElectronicsWorkbench::openProjectFile()
     }
 
     appendLog("Opened project circuit from " + file.getFullPathName());
+}
+
+void ElectronicsWorkbench::runElectricalRuleCheck()
+{
+    if (getErcReport == nullptr)
+    {
+        appendLog("No ERC engine is available.");
+        return;
+    }
+
+    const auto runDir = generatedRunDirectory();
+    if (!runDir.createDirectory())
+    {
+        appendLog("Could not create run directory: " + runDir.getFullPathName());
+        return;
+    }
+
+    const auto report = getErcReport();
+    const auto reportFile = runDir.getChildFile("erc_report.md");
+    if (!reportFile.replaceWithText(report))
+    {
+        appendLog("Could not write ERC report: " + reportFile.getFullPathName());
+        return;
+    }
+
+    const auto errors = report.fromFirstOccurrenceOf("- Errors: ", false, false)
+                             .upToFirstOccurrenceOf("\n", false, false)
+                             .trim();
+    const auto warnings = report.fromFirstOccurrenceOf("- Warnings: ", false, false)
+                               .upToFirstOccurrenceOf("\n", false, false)
+                               .trim();
+
+    appendLog("ERC complete: " + errors + " error(s), " + warnings + " warning(s). Report: " + reportFile.getFullPathName());
 }
 
 void ElectronicsWorkbench::exportCircuitArtifacts()
