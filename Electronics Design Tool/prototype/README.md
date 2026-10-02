@@ -81,6 +81,16 @@ multimeter. Place them on the diagram, wire their pins like components, and
 double-click an instrument node, or use `instrument_open_panel`, to open a
 floating instrument window.
 
+The schematic canvas defaults to snap-on editing so pins, wire endpoints, rail
+taps, and junctions land on the same grid. The toolbar also exposes Snap,
+zoom-out, zoom-reset, and zoom-in controls. Zoom is view-only: saved circuit
+coordinates and agent tool coordinates stay in schematic space.
+
+Diagram rendering should keep converging on common schematic practice: use
+recognized IEEE/ANSI or IEC-style symbols where practical, keep wires and pins
+aligned to a regular grid, make junctions explicit, avoid ambiguous near-miss
+connections, and prefer readable left-to-right signal flow over dense wiring.
+
 ## Frust And LLVM
 
 This prototype may embed Frust for the math console, compiled circuit previews,

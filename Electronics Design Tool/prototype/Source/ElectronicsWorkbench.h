@@ -50,6 +50,8 @@ private:
     juce::String exportCircuitArtifactsTool();
     void showSpecDocument();
     void exportCircuitArtifacts();
+    void applySchematicZoom(float zoom);
+    void adjustSchematicZoom(float factor);
 
     std::unique_ptr<juce::MenuBarComponent> menuBar;
     std::unique_ptr<CreationDock::DockManager> dockManager;
@@ -61,6 +63,10 @@ private:
     juce::TextButton transientButton { "Transient" };
     juce::TextButton compileButton { "Compile Preview" };
     juce::ToggleButton stampModeButton { "Stamp" };
+    juce::ToggleButton snapModeButton { "Snap" };
+    juce::TextButton zoomOutButton { "-" };
+    juce::TextButton zoomResetButton { "100%" };
+    juce::TextButton zoomInButton { "+" };
 
     juce::TextEditor* logConsole = nullptr;
     juce::String selectedSymbolId = "resistor";
@@ -76,6 +82,9 @@ private:
     std::function<juce::String(const juce::String&, const juce::String&)> connectNodesTool;
     std::function<juce::String(const juce::String&)> openInstrumentTool;
     std::function<void()> openAgentSettingsDialog;
+    std::function<void(bool)> setSnapEnabled;
+    std::function<void(float)> setSchematicZoom;
+    std::function<float()> getSchematicZoom;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(ElectronicsWorkbench)
 };

@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cmath>
 #include <memory>
 #include <map>
 #include <set>
@@ -402,6 +403,28 @@ public:
     void setInstrumentOpenListener(std::function<void(juce::String, juce::String)> listener)
     {
         onInstrumentOpen = std::move(listener);
+    }
+
+    void setSnapEnabled(bool enabled)
+    {
+        snapEnabled = enabled;
+        repaint();
+    }
+
+    bool isSnapEnabled() const
+    {
+        return snapEnabled;
+    }
+
+    void setCanvasZoom(float newZoom)
+    {
+        canvasZoom = std::clamp(newZoom, 0.5f, 2.5f);
+        repaint();
+    }
+
+    float getCanvasZoom() const
+    {
+        return canvasZoom;
     }
 
     void updateSelectedProperties(const juce::String& value,
@@ -933,17 +956,25 @@ public:
     void paint(juce::Graphics& g) override
     {
         g.fillAll(juce::Colour(0xff0e141a));
+
+        g.saveState();
+        g.addTransform(juce::AffineTransform::scale(canvasZoom));
         drawGrid(g);
         drawWires(g);
         drawInstances(g);
         drawProbes(g);
         drawPendingWire(g);
+        g.restoreState();
 
         g.setColour(juce::Colour(0xff93a7b0));
         g.setFont(juce::Font(13.0f));
         const auto stampOn = getStampPlacementEnabled != nullptr && getStampPlacementEnabled();
-        g.drawText(stampOn ? "Stamp mode: click empty canvas to place selected symbols, drag selected parts to move, R rotates."
-                           : "Drag pins/wires/rails to connect. Select a rail and drag its end handles to resize. Delete removes selected parts.",
+        const auto modeText = snapEnabled ? juce::String("Snap on") : juce::String("Snap off");
+        const auto zoomText = juce::String((int)std::round(canvasZoom * 100.0f)) + "%";
+        const auto hintText = juce::String(stampOn ? "Stamp mode: click empty canvas to place selected symbols, drag selected parts to move, R rotates."
+                                                   : "Drag pins/wires/rails to connect. Select a rail and drag its end handles to resize. Delete removes selected parts.")
+            + "  " + modeText + "  Zoom " + zoomText;
+        g.drawText(hintText,
                    getLocalBounds().reduced(12).removeFromBottom(24),
                    juce::Justification::centredLeft);
 
@@ -954,58 +985,59 @@ public:
     void mouseDown(const juce::MouseEvent& event) override
     {
         grabKeyboardFocus();
-        const auto p = snap(event.position);
+        const auto modelPosition = viewToCanvas(event.position);
+        const auto p = snapPoint(modelPosition);
         if (event.mods.isRightButtonDown())
         {
-            if (releaseProbeAt(event.position))
+            if (releaseProbeAt(modelPosition))
             {
                 repaint();
                 return;
             }
-            disconnectAt(event.position);
+            disconnectAt(modelPosition);
             repaint();
             return;
         }
 
-        if (beginRailResize(event.position))
+        if (beginRailResize(modelPosition))
         {
             repaint();
             return;
         }
 
-        if (auto rail = hitTestRailBus(event.position); rail >= 0)
+        if (auto rail = hitTestRailBus(modelPosition); rail >= 0)
         {
-            beginWireDrag(createRailTap(rail, p), event.position);
+            beginWireDrag(createRailTap(rail, p), modelPosition);
             repaint();
             return;
         }
 
-        if (auto pin = hitTestPin(event.position); pin.instanceIndex >= 0)
+        if (auto pin = hitTestPin(modelPosition); pin.instanceIndex >= 0)
         {
-            beginWireDrag(WireNode::forPin(pin), event.position);
+            beginWireDrag(WireNode::forPin(pin), modelPosition);
             repaint();
             return;
         }
 
-        if (auto junction = hitTestJunction(event.position); junction >= 0)
+        if (auto junction = hitTestJunction(modelPosition); junction >= 0)
         {
-            beginWireDrag(WireNode::forJunction(junction), event.position);
+            beginWireDrag(WireNode::forJunction(junction), modelPosition);
             repaint();
             return;
         }
 
-        if (auto wireIndex = hitTestWire(event.position); wireIndex >= 0)
+        if (auto wireIndex = hitTestWire(modelPosition); wireIndex >= 0)
         {
-            beginWireDrag(createJunctionOnWire(wireIndex, p), event.position);
+            beginWireDrag(createJunctionOnWire(wireIndex, p), modelPosition);
             repaint();
             return;
         }
 
-        if (const auto instanceIndex = hitTestInstance(event.position); instanceIndex >= 0)
+        if (const auto instanceIndex = hitTestInstance(modelPosition); instanceIndex >= 0)
         {
             selectedInstance = instanceIndex;
             draggingInstance = true;
-            dragStartMouse = event.position;
+            dragStartMouse = modelPosition;
             dragStartPosition = instances[(size_t)selectedInstance].position;
             notifySelection();
             repaint();
@@ -1022,7 +1054,8 @@ public:
 
     void mouseDoubleClick(const juce::MouseEvent& event) override
     {
-        if (const auto instanceIndex = hitTestInstance(event.position); instanceIndex >= 0)
+        const auto modelPosition = viewToCanvas(event.position);
+        if (const auto instanceIndex = hitTestInstance(modelPosition); instanceIndex >= 0)
         {
             selectedInstance = instanceIndex;
             notifySelection();
@@ -1041,16 +1074,17 @@ public:
 
     void mouseDrag(const juce::MouseEvent& event) override
     {
+        const auto modelPosition = viewToCanvas(event.position);
         if (resizingRail)
         {
-            resizeRail(event.position);
+            resizeRail(modelPosition);
             repaint();
             return;
         }
 
         if (wireDragging)
         {
-            wireDragPosition = event.position;
+            wireDragPosition = modelPosition;
             repaint();
             return;
         }
@@ -1059,16 +1093,17 @@ public:
             return;
 
         auto& instance = instances[(size_t)selectedInstance];
-        instance.position = snap(dragStartPosition + (event.position - dragStartMouse));
+        instance.position = snapPoint(dragStartPosition + (modelPosition - dragStartMouse));
         notifySelection();
         repaint();
     }
 
     void mouseUp(const juce::MouseEvent& event) override
     {
+        const auto modelPosition = viewToCanvas(event.position);
         if (wireDragging)
         {
-            finishWireDrag(event.position);
+            finishWireDrag(modelPosition);
             repaint();
         }
 
@@ -1126,9 +1161,11 @@ public:
         dragHover = false;
         setMouseCursor(juce::MouseCursor::NormalCursor);
         const auto description = details.description.toString();
+        const auto modelPosition = viewToCanvas(details.localPosition.toFloat());
+        const auto p = snapPoint(modelPosition);
         if (description.startsWith("probe:"))
         {
-            const auto node = nodeAt(details.localPosition.toFloat(), snap(details.localPosition.toFloat()));
+            const auto node = nodeAt(modelPosition, p);
             if (!node.isValid())
             {
                 if (onStatus) onStatus("Probe drop needs a pin, junction, or wire.");
@@ -1145,7 +1182,7 @@ public:
             return;
 
         const auto symbolId = description.fromFirstOccurrenceOf("symbol:", false, false);
-        placeSymbol(symbolId, snap(details.localPosition.toFloat()));
+        placeSymbol(symbolId, p);
         repaint();
     }
 
@@ -1157,7 +1194,7 @@ public:
                                      const juce::String& busName)
     {
         const auto before = instances.size();
-        placeSymbol(symbolId, snap({ x, y }));
+        placeSymbol(symbolId, snapPoint({ x, y }));
         if (instances.size() == before)
             return "{ \"ok\": false, \"error\": \"Could not place symbol.\" }";
 
@@ -1366,8 +1403,10 @@ private:
     bool draggingInstance = false;
     bool resizingRail = false;
     bool resizingLeftRailEnd = false;
+    bool snapEnabled = true;
     int resizingRailInstance = -1;
     float fixedRailEndX = 0.0f;
+    float canvasZoom = 1.0f;
     juce::Point<float> dragStartMouse;
     juce::Point<float> dragStartPosition;
     juce::Point<float> wireDragPosition;
@@ -1461,18 +1500,35 @@ private:
 
     void drawGrid(juce::Graphics& g)
     {
-        const auto b = getLocalBounds();
+        const auto logicalWidth = (int)std::ceil((float)getWidth() / std::max(0.001f, canvasZoom));
+        const auto logicalHeight = (int)std::ceil((float)getHeight() / std::max(0.001f, canvasZoom));
         g.setColour(juce::Colour(0xff18222b));
-        for (int x = 0; x < b.getWidth(); x += 24) g.drawVerticalLine(x, 0.0f, (float)b.getHeight());
-        for (int y = 0; y < b.getHeight(); y += 24) g.drawHorizontalLine(y, 0.0f, (float)b.getWidth());
+        for (int x = 0; x < logicalWidth; x += 24) g.drawVerticalLine(x, 0.0f, (float)logicalHeight);
+        for (int y = 0; y < logicalHeight; y += 24) g.drawHorizontalLine(y, 0.0f, (float)logicalWidth);
         g.setColour(juce::Colour(0xff26323d));
-        for (int x = 0; x < b.getWidth(); x += 120) g.drawVerticalLine(x, 0.0f, (float)b.getHeight());
-        for (int y = 0; y < b.getHeight(); y += 120) g.drawHorizontalLine(y, 0.0f, (float)b.getWidth());
+        for (int x = 0; x < logicalWidth; x += 120) g.drawVerticalLine(x, 0.0f, (float)logicalHeight);
+        for (int y = 0; y < logicalHeight; y += 120) g.drawHorizontalLine(y, 0.0f, (float)logicalWidth);
     }
 
     static juce::Point<float> snap(juce::Point<float> p)
     {
         return { std::round(p.x / 24.0f) * 24.0f, std::round(p.y / 24.0f) * 24.0f };
+    }
+
+    juce::Point<float> snapPoint(juce::Point<float> p) const
+    {
+        return snapEnabled ? snap(p) : p;
+    }
+
+    juce::Point<float> viewToCanvas(juce::Point<float> p) const
+    {
+        const auto scale = std::max(0.001f, canvasZoom);
+        return { p.x / scale, p.y / scale };
+    }
+
+    float hitDistance(float modelPixels) const
+    {
+        return modelPixels / std::max(0.001f, canvasZoom);
     }
 
     static bool isRailBus(const juce::String& symbolId)
@@ -1910,7 +1966,7 @@ private:
             for (int j = 0; j < (int)symbol.pins.size(); ++j)
             {
                 const auto pin = pinPosition({ i, j });
-                if (pin.getDistanceFrom(p) <= 14.0f)
+                if (pin.getDistanceFrom(p) <= hitDistance(14.0f))
                     return { i, j };
             }
         }
@@ -1920,7 +1976,7 @@ private:
     int hitTestJunction(juce::Point<float> p) const
     {
         for (int i = (int)junctions.size() - 1; i >= 0; --i)
-            if (junctions[(size_t)i].getDistanceFrom(p) <= 12.0f)
+            if (junctions[(size_t)i].getDistanceFrom(p) <= hitDistance(12.0f))
                 return i;
         return -1;
     }
@@ -1952,7 +2008,7 @@ private:
     int hitTestWire(juce::Point<float> p) const
     {
         for (int i = (int)wires.size() - 1; i >= 0; --i)
-            if (distanceToWire(p, wires[(size_t)i]) <= 8.0f)
+            if (distanceToWire(p, wires[(size_t)i]) <= hitDistance(8.0f))
                 return i;
         return -1;
     }
@@ -1963,7 +2019,7 @@ private:
         {
             const auto& instance = instances[(size_t)i];
             const auto symbol = symbolFor(instance.symbolId);
-            if (orientedBounds(instance, symbol).expanded(4.0f).contains(p))
+            if (orientedBounds(instance, symbol).expanded(hitDistance(4.0f)).contains(p))
                 return i;
         }
         return -1;
@@ -2026,7 +2082,7 @@ private:
             if (!isRailBus(instance.symbolId))
                 continue;
 
-            if (railBounds(instance).expanded(0.0f, 12.0f).contains(p))
+            if (railBounds(instance).expanded(0.0f, hitDistance(12.0f)).contains(p))
                 return i;
         }
         return -1;
@@ -2048,7 +2104,7 @@ private:
         if (!isRailBus(instance.symbolId))
             return false;
 
-        if (railHandleBounds(instance, true).contains(p))
+        if (railHandleBounds(instance, true).expanded(hitDistance(4.0f)).contains(p))
         {
             resizingRail = true;
             resizingLeftRailEnd = true;
@@ -2057,7 +2113,7 @@ private:
             return true;
         }
 
-        if (railHandleBounds(instance, false).contains(p))
+        if (railHandleBounds(instance, false).expanded(hitDistance(4.0f)).contains(p))
         {
             resizingRail = true;
             resizingLeftRailEnd = false;
@@ -2079,7 +2135,7 @@ private:
             return;
 
         constexpr auto minLength = 120.0f;
-        auto movingX = snap(p).x;
+        auto movingX = snapPoint(p).x;
         if (std::abs(movingX - fixedRailEndX) < minLength)
             movingX = fixedRailEndX + (movingX < fixedRailEndX ? -minLength : minLength);
 
@@ -2108,7 +2164,7 @@ private:
         if (!wireDragStart.isValid())
             return;
 
-        const auto target = nodeAt(position, snap(position));
+        const auto target = nodeAt(position, snapPoint(position));
         if (!target.isValid())
         {
             if (onStatus) onStatus("Wire cancelled.");
@@ -2195,7 +2251,7 @@ private:
         for (int i = (int)probes.size() - 1; i >= 0; --i)
         {
             const auto p = nodePosition(probes[(size_t)i].node);
-            if (p.getDistanceFrom(position) > 16.0f)
+            if (p.getDistanceFrom(position) > hitDistance(16.0f))
                 continue;
 
             const auto id = probes[(size_t)i].id;
@@ -2368,7 +2424,7 @@ private:
                               isRailBus(symbol.id) ? 420.0f : 0.0f });
         selectedInstance = (int)instances.size() - 1;
         notifySelection();
-        if (onStatus) onStatus("Placed " + symbol.title + " at schematic grid.");
+        if (onStatus) onStatus("Placed " + symbol.title + (snapEnabled ? " at schematic grid." : "."));
     }
 
     juce::String displayValueFor(const Instance& instance) const
@@ -4236,7 +4292,8 @@ ElectronicsWorkbench::ElectronicsWorkbench()
     statusLabel.setJustificationType(juce::Justification::centredRight);
     addAndMakeVisible(statusLabel);
 
-    for (auto* b : { &newButton, &ercButton, &transientButton, &compileButton })
+    for (auto* b : { &newButton, &ercButton, &transientButton, &compileButton,
+                     &zoomOutButton, &zoomResetButton, &zoomInButton })
     {
         b->setColour(juce::TextButton::buttonColourId, juce::Colour(0xff253341));
         b->setColour(juce::TextButton::textColourOffId, juce::Colour(0xffdce9ee));
@@ -4245,11 +4302,22 @@ ElectronicsWorkbench::ElectronicsWorkbench()
     stampModeButton.setToggleState(false, juce::dontSendNotification);
     stampModeButton.setColour(juce::ToggleButton::textColourId, juce::Colour(0xffdce9ee));
     addAndMakeVisible(stampModeButton);
+    snapModeButton.setToggleState(true, juce::dontSendNotification);
+    snapModeButton.setColour(juce::ToggleButton::textColourId, juce::Colour(0xffdce9ee));
+    addAndMakeVisible(snapModeButton);
 
     newButton.onClick = [this] { resetResearchState(); };
     ercButton.onClick = [this] { runElectricalRuleCheck(); };
     transientButton.onClick = [this] { exportCircuitArtifacts(); };
     compileButton.onClick = [this] { appendLog("Compiled Frust preview stub: circuit IR -> Frust lowering pending."); };
+    snapModeButton.onClick = [this] {
+        if (setSnapEnabled != nullptr)
+            setSnapEnabled(snapModeButton.getToggleState());
+        appendLog(snapModeButton.getToggleState() ? "Schematic snap enabled." : "Schematic snap disabled.");
+    };
+    zoomOutButton.onClick = [this] { adjustSchematicZoom(1.0f / 1.2f); };
+    zoomResetButton.onClick = [this] { applySchematicZoom(1.0f); };
+    zoomInButton.onClick = [this] { adjustSchematicZoom(1.2f); };
 
     dockManager = std::make_unique<CreationDock::DockManager>(*this);
     addAndMakeVisible(*dockManager);
@@ -4266,6 +4334,15 @@ ElectronicsWorkbench::ElectronicsWorkbench()
         [this] { return stampModeButton.getToggleState(); },
         [this](juce::String message) { appendLog(message); });
     auto* schematicPanel = schematic.get();
+    setSnapEnabled = [schematicPanel](bool enabled) {
+        schematicPanel->setSnapEnabled(enabled);
+    };
+    setSchematicZoom = [schematicPanel](float zoom) {
+        schematicPanel->setCanvasZoom(zoom);
+    };
+    getSchematicZoom = [schematicPanel] {
+        return schematicPanel->getCanvasZoom();
+    };
     auto properties = std::make_unique<PropertiesPanel>();
     auto* propertiesPanel = properties.get();
     schematicPanel->setSelectionListener([propertiesPanel](int index,
@@ -4393,10 +4470,33 @@ void ElectronicsWorkbench::resized()
     compileButton.setBounds(toolbar.removeFromLeft(140));
     toolbar.removeFromLeft(10);
     stampModeButton.setBounds(toolbar.removeFromLeft(90));
+    snapModeButton.setBounds(toolbar.removeFromLeft(82));
+    toolbar.removeFromLeft(8);
+    zoomOutButton.setBounds(toolbar.removeFromLeft(34));
+    toolbar.removeFromLeft(4);
+    zoomResetButton.setBounds(toolbar.removeFromLeft(58));
+    toolbar.removeFromLeft(4);
+    zoomInButton.setBounds(toolbar.removeFromLeft(34));
     statusLabel.setBounds(toolbar);
 
     if (dockManager != nullptr)
         dockManager->setBounds(area);
+}
+
+void ElectronicsWorkbench::applySchematicZoom(float zoom)
+{
+    const auto clampedZoom = std::clamp(zoom, 0.5f, 2.5f);
+    if (setSchematicZoom != nullptr)
+        setSchematicZoom(clampedZoom);
+
+    zoomResetButton.setButtonText(juce::String((int)std::round(clampedZoom * 100.0f)) + "%");
+    appendLog("Schematic zoom set to " + juce::String((int)std::round(clampedZoom * 100.0f)) + "%.");
+}
+
+void ElectronicsWorkbench::adjustSchematicZoom(float factor)
+{
+    const auto currentZoom = getSchematicZoom != nullptr ? getSchematicZoom() : 1.0f;
+    applySchematicZoom(currentZoom * factor);
 }
 
 juce::StringArray ElectronicsWorkbench::getMenuBarNames()
