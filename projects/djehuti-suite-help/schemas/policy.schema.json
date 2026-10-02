@@ -1,0 +1,181 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://djehuti.example/schemas/policy.schema.json",
+  "title": "DjehutiSuite authored agent policy",
+  "description": "A rule the Virtual Engineer must follow. Canonical, reviewed, versioned in Git. Mandatory policies are injected into every applicable agent request by the context assembler; they are never left to retrieval.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "recordKind",
+    "id",
+    "locale",
+    "title",
+    "policyText",
+    "enforcement",
+    "priority",
+    "scope",
+    "activation",
+    "status",
+    "owners",
+    "source",
+    "verification"
+  ],
+  "properties": {
+    "$schema": { "type": "string", "format": "uri-reference" },
+    "schemaVersion": { "const": "1.0" },
+    "recordKind": { "const": "policy" },
+    "id": { "$ref": "#/$defs/stableId" },
+    "locale": { "type": "string", "pattern": "^[a-z]{2,3}(?:-[A-Z]{2})?$" },
+    "title": { "type": "string", "minLength": 1 },
+    "policyText": {
+      "type": "string",
+      "minLength": 1,
+      "description": "The rule, written as an instruction to the agent. This exact text is what gets injected."
+    },
+    "rationale": { "type": "string", "minLength": 1 },
+    "enforcement": {
+      "enum": ["mandatory", "advisory"],
+      "description": "mandatory: always injected when applicable, cannot be displaced by retrieval or trimmed for budget. advisory: injected when applicable and budget allows."
+    },
+    "priority": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 1000,
+      "description": "Higher wins when two applicable policies conflict, and orders injection. Mandatory policies outrank all advisory policies regardless of number."
+    },
+    "scope": { "$ref": "#/$defs/scope" },
+    "activation": { "$ref": "#/$defs/activation" },
+    "supersedes": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/stableId" },
+      "uniqueItems": true,
+      "description": "Policies this one explicitly replaces where both apply. Only a policy of equal or higher priority may supersede another."
+    },
+    "status": { "enum": ["proposed", "draft", "verified", "deprecated"] },
+    "replacedBy": { "$ref": "#/$defs/stableId" },
+    "owners": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 },
+      "minItems": 1,
+      "uniqueItems": true
+    },
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "ref"],
+      "description": "Where the rule comes from (a decision, a standard, a user instruction) so it can be traced and challenged.",
+      "properties": {
+        "kind": { "enum": ["decision", "standard", "legal", "security", "user-instruction", "design", "incident"] },
+        "ref": { "type": "string", "minLength": 1 }
+      }
+    },
+    "verification": { "$ref": "#/$defs/verification" }
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "status": { "const": "deprecated" } }, "required": ["status"] },
+      "then": { "required": ["replacedBy"] }
+    }
+  ],
+  "$defs": {
+    "stableId": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9]*(?:[.-][a-z0-9]+)+$"
+    },
+    "nameList": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 },
+      "uniqueItems": true
+    },
+    "scope": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Who and what the policy is about. An empty or absent list means 'any'. Scope decides eligibility; activation decides whether an eligible policy is triggered.",
+      "properties": {
+        "products": { "$ref": "#/$defs/nameList" },
+        "audiences": { "$ref": "#/$defs/nameList" },
+        "platforms": { "$ref": "#/$defs/nameList" },
+        "helpIds": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/stableId" },
+          "uniqueItems": true,
+          "description": "Application features (help IDs) the policy concerns."
+        },
+        "processIds": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/stableId" },
+          "uniqueItems": true
+        },
+        "since": { "type": "string", "minLength": 1 },
+        "until": { "type": "string", "minLength": 1 }
+      }
+    },
+    "activation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["mode"],
+      "description": "When an in-scope policy is triggered. Evaluated by deterministic code from the request's structured facts, never by semantic search.",
+      "properties": {
+        "mode": {
+          "enum": ["always", "conditional"],
+          "description": "always: applies to every in-scope request. conditional: applies only when the conditions match."
+        },
+        "match": { "enum": ["any", "all"], "default": "any" },
+        "conditions": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/condition" }
+        }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "mode": { "const": "conditional" } }, "required": ["mode"] },
+          "then": { "required": ["conditions"], "properties": { "conditions": { "minItems": 1 } } }
+        }
+      ]
+    },
+    "condition": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["fact", "values"],
+      "properties": {
+        "fact": {
+          "enum": ["helpId", "processId", "processStepId", "intent", "agentAction", "riskLevel", "dataClass", "userRole"],
+          "description": "A structured fact the host application supplies with each request."
+        },
+        "values": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 },
+          "minItems": 1,
+          "uniqueItems": true,
+          "description": "The condition holds when the request's value(s) for the fact intersect this list."
+        },
+        "negate": { "type": "boolean", "default": false }
+      }
+    },
+    "verification": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["contentRevision", "reviewedAt", "reviewedBy", "evidence"],
+      "properties": {
+        "contentRevision": { "type": "integer", "minimum": 1 },
+        "reviewedAt": { "type": "string", "format": "date" },
+        "reviewedBy": { "type": "string", "minLength": 1 },
+        "sourceRevision": { "type": "string", "minLength": 1 },
+        "evidence": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["kind", "ref"],
+            "properties": {
+              "kind": { "enum": ["source", "test", "manual-check", "issue", "design"] },
+              "ref": { "type": "string", "minLength": 1 }
+            }
+          }
+        }
+      }
+    }
+  }
+}

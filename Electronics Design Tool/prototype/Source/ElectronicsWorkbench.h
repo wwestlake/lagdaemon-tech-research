@@ -35,9 +35,11 @@ private:
     };
 
     juce::File layoutFile() const;
+    juce::File generatedRunDirectory() const;
     void appendLog(const juce::String& text);
     void resetResearchState();
     void showSpecDocument();
+    void exportCircuitArtifacts();
 
     std::unique_ptr<juce::MenuBarComponent> menuBar;
     std::unique_ptr<CreationDock::DockManager> dockManager;
@@ -48,9 +50,12 @@ private:
     juce::TextButton ercButton { "ERC" };
     juce::TextButton transientButton { "Transient" };
     juce::TextButton compileButton { "Compile Preview" };
+    juce::ToggleButton stampModeButton { "Stamp" };
 
     juce::TextEditor* logConsole = nullptr;
     juce::String selectedSymbolId = "resistor";
+    std::function<juce::String()> getCircuitJson;
+    std::function<juce::String()> getXyceNetlist;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(ElectronicsWorkbench)
 };

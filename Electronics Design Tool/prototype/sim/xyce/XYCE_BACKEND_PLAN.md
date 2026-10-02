@@ -63,6 +63,7 @@ Second pass:
 - The app must not hard-code Xyce paths.
 - Local machine paths live in `config/xyce.local.json`.
 - Generated netlists belong under `sim/xyce/runs`.
+- Generated circuit artifacts are described in `GENERATED_ARTIFACTS.md`.
 - Solver output must be converted to app datasets before instruments consume it.
 - Circuit/source maps should preserve component and net origins so diagnostics can point back to schematic objects.
 

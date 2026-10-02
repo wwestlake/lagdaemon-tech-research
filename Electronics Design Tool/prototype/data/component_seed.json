@@ -1,0 +1,51 @@
+{
+  "schemaVersion": 1,
+  "kind": "djehuti_electronics_component_seed",
+  "librarySymbols": [
+    { "id": "resistor", "name": "Resistor", "category": "Passive" },
+    { "id": "capacitor", "name": "Capacitor", "category": "Passive" },
+    { "id": "power_bus", "name": "Power Bus", "category": "Bus" },
+    { "id": "ground_bus", "name": "Ground Bus", "category": "Bus" },
+    { "id": "battery", "name": "Battery", "category": "Source" },
+    { "id": "voltage_source", "name": "DC Voltage Source", "category": "Source" },
+    { "id": "ac_voltage_source", "name": "AC Voltage Source", "category": "Source" },
+    { "id": "signal_source", "name": "Signal Source", "category": "Source" },
+    { "id": "ground", "name": "Ground", "category": "Reference" },
+    { "id": "opamp_741", "name": "741 Op Amp - provisional", "category": "Analog IC" },
+    { "id": "npn", "name": "NPN Transistor - generic", "category": "Discrete" },
+    { "id": "logic_not", "name": "Logic Inverter - behavioral", "category": "Digital" }
+  ],
+  "archetypes": [
+    { "id": "passive.resistor", "defaultSymbol": "resistor", "defaultValue": "10k" },
+    { "id": "passive.capacitor", "defaultSymbol": "capacitor", "defaultValue": "1u" },
+    { "id": "source.battery", "defaultSymbol": "battery", "defaultValue": "9" },
+    { "id": "source.dc_voltage", "defaultSymbol": "voltage_source", "defaultValue": "10" },
+    { "id": "source.ac_voltage", "defaultSymbol": "ac_voltage_source", "defaultValue": "1", "defaultFrequency": "1k" },
+    { "id": "source.signal", "defaultSymbol": "signal_source", "defaultValue": "1", "defaultFrequency": "1k" },
+    { "id": "net.power_bus", "defaultSymbol": "power_bus", "defaultBusName": "+V" },
+    { "id": "net.ground_reference", "defaultSymbol": "ground", "defaultBusName": "0" },
+    { "id": "analog.op_amp", "defaultSymbol": "opamp_741" },
+    { "id": "discrete.bjt.npn", "defaultSymbol": "npn" },
+    { "id": "digital.logic.not", "defaultSymbol": "logic_not" }
+  ],
+  "partFamilies": [
+    { "family": "2N2222", "archetype": "discrete.bjt.npn", "notes": "Common hobby NPN transistor family." },
+    { "family": "2N3904", "archetype": "discrete.bjt.npn", "notes": "Common small-signal NPN transistor family." },
+    { "family": "1N4148", "archetype": "discrete.diode.signal", "notes": "Common signal diode family." },
+    { "family": "1N400x", "archetype": "discrete.diode.rectifier", "notes": "Common rectifier diode family." },
+    { "family": "LM741", "archetype": "analog.op_amp", "notes": "Classic op amp family; useful for education, not modern default." },
+    { "family": "LM358", "archetype": "analog.op_amp", "notes": "Common dual op amp family." },
+    { "family": "TL072", "archetype": "analog.op_amp", "notes": "Common JFET-input dual op amp family." },
+    { "family": "NE555", "archetype": "analog.timer", "notes": "Common timer IC family." }
+  ],
+  "sourcingProviders": [
+    { "id": "digikey", "kind": "distributor", "confidenceBias": "high" },
+    { "id": "mouser", "kind": "distributor", "confidenceBias": "high" },
+    { "id": "newark", "kind": "distributor", "confidenceBias": "high" },
+    { "id": "adafruit", "kind": "hobby_supplier", "confidenceBias": "medium" },
+    { "id": "sparkfun", "kind": "hobby_supplier", "confidenceBias": "medium" },
+    { "id": "amazon", "kind": "consumer_marketplace", "confidenceBias": "low" },
+    { "id": "ebay", "kind": "consumer_marketplace", "confidenceBias": "low" },
+    { "id": "aliexpress", "kind": "consumer_marketplace", "confidenceBias": "low" }
+  ]
+}

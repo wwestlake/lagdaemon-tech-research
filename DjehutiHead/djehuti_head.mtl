@@ -1,0 +1,36 @@
+# Materials for stylized Djehuti head
+newmtl green_ibis_head
+Kd 0.05 0.48 0.30
+Ka 0.02 0.16 0.10
+Ks 0.20 0.20 0.18
+Ns 35
+
+newmtl black_beak
+Kd 0.01 0.01 0.012
+Ka 0.00 0.00 0.00
+Ks 0.20 0.20 0.22
+Ns 50
+
+newmtl deep_blue_headdress
+Kd 0.00 0.10 0.33
+Ka 0.00 0.03 0.10
+Ks 0.16 0.18 0.25
+Ns 25
+
+newmtl black_eye
+Kd 0.00 0.00 0.00
+Ka 0.00 0.00 0.00
+Ks 0.80 0.80 0.80
+Ns 90
+
+newmtl gold_collar
+Kd 1.00 0.68 0.12
+Ka 0.25 0.14 0.02
+Ks 0.70 0.55 0.20
+Ns 80
+
+newmtl red_collar
+Kd 0.62 0.18 0.10
+Ka 0.16 0.04 0.02
+Ks 0.20 0.10 0.05
+Ns 25

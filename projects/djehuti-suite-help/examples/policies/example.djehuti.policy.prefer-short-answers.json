@@ -1,0 +1,41 @@
+{
+  "$schema": "../../schemas/policy.schema.json",
+  "schemaVersion": "1.0",
+  "recordKind": "policy",
+  "id": "example.djehuti.policy.prefer-short-answers",
+  "locale": "en-US",
+  "title": "Prefer short answers",
+  "policyText": "Keep answers short and practical. Give the steps first and the explanation only if the user asks or the steps would otherwise be misleading.",
+  "enforcement": "advisory",
+  "priority": 200,
+  "scope": {
+    "products": [
+      "DjehutiSuite"
+    ],
+    "audiences": [
+      "user"
+    ]
+  },
+  "activation": {
+    "mode": "always"
+  },
+  "status": "proposed",
+  "owners": [
+    "DjehutiSuite UX"
+  ],
+  "source": {
+    "kind": "design",
+    "ref": "example: tone guidelines, illustrative only"
+  },
+  "verification": {
+    "contentRevision": 1,
+    "reviewedAt": "2026-09-20",
+    "reviewedBy": "Example fixture (not a real review)",
+    "evidence": [
+      {
+        "kind": "design",
+        "ref": "example fixture"
+      }
+    ]
+  }
+}

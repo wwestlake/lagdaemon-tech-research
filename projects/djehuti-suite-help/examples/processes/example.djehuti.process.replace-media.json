@@ -1,0 +1,181 @@
+{
+  "$schema": "../../schemas/process.schema.json",
+  "schemaVersion": "1.0",
+  "recordKind": "process",
+  "id": "example.djehuti.process.replace-media",
+  "locale": "en-US",
+  "title": "Replace a media file in a project safely",
+  "purpose": "Swap one media file for another everywhere it is used in a project without losing the original or breaking playback.",
+  "executionMode": "guidance",
+  "keywords": [
+    "replace media",
+    "swap file",
+    "replace clip",
+    "new version of file"
+  ],
+  "alternateQueries": [
+    "How do I replace a file in my project?",
+    "I have a better version of a recording, how do I swap it in?"
+  ],
+  "status": "proposed",
+  "owners": [
+    "DjehutiSuite Platform"
+  ],
+  "applicability": {
+    "products": [
+      "DjehutiSuite"
+    ],
+    "audiences": [
+      "user"
+    ],
+    "helpIds": [
+      "example.djehuti.help.context"
+    ]
+  },
+  "entryConditions": [
+    {
+      "id": "project-open",
+      "description": "A project is open."
+    },
+    {
+      "id": "replacement-available",
+      "description": "The user wants to replace media.",
+      "fact": "intent",
+      "values": [
+        "replace-media"
+      ]
+    }
+  ],
+  "requiredPolicies": [
+    "example.djehuti.policy.confirm-destructive-change"
+  ],
+  "steps": [
+    {
+      "id": "confirm-target",
+      "title": "Confirm which file is being replaced",
+      "instruction": "Ask the user which media file is being replaced and by what. Repeat both names back.",
+      "expectedResult": "The user has confirmed the file to replace and the replacement file."
+    },
+    {
+      "id": "save-project",
+      "title": "Save the project",
+      "instruction": "Ask the user to save the project, or save it for them if they say yes.",
+      "expectedResult": "The project has no unsaved changes.",
+      "onFailure": "save-failed"
+    },
+    {
+      "id": "make-backup",
+      "title": "Keep a copy of the original",
+      "instruction": "Import or copy the original file under a new name so it stays in the project.",
+      "expectedResult": "The original media exists under its backup name.",
+      "policyIds": [
+        "example.djehuti.policy.confirm-destructive-change"
+      ],
+      "onFailure": "backup-failed"
+    },
+    {
+      "id": "replace-media",
+      "title": "Replace the media",
+      "instruction": "Swap the replacement file in wherever the original was used, after the user has agreed to exactly that change.",
+      "expectedResult": "Every clip that used the original now uses the replacement.",
+      "uiTarget": "example.djehuti.help.context",
+      "policyIds": [
+        "example.djehuti.policy.confirm-destructive-change"
+      ],
+      "onFailure": "replace-failed"
+    },
+    {
+      "id": "check-result",
+      "title": "Check the result",
+      "instruction": "Play the affected part of the project with the user.",
+      "expectedResult": "It plays correctly and the user says it is right.",
+      "onFailure": "replace-failed"
+    },
+    {
+      "id": "tidy-up",
+      "title": "Offer to remove the backup",
+      "instruction": "Ask whether to keep or remove the backup copy. Remove it only if the user says to.",
+      "expectedResult": "The user has decided about the backup.",
+      "optional": true
+    }
+  ],
+  "completionConditions": [
+    {
+      "id": "replaced-and-checked",
+      "description": "The media is replaced everywhere and the user has confirmed playback.",
+      "requiresSteps": [
+        "confirm-target",
+        "save-project",
+        "make-backup",
+        "replace-media",
+        "check-result"
+      ]
+    }
+  ],
+  "recoveryPaths": [
+    {
+      "id": "save-failed",
+      "title": "The project would not save",
+      "appliesToSteps": [
+        "save-project"
+      ],
+      "trigger": "Saving reports an error or the project still shows unsaved changes.",
+      "actions": [
+        "Tell the user the exact error.",
+        "Ask them to free space or choose another location, then save again."
+      ],
+      "outcome": "retry-step"
+    },
+    {
+      "id": "backup-failed",
+      "title": "The backup could not be made",
+      "appliesToSteps": [
+        "make-backup"
+      ],
+      "trigger": "The original could not be copied or imported.",
+      "actions": [
+        "Do not continue to the replacement.",
+        "Explain that replacing without a backup is not allowed by this process."
+      ],
+      "outcome": "abort"
+    },
+    {
+      "id": "replace-failed",
+      "title": "The replacement did not take effect",
+      "appliesToSteps": [
+        "replace-media",
+        "check-result"
+      ],
+      "trigger": "Some clips still use the original, or playback is wrong.",
+      "actions": [
+        "Say which clips are affected.",
+        "Offer to restore the backup for those clips."
+      ],
+      "outcome": "go-to-step",
+      "targetStepId": "replace-media"
+    }
+  ],
+  "cancellation": [
+    {
+      "id": "user-cancels",
+      "condition": "The user says to stop at any point before replace-media completes.",
+      "effect": "Nothing has been changed; the backup copy, if made, stays in the project."
+    },
+    {
+      "id": "user-cancels-late",
+      "condition": "The user says to stop after replace-media has completed.",
+      "effect": "Ask whether to restore the backup for the affected clips before ending."
+    }
+  ],
+  "verification": {
+    "contentRevision": 1,
+    "reviewedAt": "2026-09-20",
+    "reviewedBy": "Example fixture (not a real review)",
+    "evidence": [
+      {
+        "kind": "design",
+        "ref": "example fixture"
+      }
+    ]
+  }
+}

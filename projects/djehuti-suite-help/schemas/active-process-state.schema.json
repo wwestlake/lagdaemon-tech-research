@@ -1,0 +1,119 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://djehuti.example/schemas/active-process-state.schema.json",
+  "title": "DjehutiSuite active process state (runtime data)",
+  "description": "RUNTIME DATA, not authored knowledge. Records where one running instance of a process has got to. It is created and updated by the host application, stored in the runtime store (never in the authored knowledge source or Git), and read by the context assembler on every request. It points at a process definition by ID and revision; it never copies the definition.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "recordKind",
+    "runtimeData",
+    "stateId",
+    "processId",
+    "processRevision",
+    "status",
+    "currentStepId",
+    "completedSteps",
+    "observations",
+    "unresolvedQuestions",
+    "createdAt",
+    "updatedAt"
+  ],
+  "properties": {
+    "$schema": { "type": "string", "format": "uri-reference" },
+    "schemaVersion": { "const": "1.0" },
+    "recordKind": { "const": "active-process-state" },
+    "runtimeData": {
+      "const": true,
+      "description": "Always true. Marks the document as runtime data so tooling can refuse to treat it as authored content."
+    },
+    "stateId": { "type": "string", "minLength": 1, "description": "Opaque unique ID of this run, assigned at start." },
+    "subject": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "What the run belongs to (a user, a project, a workspace), by opaque reference. No personal data.",
+      "properties": {
+        "kind": { "type": "string", "minLength": 1 },
+        "ref": { "type": "string", "minLength": 1 }
+      }
+    },
+    "processId": { "$ref": "#/$defs/stableId" },
+    "processRevision": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "verification.contentRevision of the definition this run started on."
+    },
+    "status": {
+      "enum": ["active", "waiting-for-user", "blocked", "recovering", "completed", "failed", "cancelled"]
+    },
+    "currentStepId": {
+      "oneOf": [{ "$ref": "#/$defs/localId" }, { "type": "null" }],
+      "description": "Null only when status is completed, failed or cancelled."
+    },
+    "activeRecoveryPathId": { "$ref": "#/$defs/localId" },
+    "completedSteps": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["stepId", "completedAt", "outcome"],
+        "properties": {
+          "stepId": { "$ref": "#/$defs/localId" },
+          "completedAt": { "type": "string", "format": "date-time" },
+          "outcome": { "enum": ["succeeded", "skipped", "recovered"] },
+          "result": { "type": "string", "description": "What actually happened, in the terms of the step's expected result." }
+        }
+      }
+    },
+    "observations": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["at", "text"],
+        "properties": {
+          "at": { "type": "string", "format": "date-time" },
+          "stepId": { "$ref": "#/$defs/localId" },
+          "source": { "enum": ["user", "application", "agent"] },
+          "text": { "type": "string", "minLength": 1 }
+        }
+      }
+    },
+    "unresolvedQuestions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "question", "askedAt"],
+        "properties": {
+          "id": { "$ref": "#/$defs/localId" },
+          "stepId": { "$ref": "#/$defs/localId" },
+          "question": { "type": "string", "minLength": 1 },
+          "askedAt": { "type": "string", "format": "date-time" }
+        }
+      }
+    },
+    "createdAt": { "type": "string", "format": "date-time" },
+    "updatedAt": { "type": "string", "format": "date-time" },
+    "endedAt": { "type": "string", "format": "date-time" },
+    "endReason": { "type": "string", "minLength": 1 }
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "status": { "enum": ["completed", "failed", "cancelled"] } }, "required": ["status"] },
+      "then": { "properties": { "currentStepId": { "type": "null" } }, "required": ["endedAt"] },
+      "else": { "properties": { "currentStepId": { "type": "string" } } }
+    }
+  ],
+  "$defs": {
+    "stableId": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9]*(?:[.-][a-z0-9]+)+$"
+    },
+    "localId": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$"
+    }
+  }
+}

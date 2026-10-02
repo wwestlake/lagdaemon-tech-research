@@ -28,6 +28,8 @@ set(CMAKE_RUNTIME_OUTPUT_DIRECTORY_RELEASE "${CMAKE_CURRENT_SOURCE_DIR}/bin/Rele
 juce_add_gui_app(DjehutiElectronicsLab
     PRODUCT_NAME "Djehuti Electronics Lab"
     VERSION 0.1.0
+    ICON_BIG "${CMAKE_CURRENT_SOURCE_DIR}/../assets/DjehutiElectronicsLabLogo.png"
+    ICON_SMALL "${CMAKE_CURRENT_SOURCE_DIR}/../assets/DjehutiElectronicsLabLogo.png"
 )
 
 set_target_properties(DjehutiElectronicsLab PROPERTIES OUTPUT_NAME "djehuti_electronics_lab")

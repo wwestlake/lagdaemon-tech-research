@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Validate DjehutiSuite help sources and compile browser/RAG read models."""
+"""Validate DjehutiSuite help, policy and process sources and compile browser/RAG read models."""
 
 from __future__ import annotations
 
@@ -227,6 +227,32 @@ def write_json(path: Path, value: Any) -> None:
     path.write_text(json.dumps(value, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
 
 
+def load_definitions(directory: Path | None, schema: dict[str, Any] | None, errors: list[str]) -> list[dict[str, Any]]:
+    """Loads authored policy or process JSON from a directory, refusing runtime records."""
+    if directory is None or schema is None:
+        return []
+    import context_system
+
+    if not directory.is_dir():
+        errors.append(f"definition directory does not exist: {directory}")
+        return []
+    documents: list[tuple[str, Any]] = []
+    for path in sorted(directory.rglob("*.json")):
+        documents.append((str(path), load_json(path)))
+    errors.extend(context_system.runtime_data_errors(documents))
+    loaded: list[dict[str, Any]] = []
+    for label, document in documents:
+        if isinstance(document, dict) and (
+            document.get("runtimeData") is True or document.get("recordKind") in context_system.RUNTIME_MARKERS
+        ):
+            continue
+        schema_problems = schema_errors(document, schema, label)
+        errors.extend(schema_problems)
+        if not schema_problems:
+            loaded.append(document)
+    return loaded
+
+
 def build(args: argparse.Namespace) -> int:
     topic_schema = load_json(args.topic_schema)
     inventory_schema = load_json(args.inventory_schema)
@@ -243,16 +269,31 @@ def build(args: argparse.Namespace) -> int:
     if not topic_paths:
         errors.append(f"no topic JSON files found under {args.topics}")
 
+    # Policies and processes are optional additions to the help sources.
+    policies_dir = getattr(args, "policies", None)
+    processes_dir = getattr(args, "processes", None)
+    policy_schema = load_json(args.policy_schema) if getattr(args, "policy_schema", None) else None
+    process_schema = load_json(args.process_schema) if getattr(args, "process_schema", None) else None
+    policies = load_definitions(policies_dir, policy_schema, errors)
+    processes = load_definitions(processes_dir, process_schema, errors)
+
+    warnings: list[str] = []
     if not errors:
         link_errors, warnings = validate_links(topics, inventory)
         errors.extend(link_errors)
-    else:
-        warnings = []
+        if policies or processes:
+            import context_system
+
+            definition_errors, definition_warnings = context_system.validate_definitions(policies, processes, inventory)
+            errors.extend(definition_errors)
+            warnings.extend(definition_warnings)
 
     report = {
         "schemaVersion": "1.0",
         "ok": not errors,
         "topicCount": len(topics),
+        "policyCount": len(policies),
+        "processCount": len(processes),
         "inventoryItemCount": len(inventory.get("items", [])),
         "errorCount": len(errors),
         "warningCount": len(warnings),
@@ -270,13 +311,20 @@ def build(args: argparse.Namespace) -> int:
     write_json(args.output / "help-catalog.json", compile_catalog(topics, inventory))
     write_json(args.output / "context-map.json", compile_context_map(topics))
     cards = compile_cards(topics)
+    if policies or processes:
+        import context_system
+
+        write_json(args.output / "policy-index.json", context_system.compile_policy_index(policies, processes))
+        write_json(args.output / "process-catalog.json", context_system.compile_process_catalog(processes))
+        cards.extend(context_system.compile_policy_cards(policies))
+        cards.extend(context_system.compile_process_cards(processes))
     with (args.output / "semantic-cards.jsonl").open("w", encoding="utf-8") as handle:
         for card in cards:
             handle.write(json.dumps(card, ensure_ascii=False, sort_keys=True) + "\n")
 
     print(
-        f"Compiled {len(topics)} topic(s), {len(cards)} semantic card(s), "
-        f"and {len(inventory['items'])} inventory item(s)."
+        f"Compiled {len(topics)} topic(s), {len(policies)} policy(ies), {len(processes)} process(es), "
+        f"{len(cards)} semantic card(s), and {len(inventory['items'])} inventory item(s)."
     )
     for warning in warnings:
         print(f"WARNING: {warning}", file=sys.stderr)
@@ -292,6 +340,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--inventory-schema", type=Path, default=root / "schemas" / "help-inventory.schema.json"
     )
+    parser.add_argument("--policies", type=Path, default=root / "examples" / "policies")
+    parser.add_argument("--processes", type=Path, default=root / "examples" / "processes")
+    parser.add_argument("--policy-schema", type=Path, default=root / "schemas" / "policy.schema.json")
+    parser.add_argument("--process-schema", type=Path, default=root / "schemas" / "process.schema.json")
     parser.add_argument("--output", type=Path, default=root / "build")
     return parser.parse_args()
 

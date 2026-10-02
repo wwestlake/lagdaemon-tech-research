@@ -71,6 +71,76 @@ Expected workflow:
 8. Ask for user approval when confidence is low or ambiguity exists.
 9. Add the verified/provisional component to the database.
 
+The component system should separate design intent from exact procurement/spec
+identity:
+
+- **Archetype**: the generic kind of thing placed on a schematic, such as an NPN
+  transistor, op amp, resistor, battery, AC source, or power bus.
+- **Part family**: a common part identity, such as `2N2222`, `LM741`, `1N4148`,
+  or `NE555`, without committing to one manufacturer.
+- **Manufacturer part**: a concrete vendor-specific component, such as a Texas
+  Instruments `LM741CN` or onsemi `P2N2222A`, with datasheet provenance.
+- **Placed instance**: the actual schematic item, such as `Q3` or `U1`, with
+  local value overrides, package choice, model selection, and simulation role.
+
+The user should be able to sketch with archetypes first and bind exact
+manufacturer parts later. This keeps early design fast while still allowing the
+tool to enrich parts when public specifications are available.
+
+The tool should maintain its own local component database. First research pass
+can use JSON or SQLite, but the conceptual records should be stable:
+
+- archetype records for generic symbols/behavior
+- family records for common industry part identities
+- manufacturer-part records with datasheet provenance and extracted claims
+- symbol records
+- package/footprint records
+- simulation model records
+- ingestion source records
+- claim/provenance records
+
+The database should be seeded with common components so the agent is not forced
+to search the web for every ordinary part.
+
+### 2.1 Parts Sourcing
+
+The tool should help hobby users find where to buy parts after a design starts
+to become real. Sourcing must be separate from verified component specifications:
+a marketplace listing is not a datasheet.
+
+Sourcing records should attach to part families, manufacturer parts, and placed
+instances without replacing the engineering component record.
+
+Expected sourcing targets:
+
+- electronics distributors, such as Digi-Key, Mouser, Newark, Arrow, and TME
+- hobby suppliers, such as Adafruit, SparkFun, Pololu, and Jameco
+- consumer marketplaces, such as Amazon, eBay, AliExpress, and Walmart
+- local/user-provided inventory lists
+
+The sourcing system should answer:
+
+- where to buy this part
+- whether the match is exact, equivalent, generic, or uncertain
+- package and breadboard friendliness
+- price and quantity breaks when available
+- estimated shipping or availability when available
+- whether an assortment kit can cover the needed part
+- substitute suggestions
+- warnings for vague marketplace listings
+
+Confidence should be explicit:
+
+- **High**: exact manufacturer part number from a distributor or manufacturer
+- **Medium**: clear hobby supplier listing or trusted substitute
+- **Low**: keyword match or generic marketplace listing
+- **Warning**: ambiguous kit, clone, counterfeit risk, unclear package, or
+  "compatible with" language
+
+The agent should search the local component database and local sourcing cache
+first, then use approved provider/search tools when available. Search results
+should become provisional sourcing records with timestamps and source URLs.
+
 The component record should include:
 
 - manufacturer

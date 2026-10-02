@@ -1,0 +1,260 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://djehuti.example/schemas/process.schema.json",
+  "title": "DjehutiSuite authored process definition",
+  "description": "A repeatable multi-step procedure. Canonical, reviewed, versioned in Git. Usable first as guidance for the Virtual Engineer, and structured so it can later drive executable procedures. Contains no run-time state: progress lives in an active-process-state record.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "recordKind",
+    "id",
+    "locale",
+    "title",
+    "purpose",
+    "executionMode",
+    "status",
+    "owners",
+    "applicability",
+    "entryConditions",
+    "requiredPolicies",
+    "steps",
+    "completionConditions",
+    "recoveryPaths",
+    "cancellation",
+    "verification"
+  ],
+  "properties": {
+    "$schema": { "type": "string", "format": "uri-reference" },
+    "schemaVersion": { "const": "1.0" },
+    "recordKind": { "const": "process" },
+    "id": { "$ref": "#/$defs/stableId" },
+    "locale": { "type": "string", "pattern": "^[a-z]{2,3}(?:-[A-Z]{2})?$" },
+    "title": { "type": "string", "minLength": 1 },
+    "purpose": { "type": "string", "minLength": 1 },
+    "executionMode": {
+      "enum": ["guidance", "assisted", "automated"],
+      "description": "guidance: the agent explains and tracks the steps. assisted/automated are reserved for later executable procedures; the step shape does not change."
+    },
+    "keywords": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 },
+      "uniqueItems": true
+    },
+    "alternateQueries": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 },
+      "uniqueItems": true
+    },
+    "status": { "enum": ["proposed", "draft", "verified", "deprecated"] },
+    "replacedBy": { "$ref": "#/$defs/stableId" },
+    "owners": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 },
+      "minItems": 1,
+      "uniqueItems": true
+    },
+    "applicability": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Where the process can be started. Absent lists mean 'any'.",
+      "properties": {
+        "products": { "$ref": "#/$defs/nameList" },
+        "audiences": { "$ref": "#/$defs/nameList" },
+        "platforms": { "$ref": "#/$defs/nameList" },
+        "helpIds": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/stableId" },
+          "uniqueItems": true
+        },
+        "since": { "type": "string", "minLength": 1 },
+        "until": { "type": "string", "minLength": 1 }
+      }
+    },
+    "entryConditions": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/condition" },
+      "description": "What must be true before the process may start."
+    },
+    "requiredPolicies": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/stableId" },
+      "uniqueItems": true,
+      "description": "Policies that are injected as mandatory for as long as this process is active, whether or not their own activation conditions match."
+    },
+    "steps": {
+      "type": "array",
+      "minItems": 1,
+      "description": "Ordered. Array order is the normal order of execution.",
+      "items": { "$ref": "#/$defs/step" }
+    },
+    "completionConditions": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/completion" }
+    },
+    "recoveryPaths": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/recoveryPath" }
+    },
+    "cancellation": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/cancellation" }
+    },
+    "verification": { "$ref": "#/$defs/verification" }
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "status": { "const": "deprecated" } }, "required": ["status"] },
+      "then": { "required": ["replacedBy"] }
+    }
+  ],
+  "$defs": {
+    "stableId": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9]*(?:[.-][a-z0-9]+)+$"
+    },
+    "localId": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$"
+    },
+    "nameList": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 },
+      "uniqueItems": true
+    },
+    "condition": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "description"],
+      "properties": {
+        "id": { "$ref": "#/$defs/localId" },
+        "description": { "type": "string", "minLength": 1 },
+        "fact": {
+          "enum": ["helpId", "processId", "processStepId", "intent", "agentAction", "riskLevel", "dataClass", "userRole"],
+          "description": "Optional structured form so the condition can be checked by code. Without it the condition is checked by the agent or the user."
+        },
+        "values": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "negate": { "type": "boolean", "default": false }
+      },
+      "dependentRequired": { "fact": ["values"], "values": ["fact"] }
+    },
+    "step": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "title", "instruction", "expectedResult"],
+      "properties": {
+        "id": { "$ref": "#/$defs/localId" },
+        "title": { "type": "string", "minLength": 1 },
+        "instruction": { "type": "string", "minLength": 1 },
+        "expectedResult": { "type": "string", "minLength": 1 },
+        "uiTarget": { "$ref": "#/$defs/stableId" },
+        "policyIds": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/stableId" },
+          "uniqueItems": true,
+          "description": "Extra policies mandatory while this step is current."
+        },
+        "optional": { "type": "boolean", "default": false },
+        "onFailure": {
+          "$ref": "#/$defs/localId",
+          "description": "recoveryPaths[].id to follow when the step's expected result is not met."
+        },
+        "action": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "Reserved for executable procedures: a machine-readable action the step performs. Ignored while executionMode is guidance.",
+          "required": ["kind"],
+          "properties": {
+            "kind": { "type": "string", "minLength": 1 },
+            "target": { "$ref": "#/$defs/stableId" },
+            "parameters": { "type": "object" }
+          }
+        }
+      }
+    },
+    "completion": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "description"],
+      "properties": {
+        "id": { "$ref": "#/$defs/localId" },
+        "description": { "type": "string", "minLength": 1 },
+        "requiresSteps": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/localId" },
+          "uniqueItems": true,
+          "description": "Steps that must be completed. Omit to require every non-optional step."
+        }
+      }
+    },
+    "recoveryPath": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "title", "appliesToSteps", "trigger", "actions", "outcome"],
+      "properties": {
+        "id": { "$ref": "#/$defs/localId" },
+        "title": { "type": "string", "minLength": 1 },
+        "appliesToSteps": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/localId" },
+          "uniqueItems": true
+        },
+        "trigger": { "type": "string", "minLength": 1 },
+        "actions": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "outcome": { "enum": ["retry-step", "go-to-step", "abort", "escalate"] },
+        "targetStepId": { "$ref": "#/$defs/localId" }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "outcome": { "const": "go-to-step" } }, "required": ["outcome"] },
+          "then": { "required": ["targetStepId"] }
+        }
+      ]
+    },
+    "cancellation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "condition", "effect"],
+      "properties": {
+        "id": { "$ref": "#/$defs/localId" },
+        "condition": { "type": "string", "minLength": 1 },
+        "effect": { "type": "string", "minLength": 1, "description": "What is left as it is, or undone, when the process is cancelled." }
+      }
+    },
+    "verification": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["contentRevision", "reviewedAt", "reviewedBy", "evidence"],
+      "properties": {
+        "contentRevision": { "type": "integer", "minimum": 1 },
+        "reviewedAt": { "type": "string", "format": "date" },
+        "reviewedBy": { "type": "string", "minLength": 1 },
+        "sourceRevision": { "type": "string", "minLength": 1 },
+        "evidence": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["kind", "ref"],
+            "properties": {
+              "kind": { "enum": ["source", "test", "manual-check", "issue", "design"] },
+              "ref": { "type": "string", "minLength": 1 }
+            }
+          }
+        }
+      }
+    }
+  }
+}

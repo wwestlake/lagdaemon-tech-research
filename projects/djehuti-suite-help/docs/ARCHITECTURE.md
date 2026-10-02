@@ -4,7 +4,7 @@ Status: research prototype
 
 Date: 2026-09-20
 
-Scope: technology-independent source model, synchronization, browser publication, video, and LiteSemRAG + ISD ingestion
+Scope: technology-independent source model, synchronization, browser publication, video, LiteSemRAG + ISD ingestion, and the agent context system (policies, processes, active process state, context assembly)
 
 ## Executive decision
 
@@ -349,6 +349,173 @@ Labels localize and routes move. Stable semantic IDs survive both.
 ### Store whole topics as one RAG chunk
 
 Whole topics dilute retrieval and make evidence coarse. Arbitrary token windows sever procedural and relational meaning. Stable authored blocks provide the useful middle ground.
+
+## Agent context system: policies, processes and process state
+
+The help system above answers "what is this and how do I do it". The Virtual Engineer needs three more kinds of context that behave differently from help and must not be handled as help:
+
+| Kind | What it is | Authority | Lifetime | Retrieved by |
+|---|---|---|---|---|
+| Help / product knowledge | Explanations, tasks, reference | Canonical, reviewed (Git) | Versioned with the product | Search and graph (existing design) |
+| **Policy** | A rule the agent must follow | Canonical, reviewed (Git) | Versioned with the product | **Not retrieved.** Selected by deterministic code and injected |
+| **Process** | A repeatable multi-step procedure | Canonical, reviewed (Git) | Versioned with the product | By ID once active; by search only to be *offered* |
+| **Active process state** | Where one running instance of a process has got to | **Runtime data**, not authored | Created and ended at run time | Read by ID from the runtime store on every request |
+
+This is an addition to the help architecture, not a replacement. Policies and processes reuse the same conventions: stable IDs, JSON Schema, review revisions with evidence, compiler validation, and derived read models. It is independent of any application, including the FRust IDE.
+
+### Policy records
+
+A policy is one rule, written as an instruction to the agent. Schema: `schemas/policy.schema.json`; example: `examples/policies/`.
+
+| Field | Purpose |
+|---|---|
+| `id` | Stable ID, same rules as help IDs (`djehuti.policy.confirm-destructive-change`). Never reused. |
+| `title`, `policyText`, `rationale` | The rule. `policyText` is the exact text injected into the request. |
+| `enforcement` | `mandatory` or `advisory` (see precedence). |
+| `priority` | 0-1000. Orders injection and settles conflicts *within* an enforcement class. |
+| `scope` | Eligibility: products, audiences, platforms, help IDs, process IDs, version range. Absent list means any. |
+| `activation` | `always`, or `conditional` on structured facts (`helpId`, `processId`, `processStepId`, `intent`, `agentAction`, `riskLevel`, `dataClass`, `userRole`), matched with `any` or `all`. |
+| `supersedes` | Policies this one explicitly replaces where both apply. |
+| `status`, `replacedBy` | `proposed`, `draft`, `verified`, `deprecated` (deprecated requires a replacement). |
+| `owners`, `source`, `verification` | Who owns it; where the rule came from (decision, standard, legal, security, user instruction, design, incident); revision, reviewer, date and evidence. |
+
+Scope answers "could this policy ever apply here". Activation answers "is it triggered by this request". Both are evaluated by code from structured facts the host application supplies with each request (current product, audience, focused feature help IDs, the action the agent is about to take, a risk classification). They are never evaluated by similarity search, so a rule about deleting a project applies whether or not the user's words resemble the rule.
+
+A mandatory policy with `activation.mode: always` is the baseline. Conditional mandatory policies cover situations such as destructive actions. The `agentAction` and `riskLevel` facts are declared by the host before the agent acts; an agent cannot avoid a policy by not mentioning the action in prose.
+
+### Process records
+
+A process is a repeatable, ordered procedure. Schema: `schemas/process.schema.json`; example: `examples/processes/`.
+
+- `id`, `title`, `purpose`, `keywords`, `alternateQueries`, `status`, `owners`, `verification`, as for topics.
+- `applicability` and `entryConditions`: where it can be started and what must be true first. Entry conditions may carry a structured `fact`/`values` form so code can check them, or be prose that the agent or user checks.
+- `requiredPolicies`: policies that are mandatory for the whole run.
+- `steps[]`: ordered; the array order is the normal execution order. Each has a stable step ID (unique within the process), title, `instruction`, a required `expectedResult`, optional step-level `policyIds` (mandatory while that step is current), `optional`, `uiTarget` (a help ID), `onFailure` (a recovery path ID), and a reserved `action` object.
+- `completionConditions[]`: what must be true for the run to be complete, optionally naming required steps (default: every non-optional step).
+- `recoveryPaths[]`: `trigger`, `actions`, the steps it `appliesToSteps`, and an `outcome` of `retry-step`, `go-to-step` (with `targetStepId`), `abort` or `escalate`.
+- `cancellation[]`: conditions under which the run can be cancelled and what state that leaves the user's work in.
+- `executionMode`: `guidance` now. `assisted` and `automated` are reserved. The step shape does not change when a process becomes executable; the `action` object is where a machine-readable operation will attach, and it is ignored in guidance mode. Steps therefore always state their observable expected result, which is what an executor will later check.
+
+Processes contain no run-time data. Nothing in a definition changes because someone is partway through it.
+
+### Active process state (runtime data)
+
+Schema: `schemas/active-process-state.schema.json`; example: `examples/runtime/example.active-process-state.json`. The schema requires `"runtimeData": true` and `"recordKind": "active-process-state"`, so tooling can always tell it from authored content.
+
+| Field | Purpose |
+|---|---|
+| `stateId`, `subject` | Opaque run identity and an opaque reference to what it belongs to (a workspace, a project). No personal data. |
+| `processId`, `processRevision` | The definition this run points at, by ID and `contentRevision`. The definition is never copied. |
+| `status` | `active`, `waiting-for-user`, `blocked`, `recovering`, `completed`, `failed`, `cancelled`. |
+| `currentStepId`, `activeRecoveryPathId` | Position. `currentStepId` is null exactly when the status is terminal. |
+| `completedSteps[]` | Step ID, time, outcome (`succeeded`, `skipped`, `recovered`) and the actual result. |
+| `observations[]`, `unresolvedQuestions[]` | What has been learned and what is still open, tied to steps. |
+| `createdAt`, `updatedAt`, `endedAt`, `endReason` | Timing. |
+
+Rules:
+
+1. **Separate store.** State lives in the host application's runtime store, keyed by `stateId`. It is never written into the topic, policy or process files, never committed with them, and never compiled into help catalogs or semantic cards. The compiler rejects a runtime record found in an authored source directory.
+2. **Not conversation history.** The agent does not "remember" that a process is active or what step it is on. The host reads the state record and passes it in on every request. Losing or trimming the conversation loses nothing about the process.
+3. **Host owns writes.** The host updates state when a step completes, a question is raised or answered, or the user cancels. The agent may propose transitions; the host validates and records them. `validate_active_state` (in `tools/context_system.py`) states the invariants: the process and revision match; the current step exists and is not already completed; no completed step lies after the current one (except while recovering); a completed run has every required step; recovery state names a real recovery path; observations and questions refer to real steps.
+4. **Revision drift is an explicit event.** If the definition's `contentRevision` differs from the run's `processRevision`, the run is flagged, not silently continued on new text. The host decides: finish on the old revision (requires keeping that revision available) or restart. Assembly refuses to proceed on an inconsistent state rather than guess.
+5. **Terminal runs stop shaping context.** A completed, failed or cancelled run injects no process section and no process-required policies.
+
+### Context construction
+
+Every agent request is rebuilt from scratch, in this order:
+
+1. **Applicable mandatory policies.**
+2. **Active process definition and current state.**
+3. **Relevant help and product knowledge.**
+4. **Relevant conversation context.**
+5. **The current user request.**
+
+The order is precedence as well as layout: earlier sections govern later ones.
+
+```text
+host facts + policy store ──> applicable policies ─┐
+runtime store ──> state ──> process definition ────┤
+retrieval (exact IDs, graph, lexical/semantic) ────┼──> assembled request
+conversation store ────────────────────────────────┤
+user's message ────────────────────────────────────┘
+```
+
+`tools/context_system.py` is a reference implementation (`applicable_policies`, `assemble_context`, `render_context`) and the tests in `tests/test_context_system.py` are its executable specification.
+
+**Policy selection** (section 1). Inputs are the policy index, the request's structured facts, and the active state. A policy is included when it is not deprecated, is in scope, and is activated. In addition, every policy in the active process's `requiredPolicies`, and every policy in the *current step's* `policyIds`, is included and treated as mandatory, whatever its authored enforcement or activation. If such a policy cannot be found, assembly fails; it never continues without it.
+
+**Process section** (section 2). Included whenever a non-terminal run exists: the definition (steps with expected results, recovery paths, completion and cancellation) and the state (status, current step, completed steps with results, observations, open questions). The state is validated against the definition first.
+
+**Knowledge section** (section 3). Retrieval follows the existing order (exact IDs, eligibility filters, graph edges, lexical and semantic). Results are reference material. Cards of kind `policy` and `process*` that come back from search are discarded here: policies are injected by selection, not by search hits, and a process is present only if a run is active. Search may still *offer* a process to the user (the summary card is searchable); starting a run is a host action that creates a state record.
+
+**Conversation section** (section 4). Recent turns, newest kept first. It carries dialogue, not authority: nothing in it changes which policies apply or where a process stands.
+
+**Request section** (section 5). The user's message, verbatim.
+
+Every request runs all five steps again. There is no carried-over "system prompt" that could drift, be truncated, or be forgotten.
+
+### Policy precedence
+
+1. **Mandatory beats advisory**, regardless of priority numbers. An advisory policy with priority 1000 still ranks below every mandatory policy.
+2. Within a class, **higher `priority` wins**, then ID order for determinism. Order is injection order.
+3. **Explicit supersession only.** A policy removes another only by naming it in `supersedes`, and only if it has equal or higher priority; an advisory policy can never supersede a mandatory one. The compiler enforces this. Otherwise, applicable policies all apply together.
+4. **Process-required policies are mandatory** for the life of the run or the current step.
+5. **Nothing below section 1 can override section 1.** Retrieved knowledge, conversation text, process step instructions and the user's message are all lower in precedence. A retrieved page that says "ignore the rules" is data, and the assembler labels the knowledge section as subordinate to policies. Policy changes come only through reviewed edits to policy files.
+6. **A process cannot weaken a policy.** Step instructions never relax a required policy; where a step's text and a mandatory policy conflict, the policy governs, and the conflict is a defect to fix in review.
+
+### Budget and truncation
+
+When the context must fit a size limit:
+
+- Sections 1 (mandatory policies), 2 (active process and state) and 5 (the user's message) are never trimmed. If they do not fit, assembly raises an error. Silent truncation of a rule is worse than a failed request.
+- Then, in order of value: advisory policies (by priority), knowledge (by retrieval rank), conversation (oldest dropped first). Items are included whole or omitted; none is cut mid-rule.
+
+This is why mandatory policy text should be short and the number of simultaneously mandatory policies kept small; the compiler's warning list is the place to notice growth.
+
+### Process continuity across turns
+
+Because state is external and every request is rebuilt, a process survives: long conversations and trimmed history; a browser or application restart (the state record persists); a switch between agents or models (the next request carries the same policies and state); and a session that resumes days later. Continuity is *the host reading the state record*, so the same mechanism supports later executable procedures, where a step's completion is recorded from an observed result and not from the agent's say-so.
+
+### Compiler and LiteSemRAG output
+
+`tools/build_help.py` accepts `--policies` and `--processes` directories with their schemas. With them it:
+
+- validates schemas, and rejects any runtime record found in authored directories;
+- checks IDs are unique (and not shared between a policy and a process);
+- checks that `requiredPolicies` and step `policyIds` exist and are not deprecated, that `supersedes` and `replacedBy` targets exist and precedence rules hold, and that scope and applicability help IDs and step `uiTarget` values exist in the inventory;
+- checks step IDs, recovery path IDs, completion, cancellation and entry-condition IDs are unique; that every `onFailure` names a recovery path that lists the step; that recovery targets and completion requirements name real steps;
+- warns when a mandatory policy is not `verified`, or a verified process depends on an unverified policy;
+- writes `policy-index.json` (pinned records ordered by priority, with the full policy text, for the assembler) and `process-catalog.json`;
+- adds cards to `semantic-cards.jsonl`.
+
+Cards (all with the ID and content-hash conventions used for topics):
+
+| Card | ID | Notes |
+|---|---|---|
+| Policy | `{policyId}` | `kind: policy`, `enforcement`, `priority`; `retrieval.mode` is `pinned` for mandatory policies (do not rely on search) and `searchable` for advisory ones. |
+| Process summary | `{processId}` | Title, purpose, step outline, `stepIds`, `requiredPolicies`. |
+| Process step | `{processId}#{stepId}` | `stepIndex`, `previousStepId`, `nextStepId`, `requiredPolicies` (process plus step), `onFailure`. |
+| Recovery path | `{processId}#recovery-{id}` | `appliesToSteps`, `outcome`, `targetStepId`; relations to its step cards. |
+| Cancellation | `{processId}#cancel-{id}` | Condition and effect. |
+
+No card is ever generated from active state. The step chain (`previousStepId`, `nextStepId`) and the relations to policies and steps become graph edges when ingested, so exact-ID and graph retrieval can walk a process. ISD steering (see above) may influence which searchable cards are found; it has no effect on policy selection or on the process section, because those are not retrieval results.
+
+### Git, storage and ownership
+
+- Canonical: `policies/`, `processes/` (authored JSON, in Git, code-owner reviewed by the owning product area; policies with a `security`, `legal` or `user-instruction` source should require an additional named approver).
+- Derived: `policy-index.json`, `process-catalog.json`, cards, embeddings. Disposable.
+- Runtime: active process state, in the host's runtime store. Not in Git. Retention and deletion follow the host's user-data rules; state contains opaque references and step observations, and must not hold secrets or personal data.
+- A policy or process change is a reviewed pull request whose report lists affected active runs (runs whose `processRevision` will no longer match) as documentation debt.
+
+### Decisions and rejected alternatives
+
+- **Policies as ordinary retrieved help.** Rejected: a rule that only applies when a search finds it is not a rule. Selection must be deterministic.
+- **One giant standing system prompt.** Rejected: unreviewable, unversioned, cannot be scoped or conditionally activated, and grows without bound.
+- **Process progress kept in the conversation.** Rejected: it is lost when history is trimmed or a session changes, and it cannot be inspected or validated.
+- **Process progress stored inside the process file.** Rejected: mixes canonical and runtime data, makes Git history a database, and breaks on concurrent runs.
+- **Letting the model decide which policies apply.** Rejected for mandatory policies: the model is the thing being constrained. Facts come from the host.
+- **Priority alone for precedence.** Rejected: a single number lets an advisory style rule outrank a safety rule by mistake. Enforcement class is a separate, first-order key.
+
 
 ## Sources
 

@@ -1,5 +1,8 @@
 #include "ElectronicsWorkbench.h"
 
+#include <map>
+#include <set>
+
 namespace
 {
 constexpr int toolbarHeight = 36;
@@ -66,13 +69,8 @@ public:
         filter.onTextChange = [this] { refreshFilter(); };
         addAndMakeVisible(filter);
 
-        add({ "resistor", "Resistor", "Passive" });
-        add({ "capacitor", "Capacitor", "Passive" });
-        add({ "voltage_source", "DC Voltage Source", "Source" });
-        add({ "ground", "Ground", "Reference" });
-        add({ "opamp_741", "741 Op Amp - provisional", "Analog IC" });
-        add({ "npn", "NPN Transistor - generic", "Discrete" });
-        add({ "logic_not", "Logic Inverter - behavioral", "Digital" });
+        if (!loadSeedLibrary())
+            addFallbackLibrary();
         refreshFilter();
 
         addAndMakeVisible(components);
@@ -189,6 +187,55 @@ private:
 
     void add(SymbolInfo item) { allSymbols.push_back(std::move(item)); }
 
+    bool loadSeedLibrary()
+    {
+        const auto seedFile = juce::File(ELECTRONICS_RESEARCH_ROOT)
+            .getChildFile("prototype")
+            .getChildFile("data")
+            .getChildFile("component_seed.json");
+        if (!seedFile.existsAsFile())
+            return false;
+
+        const auto parsed = juce::JSON::parse(seedFile);
+        const auto* root = parsed.getDynamicObject();
+        if (root == nullptr || !root->hasProperty("librarySymbols"))
+            return false;
+
+        const auto* symbols = root->getProperty("librarySymbols").getArray();
+        if (symbols == nullptr)
+            return false;
+
+        for (const auto& entry : *symbols)
+        {
+            const auto* object = entry.getDynamicObject();
+            if (object == nullptr)
+                continue;
+
+            const auto id = object->getProperty("id").toString();
+            const auto name = object->getProperty("name").toString();
+            const auto category = object->getProperty("category").toString();
+            if (id.isNotEmpty() && name.isNotEmpty())
+                add({ id, name, category });
+        }
+        return !allSymbols.empty();
+    }
+
+    void addFallbackLibrary()
+    {
+        add({ "resistor", "Resistor", "Passive" });
+        add({ "capacitor", "Capacitor", "Passive" });
+        add({ "power_bus", "Power Bus", "Bus" });
+        add({ "ground_bus", "Ground Bus", "Bus" });
+        add({ "battery", "Battery", "Source" });
+        add({ "voltage_source", "DC Voltage Source", "Source" });
+        add({ "ac_voltage_source", "AC Voltage Source", "Source" });
+        add({ "signal_source", "Signal Source", "Source" });
+        add({ "ground", "Ground", "Reference" });
+        add({ "opamp_741", "741 Op Amp - provisional", "Analog IC" });
+        add({ "npn", "NPN Transistor - generic", "Discrete" });
+        add({ "logic_not", "Logic Inverter - behavioral", "Digital" });
+    }
+
     void refreshFilter()
     {
         const auto needle = filter.getText().trim().toLowerCase();
@@ -213,11 +260,179 @@ class SchematicCanvasPanel final : public juce::Component,
 {
 public:
     SchematicCanvasPanel(std::function<juce::String()> getSelectedSymbol,
+                         std::function<bool()> getStampMode,
                          std::function<void(juce::String)> onMessage)
         : getSelectedSymbolId(std::move(getSelectedSymbol)),
+          getStampPlacementEnabled(std::move(getStampMode)),
           onStatus(std::move(onMessage))
     {
         setWantsKeyboardFocus(true);
+    }
+
+    void setSelectionListener(std::function<void(int, juce::String, juce::String, juce::String, juce::String, juce::String, juce::String, juce::String)> listener)
+    {
+        onSelectionChanged = std::move(listener);
+        notifySelection();
+    }
+
+    void updateSelectedProperties(const juce::String& value,
+                                  const juce::String& frequency,
+                                  const juce::String& busName,
+                                  const juce::String& family,
+                                  const juce::String& manufacturerPart)
+    {
+        if (selectedInstance < 0 || selectedInstance >= (int)instances.size())
+            return;
+
+        auto& instance = instances[(size_t)selectedInstance];
+        instance.value = value.trim();
+        instance.frequency = frequency.trim();
+        instance.busName = busName.trim();
+        instance.family = family.trim();
+        instance.manufacturerPart = manufacturerPart.trim();
+        if (onStatus) onStatus("Updated " + instance.refdes + " properties.");
+        notifySelection();
+        repaint();
+    }
+
+    juce::String buildCircuitJson() const
+    {
+        const auto netNames = computeNetNames();
+        juce::String text;
+        text << "{\n";
+        text << "  \"schemaVersion\": 1,\n";
+        text << "  \"kind\": \"electronics_circuit\",\n";
+        text << "  \"components\": [\n";
+        for (size_t i = 0; i < instances.size(); ++i)
+        {
+            const auto& instance = instances[i];
+            const auto symbol = symbolFor(instance.symbolId);
+            if (i != 0) text << ",\n";
+            text << "    {\n";
+            text << "      \"id\": " << quote(instance.refdes) << ",\n";
+            text << "      \"symbol\": " << quote(instance.symbolId) << ",\n";
+            text << "      \"component\": {\n";
+            text << "        \"archetype\": " << quote(archetypeFor(instance.symbolId)) << ",\n";
+            text << "        \"family\": " << nullableQuote(instance.family) << ",\n";
+            text << "        \"manufacturerPart\": " << nullableQuote(instance.manufacturerPart) << ",\n";
+            text << "        \"datasheetStatus\": \"generic\"\n";
+            text << "      },\n";
+            text << "      \"x\": " << instance.position.x << ",\n";
+            text << "      \"y\": " << instance.position.y << ",\n";
+            text << "      \"value\": " << quote(instance.value) << ",\n";
+            text << "      \"parameters\": " << parametersJsonFor(instance) << ",\n";
+            text << "      \"pins\": {\n";
+            for (size_t p = 0; p < symbol.pins.size(); ++p)
+            {
+                if (p != 0) text << ",\n";
+                text << "        " << quote(symbol.pins[p].name) << ": "
+                     << quote(netFor({ (int)i, (int)p }, netNames));
+            }
+            text << "\n      }\n";
+            text << "    }";
+        }
+        text << "\n  ],\n";
+        text << "  \"wires\": [\n";
+        for (size_t i = 0; i < wires.size(); ++i)
+        {
+            const auto& wire = wires[i];
+            if (i != 0) text << ",\n";
+            text << "    { \"a\": " << quote(pinLabel(wire.a))
+                 << ", \"b\": " << quote(pinLabel(wire.b)) << " }";
+        }
+        text << "\n  ]\n";
+        text << "}\n";
+        return text;
+    }
+
+    juce::String buildXyceNetlist() const
+    {
+        const auto netNames = computeNetNames();
+        juce::String netlist;
+        netlist << "* Djehuti Electronics Lab generated Xyce netlist\n";
+        netlist << "* Research prototype output. Circuit JSON remains authoritative.\n\n";
+
+        bool hasGround = false;
+        bool hasProbe = false;
+
+        for (size_t i = 0; i < instances.size(); ++i)
+        {
+            const auto& instance = instances[i];
+            const auto symbol = symbolFor(instance.symbolId);
+            auto pinNet = [&](const juce::String& pinName) {
+                for (size_t p = 0; p < symbol.pins.size(); ++p)
+                    if (symbol.pins[p].name == pinName)
+                        return netFor({ (int)i, (int)p }, netNames);
+                return juce::String("floating");
+            };
+
+            if (instance.symbolId == "ground" || instance.symbolId == "ground_bus")
+            {
+                hasGround = true;
+                continue;
+            }
+            if (instance.symbolId == "power_bus")
+            {
+                netlist << "* " << instance.refdes << " " << instance.busName << " power bus on net " << pinNet("VBUS") << "\n";
+                continue;
+            }
+            if (instance.symbolId == "resistor")
+            {
+                netlist << instance.refdes << " " << pinNet("1") << " " << pinNet("2") << " " << instance.value << "\n";
+                hasProbe = true;
+            }
+            else if (instance.symbolId == "capacitor")
+            {
+                netlist << instance.refdes << " " << pinNet("1") << " " << pinNet("2") << " " << instance.value << "\n";
+            }
+            else if (instance.symbolId == "voltage_source")
+            {
+                netlist << instance.refdes << " " << pinNet("+") << " " << pinNet("-") << " DC " << instance.value << "\n";
+                hasProbe = true;
+            }
+            else if (instance.symbolId == "battery")
+            {
+                netlist << instance.refdes << " " << pinNet("+") << " " << pinNet("-") << " DC " << instance.value << "\n";
+                hasProbe = true;
+            }
+            else if (instance.symbolId == "ac_voltage_source")
+            {
+                netlist << instance.refdes << " " << pinNet("+") << " " << pinNet("-") << " AC " << instance.value
+                        << " SIN(0 " << instance.value << " " << instance.frequency << ")\n";
+                hasProbe = true;
+            }
+            else if (instance.symbolId == "signal_source")
+            {
+                netlist << instance.refdes << " " << pinNet("OUT") << " " << pinNet("REF") << " AC " << instance.value
+                        << " SIN(0 " << instance.value << " " << instance.frequency << ")\n";
+                hasProbe = true;
+            }
+            else
+            {
+                netlist << "* " << instance.refdes << " (" << instance.symbolId << ") not lowered to Xyce yet\n";
+            }
+        }
+
+        netlist << "\n.OP\n";
+        netlist << ".PRINT DC";
+        const auto printableNets = printableNetNames(netNames);
+        if (printableNets.empty())
+        {
+            netlist << " V(0)";
+        }
+        else
+        {
+            for (const auto& net : printableNets)
+                netlist << " V(" << net << ")";
+        }
+        netlist << "\n.END\n";
+
+        if (!hasGround)
+            netlist = "* WARNING: no ground symbol found; generated netlist may not solve.\n" + netlist;
+        if (!hasProbe)
+            netlist = "* WARNING: no lowered source/resistor found; this netlist is mostly structural.\n" + netlist;
+
+        return netlist;
     }
 
     void paint(juce::Graphics& g) override
@@ -230,7 +445,9 @@ public:
 
         g.setColour(juce::Colour(0xff93a7b0));
         g.setFont(juce::Font(13.0f));
-        g.drawText("Select a symbol, click canvas to place it. Click pins to start/end right-angle wires.",
+        const auto stampOn = getStampPlacementEnabled != nullptr && getStampPlacementEnabled();
+        g.drawText(stampOn ? "Stamp mode: click empty canvas to place selected symbols. Click pins to wire."
+                           : "Drag components from the library. Click pins to start/end right-angle wires.",
                    getLocalBounds().reduced(12).removeFromBottom(24),
                    juce::Justification::centredLeft);
 
@@ -265,9 +482,20 @@ public:
             return;
         }
 
-        const auto selected = getSelectedSymbolId != nullptr ? getSelectedSymbolId() : juce::String("resistor");
-        placeSymbol(selected, p);
-        repaint();
+        if (const auto instanceIndex = hitTestInstance(event.position); instanceIndex >= 0)
+        {
+            selectedInstance = instanceIndex;
+            notifySelection();
+            repaint();
+            return;
+        }
+
+        if (getStampPlacementEnabled != nullptr && getStampPlacementEnabled())
+        {
+            const auto selected = getSelectedSymbolId != nullptr ? getSelectedSymbolId() : juce::String("resistor");
+            placeSymbol(selected, p);
+            repaint();
+        }
     }
 
     bool keyPressed(const juce::KeyPress& key) override
@@ -329,6 +557,11 @@ private:
     {
         juce::String symbolId;
         juce::String refdes;
+        juce::String value;
+        juce::String frequency;
+        juce::String busName;
+        juce::String family;
+        juce::String manufacturerPart;
         juce::Point<float> position;
     };
 
@@ -344,13 +577,52 @@ private:
         PinRef b;
     };
 
+    struct DisjointSet
+    {
+        std::vector<int> parent;
+
+        explicit DisjointSet(int count)
+        {
+            parent.resize((size_t)count);
+            for (int i = 0; i < count; ++i) parent[(size_t)i] = i;
+        }
+
+        int find(int x)
+        {
+            auto& p = parent[(size_t)x];
+            if (p == x) return x;
+            p = find(p);
+            return p;
+        }
+
+        void unite(int a, int b)
+        {
+            const auto ra = find(a);
+            const auto rb = find(b);
+            if (ra != rb) parent[(size_t)rb] = ra;
+        }
+    };
+
     std::vector<Instance> instances;
     std::vector<Wire> wires;
     PinRef pendingPin;
+    int selectedInstance = -1;
     int nextRef = 1;
     bool dragHover = false;
     std::function<juce::String()> getSelectedSymbolId;
+    std::function<bool()> getStampPlacementEnabled;
     std::function<void(juce::String)> onStatus;
+    std::function<void(int, juce::String, juce::String, juce::String, juce::String, juce::String, juce::String, juce::String)> onSelectionChanged;
+
+    static juce::String quote(const juce::String& text)
+    {
+        return "\"" + text.replace("\\", "\\\\").replace("\"", "\\\"") + "\"";
+    }
+
+    static juce::String nullableQuote(const juce::String& text)
+    {
+        return text.isEmpty() ? juce::String("null") : quote(text);
+    }
 
     void drawGrid(juce::Graphics& g)
     {
@@ -372,8 +644,18 @@ private:
     {
         if (id == "capacitor")
             return { id, "C", { -30, -18, 60, 36 }, { { "1", { -42, 0 } }, { "2", { 42, 0 } } } };
+        if (id == "power_bus")
+            return { id, "PWR", { -42, -14, 84, 28 }, { { "VBUS", { 0, 28 } } } };
+        if (id == "ground_bus")
+            return { id, "GND BUS", { -48, -14, 96, 28 }, { { "0", { 0, -28 } } } };
+        if (id == "battery")
+            return { id, "BAT", { -24, -34, 48, 68 }, { { "+", { 0, -52 } }, { "-", { 0, 52 } } } };
         if (id == "voltage_source")
             return { id, "V", { -24, -24, 48, 48 }, { { "+", { 0, -42 } }, { "-", { 0, 42 } } } };
+        if (id == "ac_voltage_source")
+            return { id, "AC", { -28, -28, 56, 56 }, { { "+", { 0, -46 } }, { "-", { 0, 46 } } } };
+        if (id == "signal_source")
+            return { id, "SIG", { -40, -24, 80, 48 }, { { "OUT", { 58, 0 } }, { "REF", { -58, 0 } } } };
         if (id == "ground")
             return { id, "GND", { -24, -12, 48, 32 }, { { "0", { 0, -24 } } } };
         if (id == "opamp_741")
@@ -383,6 +665,155 @@ private:
         if (id == "logic_not")
             return { id, "NOT", { -42, -30, 84, 60 }, { { "A", { -66, 0 } }, { "Y", { 66, 0 } } } };
         return { "resistor", "R", { -36, -14, 72, 28 }, { { "1", { -54, 0 } }, { "2", { 54, 0 } } } };
+    }
+
+    juce::String defaultValueFor(const juce::String& symbolId) const
+    {
+        if (symbolId == "resistor") return "10k";
+        if (symbolId == "capacitor") return "1u";
+        if (symbolId == "power_bus") return "+V";
+        if (symbolId == "ground_bus") return "0";
+        if (symbolId == "battery") return "9";
+        if (symbolId == "voltage_source") return "10";
+        if (symbolId == "ac_voltage_source") return "1";
+        if (symbolId == "signal_source") return "1";
+        if (symbolId == "opamp_741") return "uA741";
+        if (symbolId == "npn") return "generic_npn";
+        return "";
+    }
+
+    juce::String archetypeFor(const juce::String& symbolId) const
+    {
+        if (symbolId == "resistor") return "passive.resistor";
+        if (symbolId == "capacitor") return "passive.capacitor";
+        if (symbolId == "power_bus") return "net.power_bus";
+        if (symbolId == "ground" || symbolId == "ground_bus") return "net.ground_reference";
+        if (symbolId == "battery") return "source.battery";
+        if (symbolId == "voltage_source") return "source.dc_voltage";
+        if (symbolId == "ac_voltage_source") return "source.ac_voltage";
+        if (symbolId == "signal_source") return "source.signal";
+        if (symbolId == "opamp_741") return "analog.op_amp";
+        if (symbolId == "npn") return "discrete.bjt.npn";
+        if (symbolId == "logic_not") return "digital.logic.not";
+        return "unknown";
+    }
+
+    juce::String familyFor(const juce::String& symbolId) const
+    {
+        if (symbolId == "opamp_741") return "741";
+        if (symbolId == "npn") return "generic_npn";
+        return "";
+    }
+
+    juce::String defaultFrequencyFor(const juce::String& symbolId) const
+    {
+        if (symbolId == "ac_voltage_source" || symbolId == "signal_source") return "1k";
+        return "";
+    }
+
+    juce::String defaultBusNameFor(const juce::String& symbolId) const
+    {
+        if (symbolId == "power_bus") return "+V";
+        if (symbolId == "ground" || symbolId == "ground_bus") return "0";
+        return "";
+    }
+
+    juce::String parametersJsonFor(const Instance& instance) const
+    {
+        const auto& symbolId = instance.symbolId;
+        if (symbolId == "resistor")
+            return "{ \"resistance\": { \"value\": " + quote(instance.value) + ", \"unit\": \"ohm\" } }";
+        if (symbolId == "capacitor")
+            return "{ \"capacitance\": { \"value\": " + quote(instance.value) + ", \"unit\": \"F\" } }";
+        if (symbolId == "power_bus")
+            return "{ \"name\": " + quote(instance.busName) + ", \"voltageHint\": null }";
+        if (symbolId == "ground" || symbolId == "ground_bus")
+            return "{ \"name\": " + quote(instance.busName) + ", \"voltageHint\": \"0V\" }";
+        if (symbolId == "battery")
+            return "{ \"voltage\": { \"value\": " + quote(instance.value) + ", \"unit\": \"V\" } }";
+        if (symbolId == "voltage_source")
+            return "{ \"dcVoltage\": { \"value\": " + quote(instance.value) + ", \"unit\": \"V\" } }";
+        if (symbolId == "ac_voltage_source")
+            return "{ \"amplitude\": { \"value\": " + quote(instance.value) + ", \"unit\": \"V\" }, \"frequency\": { \"value\": " + quote(instance.frequency) + ", \"unit\": \"Hz\" }, \"offset\": { \"value\": \"0\", \"unit\": \"V\" } }";
+        if (symbolId == "signal_source")
+            return "{ \"waveform\": \"sine\", \"amplitude\": { \"value\": " + quote(instance.value) + ", \"unit\": \"V\" }, \"frequency\": { \"value\": " + quote(instance.frequency) + ", \"unit\": \"Hz\" } }";
+        return "{}";
+    }
+
+    int pinOrdinal(const PinRef& pin) const
+    {
+        int ordinal = 0;
+        for (int i = 0; i < pin.instanceIndex; ++i)
+            ordinal += (int)symbolFor(instances[(size_t)i].symbolId).pins.size();
+        return ordinal + pin.pinIndex;
+    }
+
+    std::map<int, juce::String> computeNetNames() const
+    {
+        int pinCount = 0;
+        for (const auto& instance : instances)
+            pinCount += (int)symbolFor(instance.symbolId).pins.size();
+
+        std::map<int, juce::String> result;
+        if (pinCount <= 0)
+            return result;
+
+        DisjointSet sets(pinCount);
+        for (const auto& wire : wires)
+        {
+            if (wire.a.instanceIndex < 0 || wire.b.instanceIndex < 0)
+                continue;
+            sets.unite(pinOrdinal(wire.a), pinOrdinal(wire.b));
+        }
+
+        std::set<int> groundRoots;
+        for (size_t i = 0; i < instances.size(); ++i)
+        {
+            if (instances[i].symbolId != "ground")
+                continue;
+            const auto symbol = symbolFor(instances[i].symbolId);
+            for (size_t p = 0; p < symbol.pins.size(); ++p)
+                groundRoots.insert(sets.find(pinOrdinal({ (int)i, (int)p })));
+        }
+
+        std::map<int, int> assigned;
+        int nextNet = 1;
+        for (int pin = 0; pin < pinCount; ++pin)
+        {
+            const auto root = sets.find(pin);
+            if (groundRoots.count(root) != 0)
+            {
+                result[pin] = "0";
+                continue;
+            }
+            if (assigned.count(root) == 0)
+                assigned[root] = nextNet++;
+            result[pin] = "n" + juce::String(assigned[root]);
+        }
+        return result;
+    }
+
+    juce::String netFor(const PinRef& pin, const std::map<int, juce::String>& netNames) const
+    {
+        if (pin.instanceIndex < 0 || pin.instanceIndex >= (int)instances.size())
+            return "floating";
+        const auto ordinal = pinOrdinal(pin);
+        const auto found = netNames.find(ordinal);
+        return found != netNames.end() ? found->second : "floating";
+    }
+
+    std::vector<juce::String> printableNetNames(const std::map<int, juce::String>& netNames) const
+    {
+        std::set<juce::String> unique;
+        for (const auto& entry : netNames)
+            if (entry.second != "0")
+                unique.insert(entry.second);
+
+        std::vector<juce::String> result;
+        result.reserve(unique.size());
+        for (const auto& net : unique)
+            result.push_back(net);
+        return result;
     }
 
     juce::Point<float> pinPosition(const PinRef& pin) const
@@ -418,17 +849,59 @@ private:
         return {};
     }
 
+    int hitTestInstance(juce::Point<float> p) const
+    {
+        for (int i = (int)instances.size() - 1; i >= 0; --i)
+        {
+            const auto& instance = instances[(size_t)i];
+            const auto symbol = symbolFor(instance.symbolId);
+            if (symbol.bounds.translated(instance.position.x, instance.position.y).expanded(4.0f).contains(p))
+                return i;
+        }
+        return -1;
+    }
+
+    void notifySelection()
+    {
+        if (onSelectionChanged == nullptr)
+            return;
+
+        if (selectedInstance < 0 || selectedInstance >= (int)instances.size())
+        {
+            onSelectionChanged(-1, {}, {}, {}, {}, {}, {}, {});
+            return;
+        }
+
+        const auto& instance = instances[(size_t)selectedInstance];
+        onSelectionChanged(selectedInstance, instance.refdes, instance.symbolId, instance.value,
+                           instance.frequency, instance.busName, instance.family, instance.manufacturerPart);
+    }
+
     void placeSymbol(const juce::String& symbolId, juce::Point<float> p)
     {
         const auto symbol = symbolFor(symbolId);
         const auto prefix = symbolId == "ground" ? juce::String("GND") :
+                            symbolId == "ground_bus" ? juce::String("GBUS") :
+                            symbolId == "power_bus" ? juce::String("PBUS") :
+                            symbolId == "battery" ? juce::String("BAT") :
                             symbolId == "voltage_source" ? juce::String("V") :
+                            symbolId == "ac_voltage_source" ? juce::String("VAC") :
+                            symbolId == "signal_source" ? juce::String("SIG") :
                             symbolId == "capacitor" ? juce::String("C") :
                             symbolId == "resistor" ? juce::String("R") :
                             symbolId == "opamp_741" ? juce::String("U") :
                             symbolId == "npn" ? juce::String("Q") :
                             juce::String("U");
-        instances.push_back({ symbol.id, prefix + juce::String(nextRef++), p });
+        instances.push_back({ symbol.id,
+                              prefix + juce::String(nextRef++),
+                              defaultValueFor(symbol.id),
+                              defaultFrequencyFor(symbol.id),
+                              defaultBusNameFor(symbol.id),
+                              familyFor(symbol.id),
+                              {},
+                              p });
+        selectedInstance = (int)instances.size() - 1;
+        notifySelection();
         if (onStatus) onStatus("Placed " + symbol.title + " at schematic grid.");
     }
 
@@ -439,6 +912,12 @@ private:
         g.fillRoundedRectangle(body, 4.0f);
         g.setColour(juce::Colour(0xff78dcca));
         g.drawRoundedRectangle(body, 4.0f, 1.6f);
+        if (selectedInstance >= 0 && selectedInstance < (int)instances.size()
+            && &instance == &instances[(size_t)selectedInstance])
+        {
+            g.setColour(juce::Colour(0xffffc857));
+            g.drawRoundedRectangle(body.expanded(4.0f), 6.0f, 2.0f);
+        }
 
         if (symbol.id == "opamp_741")
         {
@@ -472,7 +951,13 @@ private:
             g.drawVerticalLine((int)(body.getCentreX() - 6), body.getY(), body.getBottom());
             g.drawVerticalLine((int)(body.getCentreX() + 6), body.getY(), body.getBottom());
         }
-        else if (symbol.id == "ground")
+        else if (symbol.id == "power_bus")
+        {
+            g.setColour(juce::Colour(0xffffc857));
+            g.drawLine(body.getX() + 8.0f, body.getCentreY(), body.getRight() - 8.0f, body.getCentreY(), 3.0f);
+            g.drawLine(body.getCentreX(), body.getCentreY(), body.getCentreX(), body.getBottom() + 14.0f, 2.0f);
+        }
+        else if (symbol.id == "ground" || symbol.id == "ground_bus")
         {
             g.setColour(juce::Colour(0xffe8f1f2));
             const auto cx = body.getCentreX();
@@ -481,11 +966,27 @@ private:
             g.drawLine(cx - 14, body.getY() + 19, cx + 14, body.getY() + 19, 2.0f);
             g.drawLine(cx - 6, body.getY() + 28, cx + 6, body.getY() + 28, 2.0f);
         }
-        else if (symbol.id == "voltage_source")
+        else if (symbol.id == "voltage_source" || symbol.id == "battery" || symbol.id == "ac_voltage_source" || symbol.id == "signal_source")
         {
             g.setColour(juce::Colour(0xffe8f1f2));
             g.drawEllipse(body, 2.0f);
-            g.drawText("+", body.withHeight(22.0f).toNearestInt(), juce::Justification::centred);
+            if (symbol.id == "ac_voltage_source" || symbol.id == "signal_source")
+            {
+                juce::Path wave;
+                const auto cy = body.getCentreY();
+                for (int i = 0; i <= 24; ++i)
+                {
+                    const auto t = (float)i / 24.0f;
+                    const auto x = body.getX() + 8.0f + t * (body.getWidth() - 16.0f);
+                    const auto y = cy + std::sin(t * juce::MathConstants<float>::twoPi) * 8.0f;
+                    if (i == 0) wave.startNewSubPath(x, y); else wave.lineTo(x, y);
+                }
+                g.strokePath(wave, juce::PathStrokeType(1.6f));
+            }
+            else
+            {
+                g.drawText("+", body.withHeight(22.0f).toNearestInt(), juce::Justification::centred);
+            }
         }
 
         g.setColour(juce::Colour(0xffdce9ee));
@@ -634,20 +1135,122 @@ private:
     juce::TextEditor console;
 };
 
-class PropertiesPanel final : public NotesPanel
+class PropertiesPanel final : public juce::Component
 {
 public:
     PropertiesPanel()
-        : NotesPanel("Properties",
-                     "Selected object properties will appear here.\n\n"
-                     "Early targets:\n"
-                     "- component values\n"
-                     "- pin mappings\n"
-                     "- datasheet provenance\n"
-                     "- simulation model choice\n"
-                     "- verification status")
     {
+        title.setText("Properties", juce::dontSendNotification);
+        title.setFont(juce::Font(16.0f, juce::Font::bold));
+        title.setColour(juce::Label::textColourId, juce::Colour(0xff78dcca));
+        addAndMakeVisible(title);
+
+        for (auto* label : { &selectedLabel, &valueLabel, &frequencyLabel, &busLabel, &familyLabel, &manufacturerLabel })
+        {
+            label->setFont(juce::Font(12.5f, juce::Font::bold));
+            label->setColour(juce::Label::textColourId, juce::Colour(0xff93a7b0));
+            addAndMakeVisible(*label);
+        }
+
+        selectedLabel.setText("Selected", juce::dontSendNotification);
+        valueLabel.setText("Value / amplitude", juce::dontSendNotification);
+        frequencyLabel.setText("Frequency", juce::dontSendNotification);
+        busLabel.setText("Bus / net name", juce::dontSendNotification);
+        familyLabel.setText("Part family", juce::dontSendNotification);
+        manufacturerLabel.setText("Manufacturer part", juce::dontSendNotification);
+
+        for (auto* editor : { &selected, &value, &frequency, &busName, &family, &manufacturerPart })
+        {
+            styleTextEditor(*editor);
+            editor->setMultiLine(false);
+            addAndMakeVisible(*editor);
+        }
+
+        selected.setReadOnly(true);
+        selected.setTextToShowWhenEmpty("Select a placed component", juce::Colour(0xff71808c));
+        value.setTextToShowWhenEmpty("10k, 1u, 9, 1...", juce::Colour(0xff71808c));
+        frequency.setTextToShowWhenEmpty("1k", juce::Colour(0xff71808c));
+        busName.setTextToShowWhenEmpty("+5V, +12V, VREF, 0", juce::Colour(0xff71808c));
+        family.setTextToShowWhenEmpty("2N2222, LM741, NE555...", juce::Colour(0xff71808c));
+        manufacturerPart.setTextToShowWhenEmpty("vendor-specific MPN", juce::Colour(0xff71808c));
+
+        apply.setButtonText("Apply");
+        apply.setColour(juce::TextButton::buttonColourId, juce::Colour(0xff253341));
+        apply.setColour(juce::TextButton::textColourOffId, juce::Colour(0xffdce9ee));
+        apply.onClick = [this] {
+            if (onApply != nullptr && selectedIndex >= 0)
+                onApply(value.getText(), frequency.getText(), busName.getText(), family.getText(), manufacturerPart.getText());
+        };
+        addAndMakeVisible(apply);
+
+        setSelection(-1, {}, {}, {}, {}, {}, {}, {});
     }
+
+    void setSelection(int index,
+                      const juce::String& refdes,
+                      const juce::String& symbol,
+                      const juce::String& newValue,
+                      const juce::String& newFrequency,
+                      const juce::String& newBusName,
+                      const juce::String& newFamily,
+                      const juce::String& newManufacturerPart)
+    {
+        selectedIndex = index;
+        const auto hasSelection = selectedIndex >= 0;
+        selected.setText(hasSelection ? refdes + "  (" + symbol + ")" : juce::String(), juce::dontSendNotification);
+        value.setText(newValue, juce::dontSendNotification);
+        frequency.setText(newFrequency, juce::dontSendNotification);
+        busName.setText(newBusName, juce::dontSendNotification);
+        family.setText(newFamily, juce::dontSendNotification);
+        manufacturerPart.setText(newManufacturerPart, juce::dontSendNotification);
+
+        for (auto* editor : { &value, &frequency, &busName, &family, &manufacturerPart })
+            editor->setEnabled(hasSelection);
+        apply.setEnabled(hasSelection);
+    }
+
+    std::function<void(juce::String, juce::String, juce::String, juce::String, juce::String)> onApply;
+
+    void paint(juce::Graphics& g) override { g.fillAll(juce::Colour(0xff151a20)); }
+
+    void resized() override
+    {
+        auto area = getLocalBounds().reduced(8);
+        title.setBounds(area.removeFromTop(24));
+        area.removeFromTop(8);
+        layoutRow(area, selectedLabel, selected);
+        layoutRow(area, valueLabel, value);
+        layoutRow(area, frequencyLabel, frequency);
+        layoutRow(area, busLabel, busName);
+        layoutRow(area, familyLabel, family);
+        layoutRow(area, manufacturerLabel, manufacturerPart);
+        area.removeFromTop(8);
+        apply.setBounds(area.removeFromTop(30).removeFromLeft(90));
+    }
+
+private:
+    static void layoutRow(juce::Rectangle<int>& area, juce::Label& label, juce::TextEditor& editor)
+    {
+        label.setBounds(area.removeFromTop(18));
+        editor.setBounds(area.removeFromTop(28));
+        area.removeFromTop(8);
+    }
+
+    int selectedIndex = -1;
+    juce::Label title;
+    juce::Label selectedLabel;
+    juce::Label valueLabel;
+    juce::Label frequencyLabel;
+    juce::Label busLabel;
+    juce::Label familyLabel;
+    juce::Label manufacturerLabel;
+    juce::TextEditor selected;
+    juce::TextEditor value;
+    juce::TextEditor frequency;
+    juce::TextEditor busName;
+    juce::TextEditor family;
+    juce::TextEditor manufacturerPart;
+    juce::TextButton apply;
 };
 
 class AgentPanel final : public NotesPanel
@@ -699,6 +1302,23 @@ public:
     }
 };
 
+class PartsSourcingPanel final : public NotesPanel
+{
+public:
+    PartsSourcingPanel()
+        : NotesPanel("Parts Sourcing",
+                     "Find buyable parts without confusing marketplace listings with verified specifications.\n\n"
+                     "Research targets:\n"
+                     "- distributor listings for exact MPNs\n"
+                     "- hobby suppliers and breadboard-friendly packages\n"
+                     "- Amazon/eBay/AliExpress style consumer listings\n"
+                     "- assortment kits and substitutes\n"
+                     "- local user inventory\n\n"
+                     "Every sourcing result should carry match confidence, source URL, timestamp, package notes, and warnings.")
+    {
+    }
+};
+
 } // namespace
 
 ElectronicsWorkbench::ElectronicsWorkbench()
@@ -723,10 +1343,13 @@ ElectronicsWorkbench::ElectronicsWorkbench()
         b->setColour(juce::TextButton::textColourOffId, juce::Colour(0xffdce9ee));
         addAndMakeVisible(*b);
     }
+    stampModeButton.setToggleState(false, juce::dontSendNotification);
+    stampModeButton.setColour(juce::ToggleButton::textColourId, juce::Colour(0xffdce9ee));
+    addAndMakeVisible(stampModeButton);
 
     newButton.onClick = [this] { resetResearchState(); };
     ercButton.onClick = [this] { appendLog("ERC research stub: no electrical rule engine wired yet."); };
-    transientButton.onClick = [this] { appendLog("Transient analysis research stub: dataset engine pending."); };
+    transientButton.onClick = [this] { exportCircuitArtifacts(); };
     compileButton.onClick = [this] { appendLog("Compiled Frust preview stub: circuit IR -> Frust lowering pending."); };
 
     dockManager = std::make_unique<CreationDock::DockManager>(*this);
@@ -739,17 +1362,40 @@ ElectronicsWorkbench::ElectronicsWorkbench()
                                        appendLog("Selected symbol: " + id + ". Drag it to the schematic.");
                                    }),
                                CreationDock::DockTargetZone::Left);
-    dockManager->registerPanel("schematic", "Schematic",
-                               std::make_unique<SchematicCanvasPanel>(
-                                   [this] { return selectedSymbolId; },
-                                   [this](juce::String message) { appendLog(message); }),
-                               CreationDock::DockTargetZone::CenterTab);
+    auto schematic = std::make_unique<SchematicCanvasPanel>(
+        [this] { return selectedSymbolId; },
+        [this] { return stampModeButton.getToggleState(); },
+        [this](juce::String message) { appendLog(message); });
+    auto* schematicPanel = schematic.get();
+    auto properties = std::make_unique<PropertiesPanel>();
+    auto* propertiesPanel = properties.get();
+    schematicPanel->setSelectionListener([propertiesPanel](int index,
+                                                           juce::String refdes,
+                                                           juce::String symbol,
+                                                           juce::String value,
+                                                           juce::String frequency,
+                                                           juce::String busName,
+                                                           juce::String family,
+                                                           juce::String manufacturerPart) {
+        propertiesPanel->setSelection(index, refdes, symbol, value, frequency, busName, family, manufacturerPart);
+    });
+    propertiesPanel->onApply = [schematicPanel](juce::String value,
+                                                juce::String frequency,
+                                                juce::String busName,
+                                                juce::String family,
+                                                juce::String manufacturerPart) {
+        schematicPanel->updateSelectedProperties(value, frequency, busName, family, manufacturerPart);
+    };
+    getCircuitJson = [panel = schematic.get()] { return panel->buildCircuitJson(); };
+    getXyceNetlist = [panel = schematic.get()] { return panel->buildXyceNetlist(); };
+    dockManager->registerPanel("schematic", "Schematic", std::move(schematic), CreationDock::DockTargetZone::CenterTab);
     dockManager->registerPanel("simulation", "Simulation", std::make_unique<SimulationPanel>(), CreationDock::DockTargetZone::CenterTab);
     dockManager->registerPanel("scope", "Instruments", std::make_unique<InstrumentPanel>(), CreationDock::DockTargetZone::Bottom);
     dockManager->registerPanel("console", "Frust Math Console", std::make_unique<ConsolePanel>(logConsole), CreationDock::DockTargetZone::Bottom);
     dockManager->registerPanel("agent", "BYOK Agent", std::make_unique<AgentPanel>(), CreationDock::DockTargetZone::Right);
-    dockManager->registerPanel("properties", "Properties", std::make_unique<PropertiesPanel>(), CreationDock::DockTargetZone::Right);
+    dockManager->registerPanel("properties", "Properties", std::move(properties), CreationDock::DockTargetZone::Right);
     dockManager->registerPanel("ingestion", "Spec Ingestion", std::make_unique<SpecIngestionPanel>(), CreationDock::DockTargetZone::Right);
+    dockManager->registerPanel("sourcing", "Parts Sourcing", std::make_unique<PartsSourcingPanel>(), CreationDock::DockTargetZone::Right);
 
     dockManager->loadLayoutFromFile(layoutFile());
     appendLog("Electronics research shell initialized.");
@@ -783,6 +1429,8 @@ void ElectronicsWorkbench::resized()
     transientButton.setBounds(toolbar.removeFromLeft(100));
     toolbar.removeFromLeft(6);
     compileButton.setBounds(toolbar.removeFromLeft(140));
+    toolbar.removeFromLeft(10);
+    stampModeButton.setBounds(toolbar.removeFromLeft(90));
     statusLabel.setBounds(toolbar);
 
     if (dockManager != nullptr)
@@ -835,7 +1483,7 @@ void ElectronicsWorkbench::menuItemSelected(int menuItemID, int)
     switch (menuItemID)
     {
         case newProject: resetResearchState(); break;
-        case saveProject: appendLog("Save project stub: circuit JSON persistence pending."); break;
+        case saveProject: exportCircuitArtifacts(); break;
         case openProject: appendLog("Open project stub: project loader pending."); break;
         case resetLayout:
             if (dockManager != nullptr) dockManager->resetLayout();
@@ -843,8 +1491,8 @@ void ElectronicsWorkbench::menuItemSelected(int menuItemID, int)
             break;
         case importComponent: appendLog("Component ingestion stub: BYOK agent/provider workflow pending."); break;
         case runErc: appendLog("ERC research stub: rules pending."); break;
-        case runOperatingPoint: appendLog("Operating point stub: solver backend pending."); break;
-        case runTransient: appendLog("Transient stub: solver backend pending."); break;
+        case runOperatingPoint: exportCircuitArtifacts(); break;
+        case runTransient: exportCircuitArtifacts(); break;
         case runCompiledPreview: appendLog("Compiled preview stub: circuit IR -> Frust backend pending."); break;
         case openAgentSettings: appendLog("BYOK agent settings stub: provider/key/model UI pending."); break;
         case openResearchSpec: showSpecDocument(); break;
@@ -859,6 +1507,18 @@ juce::File ElectronicsWorkbench::layoutFile() const
         .getChildFile("layout.json");
 }
 
+juce::File ElectronicsWorkbench::generatedRunDirectory() const
+{
+    return juce::File::getSpecialLocation(juce::File::currentExecutableFile)
+        .getParentDirectory()
+        .getParentDirectory()
+        .getParentDirectory()
+        .getChildFile("sim")
+        .getChildFile("xyce")
+        .getChildFile("runs")
+        .getChildFile("generated");
+}
+
 void ElectronicsWorkbench::appendLog(const juce::String& text)
 {
     statusLabel.setText(text, juce::dontSendNotification);
@@ -869,6 +1529,40 @@ void ElectronicsWorkbench::appendLog(const juce::String& text)
 void ElectronicsWorkbench::resetResearchState()
 {
     appendLog("New electronics research project initialized.");
+}
+
+void ElectronicsWorkbench::exportCircuitArtifacts()
+{
+    if (getCircuitJson == nullptr || getXyceNetlist == nullptr)
+    {
+        appendLog("No schematic exporter is available.");
+        return;
+    }
+
+    const auto runDir = generatedRunDirectory();
+    if (!runDir.createDirectory())
+    {
+        appendLog("Could not create run directory: " + runDir.getFullPathName());
+        return;
+    }
+
+    const auto circuitFile = runDir.getChildFile("circuit.json");
+    const auto netlistFile = runDir.getChildFile("generated.cir");
+    const auto circuitJson = getCircuitJson();
+    const auto netlist = getXyceNetlist();
+
+    if (!circuitFile.replaceWithText(circuitJson))
+    {
+        appendLog("Could not write circuit JSON: " + circuitFile.getFullPathName());
+        return;
+    }
+    if (!netlistFile.replaceWithText(netlist))
+    {
+        appendLog("Could not write Xyce netlist: " + netlistFile.getFullPathName());
+        return;
+    }
+
+    appendLog("Exported circuit JSON and Xyce netlist to " + runDir.getFullPathName());
 }
 
 void ElectronicsWorkbench::showSpecDocument()

@@ -1,0 +1,57 @@
+{
+  "$schema": "../../schemas/policy.schema.json",
+  "schemaVersion": "1.0",
+  "recordKind": "policy",
+  "id": "example.djehuti.policy.confirm-destructive-change",
+  "locale": "en-US",
+  "title": "Confirm before changing or deleting the user's work",
+  "policyText": "Never modify, overwrite, move or delete the user's projects, media or settings without first telling the user exactly what will change and receiving an explicit yes in the current conversation. A yes given earlier, for a different change, does not count. If you are unsure whether a change is destructive, treat it as destructive.",
+  "rationale": "The user's creative work is often irreplaceable and most edits cannot be undone once written.",
+  "enforcement": "mandatory",
+  "priority": 900,
+  "scope": {
+    "products": [
+      "DjehutiSuite"
+    ]
+  },
+  "activation": {
+    "mode": "conditional",
+    "match": "any",
+    "conditions": [
+      {
+        "fact": "agentAction",
+        "values": [
+          "modify",
+          "overwrite",
+          "move",
+          "delete"
+        ]
+      },
+      {
+        "fact": "riskLevel",
+        "values": [
+          "destructive"
+        ]
+      }
+    ]
+  },
+  "status": "proposed",
+  "owners": [
+    "DjehutiSuite Platform"
+  ],
+  "source": {
+    "kind": "decision",
+    "ref": "example: design review decision, illustrative only"
+  },
+  "verification": {
+    "contentRevision": 1,
+    "reviewedAt": "2026-09-20",
+    "reviewedBy": "Example fixture (not a real review)",
+    "evidence": [
+      {
+        "kind": "design",
+        "ref": "example fixture"
+      }
+    ]
+  }
+}

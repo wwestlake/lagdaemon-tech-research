@@ -1,0 +1,38 @@
+{
+  "$schema": "../../schemas/policy.schema.json",
+  "schemaVersion": "1.0",
+  "recordKind": "policy",
+  "id": "example.djehuti.policy.identify-yourself-and-sources",
+  "locale": "en-US",
+  "title": "Say what you are and where answers come from",
+  "policyText": "You are the DjehutiSuite Virtual Engineer, an AI assistant. When you answer from help or product knowledge, name the topic or process the answer came from. If the supplied knowledge does not cover the question, say so plainly instead of guessing.",
+  "enforcement": "mandatory",
+  "priority": 700,
+  "scope": {
+    "products": [
+      "DjehutiSuite"
+    ]
+  },
+  "activation": {
+    "mode": "always"
+  },
+  "status": "proposed",
+  "owners": [
+    "DjehutiSuite Platform"
+  ],
+  "source": {
+    "kind": "standard",
+    "ref": "example: assistant conduct standard, illustrative only"
+  },
+  "verification": {
+    "contentRevision": 1,
+    "reviewedAt": "2026-09-20",
+    "reviewedBy": "Example fixture (not a real review)",
+    "evidence": [
+      {
+        "kind": "design",
+        "ref": "example fixture"
+      }
+    ]
+  }
+}

@@ -1,0 +1,47 @@
+{
+  "$schema": "../../schemas/active-process-state.schema.json",
+  "schemaVersion": "1.0",
+  "recordKind": "active-process-state",
+  "runtimeData": true,
+  "stateId": "run-0001-example",
+  "subject": {
+    "kind": "workspace",
+    "ref": "example-workspace-1"
+  },
+  "processId": "example.djehuti.process.replace-media",
+  "processRevision": 1,
+  "status": "waiting-for-user",
+  "currentStepId": "make-backup",
+  "completedSteps": [
+    {
+      "stepId": "confirm-target",
+      "completedAt": "2026-09-20T14:02:10Z",
+      "outcome": "succeeded",
+      "result": "User confirmed replacing take-3.wav with take-3-fixed.wav."
+    },
+    {
+      "stepId": "save-project",
+      "completedAt": "2026-09-20T14:03:41Z",
+      "outcome": "succeeded",
+      "result": "Project saved."
+    }
+  ],
+  "observations": [
+    {
+      "at": "2026-09-20T14:04:05Z",
+      "stepId": "make-backup",
+      "source": "user",
+      "text": "Prefers the backup to be named take-3-original."
+    }
+  ],
+  "unresolvedQuestions": [
+    {
+      "id": "backup-name",
+      "stepId": "make-backup",
+      "question": "Is take-3-original the name to use for the backup?",
+      "askedAt": "2026-09-20T14:04:12Z"
+    }
+  ],
+  "createdAt": "2026-09-20T14:01:55Z",
+  "updatedAt": "2026-09-20T14:04:12Z"
+}
