@@ -73,6 +73,8 @@ private:
     std::function<bool(const juce::String&, juce::String&)> loadCircuitJson;
     std::function<juce::String(const juce::String&, float, float, const juce::String&,
                                const juce::String&, const juce::String&)> placeSymbolTool;
+    std::function<juce::String(const juce::String&, const juce::String&)> connectNodesTool;
+    std::function<juce::String(const juce::String&)> openInstrumentTool;
     std::function<void()> openAgentSettingsDialog;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(ElectronicsWorkbench)

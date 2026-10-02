@@ -4,6 +4,7 @@
 
 #include <ai_provider/AiConfig.h>
 
+#include <algorithm>
 #include <atomic>
 #include <memory>
 #include <map>
@@ -1184,6 +1185,73 @@ public:
         return result;
     }
 
+    juce::String connectNodesFromTool(const juce::String& firstLabel, const juce::String& secondLabel)
+    {
+        WireNode first;
+        WireNode second;
+        juce::String error;
+        if (!nodeFromLabel(firstLabel, first, error))
+            return toolFailure("schematic_connect", error);
+        if (!nodeFromLabel(secondLabel, second, error))
+            return toolFailure("schematic_connect", error);
+        if (sameNode(first, second))
+            return toolFailure("schematic_connect", "Cannot connect a node to itself: " + nodeLabel(first) + ".");
+
+        const auto alreadyConnected = std::any_of(wires.begin(), wires.end(), [&](const Wire& wire) {
+            return (sameNode(wire.a, first) && sameNode(wire.b, second))
+                || (sameNode(wire.a, second) && sameNode(wire.b, first));
+        });
+        if (!alreadyConnected)
+            wires.push_back({ first, second });
+
+        const auto firstResolved = nodeLabel(first);
+        const auto secondResolved = nodeLabel(second);
+        if (onStatus)
+            onStatus(alreadyConnected
+                ? "Connection already exists: " + firstResolved + " to " + secondResolved + "."
+                : "Connected " + firstResolved + " to " + secondResolved + ".");
+        repaint();
+
+        juce::String result;
+        result << "{\n";
+        result << "  \"ok\": true,\n";
+        result << "  \"tool\": \"schematic_connect\",\n";
+        result << "  \"displayTool\": \"schematic.connect\",\n";
+        result << "  \"alreadyConnected\": " << (alreadyConnected ? "true" : "false") << ",\n";
+        result << "  \"a\": " << quote(firstResolved) << ",\n";
+        result << "  \"b\": " << quote(secondResolved) << ",\n";
+        result << "  \"wireCount\": " << (int)wires.size() << "\n";
+        result << "}";
+        return result;
+    }
+
+    juce::String openInstrumentFromTool(const juce::String& refdes)
+    {
+        const auto index = instanceIndexForRefdes(refdes);
+        if (index < 0)
+            return toolFailure("instrument_open_panel", "No placed instance has reference designator " + refdes + ".");
+
+        const auto& instance = instances[(size_t)index];
+        if (!isInstrumentNode(instance.symbolId))
+            return toolFailure("instrument_open_panel", instance.refdes + " is not an instrument node.");
+        if (!onInstrumentOpen)
+            return toolFailure("instrument_open_panel", "Instrument window host is unavailable.");
+
+        onInstrumentOpen(instance.refdes, instance.symbolId);
+        if (onStatus)
+            onStatus("Opened instrument panel for " + instance.refdes + ".");
+
+        juce::String result;
+        result << "{\n";
+        result << "  \"ok\": true,\n";
+        result << "  \"tool\": \"instrument_open_panel\",\n";
+        result << "  \"displayTool\": \"instrument.open_panel\",\n";
+        result << "  \"refdes\": " << quote(instance.refdes) << ",\n";
+        result << "  \"symbolId\": " << quote(instance.symbolId) << "\n";
+        result << "}";
+        return result;
+    }
+
 private:
     struct PinDef
     {
@@ -1313,6 +1381,12 @@ private:
     static juce::String quote(const juce::String& text)
     {
         return "\"" + text.replace("\\", "\\\\").replace("\"", "\\\"") + "\"";
+    }
+
+    static juce::String toolFailure(const juce::String& toolName, const juce::String& message)
+    {
+        return "{ \"ok\": false, \"tool\": " + quote(toolName)
+            + ", \"error\": " + quote(message) + " }";
     }
 
     static juce::String nullableQuote(const juce::String& text)
@@ -1654,6 +1728,78 @@ private:
         const auto symbol = symbolFor(instance.symbolId);
         if (pin.pinIndex < 0 || pin.pinIndex >= (int)symbol.pins.size()) return instance.refdes;
         return instance.refdes + "." + symbol.pins[(size_t)pin.pinIndex].name;
+    }
+
+    int instanceIndexForRefdes(const juce::String& refdes) const
+    {
+        const auto requested = refdes.trim();
+        for (int index = 0; index < (int)instances.size(); ++index)
+            if (instances[(size_t)index].refdes.equalsIgnoreCase(requested))
+                return index;
+        return -1;
+    }
+
+    juce::String availableNodeSummary() const
+    {
+        juce::StringArray labels;
+        for (int i = 0; i < (int)instances.size(); ++i)
+        {
+            const auto symbol = symbolFor(instances[(size_t)i].symbolId);
+            for (int pin = 0; pin < (int)symbol.pins.size(); ++pin)
+                labels.add(pinLabel({ i, pin }));
+        }
+        for (int i = 0; i < (int)junctions.size(); ++i)
+            labels.add("J" + juce::String(i + 1));
+        return labels.joinIntoString(", ");
+    }
+
+    bool nodeFromLabel(const juce::String& suppliedLabel, WireNode& node, juce::String& error) const
+    {
+        const auto label = suppliedLabel.trim();
+        if (label.isEmpty())
+        {
+            error = "Node label is empty. Available labels: " + availableNodeSummary();
+            return false;
+        }
+
+        if (label.startsWithIgnoreCase("J"))
+        {
+            const auto index = label.substring(1).getIntValue() - 1;
+            if (index >= 0 && index < (int)junctions.size())
+            {
+                node = WireNode::forJunction(index);
+                return true;
+            }
+        }
+
+        const auto dot = label.lastIndexOfChar('.');
+        const auto refdes = dot > 0 ? label.substring(0, dot).trim() : label;
+        const auto pinName = dot > 0 ? label.substring(dot + 1).trim() : juce::String();
+        const auto instanceIndex = instanceIndexForRefdes(refdes);
+        if (instanceIndex < 0)
+        {
+            error = "Unknown instance " + refdes + ". Available labels: " + availableNodeSummary();
+            return false;
+        }
+
+        const auto symbol = symbolFor(instances[(size_t)instanceIndex].symbolId);
+        if (pinName.isEmpty() && symbol.pins.size() == 1)
+        {
+            node = WireNode::forPin({ instanceIndex, 0 });
+            return true;
+        }
+
+        for (int pin = 0; pin < (int)symbol.pins.size(); ++pin)
+        {
+            if (symbol.pins[(size_t)pin].name.equalsIgnoreCase(pinName))
+            {
+                node = WireNode::forPin({ instanceIndex, pin });
+                return true;
+            }
+        }
+
+        error = "Unknown pin label " + label + ". Available labels: " + availableNodeSummary();
+        return false;
     }
 
     juce::Point<float> nodePosition(const WireNode& node) const
@@ -3346,6 +3492,8 @@ public:
         std::function<juce::String()> exportArtifacts;
         std::function<juce::String(const juce::String&, float, float, const juce::String&,
                                    const juce::String&, const juce::String&)> placeSymbol;
+        std::function<juce::String(const juce::String&, const juce::String&)> connectNodes;
+        std::function<juce::String(const juce::String&)> openInstrument;
         std::function<juce::String()> toolManifest;
         std::function<void(const juce::String&)> log;
     };
@@ -3722,7 +3870,8 @@ private:
         return "You are the embedded BYOK assistant for Djehuti Electronics Lab. "
                "The circuit JSON model is authoritative. Use tools when you need current schematic facts, "
                "electrical checks, exported artifacts, or diagram edits. Prefer schematic instrument nodes "
-               "for scopes and meters, and remember that floating instrument windows are preferred. "
+               "for scopes and meters, wire pins by labels such as R1.1 or SCOPE2.CH1, and remember "
+               "that floating instrument windows are preferred. "
                "Use filesystem LiteSemRAG cards as retrieved guidance; do not assume Suite VFS storage. "
                "Be concise, report tool results plainly, and do not claim a circuit is ready for solver-backed "
                "analysis until circuit_run_erc has passed or you have explained the remaining warnings.";
@@ -3750,6 +3899,16 @@ private:
                 "schematic_place_symbol",
                 "Place a schematic symbol or instrument node at a grid coordinate.",
                 R"({"type":"object","properties":{"symbolId":{"type":"string","description":"Symbol id such as resistor, capacitor, voltage_source, ground, oscilloscope_2ch, or digital_multimeter."},"x":{"type":"number"},"y":{"type":"number"},"value":{"type":"string"},"frequency":{"type":"string"},"busName":{"type":"string"}},"required":["symbolId","x","y"],"additionalProperties":false})"
+            },
+            {
+                "schematic_connect",
+                "Connect two schematic pins or junctions by label, such as R1.1 to GND2.0.",
+                R"({"type":"object","properties":{"a":{"type":"string","description":"First node label such as R1.1, V2.+, GND3.0, SCOPE4.CH1, or J1."},"b":{"type":"string","description":"Second node label."}},"required":["a","b"],"additionalProperties":false})"
+            },
+            {
+                "instrument_open_panel",
+                "Open the floating instrument panel for a placed instrument node.",
+                R"({"type":"object","properties":{"refdes":{"type":"string","description":"Reference designator of a placed instrument node, such as SCOPE2 or DMM3."}},"required":["refdes"],"additionalProperties":false})"
             }
         };
     }
@@ -3789,6 +3948,33 @@ private:
             return tools.placeSymbol != nullptr
                 ? tools.placeSymbol(symbolId, x, y, value, frequency, busName)
                 : "{ \"ok\": false, \"error\": \"Schematic placement tool unavailable.\" }";
+        }
+
+        if (name == "schematic_connect")
+        {
+            if (!parsed.isObject())
+                return "{ \"ok\": false, \"error\": \"schematic_connect arguments must be a JSON object.\" }";
+
+            const auto first = parsed.getProperty("a", {}).toString().trim();
+            const auto second = parsed.getProperty("b", {}).toString().trim();
+            if (first.isEmpty() || second.isEmpty())
+                return "{ \"ok\": false, \"error\": \"Both a and b node labels are required.\" }";
+            return tools.connectNodes != nullptr
+                ? tools.connectNodes(first, second)
+                : "{ \"ok\": false, \"error\": \"Schematic wiring tool unavailable.\" }";
+        }
+
+        if (name == "instrument_open_panel")
+        {
+            if (!parsed.isObject())
+                return "{ \"ok\": false, \"error\": \"instrument_open_panel arguments must be a JSON object.\" }";
+
+            const auto refdes = parsed.getProperty("refdes", {}).toString().trim();
+            if (refdes.isEmpty())
+                return "{ \"ok\": false, \"error\": \"refdes is required.\" }";
+            return tools.openInstrument != nullptr
+                ? tools.openInstrument(refdes)
+                : "{ \"ok\": false, \"error\": \"Instrument opening tool unavailable.\" }";
         }
 
         return "{ \"ok\": false, \"error\": \"Unknown tool: " + originalName + "\" }";
@@ -4126,6 +4312,13 @@ ElectronicsWorkbench::ElectronicsWorkbench()
                                                 const juce::String& busName) {
         return panel->placeSymbolFromTool(symbolId, x, y, value, frequency, busName);
     };
+    connectNodesTool = [panel = schematic.get()](const juce::String& firstLabel,
+                                                 const juce::String& secondLabel) {
+        return panel->connectNodesFromTool(firstLabel, secondLabel);
+    };
+    openInstrumentTool = [panel = schematic.get()](const juce::String& refdes) {
+        return panel->openInstrumentFromTool(refdes);
+    };
     AgentPanel::HostTools agentTools;
     agentTools.inspectCircuit = [this] {
         return getCircuitJson != nullptr ? getCircuitJson() : juce::String("{}");
@@ -4141,6 +4334,16 @@ ElectronicsWorkbench::ElectronicsWorkbench()
         return placeSymbolTool != nullptr
             ? placeSymbolTool(symbolId, x, y, value, frequency, busName)
             : juce::String("{ \"ok\": false, \"error\": \"Schematic placement is unavailable.\" }");
+    };
+    agentTools.connectNodes = [this](const juce::String& firstLabel, const juce::String& secondLabel) {
+        return connectNodesTool != nullptr
+            ? connectNodesTool(firstLabel, secondLabel)
+            : juce::String("{ \"ok\": false, \"error\": \"Schematic wiring is unavailable.\" }");
+    };
+    agentTools.openInstrument = [this](const juce::String& refdes) {
+        return openInstrumentTool != nullptr
+            ? openInstrumentTool(refdes)
+            : juce::String("{ \"ok\": false, \"error\": \"Instrument opening is unavailable.\" }");
     };
     agentTools.toolManifest = [this] { return buildAssistantToolManifestJson(); };
     agentTools.log = [this](const juce::String& text) { appendLog(text); };
@@ -4418,10 +4621,21 @@ juce::String ElectronicsWorkbench::buildAssistantToolManifestJson() const
     text << "      }\n";
     text << "    },\n";
     text << "    {\n";
+    text << "      \"name\": \"schematic_connect\",\n";
+    text << "      \"displayName\": \"schematic.connect\",\n";
+    text << "      \"description\": \"Connect two schematic pins or junctions by label.\",\n";
+    text << "      \"mode\": \"modify_schematic_model\",\n";
+    text << "      \"status\": \"active\",\n";
+    text << "      \"inputs\": {\n";
+    text << "        \"a\": \"node label such as R1.1, V2.+, GND3.0, SCOPE4.CH1, or J1\",\n";
+    text << "        \"b\": \"node label\"\n";
+    text << "      }\n";
+    text << "    },\n";
+    text << "    {\n";
     text << "      \"name\": \"instrument_open_panel\",\n";
     text << "      \"displayName\": \"instrument.open_panel\",\n";
     text << "      \"description\": \"Open a floating instrument panel for a schematic instrument node.\",\n";
-    text << "      \"status\": \"ui_available_by_double_click\",\n";
+    text << "      \"status\": \"active\",\n";
     text << "      \"inputs\": { \"refdes\": \"instrument reference designator\" }\n";
     text << "    }\n";
     text << "  ],\n";

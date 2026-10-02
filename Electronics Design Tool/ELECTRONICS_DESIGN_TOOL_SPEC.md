@@ -208,8 +208,9 @@ Initial prototype integration:
   not Suite VFS storage.
 - Keep tool cards synchronized with live host tools. A tool should not be taught
   as available unless the host exposes it.
-- First live tools: inspect the circuit model, run ERC, export solver artifacts,
-  and place schematic symbols/instrument nodes.
+- First live tools: inspect the circuit model, place schematic
+  symbols/instrument nodes, connect pins by label, open floating instrument
+  panels, run ERC, and export solver artifacts.
 
 ### 4. Simulation System
 

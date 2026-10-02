@@ -64,6 +64,9 @@ The app also starts a loopback local agent API and writes its discovery file to:
 
 The API exposes message/session/cancel endpoints so external tools can talk to
 the embedded electronics agent with the same UI session and tool surface.
+The first live schematic tools are `circuit_inspect`, `schematic_place_symbol`,
+`schematic_connect`, `instrument_open_panel`, `circuit_run_erc`, and
+`simulation_export_artifacts`.
 
 Assistant knowledge uses filesystem cards instead of Suite VFS storage:
 
@@ -75,7 +78,8 @@ D:\000 Tech Research\Electronics Design Tool\prototype\projects\current\.djehuti
 Instrument placement is moving toward schematic nodes instead of a fixed bench.
 The component library includes a two-channel oscilloscope and a digital
 multimeter. Place them on the diagram, wire their pins like components, and
-double-click an instrument node to open a floating instrument window.
+double-click an instrument node, or use `instrument_open_panel`, to open a
+floating instrument window.
 
 ## Frust And LLVM
 
