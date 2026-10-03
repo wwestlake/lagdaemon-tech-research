@@ -38,3 +38,10 @@ See `COOKBOOK_TAXONOMY.json` for the target coverage map. The BYOK agent can
 inspect current coverage and missing categories through `cookbook_coverage`.
 After cookbook edits, use `cookbook_validate` to check required fields,
 taxonomy alignment, duplicate IDs, and malformed card entries.
+
+For build-time validation, run:
+
+```powershell
+cmake --build prototype/build --target validate_cookbook --config Debug
+ctest --test-dir prototype/build -C Debug -R CookbookValidation --output-on-failure
+```

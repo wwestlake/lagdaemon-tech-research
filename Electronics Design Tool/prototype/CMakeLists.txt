@@ -1,6 +1,8 @@
 cmake_minimum_required(VERSION 3.22)
 project(DjehutiElectronicsLab VERSION 0.1.0 LANGUAGES C CXX)
 
+include(CTest)
+
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
@@ -68,3 +70,33 @@ target_link_libraries(DjehutiElectronicsLab PRIVATE
 )
 
 juce_generate_juce_header(DjehutiElectronicsLab)
+
+find_program(POWERSHELL_EXECUTABLE
+    NAMES pwsh powershell
+)
+
+if(POWERSHELL_EXECUTABLE)
+    set(COOKBOOK_VALIDATION_REPORT "${CMAKE_CURRENT_BINARY_DIR}/cookbook_validation_report.json")
+    add_custom_target(validate_cookbook
+        COMMAND "${POWERSHELL_EXECUTABLE}"
+                -NoProfile
+                -ExecutionPolicy Bypass
+                -File "${CMAKE_CURRENT_SOURCE_DIR}/tools/knowledge/validate_cookbook.ps1"
+                -KnowledgeRoot "${CMAKE_CURRENT_SOURCE_DIR}/knowledge"
+                -ReportPath "${COOKBOOK_VALIDATION_REPORT}"
+        BYPRODUCTS "${COOKBOOK_VALIDATION_REPORT}"
+        COMMENT "Validating electronics cookbook cards and taxonomy coverage"
+        VERBATIM
+    )
+
+    add_test(NAME CookbookValidation
+        COMMAND "${POWERSHELL_EXECUTABLE}"
+                -NoProfile
+                -ExecutionPolicy Bypass
+                -File "${CMAKE_CURRENT_SOURCE_DIR}/tools/knowledge/validate_cookbook.ps1"
+                -KnowledgeRoot "${CMAKE_CURRENT_SOURCE_DIR}/knowledge"
+                -ReportPath "${COOKBOOK_VALIDATION_REPORT}"
+    )
+else()
+    message(WARNING "PowerShell was not found; cookbook validation target is unavailable.")
+endif()
