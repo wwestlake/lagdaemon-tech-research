@@ -950,6 +950,7 @@ public:
         selectedInstances.clear();
         if (selectedInstance >= 0)
             selectedInstances.add(selectedInstance);
+        selectedGroup = -1;
         nextRef = std::max(1, highestRefNumber + 1);
         wireDragging = false;
         draggingInstance = false;
@@ -1351,6 +1352,8 @@ public:
 
         if (event.mods.isRightButtonDown())
         {
+            if (const auto groupIndex = hitTestGroup(modelPosition); groupIndex >= 0)
+                selectGroup(groupIndex);
             showContextMenu(modelPosition);
             return;
         }
@@ -1385,6 +1388,18 @@ public:
         if (auto wireIndex = hitTestWire(modelPosition); wireIndex >= 0)
         {
             beginWireDrag(createJunctionOnWire(wireIndex, p), modelPosition);
+            repaint();
+            return;
+        }
+
+        if (const auto groupIndex = hitTestGroup(modelPosition); groupIndex >= 0)
+        {
+            selectGroup(groupIndex);
+            draggingInstance = true;
+            dragStartMouse = modelPosition;
+            dragStartPosition = groupBounds(groups[(size_t)groupIndex]).getPosition();
+            captureSelectedDragStarts();
+            notifySelection();
             repaint();
             return;
         }
@@ -1516,6 +1531,8 @@ public:
         menu.addItem(1, "Auto Layout Diagram");
         menu.addItem(2, "Auto Layout Selection", !selectedInstances.isEmpty());
         menu.addItem(5, "Create Group from Selection", selectedInstances.size() >= 2);
+        menu.addItem(6, "Edit Group Metadata...", selectedGroup >= 0 && selectedGroup < (int)groups.size());
+        menu.addItem(7, "Ungroup", selectedGroup >= 0 && selectedGroup < (int)groups.size());
         menu.addSeparator();
         menu.addItem(3, "Disconnect Here");
         menu.addItem(4, "Release Probe Here");
@@ -1527,6 +1544,10 @@ public:
                 autoLayoutSelectionFromTool();
             else if (result == 5)
                 createGroupFromSelection();
+            else if (result == 6)
+                editSelectedGroupMetadata();
+            else if (result == 7)
+                ungroupSelectedGroup();
             else if (result == 3)
                 disconnectAt(modelPosition);
             else if (result == 4)
@@ -1997,6 +2018,7 @@ private:
     WireNode wireDragStart;
     int selectedInstance = -1;
     juce::Array<int> selectedInstances;
+    int selectedGroup = -1;
     int nextRef = 1;
     bool dragHover = false;
     juce::String dragMessage = "Drop symbol on schematic";
@@ -2095,6 +2117,7 @@ private:
         groups.clear();
         selectedInstance = -1;
         selectedInstances.clear();
+        selectedGroup = -1;
         nextRef = 1;
         wireDragging = false;
         draggingInstance = false;
@@ -2866,19 +2889,47 @@ private:
 
     void drawGroups(juce::Graphics& g)
     {
-        for (const auto& group : groups)
+        for (int i = 0; i < (int)groups.size(); ++i)
         {
+            const auto& group = groups[(size_t)i];
             const auto bounds = groupBounds(group);
             if (bounds.isEmpty())
                 continue;
 
             g.setColour(group.colour.withAlpha(0.08f));
             g.fillRoundedRectangle(bounds, 6.0f);
-            g.setColour(group.colour.withAlpha(0.7f));
-            g.drawRoundedRectangle(bounds, 6.0f, 1.5f);
+            g.setColour(i == selectedGroup ? juce::Colour(0xffffc857) : group.colour.withAlpha(0.7f));
+            g.drawRoundedRectangle(bounds, 6.0f, i == selectedGroup ? 2.5f : 1.5f);
             g.setFont(juce::Font(13.0f, juce::Font::bold));
             g.drawText(group.name, bounds.reduced(8.0f).removeFromTop(18.0f), juce::Justification::centredLeft);
         }
+    }
+
+    int hitTestGroup(juce::Point<float> position) const
+    {
+        for (int i = (int)groups.size() - 1; i >= 0; --i)
+        {
+            const auto bounds = groupBounds(groups[(size_t)i]);
+            if (bounds.isEmpty())
+                continue;
+            if (bounds.expanded(hitDistance(4.0f)).contains(position)
+                && !bounds.reduced(18.0f).contains(position))
+                return i;
+        }
+        return -1;
+    }
+
+    void selectGroup(int groupIndex)
+    {
+        if (groupIndex < 0 || groupIndex >= (int)groups.size())
+            return;
+
+        selectedGroup = groupIndex;
+        selectedInstances.clear();
+        for (int member : groups[(size_t)groupIndex].memberInstances)
+            if (member >= 0 && member < (int)instances.size())
+                selectedInstances.addIfNotAlreadyThere(member);
+        selectedInstance = selectedInstances.isEmpty() ? -1 : selectedInstances.getLast();
     }
 
     void createGroupFromSelection()
@@ -2901,7 +2952,50 @@ private:
             return;
 
         groups.push_back(std::move(group));
+        selectedGroup = (int)groups.size() - 1;
         if (onStatus) onStatus("Created " + groups.back().name + " from " + juce::String((int)groups.back().memberInstances.size()) + " component(s).");
+        repaint();
+    }
+
+    void editSelectedGroupMetadata()
+    {
+        if (selectedGroup < 0 || selectedGroup >= (int)groups.size())
+            return;
+
+        const auto groupIndex = selectedGroup;
+        auto* editor = new juce::AlertWindow("Group Metadata", "Edit the visual group box.", juce::AlertWindow::NoIcon);
+        editor->addTextEditor("name", groups[(size_t)groupIndex].name, "Title");
+        editor->addTextEditor("category", groups[(size_t)groupIndex].category, "Category");
+        editor->addTextEditor("notes", groups[(size_t)groupIndex].notes, "Notes");
+        editor->addButton("Apply", 1, juce::KeyPress(juce::KeyPress::returnKey));
+        editor->addButton("Cancel", 0, juce::KeyPress(juce::KeyPress::escapeKey));
+        editor->enterModalState(true, juce::ModalCallbackFunction::create([this, editor, groupIndex](int result) {
+            std::unique_ptr<juce::AlertWindow> owner(editor);
+            if (result != 1 || groupIndex < 0 || groupIndex >= (int)groups.size())
+                return;
+
+            auto& group = groups[(size_t)groupIndex];
+            group.name = owner->getTextEditor("name")->getText().trim();
+            group.category = owner->getTextEditor("category")->getText().trim();
+            group.notes = owner->getTextEditor("notes")->getText().trim();
+            if (group.name.isEmpty())
+                group.name = group.id;
+            if (group.category.isEmpty())
+                group.category = "user_group";
+            if (onStatus) onStatus("Updated group metadata for " + group.name + ".");
+            repaint();
+        }), true);
+    }
+
+    void ungroupSelectedGroup()
+    {
+        if (selectedGroup < 0 || selectedGroup >= (int)groups.size())
+            return;
+
+        const auto name = groups[(size_t)selectedGroup].name;
+        groups.erase(groups.begin() + selectedGroup);
+        selectedGroup = -1;
+        if (onStatus) onStatus("Removed group box " + name + "; component wiring was unchanged.");
         repaint();
     }
 
@@ -3264,6 +3358,7 @@ private:
 
         selectedInstance = -1;
         selectedInstances.clear();
+        selectedGroup = -1;
         notifySelection();
         for (const auto& probeId : returnedProbes)
             if (onProbeChanged) onProbeChanged(probeId, {}, {});
@@ -3319,6 +3414,7 @@ private:
         selectedInstance = (int)instances.size() - 1;
         selectedInstances.clear();
         selectedInstances.add(selectedInstance);
+        selectedGroup = -1;
         notifySelection();
         if (onStatus) onStatus("Placed " + symbol.title + (snapEnabled ? " at schematic grid." : "."));
     }
