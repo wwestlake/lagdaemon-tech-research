@@ -64,6 +64,7 @@ $requiredAgentTools = @(
     "cookbook_coverage",
     "cookbook_validate",
     "cookbook_acceptance_goals",
+    "cookbook_acceptance_summary",
     "cookbook_acceptance_start",
     "cookbook_acceptance_record",
     "capability_gap_record",

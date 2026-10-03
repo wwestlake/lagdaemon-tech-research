@@ -51,6 +51,7 @@ private:
     juce::String cookbookCoverageTool() const;
     juce::String cookbookValidateTool() const;
     juce::String cookbookAcceptanceGoalsTool(const juce::String& domainOrId) const;
+    juce::String cookbookAcceptanceSummaryTool(const juce::String& domainOrId) const;
     juce::String cookbookAcceptanceStartTool(const juce::String& goalId) const;
     juce::String cookbookAcceptanceRecordTool(const juce::String& reportPath,
                                               const juce::String& evidenceType,

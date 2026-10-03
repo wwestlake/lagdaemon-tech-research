@@ -4114,6 +4114,7 @@ public:
         std::function<juce::String()> cookbookCoverage;
         std::function<juce::String()> cookbookValidate;
         std::function<juce::String(const juce::String&)> cookbookAcceptanceGoals;
+        std::function<juce::String(const juce::String&)> cookbookAcceptanceSummary;
         std::function<juce::String(const juce::String&)> cookbookAcceptanceStart;
         std::function<juce::String(const juce::String&, const juce::String&, const juce::String&,
                                    const juce::String&, const juce::String&, const juce::String&)> cookbookAcceptanceRecord;
@@ -4503,6 +4504,7 @@ private:
                "Use cookbook_coverage to inspect cookbook domain coverage and identify missing recipe areas. "
                "Use cookbook_validate to check cookbook schema quality and taxonomy alignment after cookbook edits. "
                "Use cookbook_acceptance_goals to inspect representative engineering goals for agent validation. "
+               "Use cookbook_acceptance_summary to inspect existing acceptance run reports before rerunning or claiming progress. "
                "Use cookbook_acceptance_start before executing an acceptance goal so evidence has a durable report scaffold. "
                "Use cookbook_acceptance_record to append retrieved cards, tool calls, artifacts, criteria, notes, and capability gaps to that report. "
                "Use capability_gap_record when a missing reusable app capability blocks a cookbook step or validation claim. "
@@ -4532,6 +4534,11 @@ private:
             {
                 "cookbook_acceptance_goals",
                 "List representative agent acceptance goals, optionally filtered by domain or goal id.",
+                R"({"type":"object","properties":{"domainOrId":{"type":"string","description":"Optional acceptance domain such as passive_filter, or exact goal id."}},"additionalProperties":false})"
+            },
+            {
+                "cookbook_acceptance_summary",
+                "Summarize generated acceptance run reports, optionally filtered by acceptance domain or goal id.",
                 R"({"type":"object","properties":{"domainOrId":{"type":"string","description":"Optional acceptance domain such as passive_filter, or exact goal id."}},"additionalProperties":false})"
             },
             {
@@ -4632,6 +4639,16 @@ private:
             return tools.cookbookAcceptanceGoals != nullptr
                 ? tools.cookbookAcceptanceGoals(domainOrId)
                 : "{ \"ok\": false, \"error\": \"Cookbook acceptance goals are unavailable.\" }";
+        }
+
+        if (name == "cookbook_acceptance_summary")
+        {
+            const auto domainOrId = parsed.isObject()
+                ? parsed.getProperty("domainOrId", {}).toString().trim()
+                : juce::String();
+            return tools.cookbookAcceptanceSummary != nullptr
+                ? tools.cookbookAcceptanceSummary(domainOrId)
+                : "{ \"ok\": false, \"error\": \"Cookbook acceptance summary is unavailable.\" }";
         }
 
         if (name == "cookbook_acceptance_start")
@@ -5358,6 +5375,9 @@ ElectronicsWorkbench::ElectronicsWorkbench()
     agentTools.cookbookAcceptanceGoals = [this](const juce::String& domainOrId) {
         return cookbookAcceptanceGoalsTool(domainOrId);
     };
+    agentTools.cookbookAcceptanceSummary = [this](const juce::String& domainOrId) {
+        return cookbookAcceptanceSummaryTool(domainOrId);
+    };
     agentTools.cookbookAcceptanceStart = [this](const juce::String& goalId) {
         return cookbookAcceptanceStartTool(goalId);
     };
@@ -5667,6 +5687,14 @@ juce::String ElectronicsWorkbench::buildAssistantToolManifestJson() const
     text << "      \"mode\": \"read_only_knowledge\",\n";
     text << "      \"inputs\": { \"domainOrId\": \"optional domain or exact goal id\" },\n";
     text << "      \"outputs\": { \"goals\": \"matching acceptance goals\", \"requiredDomains\": \"array\" }\n";
+    text << "    },\n";
+    text << "    {\n";
+    text << "      \"name\": \"cookbook_acceptance_summary\",\n";
+    text << "      \"displayName\": \"cookbook.acceptance_summary\",\n";
+    text << "      \"description\": \"Summarize generated acceptance run reports, evidence counts, and determinations.\",\n";
+    text << "      \"mode\": \"read_only_generated_artifacts\",\n";
+    text << "      \"inputs\": { \"domainOrId\": \"optional domain or exact goal id\" },\n";
+    text << "      \"outputs\": { \"runs\": \"matching generated acceptance report summaries\" }\n";
     text << "    },\n";
     text << "    {\n";
     text << "      \"name\": \"cookbook_acceptance_start\",\n";
@@ -6136,6 +6164,93 @@ juce::String ElectronicsWorkbench::cookbookAcceptanceGoalsTool(const juce::Strin
 
     result << "\n  ],\n";
     result << "  \"goalCount\": " << matched << "\n";
+    result << "}\n";
+    return result;
+}
+
+juce::String ElectronicsWorkbench::cookbookAcceptanceSummaryTool(const juce::String& domainOrId) const
+{
+    const auto acceptanceRoot = generatedRunDirectory().getChildFile("acceptance");
+    juce::Array<juce::File> reports;
+    if (acceptanceRoot.exists())
+        acceptanceRoot.findChildFiles(reports, juce::File::findFiles, true, "acceptance_report.json");
+    reports.sort();
+
+    const auto filter = domainOrId.trim();
+    auto arrayCount = [](const juce::var& value) {
+        if (auto* array = value.getArray())
+            return array->size();
+        return 0;
+    };
+
+    auto evidenceCount = [&arrayCount](const juce::var& evidence, const char* name) {
+        return arrayCount(evidence.getProperty(name, {}));
+    };
+
+    juce::String result;
+    result << "{\n";
+    result << "  \"ok\": true,\n";
+    result << "  \"schemaVersion\": 1,\n";
+    result << "  \"kind\": \"djehuti_assistant_tool_result\",\n";
+    result << "  \"tool\": \"cookbook_acceptance_summary\",\n";
+    result << "  \"displayTool\": \"cookbook.acceptance_summary\",\n";
+    result << "  \"acceptanceRoot\": " << jsonQuote(acceptanceRoot.getFullPathName()) << ",\n";
+    result << "  \"filter\": " << jsonQuote(filter) << ",\n";
+    result << "  \"runs\": [\n";
+
+    int matched = 0;
+    int unreadable = 0;
+    for (const auto& report : reports)
+    {
+        const auto parsed = juce::JSON::parse(report.loadFileAsString());
+        if (!parsed.isObject())
+        {
+            ++unreadable;
+            continue;
+        }
+
+        const auto goal = parsed.getProperty("goal", {});
+        const auto goalId = goal.getProperty("id", report.getParentDirectory().getFileName()).toString();
+        const auto domain = goal.getProperty("domain", {}).toString();
+        const auto include = filter.isEmpty()
+            || goalId.equalsIgnoreCase(filter)
+            || domain.equalsIgnoreCase(filter);
+        if (!include)
+            continue;
+
+        const auto evidence = parsed.getProperty("evidence", {});
+        const auto criteriaCount = arrayCount(parsed.getProperty("criteriaResults", {}));
+        const auto retrievedCards = evidenceCount(evidence, "retrievedCards");
+        const auto toolCalls = evidenceCount(evidence, "toolCalls");
+        const auto artifacts = evidenceCount(evidence, "artifacts");
+        const auto capabilityGaps = evidenceCount(evidence, "capabilityGaps");
+        const auto notes = evidenceCount(evidence, "notes");
+
+        if (matched > 0)
+            result << ",\n";
+        result << "    {\n";
+        result << "      \"goalId\": " << jsonQuote(goalId) << ",\n";
+        result << "      \"domain\": " << jsonQuote(domain) << ",\n";
+        result << "      \"status\": " << jsonQuote(parsed.getProperty("status", "unknown").toString()) << ",\n";
+        result << "      \"finalDetermination\": " << jsonQuote(parsed.getProperty("finalDetermination", "unverified").toString()) << ",\n";
+        result << "      \"reportPath\": " << jsonQuote(report.getFullPathName()) << ",\n";
+        result << "      \"markdownReport\": " << jsonQuote(report.getSiblingFile("acceptance_report.md").getFullPathName()) << ",\n";
+        result << "      \"evidenceCounts\": {\n";
+        result << "        \"retrievedCards\": " << retrievedCards << ",\n";
+        result << "        \"toolCalls\": " << toolCalls << ",\n";
+        result << "        \"artifacts\": " << artifacts << ",\n";
+        result << "        \"capabilityGaps\": " << capabilityGaps << ",\n";
+        result << "        \"criteriaResults\": " << criteriaCount << ",\n";
+        result << "        \"notes\": " << notes << "\n";
+        result << "      }\n";
+        result << "    }";
+        ++matched;
+    }
+
+    result << "\n  ],\n";
+    result << "  \"runCount\": " << matched << ",\n";
+    result << "  \"reportFileCount\": " << reports.size() << ",\n";
+    result << "  \"unreadableReportCount\": " << unreadable << "\n";
     result << "}\n";
     return result;
 }
