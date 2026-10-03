@@ -1208,7 +1208,7 @@ public:
         };
 
         auto unsupportedForXyce = [](const juce::String& symbolId) {
-            return symbolId == "opamp_741" || symbolId == "npn" || symbolId == "logic_not";
+            return symbolId == "opamp_741" || symbolId == "npn" || symbolId == "pnp" || symbolId == "logic_not";
         };
 
         if (instances.empty())
@@ -1745,6 +1745,81 @@ public:
         result << "  \"inductanceHenries\": " << numberText(design.inductanceHenries, 12) << ",\n";
         result << "  \"capacitanceLabel\": " << quote(humanCapacitance(design.capacitanceFarads)) << ",\n";
         result << "  \"inductanceLabel\": " << quote(humanInductance(design.inductanceHenries)) << "\n";
+        result << "}";
+        return result;
+    }
+
+    juce::String createPushPullAmplifierFromTool()
+    {
+        clearModel();
+
+        auto place = [this](const juce::String& symbolId,
+                            const juce::String& refdes,
+                            juce::Point<float> position,
+                            const juce::String& value,
+                            const juce::String& frequency = {},
+                            const juce::String& busName = {},
+                            int rotation = 0) {
+            placeSymbol(symbolId, position);
+            auto& instance = instances.back();
+            instance.refdes = refdes;
+            instance.value = value;
+            instance.frequency = frequency;
+            instance.busName = busName;
+            instance.rotation = rotation;
+            return refdes;
+        };
+
+        place("ac_voltage_source", "VIN1", { 120.0f, 288.0f }, "0.25", "1k", "Input");
+        place("resistor", "RIN1", { 312.0f, 216.0f }, "1k", {}, "Input resistor");
+        place("diode", "D1", { 480.0f, 168.0f }, "1N4148", {}, "Upper bias");
+        place("diode", "D2", { 480.0f, 264.0f }, "1N4148", {}, "Lower bias");
+        place("npn", "Q1", { 672.0f, 168.0f }, "generic_npn", {}, "Upper output");
+        place("pnp", "Q2", { 672.0f, 312.0f }, "generic_pnp", {}, "Lower output");
+        place("voltage_source", "VCC1", { 672.0f, 48.0f }, "12", {}, "+12 V");
+        place("voltage_source", "VEE1", { 672.0f, 432.0f }, "12", {}, "-12 V");
+        place("resistor", "RL1", { 864.0f, 288.0f }, "8", {}, "8 ohm load", 90);
+        place("oscilloscope_2ch", "SCOPE1", { 1080.0f, 216.0f }, "2ch", {}, "Scope");
+        place("ground", "GND1", { 120.0f, 408.0f }, "0", {}, "Input ground");
+        place("ground", "GND2", { 672.0f, 552.0f }, "0", {}, "Supply ground");
+        place("ground", "GND3", { 864.0f, 432.0f }, "0", {}, "Load ground");
+        place("ground", "GND4", { 1164.0f, 336.0f }, "0", {}, "Scope ground");
+
+        connectNodesFromTool("VIN1.-", "GND1.0");
+        connectNodesFromTool("VIN1.+", "RIN1.1");
+        connectNodesFromTool("RIN1.2", "D1.A");
+        connectNodesFromTool("RIN1.2", "D2.K");
+        connectNodesFromTool("D1.K", "Q1.B");
+        connectNodesFromTool("D2.A", "Q2.B");
+        connectNodesFromTool("Q1.C", "VCC1.+");
+        connectNodesFromTool("VCC1.-", "GND2.0");
+        connectNodesFromTool("Q2.C", "VEE1.-");
+        connectNodesFromTool("VEE1.+", "GND2.0");
+        connectNodesFromTool("Q1.E", "Q2.E");
+        connectNodesFromTool("Q1.E", "RL1.1");
+        connectNodesFromTool("RL1.2", "GND3.0");
+        connectNodesFromTool("SCOPE1.CH1", "VIN1.+");
+        connectNodesFromTool("SCOPE1.CH2", "RL1.1");
+        connectNodesFromTool("SCOPE1.REF", "GND4.0");
+
+        selectedInstance = instanceIndexForRefdes("Q1");
+        selectedInstances.clear();
+        if (selectedInstance >= 0)
+            selectedInstances.add(selectedInstance);
+        notifySelection();
+        forceDeferredRepaint();
+
+        juce::String result;
+        result << "{\n";
+        result << "  \"ok\": true,\n";
+        result << "  \"tool\": \"amplifier_design_push_pull\",\n";
+        result << "  \"displayTool\": \"amplifier.design_push_pull\",\n";
+        result << "  \"topology\": \"class_ab_complementary_emitter_follower\",\n";
+        result << "  \"componentCount\": " << (int)instances.size() << ",\n";
+        result << "  \"wireCount\": " << (int)wires.size() << ",\n";
+        result << "  \"loadOhms\": 8,\n";
+        result << "  \"inputFrequencyHz\": 1000,\n";
+        result << "  \"note\": \"Transistor symbols are structurally represented; full BJT SPICE lowering is still a future solver capability.\"\n";
         result << "}";
         return result;
     }
@@ -4731,6 +4806,7 @@ public:
         std::function<juce::String(const juce::String&, const juce::String&)> connectNodes;
         std::function<juce::String(const juce::String&)> openInstrument;
         std::function<juce::String(double, double)> designHighPass;
+        std::function<juce::String()> designPushPull;
         std::function<juce::String()> autoLayout;
         std::function<juce::String()> autoLayoutSelection;
         std::function<juce::String(const juce::String&, int)> cookbookLookup;
@@ -5122,6 +5198,7 @@ private:
                "for scopes and meters, wire pins by labels such as R1.1 or SCOPE2.CH1, and remember "
                "that floating instrument windows are preferred. "
                "Use filter_design_high_pass when asked to synthesize a matched RLC high-pass filter and produce AC response artifacts. "
+               "Use amplifier_design_push_pull when asked for a push-pull, class B, class AB, or complementary emitter-follower audio output stage. "
                "Use schematic_auto_layout after creating or editing a diagram so the result is readable and spaced. "
                "Use cookbook_lookup when requirements imply topology selection, design equations, validation recipes, troubleshooting, "
                "or when you need to compare established circuit candidates before building. "
@@ -5199,6 +5276,11 @@ private:
                 "filter_design_high_pass",
                 "Design and draw a matched RLC 2nd order high-pass filter, then run the internal AC sweep and export response artifacts.",
                 R"({"type":"object","properties":{"cutoffHz":{"type":"number","description":"Target -3 dB cutoff frequency in Hz."},"impedanceOhms":{"type":"number","description":"Matched source/load impedance in ohms."}},"required":["cutoffHz","impedanceOhms"],"additionalProperties":false})"
+            },
+            {
+                "amplifier_design_push_pull",
+                "Design and draw a diode-biased complementary push-pull audio output stage with input source, +/- rails, 8 ohm load, grounds, and a 2-channel oscilloscope.",
+                R"({"type":"object","properties":{},"additionalProperties":false})"
             },
             {
                 "schematic_auto_layout",
@@ -5351,6 +5433,11 @@ private:
                 ? tools.designHighPass(cutoffHz, impedanceOhms)
                 : "{ \"ok\": false, \"error\": \"High-pass filter design tool unavailable.\" }";
         }
+
+        if (name == "amplifier_design_push_pull")
+            return tools.designPushPull != nullptr
+                ? tools.designPushPull()
+                : "{ \"ok\": false, \"error\": \"Push-pull amplifier design tool unavailable.\" }";
 
         if (name == "schematic_auto_layout")
             return tools.autoLayout != nullptr
@@ -5980,6 +6067,13 @@ ElectronicsWorkbench::ElectronicsWorkbench()
             return schematicResult;
         return designRlcHighPassFilterTool(cutoffHz, impedanceOhms);
     };
+    designPushPullTool = [this, panel = schematic.get()] {
+        const auto schematicResult = panel->createPushPullAmplifierFromTool();
+        const auto parsed = juce::JSON::parse(schematicResult);
+        if (!parsed.isObject() || !(bool)parsed.getProperty("ok", false))
+            return schematicResult;
+        return designPushPullAmplifierTool();
+    };
     autoLayoutTool = [panel = schematic.get()] {
         return panel->autoLayoutFromTool();
     };
@@ -6016,6 +6110,11 @@ ElectronicsWorkbench::ElectronicsWorkbench()
         return designHighPassTool != nullptr
             ? designHighPassTool(cutoffHz, impedanceOhms)
             : juce::String("{ \"ok\": false, \"error\": \"High-pass filter design is unavailable.\" }");
+    };
+    agentTools.designPushPull = [this] {
+        return designPushPullTool != nullptr
+            ? designPushPullTool()
+            : juce::String("{ \"ok\": false, \"error\": \"Push-pull amplifier design is unavailable.\" }");
     };
     agentTools.autoLayout = [this] {
         return autoLayoutTool != nullptr
@@ -6440,6 +6539,20 @@ juce::String ElectronicsWorkbench::buildAssistantToolManifestJson() const
     text << "        \"csv\": " << jsonQuote(runDir.getChildFile("rlc_high_pass_ac.csv").getFullPathName()) << ",\n";
     text << "        \"svg\": " << jsonQuote(runDir.getChildFile("rlc_high_pass_response.svg").getFullPathName()) << ",\n";
     text << "        \"report\": " << jsonQuote(runDir.getChildFile("rlc_high_pass_report.md").getFullPathName()) << "\n";
+    text << "      }\n";
+    text << "    },\n";
+    text << "    {\n";
+    text << "      \"name\": \"amplifier_design_push_pull\",\n";
+    text << "      \"displayName\": \"amplifier.design_push_pull\",\n";
+    text << "      \"description\": \"Design a diode-biased complementary push-pull audio output stage with source, rails, 8 ohm load, grounds, and scope instrumentation.\",\n";
+    text << "      \"mode\": \"modify_schematic_model_and_write_generated_artifacts\",\n";
+    text << "      \"status\": \"active\",\n";
+    text << "      \"inputs\": {},\n";
+    text << "      \"outputs\": {\n";
+    text << "        \"circuitJson\": " << jsonQuote(runDir.getChildFile("push_pull_amplifier_circuit.json").getFullPathName()) << ",\n";
+    text << "        \"previewNetlist\": " << jsonQuote(runDir.getChildFile("push_pull_amplifier_preview.cir").getFullPathName()) << ",\n";
+    text << "        \"ercReport\": " << jsonQuote(runDir.getChildFile("push_pull_amplifier_erc.md").getFullPathName()) << ",\n";
+    text << "        \"report\": " << jsonQuote(runDir.getChildFile("push_pull_amplifier_report.md").getFullPathName()) << "\n";
     text << "      }\n";
     text << "    },\n";
     text << "    {\n";
@@ -7531,6 +7644,92 @@ juce::String ElectronicsWorkbench::designRlcHighPassFilterTool(double cutoffHz, 
     result << "  \"spiceNetlist\": " << jsonQuote(netlistFile.getFullPathName()) << ",\n";
     result << "  \"csv\": " << jsonQuote(csvFile.getFullPathName()) << ",\n";
     result << "  \"responseSvg\": " << jsonQuote(svgFile.getFullPathName()) << ",\n";
+    result << "  \"report\": " << jsonQuote(reportFile.getFullPathName()) << "\n";
+    result << "}\n";
+    return result;
+}
+
+juce::String ElectronicsWorkbench::designPushPullAmplifierTool()
+{
+    if (getCircuitJson == nullptr || getXyceNetlist == nullptr || getErcReport == nullptr)
+        return "{ \"ok\": false, \"tool\": \"amplifier_design_push_pull\", \"displayTool\": \"amplifier.design_push_pull\", \"error\": \"No schematic model is available.\" }";
+
+    const auto runDir = generatedRunDirectory();
+    if (!runDir.createDirectory())
+    {
+        return "{ \"ok\": false, \"tool\": \"amplifier_design_push_pull\", \"displayTool\": \"amplifier.design_push_pull\", \"error\": "
+            + jsonQuote("Could not create run directory: " + runDir.getFullPathName()) + " }";
+    }
+
+    const auto circuitFile = runDir.getChildFile("push_pull_amplifier_circuit.json");
+    const auto netlistFile = runDir.getChildFile("push_pull_amplifier_preview.cir");
+    const auto ercFile = runDir.getChildFile("push_pull_amplifier_erc.md");
+    const auto reportFile = runDir.getChildFile("push_pull_amplifier_report.md");
+    const auto manifestFile = runDir.getChildFile("assistant_tools.json");
+
+    const auto ercReport = getErcReport();
+    const auto errors = ercReport.fromFirstOccurrenceOf("- Errors: ", false, false)
+                            .upToFirstOccurrenceOf("\n", false, false).getIntValue();
+    const auto warnings = ercReport.fromFirstOccurrenceOf("- Warnings: ", false, false)
+                              .upToFirstOccurrenceOf("\n", false, false).getIntValue();
+
+    juce::String report;
+    report << "# Push-Pull Audio Output Stage\n\n";
+    report << "- Topology: diode-biased complementary emitter follower.\n";
+    report << "- Input: 0.25 V AC source at 1 kHz through 1k input resistor.\n";
+    report << "- Output pair: generic NPN and PNP transistors.\n";
+    report << "- Bias: two 1N4148 diode drops between the input drive node and transistor bases.\n";
+    report << "- Load: 8 ohm resistor from output node to ground.\n";
+    report << "- Instrumentation: 2-channel oscilloscope on input and output.\n\n";
+    report << "## Verification\n\n";
+    report << "- ERC errors: " << errors << "\n";
+    report << "- ERC warnings: " << warnings << "\n";
+    report << "- Note: transistor devices are represented structurally; full BJT SPICE model lowering is still a planned solver capability.\n\n";
+    report << "## Artifacts\n\n";
+    report << "- Circuit JSON: `" << circuitFile.getFullPathName() << "`\n";
+    report << "- Preview netlist: `" << netlistFile.getFullPathName() << "`\n";
+    report << "- ERC report: `" << ercFile.getFullPathName() << "`\n";
+
+    struct OutputFile
+    {
+        juce::File file;
+        juce::String text;
+        juce::String label;
+    };
+
+    const OutputFile files[] = {
+        { circuitFile, getCircuitJson(), "circuit JSON" },
+        { netlistFile, getXyceNetlist(), "preview netlist" },
+        { ercFile, ercReport, "ERC report" },
+        { reportFile, report, "analysis report" },
+        { manifestFile, buildAssistantToolManifestJson(), "assistant tool manifest" }
+    };
+
+    for (const auto& output : files)
+    {
+        if (!output.file.replaceWithText(output.text))
+        {
+            return "{ \"ok\": false, \"tool\": \"amplifier_design_push_pull\", \"displayTool\": \"amplifier.design_push_pull\", \"error\": "
+                + jsonQuote("Could not write " + output.label + ": " + output.file.getFullPathName()) + " }";
+        }
+    }
+
+    juce::String result;
+    result << "{\n";
+    result << "  \"ok\": true,\n";
+    result << "  \"schemaVersion\": 1,\n";
+    result << "  \"kind\": \"djehuti_assistant_tool_result\",\n";
+    result << "  \"tool\": \"amplifier_design_push_pull\",\n";
+    result << "  \"displayTool\": \"amplifier.design_push_pull\",\n";
+    result << "  \"status\": \"designed_and_exported\",\n";
+    result << "  \"topology\": \"class_ab_complementary_emitter_follower\",\n";
+    result << "  \"loadOhms\": 8,\n";
+    result << "  \"ercErrors\": " << errors << ",\n";
+    result << "  \"ercWarnings\": " << warnings << ",\n";
+    result << "  \"artifactDirectory\": " << jsonQuote(runDir.getFullPathName()) << ",\n";
+    result << "  \"circuitJson\": " << jsonQuote(circuitFile.getFullPathName()) << ",\n";
+    result << "  \"previewNetlist\": " << jsonQuote(netlistFile.getFullPathName()) << ",\n";
+    result << "  \"ercReport\": " << jsonQuote(ercFile.getFullPathName()) << ",\n";
     result << "  \"report\": " << jsonQuote(reportFile.getFullPathName()) << "\n";
     result << "}\n";
     return result;
