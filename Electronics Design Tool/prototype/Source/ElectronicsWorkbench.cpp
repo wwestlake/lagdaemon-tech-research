@@ -4115,6 +4115,8 @@ public:
         std::function<juce::String()> cookbookValidate;
         std::function<juce::String(const juce::String&)> cookbookAcceptanceGoals;
         std::function<juce::String(const juce::String&)> cookbookAcceptanceStart;
+        std::function<juce::String(const juce::String&, const juce::String&, const juce::String&,
+                                   const juce::String&, const juce::String&, const juce::String&)> cookbookAcceptanceRecord;
         std::function<juce::String()> toolManifest;
         std::function<void(const juce::String&)> log;
     };
@@ -4500,6 +4502,7 @@ private:
                "Use cookbook_validate to check cookbook schema quality and taxonomy alignment after cookbook edits. "
                "Use cookbook_acceptance_goals to inspect representative engineering goals for agent validation. "
                "Use cookbook_acceptance_start before executing an acceptance goal so evidence has a durable report scaffold. "
+               "Use cookbook_acceptance_record to append retrieved cards, tool calls, artifacts, criteria, notes, and capability gaps to that report. "
                "Use filesystem LiteSemRAG cards as retrieved guidance; do not assume Suite VFS storage. "
                "Be concise, report tool results plainly, and do not claim a circuit is ready for solver-backed "
                "analysis until circuit_run_erc has passed or you have explained the remaining warnings.";
@@ -4532,6 +4535,11 @@ private:
                 "cookbook_acceptance_start",
                 "Create a structured acceptance report scaffold for a representative goal id.",
                 R"({"type":"object","properties":{"goalId":{"type":"string","description":"Exact acceptance goal id to start."}},"required":["goalId"],"additionalProperties":false})"
+            },
+            {
+                "cookbook_acceptance_record",
+                "Append structured evidence to an acceptance report created by cookbook_acceptance_start.",
+                R"({"type":"object","properties":{"reportPath":{"type":"string","description":"Path returned as jsonReport by cookbook_acceptance_start."},"evidenceType":{"type":"string","description":"retrieved_card, tool_call, artifact, capability_gap, criterion, or note."},"label":{"type":"string","description":"Short evidence label."},"detail":{"type":"string","description":"Evidence details."},"pathOrValue":{"type":"string","description":"Artifact path, tool result path, card id, or measured value."},"status":{"type":"string","description":"observed, passed, failed, gap, unverified, or not_started."}},"required":["reportPath","evidenceType","label"],"additionalProperties":false})"
             },
             {
                 "circuit_inspect",
@@ -4629,6 +4637,24 @@ private:
             return tools.cookbookAcceptanceStart != nullptr
                 ? tools.cookbookAcceptanceStart(goalId)
                 : "{ \"ok\": false, \"error\": \"Cookbook acceptance start is unavailable.\" }";
+        }
+
+        if (name == "cookbook_acceptance_record")
+        {
+            if (!parsed.isObject())
+                return "{ \"ok\": false, \"error\": \"cookbook_acceptance_record arguments must be a JSON object.\" }";
+
+            const auto reportPath = parsed.getProperty("reportPath", {}).toString().trim();
+            const auto evidenceType = parsed.getProperty("evidenceType", {}).toString().trim();
+            const auto label = parsed.getProperty("label", {}).toString().trim();
+            const auto detail = parsed.getProperty("detail", {}).toString().trim();
+            const auto pathOrValue = parsed.getProperty("pathOrValue", {}).toString().trim();
+            const auto status = parsed.getProperty("status", {}).toString().trim();
+            if (reportPath.isEmpty() || evidenceType.isEmpty() || label.isEmpty())
+                return "{ \"ok\": false, \"error\": \"reportPath, evidenceType, and label are required.\" }";
+            return tools.cookbookAcceptanceRecord != nullptr
+                ? tools.cookbookAcceptanceRecord(reportPath, evidenceType, label, detail, pathOrValue, status)
+                : "{ \"ok\": false, \"error\": \"Cookbook acceptance record is unavailable.\" }";
         }
 
         if (name == "circuit_run_erc")
@@ -5309,6 +5335,14 @@ ElectronicsWorkbench::ElectronicsWorkbench()
     agentTools.cookbookAcceptanceStart = [this](const juce::String& goalId) {
         return cookbookAcceptanceStartTool(goalId);
     };
+    agentTools.cookbookAcceptanceRecord = [this](const juce::String& reportPath,
+                                                 const juce::String& evidenceType,
+                                                 const juce::String& label,
+                                                 const juce::String& detail,
+                                                 const juce::String& pathOrValue,
+                                                 const juce::String& status) {
+        return cookbookAcceptanceRecordTool(reportPath, evidenceType, label, detail, pathOrValue, status);
+    };
     agentTools.toolManifest = [this] { return buildAssistantToolManifestJson(); };
     agentTools.log = [this](const juce::String& text) { appendLog(text); };
     auto agent = std::make_unique<AgentPanel>(std::move(agentTools));
@@ -5607,6 +5641,21 @@ juce::String ElectronicsWorkbench::buildAssistantToolManifestJson() const
     text << "      \"mode\": \"write_generated_artifacts\",\n";
     text << "      \"inputs\": { \"goalId\": \"exact acceptance goal id\" },\n";
     text << "      \"outputs\": { \"jsonReport\": \"acceptance report scaffold\", \"markdownReport\": \"human-readable checklist\" }\n";
+    text << "    },\n";
+    text << "    {\n";
+    text << "      \"name\": \"cookbook_acceptance_record\",\n";
+    text << "      \"displayName\": \"cookbook.acceptance_record\",\n";
+    text << "      \"description\": \"Append structured evidence to an acceptance report created by cookbook_acceptance_start.\",\n";
+    text << "      \"mode\": \"write_generated_artifacts\",\n";
+    text << "      \"inputs\": {\n";
+    text << "        \"reportPath\": \"jsonReport path returned by cookbook_acceptance_start\",\n";
+    text << "        \"evidenceType\": \"retrieved_card, tool_call, artifact, capability_gap, criterion, or note\",\n";
+    text << "        \"label\": \"short evidence label\",\n";
+    text << "        \"detail\": \"evidence details\",\n";
+    text << "        \"pathOrValue\": \"artifact path, tool result path, card id, or measured value\",\n";
+    text << "        \"status\": \"observed, passed, failed, gap, unverified, or not_started\"\n";
+    text << "      },\n";
+    text << "      \"outputs\": { \"jsonReport\": \"updated acceptance report\", \"markdownReport\": \"updated human-readable log\" }\n";
     text << "    },\n";
     text << "    {\n";
     text << "      \"name\": \"circuit_inspect\",\n";
@@ -6151,6 +6200,134 @@ juce::String ElectronicsWorkbench::cookbookAcceptanceStartTool(const juce::Strin
     result << "  \"artifactDirectory\": " << jsonQuote(runDir.getFullPathName()) << ",\n";
     result << "  \"jsonReport\": " << jsonQuote(jsonReport.getFullPathName()) << ",\n";
     result << "  \"markdownReport\": " << jsonQuote(markdownReport.getFullPathName()) << "\n";
+    result << "}\n";
+    return result;
+}
+
+juce::String ElectronicsWorkbench::cookbookAcceptanceRecordTool(const juce::String& reportPath,
+                                                                const juce::String& evidenceType,
+                                                                const juce::String& label,
+                                                                const juce::String& detail,
+                                                                const juce::String& pathOrValue,
+                                                                const juce::String& status) const
+{
+    const auto report = juce::File(reportPath);
+    if (!report.existsAsFile())
+    {
+        return "{ \"ok\": false, \"tool\": \"cookbook_acceptance_record\", \"displayTool\": \"cookbook.acceptance_record\", \"error\": "
+            + jsonQuote("Acceptance report does not exist: " + reportPath) + " }";
+    }
+
+    if (!report.getFileName().equalsIgnoreCase("acceptance_report.json"))
+    {
+        return "{ \"ok\": false, \"tool\": \"cookbook_acceptance_record\", \"displayTool\": \"cookbook.acceptance_record\", \"error\": "
+            + jsonQuote("Expected an acceptance_report.json path, got: " + report.getFileName()) + " }";
+    }
+
+    auto parsed = juce::JSON::parse(report.loadFileAsString());
+    auto* root = parsed.getDynamicObject();
+    if (root == nullptr)
+    {
+        return "{ \"ok\": false, \"tool\": \"cookbook_acceptance_record\", \"displayTool\": \"cookbook.acceptance_record\", \"error\": "
+            + jsonQuote("Could not parse acceptance report: " + report.getFullPathName()) + " }";
+    }
+
+    auto normalizedType = evidenceType.trim().replaceCharacter('.', '_').replaceCharacter('-', '_').toLowerCase();
+    if (normalizedType.isEmpty())
+        normalizedType = "note";
+
+    auto normalizedStatus = status.trim().toLowerCase();
+    if (normalizedStatus.isEmpty())
+        normalizedStatus = normalizedType == "capability_gap" ? "gap" : "observed";
+
+    auto* item = new juce::DynamicObject();
+    item->setProperty("type", normalizedType);
+    item->setProperty("label", label.trim());
+    item->setProperty("detail", detail.trim());
+    item->setProperty("pathOrValue", pathOrValue.trim());
+    item->setProperty("status", normalizedStatus);
+
+    auto appendToArrayProperty = [](juce::DynamicObject* object, const juce::Identifier& property, const juce::var& value) {
+        juce::Array<juce::var> array;
+        if (auto* existing = object->getProperty(property).getArray())
+            array = *existing;
+        array.add(value);
+        object->setProperty(property, juce::var(array));
+    };
+
+    auto evidence = root->getProperty("evidence");
+    if (!evidence.isObject())
+    {
+        auto* evidenceObject = new juce::DynamicObject();
+        evidenceObject->setProperty("retrievedCards", juce::Array<juce::var>());
+        evidenceObject->setProperty("toolCalls", juce::Array<juce::var>());
+        evidenceObject->setProperty("artifacts", juce::Array<juce::var>());
+        evidenceObject->setProperty("capabilityGaps", juce::Array<juce::var>());
+        evidenceObject->setProperty("notes", juce::Array<juce::var>());
+        root->setProperty("evidence", juce::var(evidenceObject));
+        evidence = root->getProperty("evidence");
+    }
+
+    auto* evidenceObject = evidence.getDynamicObject();
+    juce::String targetArray = "notes";
+    if (normalizedType == "retrieved_card" || normalizedType == "retrieved_cards" || normalizedType == "card")
+        targetArray = "retrievedCards";
+    else if (normalizedType == "tool_call" || normalizedType == "tool_calls" || normalizedType == "tool")
+        targetArray = "toolCalls";
+    else if (normalizedType == "artifact" || normalizedType == "artifacts")
+        targetArray = "artifacts";
+    else if (normalizedType == "capability_gap" || normalizedType == "gap")
+        targetArray = "capabilityGaps";
+    else if (normalizedType == "criterion" || normalizedType == "criteria" || normalizedType == "criteria_result")
+        targetArray = "criteriaResults";
+
+    if (targetArray == "criteriaResults")
+        appendToArrayProperty(root, "criteriaResults", juce::var(item));
+    else if (evidenceObject != nullptr)
+        appendToArrayProperty(evidenceObject, targetArray, juce::var(item));
+
+    if (root->getProperty("status").toString().isEmpty()
+        || root->getProperty("status").toString().equalsIgnoreCase("not_started"))
+        root->setProperty("status", "in_progress");
+
+    if (normalizedType == "capability_gap" || normalizedStatus == "gap")
+        root->setProperty("finalDetermination", "capability_gap");
+    else if (normalizedStatus == "failed")
+        root->setProperty("finalDetermination", "failed");
+
+    if (!report.replaceWithText(juce::JSON::toString(parsed, true)))
+    {
+        return "{ \"ok\": false, \"tool\": \"cookbook_acceptance_record\", \"displayTool\": \"cookbook.acceptance_record\", \"error\": "
+            + jsonQuote("Could not update acceptance report: " + report.getFullPathName()) + " }";
+    }
+
+    const auto markdownReport = report.getSiblingFile("acceptance_report.md");
+    bool markdownUpdated = false;
+    if (markdownReport.existsAsFile())
+    {
+        juce::String line;
+        line << "\n- [`" << normalizedStatus << "`] `" << normalizedType << "`: " << label.trim();
+        if (detail.trim().isNotEmpty())
+            line << " - " << detail.trim();
+        if (pathOrValue.trim().isNotEmpty())
+            line << " (" << pathOrValue.trim() << ")";
+        line << "\n";
+        markdownUpdated = markdownReport.appendText(line);
+    }
+
+    juce::String result;
+    result << "{\n";
+    result << "  \"ok\": true,\n";
+    result << "  \"schemaVersion\": 1,\n";
+    result << "  \"kind\": \"djehuti_assistant_tool_result\",\n";
+    result << "  \"tool\": \"cookbook_acceptance_record\",\n";
+    result << "  \"displayTool\": \"cookbook.acceptance_record\",\n";
+    result << "  \"reportPath\": " << jsonQuote(report.getFullPathName()) << ",\n";
+    result << "  \"markdownReport\": " << jsonQuote(markdownReport.getFullPathName()) << ",\n";
+    result << "  \"markdownUpdated\": " << (markdownUpdated ? "true" : "false") << ",\n";
+    result << "  \"evidenceType\": " << jsonQuote(normalizedType) << ",\n";
+    result << "  \"targetArray\": " << jsonQuote(targetArray) << ",\n";
+    result << "  \"status\": " << jsonQuote(normalizedStatus) << "\n";
     result << "}\n";
     return result;
 }

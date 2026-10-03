@@ -67,6 +67,10 @@ the embedded electronics agent with the same UI session and tool surface.
 The first live schematic tools are `circuit_inspect`, `schematic_place_symbol`,
 `schematic_connect`, `instrument_open_panel`, `circuit_run_erc`, and
 `simulation_export_artifacts`.
+The cookbook validation tools add `cookbook_lookup`, `cookbook_coverage`,
+`cookbook_validate`, `cookbook_acceptance_goals`,
+`cookbook_acceptance_start`, and `cookbook_acceptance_record` so acceptance
+runs can create durable reports and record tool-derived evidence.
 
 Assistant knowledge uses filesystem cards instead of Suite VFS storage:
 
