@@ -47,6 +47,8 @@ After cookbook edits, use `cookbook_validate` to check required fields,
 taxonomy alignment, duplicate IDs, and malformed card entries.
 The build-time validator also checks acceptance-goal coverage and verifies that
 each goal references real cookbook cards.
+When generated acceptance reports exist, the validator also checks their basic
+schema and reports aggregate readiness counts.
 The BYOK agent can inspect the representative acceptance suite through
 `cookbook_acceptance_goals`, optionally filtered by domain or exact goal id.
 Before executing an acceptance goal, use `cookbook_acceptance_start` to create a

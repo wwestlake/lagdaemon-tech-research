@@ -34,6 +34,7 @@ $cardsPath = Join-Path $KnowledgeRoot "cards\electronics_cookbook_seed.jsonl"
 $toolCardsPath = Join-Path $KnowledgeRoot "cards\electronics_tool_cards.jsonl"
 $projectRoot = Split-Path -Parent $KnowledgeRoot
 $capabilityGapsPath = Join-Path $projectRoot "projects\current\.djehuti\CAPABILITY_GAPS.jsonl"
+$acceptanceRunsRoot = Join-Path $projectRoot "sim\xyce\runs\generated\acceptance"
 $taxonomy = Read-JsonFile $taxonomyPath
 
 $requiredFields = @(
@@ -93,6 +94,11 @@ $toolNamesWithCards = @{}
 $toolCardCount = 0
 $cookbookToolReferences = @{}
 $capabilityGapCount = 0
+$acceptanceRunReportCount = 0
+$acceptanceRunReadyCount = 0
+$acceptanceRunGapCount = 0
+$acceptanceRunFailedCount = 0
+$acceptanceRunAverageReadiness = 0.0
 $lineNo = 0
 
 if (-not (Test-Path -LiteralPath $cardsPath -PathType Leaf)) {
@@ -424,6 +430,60 @@ foreach ($domain in $missingAcceptanceDomains) {
     Add-Finding $errors "acceptance.domain.missing" "No acceptance goal covers required domain: $domain"
 }
 
+if (Test-Path -LiteralPath $acceptanceRunsRoot -PathType Container) {
+    $readinessTotal = 0.0
+    $reportFiles = @(Get-ChildItem -LiteralPath $acceptanceRunsRoot -Filter "acceptance_report.json" -Recurse -File)
+    foreach ($reportFile in $reportFiles) {
+        $acceptanceRunReportCount++
+        try {
+            $runReport = Get-Content -LiteralPath $reportFile.FullName -Raw | ConvertFrom-Json
+        } catch {
+            Add-Finding $errors "acceptance_run.json.parse" "$($reportFile.FullName) is not valid JSON: $($_.Exception.Message)"
+            continue
+        }
+
+        foreach ($field in @("kind", "status", "goal", "evidence", "criteriaResults", "finalDetermination")) {
+            if ($null -eq $runReport.PSObject.Properties[$field]) {
+                Add-Finding $errors "acceptance_run.field.required" "$($reportFile.FullName) is missing required field '$field'."
+            }
+        }
+
+        if ([string]$runReport.kind -ne "djehuti_acceptance_run_report") {
+            Add-Finding $errors "acceptance_run.kind.invalid" "$($reportFile.FullName) has unexpected kind: $($runReport.kind)"
+        }
+
+        $goal = $runReport.goal
+        $evidence = $runReport.evidence
+        $requiredCards = @($goal.mustRetrieve).Count
+        $requiredTools = @($goal.requiredToolEvidence).Count
+        $requiredCriteria = @($goal.passCriteria).Count
+        $actualCards = @($evidence.retrievedCards).Count
+        $actualTools = @($evidence.toolCalls).Count
+        $actualCriteria = @($runReport.criteriaResults).Count
+
+        $retrievalRatio = if ($requiredCards -le 0) { 1.0 } else { [math]::Min(1.0, $actualCards / $requiredCards) }
+        $toolRatio = if ($requiredTools -le 0) { 1.0 } else { [math]::Min(1.0, $actualTools / $requiredTools) }
+        $criteriaRatio = if ($requiredCriteria -le 0) { 1.0 } else { [math]::Min(1.0, $actualCriteria / $requiredCriteria) }
+        $readiness = ($retrievalRatio + $toolRatio + $criteriaRatio) / 3.0
+        $readinessTotal += $readiness
+
+        $determination = [string]$runReport.finalDetermination
+        if ($determination -eq "capability_gap") {
+            $acceptanceRunGapCount++
+        } elseif ($determination -eq "failed") {
+            $acceptanceRunFailedCount++
+        }
+
+        if ($readiness -ge 1.0 -and $determination -notin @("unverified", "failed")) {
+            $acceptanceRunReadyCount++
+        }
+    }
+
+    if ($acceptanceRunReportCount -gt 0) {
+        $acceptanceRunAverageReadiness = $readinessTotal / $acceptanceRunReportCount
+    }
+}
+
 $coveredCount = $taxonomy.categories.Count - $missingCategories.Count
 $coverageRatio = if ($taxonomy.categories.Count -eq 0) { 0 } else { $coveredCount / $taxonomy.categories.Count }
 $acceptanceCoveredCount = $requiredDomains.Count - $missingAcceptanceDomains.Count
@@ -440,9 +500,15 @@ $report = [pscustomobject]@{
     cookbookFile = $cardsPath
     toolCardsFile = $toolCardsPath
     capabilityGapsFile = $capabilityGapsPath
+    acceptanceRunsRoot = $acceptanceRunsRoot
     cookbookEntryCount = $entries.Count
     toolCardCount = $toolCardCount
     capabilityGapCount = $capabilityGapCount
+    acceptanceRunReportCount = $acceptanceRunReportCount
+    acceptanceRunReadyCount = $acceptanceRunReadyCount
+    acceptanceRunGapCount = $acceptanceRunGapCount
+    acceptanceRunFailedCount = $acceptanceRunFailedCount
+    acceptanceRunAverageReadiness = [math]::Round($acceptanceRunAverageReadiness, 6)
     requiredAgentToolCount = $requiredAgentTools.Count
     toolCardCoverageCount = $toolNamesWithCards.Count
     cookbookToolReferenceCount = $cookbookToolReferences.Count
