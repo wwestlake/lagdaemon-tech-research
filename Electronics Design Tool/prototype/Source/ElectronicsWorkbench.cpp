@@ -785,6 +785,7 @@ public:
         std::vector<juce::Point<float>> loadedJunctions;
         std::vector<Wire> loadedWires;
         std::vector<Probe> loadedProbes;
+        std::vector<Group> loadedGroups;
         int highestRefNumber = 0;
 
         for (const auto& entry : *componentArray)
@@ -911,11 +912,40 @@ public:
             }
         }
 
+        if (const auto* groupArray = root->getProperty("groups").getArray())
+        {
+            for (const auto& entry : *groupArray)
+            {
+                const auto* object = entry.getDynamicObject();
+                if (object == nullptr)
+                    continue;
+
+                Group group;
+                group.id = stringProperty(*object, "id", "G" + juce::String((int)loadedGroups.size() + 1));
+                group.name = stringProperty(*object, "name", "Group " + juce::String((int)loadedGroups.size() + 1));
+                group.category = stringProperty(*object, "category", "user_group");
+                group.notes = stringProperty(*object, "notes", {});
+                if (const auto* members = object->getProperty("members").getArray())
+                {
+                    for (const auto& member : *members)
+                    {
+                        const auto refdes = member.toString();
+                        for (int i = 0; i < (int)loadedInstances.size(); ++i)
+                            if (loadedInstances[(size_t)i].refdes == refdes)
+                                group.memberInstances.push_back(i);
+                    }
+                }
+                if (!group.memberInstances.empty())
+                    loadedGroups.push_back(std::move(group));
+            }
+        }
+
         const auto previousProbes = probes;
         instances = std::move(loadedInstances);
         junctions = std::move(loadedJunctions);
         wires = std::move(loadedWires);
         probes = std::move(loadedProbes);
+        groups = std::move(loadedGroups);
         selectedInstance = instances.empty() ? -1 : 0;
         selectedInstances.clear();
         if (selectedInstance >= 0)
@@ -997,6 +1027,30 @@ public:
             text << "    { \"id\": " << quote("J" + juce::String((int)i + 1))
                  << ", \"x\": " << junction.x
                  << ", \"y\": " << junction.y << " }";
+        }
+        text << "\n  ],\n";
+        text << "  \"groups\": [\n";
+        for (size_t i = 0; i < groups.size(); ++i)
+        {
+            const auto& group = groups[i];
+            if (i != 0) text << ",\n";
+            text << "    {\n";
+            text << "      \"id\": " << quote(group.id) << ",\n";
+            text << "      \"name\": " << quote(group.name) << ",\n";
+            text << "      \"category\": " << quote(group.category) << ",\n";
+            text << "      \"notes\": " << quote(group.notes) << ",\n";
+            text << "      \"members\": [";
+            bool first = true;
+            for (int member : group.memberInstances)
+            {
+                if (member < 0 || member >= (int)instances.size())
+                    continue;
+                if (!first) text << ", ";
+                first = false;
+                text << quote(instances[(size_t)member].refdes);
+            }
+            text << "]\n";
+            text << "    }";
         }
         text << "\n  ],\n";
         text << "  \"probes\": [\n";
@@ -1261,6 +1315,7 @@ public:
         g.addTransform(juce::AffineTransform::scale(canvasZoom).translated(viewOffset.x, viewOffset.y));
         drawGrid(g);
         drawWires(g);
+        drawGroups(g);
         drawInstances(g);
         drawProbes(g);
         drawPendingWire(g);
@@ -1460,6 +1515,7 @@ public:
         juce::PopupMenu menu;
         menu.addItem(1, "Auto Layout Diagram");
         menu.addItem(2, "Auto Layout Selection", !selectedInstances.isEmpty());
+        menu.addItem(5, "Create Group from Selection", selectedInstances.size() >= 2);
         menu.addSeparator();
         menu.addItem(3, "Disconnect Here");
         menu.addItem(4, "Release Probe Here");
@@ -1469,6 +1525,8 @@ public:
                 autoLayoutFromTool();
             else if (result == 2)
                 autoLayoutSelectionFromTool();
+            else if (result == 5)
+                createGroupFromSelection();
             else if (result == 3)
                 disconnectAt(modelPosition);
             else if (result == 4)
@@ -1895,6 +1953,16 @@ private:
         juce::Colour colour;
     };
 
+    struct Group
+    {
+        juce::String id;
+        juce::String name;
+        juce::String category { "user_group" };
+        juce::String notes;
+        std::vector<int> memberInstances;
+        juce::Colour colour { 0xff78dcca };
+    };
+
     struct DisjointSet
     {
         std::vector<int> parent;
@@ -1925,6 +1993,7 @@ private:
     std::vector<Wire> wires;
     std::vector<juce::Point<float>> junctions;
     std::vector<Probe> probes;
+    std::vector<Group> groups;
     WireNode wireDragStart;
     int selectedInstance = -1;
     juce::Array<int> selectedInstances;
@@ -2023,6 +2092,7 @@ private:
         wires.clear();
         junctions.clear();
         probes.clear();
+        groups.clear();
         selectedInstance = -1;
         selectedInstances.clear();
         nextRef = 1;
@@ -2778,6 +2848,63 @@ private:
         g.drawRect(box, 1.5f);
     }
 
+    juce::Rectangle<float> groupBounds(const Group& group) const
+    {
+        juce::Rectangle<float> bounds;
+        bool hasBounds = false;
+        for (int index : group.memberInstances)
+        {
+            if (index < 0 || index >= (int)instances.size())
+                continue;
+            const auto symbol = symbolFor(instances[(size_t)index].symbolId);
+            const auto itemBounds = orientedBounds(instances[(size_t)index], symbol).expanded(28.0f);
+            bounds = hasBounds ? bounds.getUnion(itemBounds) : itemBounds;
+            hasBounds = true;
+        }
+        return hasBounds ? bounds.expanded(12.0f) : juce::Rectangle<float>();
+    }
+
+    void drawGroups(juce::Graphics& g)
+    {
+        for (const auto& group : groups)
+        {
+            const auto bounds = groupBounds(group);
+            if (bounds.isEmpty())
+                continue;
+
+            g.setColour(group.colour.withAlpha(0.08f));
+            g.fillRoundedRectangle(bounds, 6.0f);
+            g.setColour(group.colour.withAlpha(0.7f));
+            g.drawRoundedRectangle(bounds, 6.0f, 1.5f);
+            g.setFont(juce::Font(13.0f, juce::Font::bold));
+            g.drawText(group.name, bounds.reduced(8.0f).removeFromTop(18.0f), juce::Justification::centredLeft);
+        }
+    }
+
+    void createGroupFromSelection()
+    {
+        if (selectedInstances.size() < 2)
+        {
+            if (onStatus) onStatus("Select two or more components to create a group.");
+            return;
+        }
+
+        Group group;
+        group.id = "GRP" + juce::String((int)groups.size() + 1);
+        group.name = "Group " + juce::String((int)groups.size() + 1);
+        group.category = "user_group";
+        for (int index : selectedInstances)
+            if (index >= 0 && index < (int)instances.size())
+                group.memberInstances.push_back(index);
+
+        if (group.memberInstances.size() < 2)
+            return;
+
+        groups.push_back(std::move(group));
+        if (onStatus) onStatus("Created " + groups.back().name + " from " + juce::String((int)groups.back().memberInstances.size()) + " component(s).");
+        repaint();
+    }
+
     WireNode nodeAt(juce::Point<float> rawPosition, juce::Point<float> snappedPosition)
     {
         if (auto pin = hitTestPin(rawPosition); pin.instanceIndex >= 0)
@@ -3121,6 +3248,19 @@ private:
         }
         for (auto& probe : probes)
             adjustNodeAfterDeletingInstance(probe.node, selectedInstance);
+        for (auto& group : groups)
+        {
+            group.memberInstances.erase(std::remove(group.memberInstances.begin(),
+                                                    group.memberInstances.end(),
+                                                    selectedInstance),
+                                        group.memberInstances.end());
+            for (auto& member : group.memberInstances)
+                if (member > selectedInstance)
+                    --member;
+        }
+        groups.erase(std::remove_if(groups.begin(), groups.end(), [](const Group& group) {
+            return group.memberInstances.size() < 2;
+        }), groups.end());
 
         selectedInstance = -1;
         selectedInstances.clear();
