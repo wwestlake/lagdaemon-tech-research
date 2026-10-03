@@ -255,6 +255,12 @@ $requiredAcceptanceFields = @(
     "passCriteria"
 )
 
+$requiredAcceptanceToolEvidence = @(
+    "cookbook_acceptance_start",
+    "cookbook_lookup",
+    "cookbook_acceptance_record"
+)
+
 $requiredDomains = @($acceptance.requiredDomains)
 $domainSet = @{}
 foreach ($domain in $requiredDomains) {
@@ -316,6 +322,19 @@ foreach ($goal in $acceptanceGoals) {
     foreach ($toolName in @($goal.requiredToolEvidence)) {
         if (-not $toolNamesWithCards.ContainsKey([string]$toolName)) {
             Add-Finding $errors "acceptance.toolEvidence.unknown" "$goalId requires tool evidence without a tool card: $toolName"
+        }
+    }
+
+    $toolEvidenceSet = @{}
+    foreach ($toolName in @($goal.requiredToolEvidence)) {
+        if (-not [string]::IsNullOrWhiteSpace([string]$toolName)) {
+            $toolEvidenceSet[[string]$toolName] = $true
+        }
+    }
+
+    foreach ($toolName in $requiredAcceptanceToolEvidence) {
+        if (-not $toolEvidenceSet.ContainsKey($toolName)) {
+            Add-Finding $errors "acceptance.toolEvidence.required" "$goalId is missing required acceptance evidence tool: $toolName"
         }
     }
 
