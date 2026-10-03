@@ -4112,6 +4112,7 @@ public:
         std::function<juce::String(double, double)> designHighPass;
         std::function<juce::String(const juce::String&, int)> cookbookLookup;
         std::function<juce::String()> cookbookCoverage;
+        std::function<juce::String()> cookbookValidate;
         std::function<juce::String()> toolManifest;
         std::function<void(const juce::String&)> log;
     };
@@ -4494,6 +4495,7 @@ private:
                "Use cookbook_lookup when requirements imply topology selection, design equations, validation recipes, troubleshooting, "
                "or when you need to compare established circuit candidates before building. "
                "Use cookbook_coverage to inspect cookbook domain coverage and identify missing recipe areas. "
+               "Use cookbook_validate to check cookbook schema quality and taxonomy alignment after cookbook edits. "
                "Use filesystem LiteSemRAG cards as retrieved guidance; do not assume Suite VFS storage. "
                "Be concise, report tool results plainly, and do not claim a circuit is ready for solver-backed "
                "analysis until circuit_run_erc has passed or you have explained the remaining warnings.";
@@ -4510,6 +4512,11 @@ private:
             {
                 "cookbook_coverage",
                 "Report structured cookbook coverage against the file-backed taxonomy, including missing categories.",
+                R"({"type":"object","properties":{},"additionalProperties":false})"
+            },
+            {
+                "cookbook_validate",
+                "Validate cookbook entries for required structured fields, taxonomy alignment, duplicate ids, and malformed raw entries.",
                 R"({"type":"object","properties":{},"additionalProperties":false})"
             },
             {
@@ -4581,6 +4588,11 @@ private:
             return tools.cookbookCoverage != nullptr
                 ? tools.cookbookCoverage()
                 : "{ \"ok\": false, \"error\": \"Cookbook coverage is unavailable.\" }";
+
+        if (name == "cookbook_validate")
+            return tools.cookbookValidate != nullptr
+                ? tools.cookbookValidate()
+                : "{ \"ok\": false, \"error\": \"Cookbook validation is unavailable.\" }";
 
         if (name == "circuit_run_erc")
             return tools.runErc != nullptr ? tools.runErc() : "{ \"ok\": false, \"error\": \"ERC tool unavailable.\" }";
@@ -5253,6 +5265,7 @@ ElectronicsWorkbench::ElectronicsWorkbench()
         return cookbookLookupTool(query, maxCards);
     };
     agentTools.cookbookCoverage = [this] { return cookbookCoverageTool(); };
+    agentTools.cookbookValidate = [this] { return cookbookValidateTool(); };
     agentTools.toolManifest = [this] { return buildAssistantToolManifestJson(); };
     agentTools.log = [this](const juce::String& text) { appendLog(text); };
     auto agent = std::make_unique<AgentPanel>(std::move(agentTools));
@@ -5529,6 +5542,14 @@ juce::String ElectronicsWorkbench::buildAssistantToolManifestJson() const
     text << "      \"outputs\": { \"coveredCategories\": \"array\", \"missingCategories\": \"array\", \"coverageRatio\": \"number\" }\n";
     text << "    },\n";
     text << "    {\n";
+    text << "      \"name\": \"cookbook_validate\",\n";
+    text << "      \"displayName\": \"cookbook.validate\",\n";
+    text << "      \"description\": \"Validate cookbook entries for required structured fields, taxonomy alignment, duplicate ids, and malformed raw entries.\",\n";
+    text << "      \"mode\": \"read_only_knowledge\",\n";
+    text << "      \"inputs\": {},\n";
+    text << "      \"outputs\": { \"status\": \"passed or failed\", \"errors\": \"array\", \"warnings\": \"array\" }\n";
+    text << "    },\n";
+    text << "    {\n";
     text << "      \"name\": \"circuit_inspect\",\n";
     text << "      \"displayName\": \"circuit.inspect\",\n";
     text << "      \"description\": \"Read the current authoritative circuit JSON from the schematic model.\",\n";
@@ -5762,6 +5783,137 @@ juce::String ElectronicsWorkbench::cookbookCoverageTool() const
     }
 
     result << "  ]\n";
+    result << "}\n";
+    return result;
+}
+
+juce::String ElectronicsWorkbench::cookbookValidateTool() const
+{
+    const auto taxonomyFile = electronics_knowledge::getKnowledgeRoot().getChildFile("COOKBOOK_TAXONOMY.json");
+    const auto parsedTaxonomy = juce::JSON::parse(taxonomyFile.loadFileAsString());
+    if (!parsedTaxonomy.isObject())
+    {
+        return "{ \"ok\": false, \"tool\": \"cookbook_validate\", \"displayTool\": \"cookbook.validate\", \"error\": "
+            + jsonQuote("Could not read cookbook taxonomy: " + taxonomyFile.getFullPathName()) + " }";
+    }
+
+    std::set<std::string> taxonomyCategories;
+    if (auto* categories = parsedTaxonomy.getProperty("categories", {}).getArray())
+        for (const auto& category : *categories)
+            taxonomyCategories.insert(category.toString().toStdString());
+
+    juce::StringArray errors;
+    juce::StringArray warnings;
+    std::set<std::string> seenIds;
+    int cookbookEntryCount = 0;
+
+    const juce::StringArray requiredFields {
+        "category",
+        "subcategory",
+        "purpose",
+        "whenToUse",
+        "whenNotToUse",
+        "requiredComponents",
+        "designProcedure",
+        "toolRecipe",
+        "analysisRecipe",
+        "validationCriteria",
+        "failureModes",
+        "iterationRules",
+        "capabilityGaps",
+        "provenance",
+        "text"
+    };
+
+    const juce::StringArray recommendedFields {
+        "parameters",
+        "relatedEntries"
+    };
+
+    auto hasUsefulProperty = [](const juce::var& object, const juce::String& name) {
+        const auto value = object.getProperty(name, {});
+        if (value.isVoid())
+            return false;
+        if (value.isString())
+            return value.toString().trim().isNotEmpty();
+        if (auto* array = value.getArray())
+            return !array->isEmpty();
+        if (auto* dyn = value.getDynamicObject())
+            return dyn->getProperties().size() > 0;
+        return true;
+    };
+
+    for (const auto& card : electronics_knowledge::allCards())
+    {
+        if (!card.kind.startsWithIgnoreCase("cookbook"))
+            continue;
+
+        ++cookbookEntryCount;
+        const auto id = card.id.isNotEmpty() ? card.id : juce::String("<missing id>");
+        if (!seenIds.insert(id.toStdString()).second)
+            errors.add(id + ": duplicate cookbook id.");
+
+        const auto parsedCard = juce::JSON::parse(card.rawJson);
+        if (!parsedCard.isObject())
+        {
+            errors.add(id + ": raw cookbook JSON is malformed.");
+            continue;
+        }
+
+        const auto category = parsedCard.getProperty("category", {}).toString().trim();
+        if (category.isEmpty())
+        {
+            errors.add(id + ": missing category.");
+        }
+        else if (taxonomyCategories.count(category.toStdString()) == 0)
+        {
+            errors.add(id + ": category is not in COOKBOOK_TAXONOMY.json: " + category);
+        }
+
+        for (const auto& field : requiredFields)
+            if (!hasUsefulProperty(parsedCard, field))
+                errors.add(id + ": missing required cookbook field `" + field + "`.");
+
+        for (const auto& field : recommendedFields)
+            if (!hasUsefulProperty(parsedCard, field))
+                warnings.add(id + ": missing recommended cookbook field `" + field + "`.");
+
+        const auto text = parsedCard.getProperty("text", {}).toString();
+        if (text.length() < 120)
+            warnings.add(id + ": summary text is short for retrieval.");
+    }
+
+    if (cookbookEntryCount == 0)
+        errors.add("No cookbook entries were found.");
+
+    auto appendStringArray = [](juce::String& out, const juce::StringArray& values) {
+        out << "[";
+        for (int index = 0; index < values.size(); ++index)
+        {
+            if (index > 0)
+                out << ", ";
+            out << jsonQuote(values[index]);
+        }
+        out << "]";
+    };
+
+    juce::String result;
+    result << "{\n";
+    result << "  \"ok\": true,\n";
+    result << "  \"schemaVersion\": 1,\n";
+    result << "  \"kind\": \"djehuti_assistant_tool_result\",\n";
+    result << "  \"tool\": \"cookbook_validate\",\n";
+    result << "  \"displayTool\": \"cookbook.validate\",\n";
+    result << "  \"status\": " << jsonQuote(errors.isEmpty() ? "passed" : "failed") << ",\n";
+    result << "  \"cookbookEntryCount\": " << cookbookEntryCount << ",\n";
+    result << "  \"errorCount\": " << errors.size() << ",\n";
+    result << "  \"warningCount\": " << warnings.size() << ",\n";
+    result << "  \"errors\": ";
+    appendStringArray(result, errors);
+    result << ",\n";
+    result << "  \"warnings\": ";
+    appendStringArray(result, warnings);
+    result << "\n";
     result << "}\n";
     return result;
 }
