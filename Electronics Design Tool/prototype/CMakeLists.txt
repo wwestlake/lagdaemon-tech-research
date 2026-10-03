@@ -72,6 +72,8 @@ target_sources(DjehutiElectronicsLab PRIVATE
     Source/Main.cpp
     Source/ElectronicsWorkbench.h
     Source/ElectronicsWorkbench.cpp
+    Source/SchematicSymbols.h
+    Source/SchematicSymbols.cpp
     Source/ElectronicsKnowledge.h
     Source/ElectronicsKnowledge.cpp
     Source/LocalAgentApi.h

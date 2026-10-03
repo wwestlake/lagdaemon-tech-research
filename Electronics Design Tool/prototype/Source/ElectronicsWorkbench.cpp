@@ -1,6 +1,7 @@
 #include "ElectronicsWorkbench.h"
 #include "ElectronicsKnowledge.h"
 #include "LocalAgentApi.h"
+#include "SchematicSymbols.h"
 
 #include <ai_provider/AiConfig.h>
 
@@ -750,9 +751,7 @@ public:
             return;
 
         auto& instance = instances[(size_t)selectedInstance];
-        const auto symbol = symbolFor(instance.symbolId);
-        const auto step = symbol.rotationStepDegrees > 0 ? symbol.rotationStepDegrees : 90;
-        instance.rotation = (instance.rotation + step) % 360;
+        instance.rotation = schematic::normalizedRotation(instance.rotation + 90);
         if (onStatus) onStatus("Rotated " + instance.refdes + " to " + juce::String(instance.rotation) + " degrees.");
         notifySelection();
         repaint();
@@ -786,7 +785,6 @@ public:
         std::vector<Wire> loadedWires;
         std::vector<Probe> loadedProbes;
         std::vector<Group> loadedGroups;
-        int highestRefNumber = 0;
 
         for (const auto& entry : *componentArray)
         {
@@ -795,13 +793,18 @@ public:
                 continue;
 
             Instance instance;
-            instance.symbolId = stringProperty(*object, "symbol", "resistor");
+            instance.symbolId = stringProperty(*object, "symbol", {});
+            if (!schematic::isSupportedSymbol(instance.symbolId))
+            {
+                error = "Project uses unsupported symbol '" + instance.symbolId + "'; no substitute was loaded.";
+                return false;
+            }
             instance.refdes = stringProperty(*object, "id", "U" + juce::String((int)loadedInstances.size() + 1));
             instance.value = stringProperty(*object, "value", defaultValueFor(instance.symbolId));
             instance.frequency = stringProperty(*object, "frequency", defaultFrequencyFor(instance.symbolId));
             instance.busName = stringProperty(*object, "busName", defaultBusNameFor(instance.symbolId));
             instance.position = { floatProperty(*object, "x", 120.0f), floatProperty(*object, "y", 120.0f) };
-            instance.rotation = (int)floatProperty(*object, "rotation", 0.0f);
+            instance.rotation = schematic::normalizedRotation((int)floatProperty(*object, "rotation", 0.0f));
             instance.busLength = floatProperty(*object, "length", isRailBus(instance.symbolId) ? 420.0f : 0.0f);
 
             if (const auto* component = object->getProperty("component").getDynamicObject())
@@ -814,7 +817,6 @@ public:
                 instance.family = familyFor(instance.symbolId);
             }
 
-            highestRefNumber = std::max(highestRefNumber, trailingNumber(instance.refdes));
             loadedInstances.push_back(std::move(instance));
         }
 
@@ -831,7 +833,7 @@ public:
         }
 
         auto nodeForLabel = [&](const juce::String& label, WireNode& result) -> bool {
-            if (label.startsWith("J"))
+            if (label.startsWith("N") && label.substring(1).containsOnly("0123456789"))
             {
                 const auto index = label.substring(1).getIntValue() - 1;
                 if (index >= 0 && index < (int)loadedJunctions.size())
@@ -951,7 +953,6 @@ public:
         if (selectedInstance >= 0)
             selectedInstances.add(selectedInstance);
         selectedGroup = -1;
-        nextRef = std::max(1, highestRefNumber + 1);
         wireDragging = false;
         draggingInstance = false;
         resizingRail = false;
@@ -1025,7 +1026,7 @@ public:
         {
             const auto& junction = junctions[i];
             if (i != 0) text << ",\n";
-            text << "    { \"id\": " << quote("J" + juce::String((int)i + 1))
+            text << "    { \"id\": " << quote("N" + juce::String((int)i + 1))
                  << ", \"x\": " << junction.x
                  << ", \"y\": " << junction.y << " }";
         }
@@ -1102,6 +1103,8 @@ public:
                 netlist << "* " << instance.refdes << " " << instance.busName << " power bus on net " << pinNet("VBUS") << "\n";
                 continue;
             }
+            if (instance.symbolId == "power_port")
+                continue;
             if (instance.symbolId == "resistor")
             {
                 netlist << instance.refdes << " " << pinNet("1") << " " << pinNet("2") << " " << instance.value << "\n";
@@ -1249,8 +1252,12 @@ public:
             if (instance.value.trim().isEmpty()
                 && instance.symbolId != "ground"
                 && instance.symbolId != "ground_bus"
-                && instance.symbolId != "power_bus")
+                && instance.symbolId != "power_bus"
+                && instance.symbolId != "power_port")
                 addFinding("WARN", instance.refdes + " has no value or model text.");
+
+            if (instance.symbolId == "power_port" && instance.busName.trim().isEmpty())
+                addFinding("ERROR", instance.refdes + " is a supply port with no net name.");
 
             if (unsupportedForXyce(instance.symbolId))
                 addFinding("INFO", instance.refdes + " (" + instance.symbolId + ") is captured in the model but not lowered to Xyce yet.");
@@ -1286,6 +1293,24 @@ public:
             if (sameNode(wire.a, wire.b))
                 addFinding("WARN", "A wire loops back to " + nodeLabel(wire.a) + ".");
         }
+
+        // Every named supply net needs something that actually sets its voltage.
+        std::set<juce::String> supplyNets;
+        std::set<juce::String> drivenNets;
+        for (int i = 0; i < (int)instances.size(); ++i)
+        {
+            const auto& instance = instances[(size_t)i];
+            if (instance.symbolId == "power_port" && instance.busName.trim().isNotEmpty())
+                supplyNets.insert(pinNet(i, "1"));
+            if (instance.symbolId == "voltage_source" || instance.symbolId == "battery")
+            {
+                drivenNets.insert(pinNet(i, "+"));
+                drivenNets.insert(pinNet(i, "-"));
+            }
+        }
+        for (const auto& net : supplyNets)
+            if (drivenNets.count(net) == 0)
+                addFinding("ERROR", "Supply net " + net + " has ports but no voltage source or battery driving it.");
 
         if (probes.empty() && !instances.empty())
             addFinding("INFO", "No lab probes are assigned yet, so instruments do not have schematic targets.");
@@ -1638,18 +1663,7 @@ public:
                                      const juce::String& busName)
     {
         const auto requestedSymbol = symbolId.trim();
-        const juce::StringArray supported {
-            "resistor", "potentiometer", "capacitor", "capacitor_polarized", "variable_capacitor",
-            "inductor", "coupled_inductor", "transformer", "diode", "zener_diode", "led",
-            "schottky_diode", "power_bus", "ground_bus", "battery", "voltage_source",
-            "ac_voltage_source", "current_source", "ac_current_source", "vcvs", "vccs",
-            "ccvs", "cccs", "signal_source", "ground", "opamp_741", "npn", "pnp",
-            "nmos", "pmos", "njfet", "pjfet", "switch_spst", "switch_spdt", "relay_spst",
-            "fuse", "connector_2", "connector_3", "test_point", "logic_not", "logic_and",
-            "logic_or", "logic_nand", "logic_nor", "logic_xor", "oscilloscope_2ch",
-            "digital_multimeter"
-        };
-        if (!supported.contains(requestedSymbol))
+        if (!schematic::isSupportedSymbol(requestedSymbol))
             return "{ \"ok\": false, \"error\": \"Unsupported symbolId; no substitute was placed.\", \"requestedSymbolId\": "
                 + quote(requestedSymbol) + " }";
 
@@ -1770,37 +1784,90 @@ public:
             return refdes;
         };
 
-        place("ac_voltage_source", "VIN1", { 120.0f, 288.0f }, "0.25", "1k", "Input");
-        place("resistor", "RIN1", { 312.0f, 216.0f }, "1k", {}, "Input resistor");
-        place("diode", "D1", { 480.0f, 168.0f }, "1N4148", {}, "Upper bias");
-        place("diode", "D2", { 480.0f, 264.0f }, "1N4148", {}, "Lower bias");
-        place("npn", "Q1", { 672.0f, 168.0f }, "generic_npn", {}, "Upper output");
-        place("pnp", "Q2", { 672.0f, 312.0f }, "generic_pnp", {}, "Lower output");
-        place("voltage_source", "VCC1", { 672.0f, 48.0f }, "12", {}, "+12 V");
-        place("voltage_source", "VEE1", { 672.0f, 432.0f }, "12", {}, "-12 V");
-        place("resistor", "RL1", { 864.0f, 288.0f }, "8", {}, "8 ohm load", 90);
-        place("oscilloscope_2ch", "SCOPE1", { 1080.0f, 216.0f }, "2ch", {}, "Scope");
-        place("ground", "GND1", { 120.0f, 408.0f }, "0", {}, "Input ground");
-        place("ground", "GND2", { 672.0f, 552.0f }, "0", {}, "Supply ground");
-        place("ground", "GND3", { 864.0f, 432.0f }, "0", {}, "Load ground");
-        place("ground", "GND4", { 1164.0f, 336.0f }, "0", {}, "Scope ground");
+        auto junction = [this](juce::Point<float> p) {
+            junctions.push_back(p);
+            return "N" + juce::String((int)junctions.size());
+        };
 
-        connectNodesFromTool("VIN1.-", "GND1.0");
-        connectNodesFromTool("VIN1.+", "RIN1.1");
-        connectNodesFromTool("RIN1.2", "D1.A");
-        connectNodesFromTool("RIN1.2", "D2.K");
-        connectNodesFromTool("D1.K", "Q1.B");
-        connectNodesFromTool("D2.A", "Q2.B");
-        connectNodesFromTool("Q1.C", "VCC1.+");
-        connectNodesFromTool("VCC1.-", "GND2.0");
-        connectNodesFromTool("Q2.C", "VEE1.-");
-        connectNodesFromTool("VEE1.+", "GND2.0");
-        connectNodesFromTool("Q1.E", "Q2.E");
-        connectNodesFromTool("Q1.E", "RL1.1");
-        connectNodesFromTool("RL1.2", "GND3.0");
-        connectNodesFromTool("SCOPE1.CH1", "VIN1.+");
+        // Class AB complementary emitter follower, drawn the textbook way:
+        // NPN above PNP with the output node between their emitters, the
+        // diode bias string between the bases, supplies as named ports at
+        // the pins that need them, and ground symbols at each ground pin.
+        // Rotation 90 turns a horizontal two-pin part vertical with pin 1
+        // (anode for diodes) on top.
+
+        // Input: AC source coupled through C1 into the middle of the bias string.
+        place("ac_voltage_source", "V1", { 168.0f, 384.0f }, "0.25", "1k", "Input");
+        place("ground", "GND1", { 168.0f, 456.0f }, "0");
+        place("capacitor", "C1", { 312.0f, 336.0f }, "10u");
+
+        // Bias string: R1 from +12V, D1 and D2, R2 to -12V.
+        place("power_port", "PWR1", { 408.0f, 0.0f }, {}, {}, "+12V");
+        place("resistor", "R1", { 408.0f, 72.0f }, "2.2k", {}, {}, 90);
+        place("diode", "D1", { 408.0f, 192.0f }, "1N4148", {}, {}, 90);
+        place("diode", "D2", { 408.0f, 480.0f }, "1N4148", {}, {}, 90);
+        place("resistor", "R2", { 408.0f, 600.0f }, "2.2k", {}, {}, 90);
+        place("power_port", "PWR2", { 408.0f, 672.0f }, {}, {}, "-12V", 180);
+
+        // Output pair with emitter ballast resistors.
+        place("power_port", "PWR3", { 576.0f, 48.0f }, {}, {}, "+12V");
+        place("npn", "Q1", { 552.0f, 144.0f }, "generic_npn");
+        place("resistor", "R3", { 576.0f, 264.0f }, "0.47", {}, {}, 90);
+        place("resistor", "R4", { 576.0f, 408.0f }, "0.47", {}, {}, 90);
+        place("pnp", "Q2", { 552.0f, 528.0f }, "generic_pnp");
+        place("power_port", "PWR4", { 576.0f, 624.0f }, {}, {}, "-12V", 180);
+
+        // Load.
+        place("resistor", "RL1", { 720.0f, 384.0f }, "8", {}, {}, 90);
+        place("ground", "GND2", { 720.0f, 456.0f }, "0");
+
+        // Supplies: stacked sources around a grounded midpoint.
+        place("voltage_source", "V2", { 168.0f, 600.0f }, "12");
+        place("power_port", "PWR5", { 168.0f, 528.0f }, {}, {}, "+12V");
+        place("voltage_source", "V3", { 168.0f, 744.0f }, "12");
+        place("power_port", "PWR6", { 168.0f, 816.0f }, {}, {}, "-12V", 180);
+        place("ground", "GND3", { 240.0f, 672.0f }, "0");
+
+        // Scope: CH1 on the input drive, CH2 on the output, REF to ground.
+        place("oscilloscope_2ch", "SCOPE1", { 912.0f, 360.0f }, "2ch");
+        place("ground", "GND4", { 912.0f, 456.0f }, "0");
+
+        const auto inputNode = junction({ 408.0f, 336.0f });
+        const auto outputNode = junction({ 576.0f, 336.0f });
+        const auto supplyMid = junction({ 168.0f, 672.0f });
+
+        connectNodesFromTool("V1.-", "GND1");
+        connectNodesFromTool("V1.+", "C1.1");
+        connectNodesFromTool("C1.2", inputNode);
+
+        connectNodesFromTool("PWR1", "R1.1");
+        connectNodesFromTool("R1.2", "D1.A");
+        connectNodesFromTool("D1.K", inputNode);
+        connectNodesFromTool(inputNode, "D2.A");
+        connectNodesFromTool("D2.K", "R2.1");
+        connectNodesFromTool("R2.2", "PWR2");
+
+        connectNodesFromTool("D1.A", "Q1.B");
+        connectNodesFromTool("D2.K", "Q2.B");
+        connectNodesFromTool("PWR3", "Q1.C");
+        connectNodesFromTool("Q1.E", "R3.1");
+        connectNodesFromTool("R3.2", outputNode);
+        connectNodesFromTool(outputNode, "R4.1");
+        connectNodesFromTool("R4.2", "Q2.E");
+        connectNodesFromTool("Q2.C", "PWR4");
+
+        connectNodesFromTool(outputNode, "RL1.1");
+        connectNodesFromTool("RL1.2", "GND2");
+
+        connectNodesFromTool("PWR5", "V2.+");
+        connectNodesFromTool("V2.-", supplyMid);
+        connectNodesFromTool(supplyMid, "V3.+");
+        connectNodesFromTool(supplyMid, "GND3");
+        connectNodesFromTool("V3.-", "PWR6");
+
+        connectNodesFromTool("SCOPE1.CH1", "V1.+");
         connectNodesFromTool("SCOPE1.CH2", "RL1.1");
-        connectNodesFromTool("SCOPE1.REF", "GND4.0");
+        connectNodesFromTool("SCOPE1.REF", "GND4");
 
         selectedInstance = instanceIndexForRefdes("Q1");
         selectedInstances.clear();
@@ -1975,20 +2042,8 @@ public:
     }
 
 private:
-    struct PinDef
-    {
-        juce::String name;
-        juce::Point<float> offset;
-    };
-
-    struct SymbolDef
-    {
-        juce::String id;
-        juce::String title;
-        juce::Rectangle<float> bounds;
-        std::vector<PinDef> pins;
-        int rotationStepDegrees = 90;
-    };
+    using PinDef = schematic::PinDef;
+    using SymbolDef = schematic::SymbolDef;
 
     struct Instance
     {
@@ -2094,7 +2149,6 @@ private:
     int selectedInstance = -1;
     juce::Array<int> selectedInstances;
     int selectedGroup = -1;
-    int nextRef = 1;
     bool dragHover = false;
     juce::String dragMessage = "Drop symbol on schematic";
     bool wireDragging = false;
@@ -2181,21 +2235,6 @@ private:
         return (float)(double)value;
     }
 
-    static int trailingNumber(const juce::String& text)
-    {
-        auto start = text.length();
-        const auto end = start;
-        while (start > 0)
-        {
-            const auto c = text[start - 1];
-            if (c < '0' || c > '9')
-                break;
-            --start;
-        }
-
-        return start == end ? 0 : text.substring(start, end).getIntValue();
-    }
-
     void clearModel()
     {
         const auto previousProbes = probes;
@@ -2207,7 +2246,6 @@ private:
         selectedInstance = -1;
         selectedInstances.clear();
         selectedGroup = -1;
-        nextRef = 1;
         wireDragging = false;
         draggingInstance = false;
         resizingRail = false;
@@ -2276,109 +2314,19 @@ private:
 
     static bool isRailBus(const juce::String& symbolId)
     {
-        return symbolId == "power_bus" || symbolId == "ground_bus";
+        return schematic::isRailBus(symbolId);
     }
 
     static bool isInstrumentNode(const juce::String& symbolId)
     {
-        return symbolId == "oscilloscope_2ch" || symbolId == "digital_multimeter";
+        return schematic::isInstrumentSymbol(symbolId);
     }
 
     SymbolDef symbolFor(const juce::String& id) const
     {
-        if (id == "capacitor")
-            return { id, "C", { -30, -18, 60, 36 }, { { "1", { -42, 0 } }, { "2", { 42, 0 } } } };
-        if (id == "capacitor_polarized")
-            return { id, "C+", { -30, -22, 60, 44 }, { { "+", { -42, 0 } }, { "-", { 42, 0 } } } };
-        if (id == "variable_capacitor")
-            return { id, "CV", { -34, -22, 68, 44 }, { { "1", { -46, 0 } }, { "2", { 46, 0 } } }, 45 };
-        if (id == "potentiometer")
-            return { id, "POT", { -42, -18, 84, 36 }, { { "1", { -60, 0 } }, { "2", { 60, 0 } }, { "W", { 0, -48 } } } };
-        if (id == "inductor")
-            return { id, "L", { -34, -18, 68, 36 }, { { "1", { -54, 0 } }, { "2", { 54, 0 } } }, 45 };
-        if (id == "coupled_inductor")
-            return { id, "Lx2", { -42, -38, 84, 76 }, { { "1A", { -60, -22 } }, { "1B", { 60, -22 } }, { "2A", { -60, 22 } }, { "2B", { 60, 22 } } } };
-        if (id == "transformer")
-            return { id, "XFMR", { -48, -42, 96, 84 }, { { "P1", { -70, -24 } }, { "P2", { -70, 24 } }, { "S1", { 70, -24 } }, { "S2", { 70, 24 } } } };
-        if (id == "diode")
-            return { id, "D", { -28, -24, 56, 48 }, { { "A", { -54, 0 } }, { "K", { 54, 0 } } }, 45 };
-        if (id == "zener_diode")
-            return { id, "ZD", { -30, -24, 60, 48 }, { { "A", { -54, 0 } }, { "K", { 54, 0 } } }, 45 };
-        if (id == "led")
-            return { id, "LED", { -32, -26, 64, 52 }, { { "A", { -56, 0 } }, { "K", { 56, 0 } } }, 45 };
-        if (id == "schottky_diode")
-            return { id, "SD", { -30, -24, 60, 48 }, { { "A", { -54, 0 } }, { "K", { 54, 0 } } }, 45 };
-        if (id == "power_bus")
-            return { id, "PWR", { -210, -8, 420, 16 }, { { "VBUS", { 0, 0 } } } };
-        if (id == "ground_bus")
-            return { id, "GND BUS", { -210, -8, 420, 16 }, { { "0", { 0, 0 } } } };
-        if (id == "battery")
-            return { id, "BAT", { -24, -34, 48, 68 }, { { "+", { 0, -52 } }, { "-", { 0, 52 } } } };
-        if (id == "voltage_source")
-            return { id, "V", { -24, -24, 48, 48 }, { { "+", { 0, -42 } }, { "-", { 0, 42 } } } };
-        if (id == "ac_voltage_source")
-            return { id, "AC", { -28, -28, 56, 56 }, { { "+", { 0, -46 } }, { "-", { 0, 46 } } } };
-        if (id == "current_source")
-            return { id, "I", { -24, -24, 48, 48 }, { { "+", { 0, -42 } }, { "-", { 0, 42 } } } };
-        if (id == "ac_current_source")
-            return { id, "IAC", { -28, -28, 56, 56 }, { { "+", { 0, -46 } }, { "-", { 0, 46 } } } };
-        if (id == "vcvs")
-            return { id, "E", { -34, -34, 68, 68 }, { { "+", { 0, -56 } }, { "-", { 0, 56 } }, { "CP+", { -58, -18 } }, { "CP-", { -58, 18 } } } };
-        if (id == "vccs")
-            return { id, "G", { -34, -34, 68, 68 }, { { "+", { 0, -56 } }, { "-", { 0, 56 } }, { "CP+", { -58, -18 } }, { "CP-", { -58, 18 } } } };
-        if (id == "ccvs")
-            return { id, "H", { -34, -34, 68, 68 }, { { "+", { 0, -56 } }, { "-", { 0, 56 } }, { "S+", { -58, -18 } }, { "S-", { -58, 18 } } } };
-        if (id == "cccs")
-            return { id, "F", { -34, -34, 68, 68 }, { { "+", { 0, -56 } }, { "-", { 0, 56 } }, { "S+", { -58, -18 } }, { "S-", { -58, 18 } } } };
-        if (id == "signal_source")
-            return { id, "SIG", { -40, -24, 80, 48 }, { { "OUT", { 58, 0 } }, { "REF", { -58, 0 } } } };
-        if (id == "ground")
-            return { id, "GND", { -24, -12, 48, 32 }, { { "0", { 0, -24 } } } };
-        if (id == "opamp_741")
-            return { id, "uA741", { -50, -42, 100, 84 }, { { "IN+", { -72, -20 } }, { "IN-", { -72, 20 } }, { "OUT", { 72, 0 } }, { "V+", { 0, -62 } }, { "V-", { 0, 62 } } } };
-        if (id == "npn")
-            return { id, "NPN", { -30, -36, 60, 72 }, { { "B", { -54, 0 } }, { "C", { 28, -48 } }, { "E", { 28, 48 } } } };
-        if (id == "pnp")
-            return { id, "PNP", { -30, -36, 60, 72 }, { { "B", { -54, 0 } }, { "C", { 28, -48 } }, { "E", { 28, 48 } } } };
-        if (id == "nmos")
-            return { id, "NMOS", { -32, -38, 64, 76 }, { { "G", { -58, 0 } }, { "D", { 30, -50 } }, { "S", { 30, 50 } } } };
-        if (id == "pmos")
-            return { id, "PMOS", { -32, -38, 64, 76 }, { { "G", { -58, 0 } }, { "D", { 30, -50 } }, { "S", { 30, 50 } } } };
-        if (id == "njfet")
-            return { id, "NJFET", { -32, -38, 64, 76 }, { { "G", { -58, 0 } }, { "D", { 30, -50 } }, { "S", { 30, 50 } } } };
-        if (id == "pjfet")
-            return { id, "PJFET", { -32, -38, 64, 76 }, { { "G", { -58, 0 } }, { "D", { 30, -50 } }, { "S", { 30, 50 } } } };
-        if (id == "switch_spst")
-            return { id, "SW", { -36, -20, 72, 40 }, { { "1", { -56, 0 } }, { "2", { 56, 0 } } }, 45 };
-        if (id == "switch_spdt")
-            return { id, "SWDT", { -42, -34, 84, 68 }, { { "C", { -62, 0 } }, { "A", { 62, -24 } }, { "B", { 62, 24 } } } };
-        if (id == "relay_spst")
-            return { id, "K", { -48, -42, 96, 84 }, { { "COIL+", { -68, -26 } }, { "COIL-", { -68, 26 } }, { "1", { 68, -18 } }, { "2", { 68, 18 } } } };
-        if (id == "fuse")
-            return { id, "FUSE", { -38, -14, 76, 28 }, { { "1", { -58, 0 } }, { "2", { 58, 0 } } } };
-        if (id == "connector_2")
-            return { id, "J2", { -28, -30, 56, 60 }, { { "1", { -48, -14 } }, { "2", { -48, 14 } } } };
-        if (id == "connector_3")
-            return { id, "J3", { -28, -42, 56, 84 }, { { "1", { -48, -24 } }, { "2", { -48, 0 } }, { "3", { -48, 24 } } } };
-        if (id == "test_point")
-            return { id, "TP", { -18, -18, 36, 36 }, { { "1", { -42, 0 } } } };
-        if (id == "logic_not")
-            return { id, "NOT", { -42, -30, 84, 60 }, { { "A", { -66, 0 } }, { "Y", { 66, 0 } } } };
-        if (id == "logic_and")
-            return { id, "AND", { -42, -34, 84, 68 }, { { "A", { -66, -18 } }, { "B", { -66, 18 } }, { "Y", { 66, 0 } } } };
-        if (id == "logic_or")
-            return { id, "OR", { -42, -34, 84, 68 }, { { "A", { -66, -18 } }, { "B", { -66, 18 } }, { "Y", { 66, 0 } } } };
-        if (id == "logic_nand")
-            return { id, "NAND", { -46, -34, 92, 68 }, { { "A", { -70, -18 } }, { "B", { -70, 18 } }, { "Y", { 70, 0 } } } };
-        if (id == "logic_nor")
-            return { id, "NOR", { -46, -34, 92, 68 }, { { "A", { -70, -18 } }, { "B", { -70, 18 } }, { "Y", { 70, 0 } } } };
-        if (id == "logic_xor")
-            return { id, "XOR", { -46, -34, 92, 68 }, { { "A", { -70, -18 } }, { "B", { -70, 18 } }, { "Y", { 70, 0 } } } };
-        if (id == "oscilloscope_2ch")
-            return { id, "SCOPE", { -58, -42, 116, 84 }, { { "CH1", { -82, -22 } }, { "CH2", { -82, 22 } }, { "REF", { 82, 0 } } } };
-        if (id == "digital_multimeter")
-            return { id, "DMM", { -48, -36, 96, 72 }, { { "HI", { -72, -18 } }, { "LO", { -72, 18 } } } };
-        return { "resistor", "R", { -36, -14, 72, 28 }, { { "1", { -54, 0 } }, { "2", { 54, 0 } } } };
+        // Unknown ids yield a pinless invalid def; placement and loading
+        // reject unknown symbols before they reach the model.
+        return schematic::symbolFor(id);
     }
 
     juce::String defaultValueFor(const juce::String& symbolId) const
@@ -2567,6 +2515,29 @@ private:
             sets.unite(a, b);
         }
 
+        // Named supply ports and power rails with the same name are one net
+        // (SCH-P2), even with no wire between them.
+        std::map<juce::String, int> namedSupplyPins;
+        for (size_t i = 0; i < instances.size(); ++i)
+        {
+            const auto& instance = instances[i];
+            if (instance.symbolId != "power_port" && instance.symbolId != "power_bus")
+                continue;
+            const auto name = instance.busName.trim();
+            if (name.isEmpty())
+                continue;
+            const auto ordinal = pinOrdinal({ (int)i, 0 });
+            const auto found = namedSupplyPins.find(name);
+            if (found == namedSupplyPins.end())
+                namedSupplyPins[name] = ordinal;
+            else
+                sets.unite(found->second, ordinal);
+        }
+
+        std::map<int, juce::String> supplyNetNames;
+        for (const auto& [name, ordinal] : namedSupplyPins)
+            supplyNetNames[sets.find(ordinal)] = spiceNetName(name);
+
         std::set<int> groundRoots;
         for (size_t i = 0; i < instances.size(); ++i)
         {
@@ -2587,11 +2558,29 @@ private:
                 result[pin] = "0";
                 continue;
             }
+            if (const auto named = supplyNetNames.find(root); named != supplyNetNames.end())
+            {
+                result[pin] = named->second;
+                continue;
+            }
             if (assigned.count(root) == 0)
                 assigned[root] = nextNet++;
             result[pin] = "n" + juce::String(assigned[root]);
         }
         return result;
+    }
+
+    static juce::String spiceNetName(const juce::String& supplyName)
+    {
+        juce::String result;
+        for (auto c : supplyName)
+        {
+            if (c == '+') result << "P";
+            else if (c == '-') result << "N";
+            else if (juce::CharacterFunctions::isLetterOrDigit(c)) result << juce::String::charToString(c);
+            else result << "_";
+        }
+        return result.isEmpty() ? juce::String("VSUPPLY") : result;
     }
 
     juce::String netFor(const PinRef& pin, const std::map<int, juce::String>& netNames) const
@@ -2663,7 +2652,7 @@ private:
                 labels.add(pinLabel({ i, pin }));
         }
         for (int i = 0; i < (int)junctions.size(); ++i)
-            labels.add("J" + juce::String(i + 1));
+            labels.add("N" + juce::String(i + 1));
         return labels.joinIntoString(", ");
     }
 
@@ -2676,7 +2665,7 @@ private:
             return false;
         }
 
-        if (label.startsWithIgnoreCase("J"))
+        if (label.startsWithIgnoreCase("N") && label.substring(1).containsOnly("0123456789"))
         {
             const auto index = label.substring(1).getIntValue() - 1;
             if (index >= 0 && index < (int)junctions.size())
@@ -2730,7 +2719,7 @@ private:
         if (node.isPin())
             return pinLabel(node.pin);
         if (node.isJunction())
-            return "J" + juce::String(node.junctionIndex + 1);
+            return "N" + juce::String(node.junctionIndex + 1);
         return {};
     }
 
@@ -3107,13 +3096,7 @@ private:
 
     static juce::Point<float> rotateOffset(juce::Point<float> offset, int rotation)
     {
-        switch (((rotation % 360) + 360) % 360)
-        {
-            case 90: return { -offset.y, offset.x };
-            case 180: return { -offset.x, -offset.y };
-            case 270: return { offset.y, -offset.x };
-            default: return offset;
-        }
+        return schematic::rotateOffset(offset, rotation);
     }
 
     juce::Rectangle<float> orientedBounds(const Instance& instance, const SymbolDef& symbol) const
@@ -3121,14 +3104,8 @@ private:
         if (isRailBus(instance.symbolId))
             return railBounds(instance).expanded(0.0f, 10.0f);
 
-        const auto r = symbol.bounds;
-        const auto rotation = ((instance.rotation % 360) + 360) % 360;
-        if (rotation == 90 || rotation == 270)
-            return { instance.position.x - r.getHeight() * 0.5f,
-                     instance.position.y - r.getWidth() * 0.5f,
-                     r.getHeight(),
-                     r.getWidth() };
-        return r.translated(instance.position.x, instance.position.y);
+        return schematic::rotateBounds(symbol.bounds, instance.rotation)
+            .translated(instance.position.x, instance.position.y);
     }
 
     juce::Rectangle<float> railBounds(const Instance& instance) const
@@ -3471,27 +3448,28 @@ private:
                            instance.frequency, instance.busName, instance.family, instance.manufacturerPart);
     }
 
+    juce::String nextRefdesFor(const juce::String& symbolId) const
+    {
+        const auto prefix = schematic::refdesPrefixFor(symbolId);
+        int highest = 0;
+        for (const auto& instance : instances)
+        {
+            if (!instance.refdes.startsWith(prefix))
+                continue;
+            const auto suffix = instance.refdes.substring(prefix.length());
+            if (suffix.isNotEmpty() && suffix.containsOnly("0123456789"))
+                highest = std::max(highest, suffix.getIntValue());
+        }
+        return prefix + juce::String(highest + 1);
+    }
+
     void placeSymbol(const juce::String& symbolId, juce::Point<float> p)
     {
         const auto symbol = symbolFor(symbolId);
-        const auto prefix = symbolId == "ground" ? juce::String("GND") :
-                            symbolId == "ground_bus" ? juce::String("GBUS") :
-                            symbolId == "power_bus" ? juce::String("PBUS") :
-                            symbolId == "battery" ? juce::String("BAT") :
-                            symbolId == "voltage_source" ? juce::String("V") :
-                            symbolId == "ac_voltage_source" ? juce::String("VAC") :
-                            symbolId == "signal_source" ? juce::String("SIG") :
-                            symbolId == "capacitor" ? juce::String("C") :
-                            symbolId == "inductor" ? juce::String("L") :
-                            symbolId == "diode" ? juce::String("D") :
-                            symbolId == "resistor" ? juce::String("R") :
-                            symbolId == "opamp_741" ? juce::String("U") :
-                            symbolId == "npn" ? juce::String("Q") :
-                            symbolId == "oscilloscope_2ch" ? juce::String("SCOPE") :
-                            symbolId == "digital_multimeter" ? juce::String("DMM") :
-                            juce::String("U");
+        if (!symbol.isValid())
+            return;
         instances.push_back({ symbol.id,
-                              prefix + juce::String(nextRef++),
+                              nextRefdesFor(symbol.id),
                               defaultValueFor(symbol.id),
                               defaultFrequencyFor(symbol.id),
                               defaultBusNameFor(symbol.id),
@@ -3548,255 +3526,86 @@ private:
             }
         }
 
-        const auto body = symbol.bounds;
+        if (isRailBus(instance.symbolId))
+        {
+            drawRailBus(g, instance);
+            return;
+        }
+
         g.saveState();
         g.addTransform(juce::AffineTransform::rotation(juce::degreesToRadians((float)instance.rotation))
                            .translated(instance.position.x, instance.position.y));
-
-        if (symbol.id == "opamp_741")
-        {
-            juce::Path tri;
-            tri.startNewSubPath(body.getX(), body.getY());
-            tri.lineTo(body.getX(), body.getBottom());
-            tri.lineTo(body.getRight(), body.getCentreY());
-            tri.closeSubPath();
-            g.setColour(juce::Colour(0xff78dcca));
-            g.strokePath(tri, juce::PathStrokeType(1.8f));
-            g.setColour(juce::Colour(0xffe8f1f2));
-            g.drawLine(-72.0f, -20.0f, body.getX(), -20.0f, 1.8f);
-            g.drawLine(-72.0f, 20.0f, body.getX(), 20.0f, 1.8f);
-            g.drawLine(body.getRight(), 0.0f, 72.0f, 0.0f, 1.8f);
-            g.drawLine(0.0f, -62.0f, 0.0f, body.getY(), 1.8f);
-            g.drawLine(0.0f, body.getBottom(), 0.0f, 62.0f, 1.8f);
-            g.setFont(juce::Font(14.0f, juce::Font::bold));
-            g.drawText("+", -48, -30, 18, 18, juce::Justification::centred);
-            g.drawText("-", -48, 12, 18, 18, juce::Justification::centred);
-            g.setColour(juce::Colour(0xffdce9ee));
-            g.setFont(juce::Font(13.0f, juce::Font::bold));
-            g.drawText("uA741", body.toNearestInt(), juce::Justification::centred);
-        }
-        else if (symbol.id == "resistor")
-        {
-            g.setColour(juce::Colour(0xffe8f1f2));
-            juce::Path z;
-            const auto cy = body.getCentreY();
-            g.drawLine(-54.0f, 0.0f, body.getX(), 0.0f, 1.8f);
-            z.startNewSubPath(body.getX(), cy);
-            for (int i = 0; i < 6; ++i)
-            {
-                const auto x = body.getX() + (float)(i + 1) * body.getWidth() / 7.0f;
-                z.lineTo(x, cy + (i % 2 == 0 ? -10.0f : 10.0f));
-            }
-            z.lineTo(body.getRight(), cy);
-            g.strokePath(z, juce::PathStrokeType(1.8f));
-            g.drawLine(body.getRight(), 0.0f, 54.0f, 0.0f, 1.8f);
-        }
-        else if (symbol.id == "capacitor")
-        {
-            g.setColour(juce::Colour(0xffe8f1f2));
-            g.drawLine(-42.0f, 0.0f, -8.0f, 0.0f, 1.8f);
-            g.drawLine(8.0f, 0.0f, 42.0f, 0.0f, 1.8f);
-            g.drawVerticalLine((int)(body.getCentreX() - 6), body.getY(), body.getBottom());
-            g.drawVerticalLine((int)(body.getCentreX() + 6), body.getY(), body.getBottom());
-        }
-        else if (symbol.id == "inductor")
-        {
-            g.setColour(juce::Colour(0xffe8f1f2));
-            g.drawLine(-54.0f, 0.0f, -34.0f, 0.0f, 1.8f);
-            g.drawLine(34.0f, 0.0f, 54.0f, 0.0f, 1.8f);
-            juce::Path coils;
-            coils.startNewSubPath(-34.0f, 0.0f);
-            for (int i = 0; i < 4; ++i)
-            {
-                const auto x = -34.0f + (float)i * 17.0f;
-                coils.cubicTo(x + 4.0f, -18.0f, x + 13.0f, -18.0f, x + 17.0f, 0.0f);
-            }
-            g.strokePath(coils, juce::PathStrokeType(1.8f));
-        }
-        else if (symbol.id == "diode")
-        {
-            g.setColour(juce::Colour(0xffe8f1f2));
-            g.drawLine(-54.0f, 0.0f, -28.0f, 0.0f, 1.8f);
-            g.drawLine(28.0f, 0.0f, 54.0f, 0.0f, 1.8f);
-            juce::Path tri;
-            tri.startNewSubPath(-28.0f, -20.0f);
-            tri.lineTo(-28.0f, 20.0f);
-            tri.lineTo(18.0f, 0.0f);
-            tri.closeSubPath();
-            g.strokePath(tri, juce::PathStrokeType(1.8f));
-            g.drawLine(22.0f, -22.0f, 22.0f, 22.0f, 1.8f);
-        }
-        else if (symbol.id == "power_bus")
-        {
-            g.setColour(juce::Colour(0xffffc857));
-            const auto length = std::max(120.0f, instance.busLength);
-            g.drawLine(-length * 0.5f, 0.0f, length * 0.5f, 0.0f, 3.0f);
-            for (float x = -length * 0.5f; x <= length * 0.5f + 0.1f; x += 48.0f)
-            {
-                g.drawLine(x, -7.0f, x, 7.0f, 1.2f);
-            }
-            g.setFont(juce::Font(12.0f, juce::Font::bold));
-            g.drawText(instance.busName.isNotEmpty() ? instance.busName : "PWR",
-                       juce::Rectangle<float>(-length * 0.5f, -24.0f, length, 18.0f).toNearestInt(),
-                       juce::Justification::centredLeft);
-        }
-        else if (symbol.id == "ground_bus")
-        {
-            g.setColour(juce::Colour(0xff78dcca));
-            const auto length = std::max(120.0f, instance.busLength);
-            g.drawLine(-length * 0.5f, 0.0f, length * 0.5f, 0.0f, 3.0f);
-            for (float x = -length * 0.5f; x <= length * 0.5f + 0.1f; x += 48.0f)
-            {
-                g.drawLine(x, -7.0f, x, 7.0f, 1.2f);
-            }
-            g.setFont(juce::Font(12.0f, juce::Font::bold));
-            g.drawText(instance.busName.isNotEmpty() ? instance.busName : "0",
-                       juce::Rectangle<float>(-length * 0.5f, 6.0f, length, 18.0f).toNearestInt(),
-                       juce::Justification::centredLeft);
-        }
-        else if (symbol.id == "ground")
-        {
-            g.setColour(juce::Colour(0xffe8f1f2));
-            const auto cx = body.getCentreX();
-            const auto leadTop = -24.0f;
-            g.drawLine(cx, leadTop, cx, body.getY() + 10, 2.0f);
-            g.drawLine(cx - 22, body.getY() + 10, cx + 22, body.getY() + 10, 2.0f);
-            g.drawLine(cx - 14, body.getY() + 19, cx + 14, body.getY() + 19, 2.0f);
-            g.drawLine(cx - 6, body.getY() + 28, cx + 6, body.getY() + 28, 2.0f);
-        }
-        else if (symbol.id == "voltage_source" || symbol.id == "battery" || symbol.id == "ac_voltage_source" || symbol.id == "signal_source")
-        {
-            g.setColour(juce::Colour(0xffe8f1f2));
-            if (symbol.id == "signal_source")
-            {
-                g.drawLine(-58.0f, 0.0f, body.getX(), 0.0f, 1.8f);
-                g.drawLine(body.getRight(), 0.0f, 58.0f, 0.0f, 1.8f);
-            }
-            else
-            {
-                const auto topPin = symbol.id == "battery" ? -52.0f : symbol.id == "ac_voltage_source" ? -46.0f : -42.0f;
-                const auto bottomPin = -topPin;
-                g.drawLine(0.0f, topPin, 0.0f, body.getY(), 1.8f);
-                g.drawLine(0.0f, body.getBottom(), 0.0f, bottomPin, 1.8f);
-            }
-            if (symbol.id == "battery")
-            {
-                g.drawLine(-14.0f, -10.0f, 14.0f, -10.0f, 2.0f);
-                g.drawLine(-8.0f, 10.0f, 8.0f, 10.0f, 2.0f);
-                g.setFont(juce::Font(12.0f, juce::Font::bold));
-                g.drawText("+", 10, -30, 18, 18, juce::Justification::centred);
-            }
-            else if (symbol.id == "ac_voltage_source" || symbol.id == "signal_source")
-            {
-                g.drawEllipse(body, 2.0f);
-                juce::Path wave;
-                const auto cy = body.getCentreY();
-                for (int i = 0; i <= 24; ++i)
-                {
-                    const auto t = (float)i / 24.0f;
-                    const auto x = body.getX() + 8.0f + t * (body.getWidth() - 16.0f);
-                    const auto y = cy + std::sin(t * juce::MathConstants<float>::twoPi) * 8.0f;
-                    if (i == 0) wave.startNewSubPath(x, y); else wave.lineTo(x, y);
-                }
-                g.strokePath(wave, juce::PathStrokeType(1.6f));
-            }
-            else
-            {
-                g.drawEllipse(body, 2.0f);
-                g.drawText("+", body.withHeight(22.0f).toNearestInt(), juce::Justification::centred);
-            }
-            g.setFont(juce::Font(12.0f, juce::Font::bold));
-        }
-        else if (symbol.id == "npn")
-        {
-            g.setColour(juce::Colour(0xffe8f1f2));
-            g.drawLine(-54.0f, 0.0f, -10.0f, 0.0f, 1.8f);
-            g.drawLine(-10.0f, -24.0f, -10.0f, 24.0f, 1.8f);
-            g.drawLine(-10.0f, -12.0f, 28.0f, -48.0f, 1.8f);
-            g.drawLine(-10.0f, 12.0f, 28.0f, 48.0f, 1.8f);
-            juce::Path arrow;
-            arrow.startNewSubPath(20.0f, 38.0f);
-            arrow.lineTo(28.0f, 48.0f);
-            arrow.lineTo(15.0f, 46.0f);
-            g.strokePath(arrow, juce::PathStrokeType(1.8f));
-        }
-        else if (symbol.id == "logic_not")
-        {
-            g.setColour(juce::Colour(0xffe8f1f2));
-            g.drawLine(-66.0f, 0.0f, body.getX(), 0.0f, 1.8f);
-            juce::Path tri;
-            tri.startNewSubPath(body.getX(), body.getY());
-            tri.lineTo(body.getX(), body.getBottom());
-            tri.lineTo(body.getRight() - 12.0f, 0.0f);
-            tri.closeSubPath();
-            g.strokePath(tri, juce::PathStrokeType(1.8f));
-            g.drawEllipse(body.getRight() - 12.0f, -6.0f, 12.0f, 12.0f, 1.8f);
-            g.drawLine(body.getRight(), 0.0f, 66.0f, 0.0f, 1.8f);
-        }
-        else if (symbol.id == "oscilloscope_2ch")
-        {
-            g.setColour(juce::Colour(0xff17212b));
-            g.fillRoundedRectangle(body, 6.0f);
-            g.setColour(juce::Colour(0xffff6b6b));
-            g.drawRoundedRectangle(body, 6.0f, 2.0f);
-            g.setColour(juce::Colour(0xff26323d));
-            g.fillRoundedRectangle(body.reduced(12.0f, 14.0f), 4.0f);
-            g.setColour(juce::Colour(0xff78dcca));
-            juce::Path trace;
-            const auto graph = body.reduced(16.0f, 22.0f);
-            for (int i = 0; i <= 28; ++i)
-            {
-                const auto t = (float)i / 28.0f;
-                const auto x = graph.getX() + t * graph.getWidth();
-                const auto y = graph.getCentreY() - std::sin(t * juce::MathConstants<float>::twoPi * 2.0f) * graph.getHeight() * 0.32f;
-                if (i == 0) trace.startNewSubPath(x, y); else trace.lineTo(x, y);
-            }
-            g.strokePath(trace, juce::PathStrokeType(1.5f));
-            g.setFont(juce::Font(12.0f, juce::Font::bold));
-            g.drawText("SCOPE", body.toNearestInt(), juce::Justification::centredTop);
-            g.setColour(juce::Colour(0xffe8f1f2));
-            g.drawLine(-82.0f, -22.0f, body.getX(), -22.0f, 1.8f);
-            g.drawLine(-82.0f, 22.0f, body.getX(), 22.0f, 1.8f);
-            g.drawLine(body.getRight(), 0.0f, 82.0f, 0.0f, 1.8f);
-        }
-        else if (symbol.id == "digital_multimeter")
-        {
-            g.setColour(juce::Colour(0xff17212b));
-            g.fillRoundedRectangle(body, 6.0f);
-            g.setColour(juce::Colour(0xffffc857));
-            g.drawRoundedRectangle(body, 6.0f, 2.0f);
-            auto display = body.reduced(12.0f, 12.0f).withHeight(24.0f);
-            g.setColour(juce::Colour(0xff0e141a));
-            g.fillRoundedRectangle(display, 4.0f);
-            g.setColour(juce::Colour(0xff78dcca));
-            g.setFont(juce::Font(13.0f, juce::Font::bold));
-            g.drawText(instance.value.isNotEmpty() ? instance.value : "DCV", display.toNearestInt(), juce::Justification::centred);
-            g.setColour(juce::Colour(0xffe8f1f2));
-            g.drawLine(-72.0f, -18.0f, body.getX(), -18.0f, 1.8f);
-            g.drawLine(-72.0f, 18.0f, body.getX(), 18.0f, 1.8f);
-            g.setFont(juce::Font(12.0f, juce::Font::bold));
-            g.drawText("DMM", body.withTrimmedTop(32.0f).toNearestInt(), juce::Justification::centred);
-        }
-
+        schematic::drawSymbolArt(g, symbol, instance.value);
         g.restoreState();
 
-        g.setColour(juce::Colour(0xff93a7b0));
+        drawSymbolLabels(g, instance, symbol);
+    }
+
+    void drawRailBus(juce::Graphics& g, const Instance& instance)
+    {
+        const auto ground = instance.symbolId == "ground_bus";
+        g.saveState();
+        g.addTransform(juce::AffineTransform::rotation(juce::degreesToRadians((float)instance.rotation))
+                           .translated(instance.position.x, instance.position.y));
+        g.setColour(ground ? juce::Colour(0xff78dcca) : juce::Colour(0xffffc857));
+        const auto length = std::max(120.0f, instance.busLength);
+        g.drawLine(-length * 0.5f, 0.0f, length * 0.5f, 0.0f, 3.0f);
+        for (float x = -length * 0.5f; x <= length * 0.5f + 0.1f; x += 48.0f)
+            g.drawLine(x, -7.0f, x, 7.0f, 1.2f);
+        g.setFont(juce::Font(12.0f, juce::Font::bold));
+        g.drawText(instance.busName.isNotEmpty() ? instance.busName : (ground ? "0" : "PWR"),
+                   juce::Rectangle<float>(-length * 0.5f, ground ? 6.0f : -24.0f, length, 18.0f).toNearestInt(),
+                   juce::Justification::centredLeft);
+        g.restoreState();
+    }
+
+    // Reference designator and value beside the body, always reading left
+    // to right (SCH-T1). Wide symbols carry labels above and below; tall
+    // symbols carry them stacked on the right. Power symbols show only
+    // their net name.
+    void drawSymbolLabels(juce::Graphics& g, const Instance& instance, const SymbolDef& symbol)
+    {
+        const auto bounds = orientedBounds(instance, symbol);
         g.setFont(juce::Font(12.0f));
-        g.drawText(instance.refdes,
-                   (int)selectionBounds.getX(),
-                   (int)selectionBounds.getY() - 18,
-                   (int)selectionBounds.getWidth(),
-                   16,
-                   juce::Justification::centred);
+
+        if (instance.symbolId == "ground")
+            return;
+
+        if (instance.symbolId == "power_port")
+        {
+            const auto pointsDown = schematic::normalizedRotation(instance.rotation) == 180;
+            const auto label = instance.busName.isNotEmpty() ? instance.busName : juce::String("VCC");
+            g.setColour(juce::Colour(0xffffc857));
+            g.setFont(juce::Font(12.0f, juce::Font::bold));
+            const auto y = pointsDown ? bounds.getBottom() + 2.0f : bounds.getY() - 16.0f;
+            g.drawText(label, juce::Rectangle<float>(bounds.getCentreX() - 40.0f, y, 80.0f, 14.0f).toNearestInt(),
+                       juce::Justification::centred);
+            return;
+        }
+
         const auto valueText = displayValueFor(instance);
+        const auto tall = bounds.getHeight() > bounds.getWidth() * 1.2f;
+        if (tall)
+        {
+            const auto x = (int)bounds.getRight() + 6;
+            const auto midY = (int)bounds.getCentreY();
+            g.setColour(juce::Colour(0xff93a7b0));
+            g.drawText(instance.refdes, x, midY - (valueText.isNotEmpty() ? 16 : 8), 96, 15, juce::Justification::centredLeft);
+            if (valueText.isNotEmpty())
+            {
+                g.setColour(juce::Colour(0xffdce9ee));
+                g.drawText(valueText, x, midY + 1, 96, 15, juce::Justification::centredLeft);
+            }
+            return;
+        }
+
+        g.setColour(juce::Colour(0xff93a7b0));
+        g.drawText(instance.refdes, (int)bounds.getCentreX() - 60, (int)bounds.getY() - 17, 120, 15,
+                   juce::Justification::centred);
         if (valueText.isNotEmpty())
         {
             g.setColour(juce::Colour(0xffdce9ee));
-            g.drawText(valueText,
-                       (int)selectionBounds.getX(),
-                       (int)selectionBounds.getBottom() + 2,
-                       (int)selectionBounds.getWidth(),
-                       16,
+            g.drawText(valueText, (int)bounds.getCentreX() - 60, (int)bounds.getBottom() + 2, 120, 15,
                        juce::Justification::centred);
         }
     }
@@ -3814,14 +3623,41 @@ private:
 
             for (size_t i = 0; i < symbol.pins.size(); ++i)
             {
-                const auto pin = pinPosition({ instanceIndex, (int)i });
-                g.setColour(juce::Colour(0xffe8f1f2));
-                g.fillEllipse(pin.x - 4, pin.y - 4, 8, 8);
-                g.setColour(juce::Colour(0xff93a7b0));
-                g.setFont(juce::Font(11.0f));
-                g.drawText(symbol.pins[i].name, (int)pin.x - 24, (int)pin.y - 18, 48, 14, juce::Justification::centred);
+                const PinRef ref { instanceIndex, (int)i };
+                const auto pin = pinPosition(ref);
+
+                // Unconnected pins get a small open marker so dangling ends
+                // are visible; connected pins draw nothing (SCH-J3).
+                if (wireCountAtPin(ref) == 0)
+                {
+                    g.setColour(juce::Colour(0xffff8a65));
+                    g.drawEllipse(pin.x - 3.0f, pin.y - 3.0f, 6.0f, 6.0f, 1.2f);
+                }
+
+                if (symbol.showPinNames)
+                {
+                    auto toward = instance.position - pin;
+                    const auto len = std::sqrt(toward.x * toward.x + toward.y * toward.y);
+                    if (len > 0.001f)
+                        toward = toward / len;
+                    const auto at = pin + toward * 20.0f;
+                    g.setColour(juce::Colour(0xff93a7b0));
+                    g.setFont(juce::Font(10.0f));
+                    g.drawText(symbol.pins[i].name, (int)at.x - 18, (int)at.y - 12, 36, 12, juce::Justification::centred);
+                }
             }
         }
+    }
+
+    int wireCountAtPin(const PinRef& pin) const
+    {
+        int count = 0;
+        for (const auto& wire : wires)
+        {
+            if (wire.a.isPin() && wire.a.pin.instanceIndex == pin.instanceIndex && wire.a.pin.pinIndex == pin.pinIndex) ++count;
+            if (wire.b.isPin() && wire.b.pin.instanceIndex == pin.instanceIndex && wire.b.pin.pinIndex == pin.pinIndex) ++count;
+        }
+        return count;
     }
 
     void drawRightAngleWire(juce::Graphics& g, juce::Point<float> a, juce::Point<float> b, juce::Colour colour, float width)
@@ -3861,8 +3697,31 @@ private:
         }
 
         g.setColour(juce::Colour(0xffffc857));
-        for (const auto& junction : junctions)
-            g.fillEllipse(junction.x - 4.0f, junction.y - 4.0f, 8.0f, 8.0f);
+        for (int i = 0; i < (int)junctions.size(); ++i)
+        {
+            int degree = 0;
+            for (const auto& wire : wires)
+                degree += (wire.a.isJunction() && wire.a.junctionIndex == i ? 1 : 0)
+                        + (wire.b.isJunction() && wire.b.junctionIndex == i ? 1 : 0);
+            if (degree >= 3)
+                g.fillEllipse(junctions[(size_t)i].x - 4.0f, junctions[(size_t)i].y - 4.0f, 8.0f, 8.0f);
+        }
+
+        for (int instanceIndex = 0; instanceIndex < (int)instances.size(); ++instanceIndex)
+        {
+            if (isRailBus(instances[(size_t)instanceIndex].symbolId))
+                continue;
+            const auto symbol = symbolFor(instances[(size_t)instanceIndex].symbolId);
+            for (int p = 0; p < (int)symbol.pins.size(); ++p)
+            {
+                const PinRef ref { instanceIndex, p };
+                if (wireCountAtPin(ref) >= 2)
+                {
+                    const auto pin = pinPosition(ref);
+                    g.fillEllipse(pin.x - 4.0f, pin.y - 4.0f, 8.0f, 8.0f);
+                }
+            }
+        }
     }
 
     void drawProbes(juce::Graphics& g)
@@ -5295,7 +5154,7 @@ private:
             {
                 "schematic_place_symbol",
                 "Place a schematic symbol or instrument node at a grid coordinate. Use deliberate layout spacing: keep symbols at least 144 px apart horizontally or 96 px vertically, arrange signal flow left-to-right, put sources on the left, outputs/load on the right, grounds below, instruments to the far right, and never reuse the same x/y for multiple parts.",
-                R"({"type":"object","properties":{"symbolId":{"type":"string","description":"Supported symbol id: resistor, potentiometer, capacitor, capacitor_polarized, variable_capacitor, inductor, coupled_inductor, transformer, diode, zener_diode, led, schottky_diode, power_bus, ground_bus, battery, voltage_source, ac_voltage_source, current_source, ac_current_source, vcvs, vccs, ccvs, cccs, signal_source, ground, opamp_741, npn, pnp, nmos, pmos, njfet, pjfet, switch_spst, switch_spdt, relay_spst, fuse, connector_2, connector_3, test_point, logic_not, logic_and, logic_or, logic_nand, logic_nor, logic_xor, oscilloscope_2ch, or digital_multimeter. Unsupported symbols are rejected, not substituted."},"x":{"type":"number","description":"Grid x coordinate. Leave at least 144 px horizontal space from other symbols."},"y":{"type":"number","description":"Grid y coordinate. Leave at least 96 px vertical space from other symbols."},"value":{"type":"string"},"frequency":{"type":"string"},"busName":{"type":"string"}},"required":["symbolId","x","y"],"additionalProperties":false})"
+                R"({"type":"object","properties":{"symbolId":{"type":"string","description":"Supported symbol id: resistor, potentiometer, capacitor, capacitor_polarized, variable_capacitor, inductor, coupled_inductor, transformer, diode, zener_diode, led, schottky_diode, power_bus, ground_bus, power_port, battery, voltage_source, ac_voltage_source, current_source, ac_current_source, vcvs, vccs, ccvs, cccs, signal_source, ground, opamp_741, npn, pnp, nmos, pmos, njfet, pjfet, switch_spst, switch_spdt, relay_spst, fuse, connector_2, connector_3, test_point, logic_not, logic_and, logic_or, logic_nand, logic_nor, logic_xor, oscilloscope_2ch, or digital_multimeter. Use ground and power_port symbols at each pin that needs ground or a supply instead of long wires: power_port takes busName like +12V (drawn pointing up) or -12V (place with a leading minus; drawn pointing down); ports with the same busName are the same net. Unsupported symbols are rejected, not substituted."},"x":{"type":"number","description":"Grid x coordinate. Leave at least 144 px horizontal space from other symbols."},"y":{"type":"number","description":"Grid y coordinate. Leave at least 96 px vertical space from other symbols."},"value":{"type":"string"},"frequency":{"type":"string"},"busName":{"type":"string"}},"required":["symbolId","x","y"],"additionalProperties":false})"
             },
             {
                 "schematic_connect",
@@ -7675,10 +7534,13 @@ juce::String ElectronicsWorkbench::designPushPullAmplifierTool()
 
     juce::String report;
     report << "# Push-Pull Audio Output Stage\n\n";
-    report << "- Topology: diode-biased complementary emitter follower.\n";
-    report << "- Input: 0.25 V AC source at 1 kHz through 1k input resistor.\n";
-    report << "- Output pair: generic NPN and PNP transistors.\n";
-    report << "- Bias: two 1N4148 diode drops between the input drive node and transistor bases.\n";
+    report << "- Topology: diode-biased class AB complementary emitter follower.\n";
+    report << "- Supplies: +12V and -12V named rails from two stacked 12 V sources around ground.\n";
+    report << "- Input: 0.25 V AC source at 1 kHz, coupled through 10u C1 into the middle of the bias string.\n";
+    report << "- Bias: R1 2.2k from +12V and R2 2.2k to -12V feed two 1N4148 diodes; the diode drops hold\n";
+    report << "  the NPN base about 0.6 V above and the PNP base about 0.6 V below the drive node.\n";
+    report << "- Output pair: generic NPN (collector to +12V) and PNP (collector to -12V) with 0.47 ohm\n";
+    report << "  emitter ballast resistors R3/R4 into the output node.\n";
     report << "- Load: 8 ohm resistor from output node to ground.\n";
     report << "- Instrumentation: 2-channel oscilloscope on input and output.\n\n";
     report << "## Verification\n\n";
