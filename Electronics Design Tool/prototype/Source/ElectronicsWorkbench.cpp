@@ -281,11 +281,12 @@ juce::String markdownToHtmlDocument(const juce::String& title, const juce::Strin
     if (inMathBlock) body << "\\]</div>\n";
 
     juce::String html;
-    html << "<!doctype html><html><head><meta charset=\"utf-8\"><title>" << htmlEscape(title) << "</title>"
-         << "<link rel=\"stylesheet\" href=\"https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css\">"
-         << "<script defer src=\"https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js\"></script>"
-         << "<script defer src=\"https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/contrib/auto-render.min.js\" "
-         << "onload=\"renderMathInElement(document.body,{delimiters:[{left:'\\\\[',right:'\\\\]',display:true},{left:'\\\\(',right:'\\\\)',display:false}]});\"></script>"
+    html << "<!doctype html><html><head><meta charset=\"utf-8\"><meta http-equiv=\"X-UA-Compatible\" content=\"IE=edge\">"
+         << "<title>" << htmlEscape(title) << "</title>"
+         << "<link rel=\"stylesheet\" href=\"https://cdn.jsdelivr.net/npm/katex@0.11.1/dist/katex.min.css\">"
+         << "<script src=\"https://cdn.jsdelivr.net/npm/katex@0.11.1/dist/katex.min.js\"></script>"
+         << "<script src=\"https://cdn.jsdelivr.net/npm/katex@0.11.1/dist/contrib/auto-render.min.js\"></script>"
+         << "<script>window.onload=function(){if(window.renderMathInElement){renderMathInElement(document.body,{delimiters:[{left:'\\\\[',right:'\\\\]',display:true},{left:'\\\\(',right:'\\\\)',display:false}]});}}</script>"
          << "<style>"
          << "body{margin:0;padding:24px;background:#10161d;color:#dce9ee;font:15px/1.55 Segoe UI,Arial,sans-serif;}"
          << "h1,h2,h3{color:#78dcca;margin:0 0 12px;}h1{font-size:24px;}h2{font-size:19px;margin-top:24px;}h3{font-size:16px;margin-top:18px;}"
@@ -571,54 +572,6 @@ public:
 private:
     juce::Label title;
     juce::TextEditor text;
-};
-
-class MarkdownReportPanel final : public juce::Component
-{
-public:
-    MarkdownReportPanel()
-    {
-        title.setText("Agent Reports", juce::dontSendNotification);
-        title.setFont(juce::Font(16.0f, juce::Font::bold));
-        title.setColour(juce::Label::textColourId, juce::Colour(0xff78dcca));
-        addAndMakeVisible(title);
-
-        pathLabel.setJustificationType(juce::Justification::centredLeft);
-        pathLabel.setColour(juce::Label::textColourId, juce::Colour(0xff93a7b0));
-        addAndMakeVisible(pathLabel);
-
-        addAndMakeVisible(browser);
-    }
-
-    void setReport(const juce::File& markdownFile, const juce::File& htmlFile)
-    {
-        currentMarkdown = markdownFile;
-        currentHtml = htmlFile;
-        pathLabel.setText("Markdown: " + markdownFile.getFullPathName(), juce::dontSendNotification);
-        browser.goToURL(juce::URL(htmlFile).toString(true));
-    }
-
-    void paint(juce::Graphics& g) override
-    {
-        g.fillAll(juce::Colour(0xff151a20));
-    }
-
-    void resized() override
-    {
-        auto area = getLocalBounds().reduced(8);
-        title.setBounds(area.removeFromTop(24));
-        area.removeFromTop(4);
-        pathLabel.setBounds(area.removeFromTop(22));
-        area.removeFromTop(6);
-        browser.setBounds(area);
-    }
-
-private:
-    juce::Label title;
-    juce::Label pathLabel;
-    juce::WebBrowserComponent browser;
-    juce::File currentMarkdown;
-    juce::File currentHtml;
 };
 
 class ComponentLibraryPanel final : public juce::Component
@@ -5017,7 +4970,10 @@ public:
 
     explicit AgentPanel(HostTools hostTools)
         : tools(std::move(hostTools)),
-          aiConfig(aiConfigFile().getFullPathName().toStdString())
+          aiConfig(aiConfigFile().getFullPathName().toStdString()),
+          transcriptBrowser(juce::WebBrowserComponent::Options()
+              .withBackend(juce::WebBrowserComponent::Options::Backend::webview2)
+              .withKeepPageLoadedWhenBrowserIsHidden())
     {
         title.setText("BYOK Electronics Agent", juce::dontSendNotification);
         title.setFont(juce::Font(16.0f, juce::Font::bold));
@@ -5052,10 +5008,8 @@ public:
         };
         addAndMakeVisible(exportButton);
 
-        styleTextEditor(transcript);
-        transcript.setReadOnly(true);
-        transcript.setText("BYOK assistant ready.\n");
-        addAndMakeVisible(transcript);
+        transcriptMarkdown = "BYOK assistant ready.\n";
+        addAndMakeVisible(transcriptBrowser);
 
         styleTextEditor(input);
         input.setTextToShowWhenEmpty("Ask about the circuit, place an instrument node, run ERC...", juce::Colour(0xff71808c));
@@ -5083,6 +5037,7 @@ public:
 
         refreshProfileList();
         startLocalApi();
+        refreshTranscriptBrowser();
     }
 
     ~AgentPanel() override
@@ -5127,7 +5082,7 @@ public:
         input.setBounds(bottom);
 
         area.removeFromBottom(8);
-        transcript.setBounds(area);
+        transcriptBrowser.setBounds(area);
     }
 
     void showAiSettingsForSelected()
@@ -5234,7 +5189,8 @@ public:
         if ((bool)options.getProperty("newConversation", false))
         {
             history.clear();
-            transcript.setText("BYOK assistant ready.\n");
+            transcriptMarkdown = "BYOK assistant ready.\n";
+            refreshTranscriptBrowser();
         }
         return true;
     }
@@ -5277,7 +5233,8 @@ private:
     juce::TextButton cardsButton { "Cards" };
     juce::TextButton ercButton { "Run ERC" };
     juce::TextButton exportButton { "Export" };
-    juce::TextEditor transcript;
+    juce::WebBrowserComponent transcriptBrowser;
+    juce::String transcriptMarkdown;
     juce::TextEditor input;
     juce::TextButton sendButton { "Send" };
     bool requestInFlight = false;
@@ -5377,9 +5334,30 @@ private:
 
     void appendTranscript(const juce::String& speaker, const juce::String& text)
     {
-        transcript.moveCaretToEnd();
-        transcript.insertTextAtCaret("\n[" + speaker + "]\n" + text.trim() + "\n");
-        transcript.moveCaretToEnd();
+        transcriptMarkdown << "\n\n### [" << speaker << "]\n\n";
+        if ((speaker == "tool" || speaker == "system") && text.trim().startsWith("{"))
+            transcriptMarkdown << "```json\n" << text.trim() << "\n```\n";
+        else
+            transcriptMarkdown << text.trim() << "\n";
+        refreshTranscriptBrowser();
+    }
+
+    juce::File transcriptHtmlFile() const
+    {
+        return juce::File::getSpecialLocation(juce::File::userApplicationDataDirectory)
+            .getChildFile("DjehutiElectronicsLab")
+            .getChildFile("agent-transcript.html");
+    }
+
+    void refreshTranscriptBrowser()
+    {
+        const auto file = transcriptHtmlFile();
+        if (!file.getParentDirectory().createDirectory().wasOk())
+            return;
+
+        const auto html = markdownToHtmlDocument("BYOK Electronics Agent", transcriptMarkdown);
+        if (file.replaceWithText(html))
+            transcriptBrowser.goToURL(juce::URL(file).toString(true));
     }
 
     juce::String systemPrompt() const
@@ -5401,7 +5379,10 @@ private:
                "Use cookbook_acceptance_start before executing an acceptance goal so evidence has a durable report scaffold. "
                "Use cookbook_acceptance_record to append retrieved cards, tool calls, artifacts, criteria, notes, and capability gaps to that report. "
                "Use capability_gap_record when a missing reusable app capability blocks a cookbook step or validation claim. "
-               "Use agent_write_markdown when producing a report, derivation, or equation-rich explanation that should be rendered in the app. "
+               "The BYOK Agent window renders markdown and KaTeX math. Use $...$ for inline equations and $$ on separate lines "
+               "for display equations when discussing formulas, transfer functions, impedance, gain, cutoff frequency, filters, "
+               "component sizing, or any math-heavy design reasoning. "
+               "Use agent_write_markdown when producing a durable report, derivation, or equation-rich explanation that should be saved and rendered in this agent window. "
                "Use research_web_search only when current external information, standards references, datasheets, or source links are needed; summarize sources conservatively. "
                "Use filesystem LiteSemRAG cards as retrieved guidance; do not assume Suite VFS storage. "
                "Be concise, report tool results plainly, and do not claim a circuit is ready for solver-backed "
@@ -5468,7 +5449,7 @@ private:
             },
             {
                 "agent_write_markdown",
-                "Write a markdown report into the agent workspace and render it as HTML with KaTeX equation support in the Agent Reports panel.",
+                "Write a markdown report into the agent workspace and render it in the BYOK Agent window with KaTeX equation support.",
                 R"({"type":"object","properties":{"title":{"type":"string","description":"Short report title used for filenames and HTML title."},"markdown":{"type":"string","description":"Markdown content. Use $...$ for inline math and $$ on separate lines for display equations."}},"required":["title","markdown"],"additionalProperties":false})"
             },
             {
@@ -5639,9 +5620,14 @@ private:
             const auto markdown = parsed.getProperty("markdown", {}).toString();
             if (title.isEmpty() || markdown.trim().isEmpty())
                 return "{ \"ok\": false, \"error\": \"title and markdown are required.\" }";
-            return tools.writeMarkdown != nullptr
-                ? tools.writeMarkdown(title, markdown)
-                : "{ \"ok\": false, \"error\": \"Markdown writing is unavailable.\" }";
+            if (tools.writeMarkdown == nullptr)
+                return "{ \"ok\": false, \"error\": \"Markdown writing is unavailable.\" }";
+
+            const auto result = tools.writeMarkdown(title, markdown);
+            const auto reportResult = juce::JSON::parse(result);
+            if (reportResult.isObject() && (bool)reportResult.getProperty("ok", false))
+                appendTranscript("assistant report", markdown);
+            return result;
         }
 
         if (name == "research_web_search")
@@ -6276,8 +6262,6 @@ ElectronicsWorkbench::ElectronicsWorkbench()
     auto* instrumentPanel = instruments.get();
     auto analysis = std::make_unique<FrequencyResponsePanel>();
     auto* analysisPanel = analysis.get();
-    auto reports = std::make_unique<MarkdownReportPanel>();
-    auto* reportsPanel = reports.get();
     analysisPanel->onRun = [this] { designRlcHighPassFilter(); };
     showFrequencyResponse = [analysisPanel](const juce::File& csvFile,
                                             const juce::File& reportFile,
@@ -6350,15 +6334,8 @@ ElectronicsWorkbench::ElectronicsWorkbench()
     };
     agentTools.runErc = [this] { return runElectricalRuleCheckTool(); };
     agentTools.exportArtifacts = [this] { return exportCircuitArtifactsTool(); };
-    agentTools.writeMarkdown = [this, reportsPanel](const juce::String& title, const juce::String& markdown) {
-        const auto result = writeAgentMarkdownTool(title, markdown);
-        const auto parsed = juce::JSON::parse(result);
-        if (parsed.isObject() && (bool)parsed.getProperty("ok", false) && reportsPanel != nullptr)
-        {
-            reportsPanel->setReport(juce::File(parsed.getProperty("markdownPath", {}).toString()),
-                                    juce::File(parsed.getProperty("htmlPath", {}).toString()));
-        }
-        return result;
+    agentTools.writeMarkdown = [this](const juce::String& title, const juce::String& markdown) {
+        return writeAgentMarkdownTool(title, markdown);
     };
     agentTools.webSearch = [this](const juce::String& query, int maxResults) {
         return researchWebSearchTool(query, maxResults);
@@ -6448,7 +6425,6 @@ ElectronicsWorkbench::ElectronicsWorkbench()
     openAgentSettingsDialog = [agentPanel] { agentPanel->showAiSettingsForSelected(); };
     dockManager->registerPanel("schematic", "Schematic", std::move(schematic), CreationDock::DockTargetZone::CenterTab);
     dockManager->registerPanel("simulation", "Simulation", std::move(analysis), CreationDock::DockTargetZone::CenterTab);
-    dockManager->registerPanel("agent_reports", "Agent Reports", std::move(reports), CreationDock::DockTargetZone::CenterTab);
     dockManager->registerPanel("console", "Frust Math Console", std::make_unique<ConsolePanel>(logConsole), CreationDock::DockTargetZone::Bottom);
     dockManager->registerPanel("agent", "BYOK Agent", std::move(agent), CreationDock::DockTargetZone::Right);
     dockManager->registerPanel("properties", "Properties", std::move(properties), CreationDock::DockTargetZone::Right);
@@ -6815,10 +6791,10 @@ juce::String ElectronicsWorkbench::buildAssistantToolManifestJson() const
     text << "    {\n";
     text << "      \"name\": \"agent_write_markdown\",\n";
     text << "      \"displayName\": \"agent.write_markdown\",\n";
-    text << "      \"description\": \"Write markdown into the agent workspace and render it as HTML with KaTeX equation support.\",\n";
-    text << "      \"mode\": \"write_generated_artifacts_and_update_report_panel\",\n";
+    text << "      \"description\": \"Write markdown into the agent workspace and render it in the BYOK Agent window with KaTeX equation support.\",\n";
+    text << "      \"mode\": \"write_generated_artifacts_and_update_agent_transcript\",\n";
     text << "      \"status\": \"active\",\n";
-    text << "      \"inputs\": { \"title\": \"report title\", \"markdown\": \"markdown source with $...$ or $$ display equations\" },\n";
+    text << "      \"inputs\": { \"title\": \"report title\", \"markdown\": \"markdown source; use $...$ for inline equations and $$ on separate lines for display equations\" },\n";
     text << "      \"outputs\": { \"markdownPath\": \"written markdown source\", \"htmlPath\": \"rendered HTML report\" }\n";
     text << "    },\n";
     text << "    {\n";
