@@ -29,11 +29,13 @@
         "electronics.cookbook.filter.rc_low_pass"
       ],
       "requiredToolEvidence": [
+        "cookbook_acceptance_start",
         "cookbook_lookup",
         "schematic_place_symbol",
         "schematic_connect",
         "circuit_run_erc",
-        "simulation_export_artifacts"
+        "simulation_export_artifacts",
+        "cookbook_acceptance_record"
       ],
       "expectedCapabilityGaps": [
         "General arbitrary-circuit AC sweep and vector plotting may be missing."
@@ -54,9 +56,11 @@
         "electronics.cookbook.filter.rc_low_pass"
       ],
       "requiredToolEvidence": [
+        "cookbook_acceptance_start",
         "cookbook_lookup",
         "circuit_run_erc",
-        "simulation_export_artifacts"
+        "simulation_export_artifacts",
+        "cookbook_acceptance_record"
       ],
       "expectedCapabilityGaps": [
         "Op-amp symbols/models and general AC/transient tools may be missing."
@@ -75,9 +79,11 @@
         "electronics.cookbook.bjt.common_emitter_amplifier"
       ],
       "requiredToolEvidence": [
+        "cookbook_acceptance_start",
         "cookbook_lookup",
         "circuit_run_erc",
-        "simulation_export_artifacts"
+        "simulation_export_artifacts",
+        "cookbook_acceptance_record"
       ],
       "expectedCapabilityGaps": [
         "BJT model support, operating-point analysis, and AC/transient validation may be missing."
@@ -97,9 +103,11 @@
         "electronics.cookbook.opamp.non_inverting_amplifier"
       ],
       "requiredToolEvidence": [
+        "cookbook_acceptance_start",
         "cookbook_lookup",
         "circuit_run_erc",
-        "simulation_export_artifacts"
+        "simulation_export_artifacts",
+        "cookbook_acceptance_record"
       ],
       "expectedCapabilityGaps": [
         "Op-amp audio models, noise analysis, and multi-source transient support may be missing."
@@ -119,11 +127,13 @@
         "electronics.cookbook.diode.bridge_rectifier"
       ],
       "requiredToolEvidence": [
+        "cookbook_acceptance_start",
         "cookbook_lookup",
         "schematic_place_symbol",
         "schematic_connect",
         "circuit_run_erc",
-        "simulation_export_artifacts"
+        "simulation_export_artifacts",
+        "cookbook_acceptance_record"
       ],
       "expectedCapabilityGaps": [
         "Diode models and transient waveform measurement may be missing."
@@ -142,9 +152,11 @@
         "electronics.cookbook.references.zener_reference"
       ],
       "requiredToolEvidence": [
+        "cookbook_acceptance_start",
         "cookbook_lookup",
         "circuit_run_erc",
-        "simulation_export_artifacts"
+        "simulation_export_artifacts",
+        "cookbook_acceptance_record"
       ],
       "expectedCapabilityGaps": [
         "DC load sweep and Zener model support may be missing."
@@ -163,9 +175,11 @@
         "electronics.cookbook.oscillator.wien_bridge"
       ],
       "requiredToolEvidence": [
+        "cookbook_acceptance_start",
         "cookbook_lookup",
         "circuit_run_erc",
-        "simulation_export_artifacts"
+        "simulation_export_artifacts",
+        "cookbook_acceptance_record"
       ],
       "expectedCapabilityGaps": [
         "Op-amp models, transient startup, and distortion metrics may be missing."
@@ -186,8 +200,10 @@
         "electronics.cookbook.control.loop_frequency_response"
       ],
       "requiredToolEvidence": [
+        "cookbook_acceptance_start",
         "cookbook_lookup",
-        "simulation_export_artifacts"
+        "simulation_export_artifacts",
+        "cookbook_acceptance_record"
       ],
       "expectedCapabilityGaps": [
         "Thermal plant model, step-response metrics, and loop-margin tools may be missing."
@@ -207,11 +223,13 @@
         "electronics.cookbook.adc.sar_input_driver"
       ],
       "requiredToolEvidence": [
+        "cookbook_acceptance_start",
         "cookbook_lookup",
         "schematic_place_symbol",
         "schematic_connect",
         "circuit_run_erc",
-        "simulation_export_artifacts"
+        "simulation_export_artifacts",
+        "cookbook_acceptance_record"
       ],
       "expectedCapabilityGaps": [
         "Temperature-dependent thermistor sweeps and ADC sampling checks may be missing."

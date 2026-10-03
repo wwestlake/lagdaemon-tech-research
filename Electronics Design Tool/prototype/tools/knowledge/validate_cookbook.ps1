@@ -31,6 +31,7 @@ function Read-JsonFile {
 $taxonomyPath = Join-Path $KnowledgeRoot "COOKBOOK_TAXONOMY.json"
 $acceptancePath = Join-Path $KnowledgeRoot "COOKBOOK_ACCEPTANCE_GOALS.json"
 $cardsPath = Join-Path $KnowledgeRoot "cards\electronics_cookbook_seed.jsonl"
+$toolCardsPath = Join-Path $KnowledgeRoot "cards\electronics_tool_cards.jsonl"
 $taxonomy = Read-JsonFile $taxonomyPath
 
 $requiredFields = @(
@@ -56,6 +57,21 @@ $recommendedFields = @(
     "relatedEntries"
 )
 
+$requiredAgentTools = @(
+    "cookbook_lookup",
+    "cookbook_coverage",
+    "cookbook_validate",
+    "cookbook_acceptance_goals",
+    "cookbook_acceptance_start",
+    "cookbook_acceptance_record",
+    "circuit_inspect",
+    "circuit_run_erc",
+    "simulation_export_artifacts",
+    "schematic_place_symbol",
+    "schematic_connect",
+    "instrument_open_panel"
+)
+
 $taxonomySet = @{}
 foreach ($category in $taxonomy.categories) {
     if (-not [string]::IsNullOrWhiteSpace($category)) {
@@ -67,6 +83,9 @@ $errors = [System.Collections.Generic.List[object]]::new()
 $warnings = [System.Collections.Generic.List[object]]::new()
 $ids = @{}
 $entries = @()
+$toolCardIds = @{}
+$toolNamesWithCards = @{}
+$toolCardCount = 0
 $lineNo = 0
 
 if (-not (Test-Path -LiteralPath $cardsPath -PathType Leaf)) {
@@ -133,6 +152,75 @@ foreach ($line in Get-Content -LiteralPath $cardsPath) {
 
     if (([string]$card.text).Length -lt 120) {
         Add-Finding $warnings "card.text.short" "$id summary text is short for retrieval."
+    }
+}
+
+if (-not (Test-Path -LiteralPath $toolCardsPath -PathType Leaf)) {
+    throw "Missing tool-card JSONL: $toolCardsPath"
+}
+
+$toolLineNo = 0
+foreach ($line in Get-Content -LiteralPath $toolCardsPath) {
+    $toolLineNo++
+    if ([string]::IsNullOrWhiteSpace($line)) {
+        continue
+    }
+
+    try {
+        $card = $line | ConvertFrom-Json
+    } catch {
+        Add-Finding $errors "toolcard.jsonl.parse" "Line $toolLineNo is not valid JSON: $($_.Exception.Message)"
+        continue
+    }
+
+    $toolCardCount++
+    $id = [string]$card.id
+    if ([string]::IsNullOrWhiteSpace($id)) {
+        $id = "<tool-card line $toolLineNo>"
+        Add-Finding $errors "toolcard.id.missing" "Line $toolLineNo is missing id."
+    }
+
+    if ($toolCardIds.ContainsKey($id)) {
+        Add-Finding $errors "toolcard.id.duplicate" "$id is duplicated."
+    } else {
+        $toolCardIds[$id] = $true
+    }
+
+    foreach ($field in @("id", "documentId", "kind", "title", "tokens", "priority", "status", "source", "text")) {
+        $property = $card.PSObject.Properties[$field]
+        $missing = $null -eq $property
+        if (-not $missing) {
+            $value = $property.Value
+            if ($null -eq $value) {
+                $missing = $true
+            } elseif ($value -is [string] -and [string]::IsNullOrWhiteSpace($value)) {
+                $missing = $true
+            } elseif ($value -is [array] -and $value.Count -eq 0) {
+                $missing = $true
+            }
+        }
+
+        if ($missing) {
+            Add-Finding $errors "toolcard.field.required" "$id is missing required field '$field'."
+        }
+    }
+
+    $documentId = [string]$card.documentId
+    if ($documentId.StartsWith("electronics.tool.")) {
+        $toolName = $documentId.Substring("electronics.tool.".Length)
+        if (-not [string]::IsNullOrWhiteSpace($toolName)) {
+            $toolNamesWithCards[$toolName] = $true
+        }
+    }
+
+    if (([string]$card.text).Length -lt 80) {
+        Add-Finding $warnings "toolcard.text.short" "$id summary text is short for retrieval."
+    }
+}
+
+foreach ($toolName in $requiredAgentTools) {
+    if (-not $toolNamesWithCards.ContainsKey($toolName)) {
+        Add-Finding $errors "toolcard.required.missing" "Required agent tool has no retrievable tool card: $toolName"
     }
 }
 
@@ -224,6 +312,12 @@ foreach ($goal in $acceptanceGoals) {
         }
     }
 
+    foreach ($toolName in @($goal.requiredToolEvidence)) {
+        if (-not $toolNamesWithCards.ContainsKey([string]$toolName)) {
+            Add-Finding $errors "acceptance.toolEvidence.unknown" "$goalId requires tool evidence without a tool card: $toolName"
+        }
+    }
+
     if (@($goal.requiredToolEvidence).Count -lt 2) {
         Add-Finding $warnings "acceptance.tools.sparse" "$goalId has fewer than two required tool-evidence entries."
     }
@@ -258,7 +352,11 @@ $report = [pscustomobject]@{
     taxonomyFile = $taxonomyPath
     acceptanceFile = $acceptancePath
     cookbookFile = $cardsPath
+    toolCardsFile = $toolCardsPath
     cookbookEntryCount = $entries.Count
+    toolCardCount = $toolCardCount
+    requiredAgentToolCount = $requiredAgentTools.Count
+    toolCardCoverageCount = $toolNamesWithCards.Count
     requiredCategoryCount = $taxonomy.categories.Count
     coveredCategoryCount = $coveredCount
     missingCategoryCount = $missingCategories.Count
