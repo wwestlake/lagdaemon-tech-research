@@ -4111,6 +4111,7 @@ public:
         std::function<juce::String(const juce::String&)> openInstrument;
         std::function<juce::String(double, double)> designHighPass;
         std::function<juce::String(const juce::String&, int)> cookbookLookup;
+        std::function<juce::String()> cookbookCoverage;
         std::function<juce::String()> toolManifest;
         std::function<void(const juce::String&)> log;
     };
@@ -4492,6 +4493,7 @@ private:
                "Use filter_design_high_pass when asked to synthesize a matched RLC high-pass filter and produce AC response artifacts. "
                "Use cookbook_lookup when requirements imply topology selection, design equations, validation recipes, troubleshooting, "
                "or when you need to compare established circuit candidates before building. "
+               "Use cookbook_coverage to inspect cookbook domain coverage and identify missing recipe areas. "
                "Use filesystem LiteSemRAG cards as retrieved guidance; do not assume Suite VFS storage. "
                "Be concise, report tool results plainly, and do not claim a circuit is ready for solver-backed "
                "analysis until circuit_run_erc has passed or you have explained the remaining warnings.";
@@ -4504,6 +4506,11 @@ private:
                 "cookbook_lookup",
                 "Search structured electronics cookbook cards for topology candidates, design recipes, analysis steps, validation criteria, and known capability gaps.",
                 R"({"type":"object","properties":{"query":{"type":"string","description":"Engineering requirement or cookbook topic to retrieve."},"maxCards":{"type":"integer","description":"Maximum number of cookbook/knowledge cards to return."}},"required":["query"],"additionalProperties":false})"
+            },
+            {
+                "cookbook_coverage",
+                "Report structured cookbook coverage against the file-backed taxonomy, including missing categories.",
+                R"({"type":"object","properties":{},"additionalProperties":false})"
             },
             {
                 "circuit_inspect",
@@ -4569,6 +4576,11 @@ private:
                 ? tools.cookbookLookup(query, maxCards)
                 : "{ \"ok\": false, \"error\": \"Cookbook lookup is unavailable.\" }";
         }
+
+        if (name == "cookbook_coverage")
+            return tools.cookbookCoverage != nullptr
+                ? tools.cookbookCoverage()
+                : "{ \"ok\": false, \"error\": \"Cookbook coverage is unavailable.\" }";
 
         if (name == "circuit_run_erc")
             return tools.runErc != nullptr ? tools.runErc() : "{ \"ok\": false, \"error\": \"ERC tool unavailable.\" }";
@@ -5240,6 +5252,7 @@ ElectronicsWorkbench::ElectronicsWorkbench()
     agentTools.cookbookLookup = [this](const juce::String& query, int maxCards) {
         return cookbookLookupTool(query, maxCards);
     };
+    agentTools.cookbookCoverage = [this] { return cookbookCoverageTool(); };
     agentTools.toolManifest = [this] { return buildAssistantToolManifestJson(); };
     agentTools.log = [this](const juce::String& text) { appendLog(text); };
     auto agent = std::make_unique<AgentPanel>(std::move(agentTools));
@@ -5508,6 +5521,14 @@ juce::String ElectronicsWorkbench::buildAssistantToolManifestJson() const
     text << "      \"outputs\": { \"cards\": \"matching cookbook/knowledge cards with provenance\" }\n";
     text << "    },\n";
     text << "    {\n";
+    text << "      \"name\": \"cookbook_coverage\",\n";
+    text << "      \"displayName\": \"cookbook.coverage\",\n";
+    text << "      \"description\": \"Report cookbook coverage against the file-backed taxonomy and identify missing recipe categories.\",\n";
+    text << "      \"mode\": \"read_only_knowledge\",\n";
+    text << "      \"inputs\": {},\n";
+    text << "      \"outputs\": { \"coveredCategories\": \"array\", \"missingCategories\": \"array\", \"coverageRatio\": \"number\" }\n";
+    text << "    },\n";
+    text << "    {\n";
     text << "      \"name\": \"circuit_inspect\",\n";
     text << "      \"displayName\": \"circuit.inspect\",\n";
     text << "      \"description\": \"Read the current authoritative circuit JSON from the schematic model.\",\n";
@@ -5638,6 +5659,104 @@ juce::String ElectronicsWorkbench::cookbookLookupTool(const juce::String& query,
             result << "\n";
         result << "    }";
         if (index + 1 < retrieved.cards.size())
+            result << ",";
+        result << "\n";
+    }
+
+    result << "  ]\n";
+    result << "}\n";
+    return result;
+}
+
+juce::String ElectronicsWorkbench::cookbookCoverageTool() const
+{
+    const auto taxonomyFile = electronics_knowledge::getKnowledgeRoot().getChildFile("COOKBOOK_TAXONOMY.json");
+    const auto parsedTaxonomy = juce::JSON::parse(taxonomyFile.loadFileAsString());
+    if (!parsedTaxonomy.isObject())
+    {
+        return "{ \"ok\": false, \"tool\": \"cookbook_coverage\", \"displayTool\": \"cookbook.coverage\", \"error\": "
+            + jsonQuote("Could not read cookbook taxonomy: " + taxonomyFile.getFullPathName()) + " }";
+    }
+
+    juce::StringArray requiredCategories;
+    if (auto* categories = parsedTaxonomy.getProperty("categories", {}).getArray())
+        for (const auto& category : *categories)
+            requiredCategories.add(category.toString());
+    requiredCategories.removeEmptyStrings();
+
+    std::map<juce::String, juce::StringArray> entriesByCategory;
+    int cookbookEntryCount = 0;
+    for (const auto& card : electronics_knowledge::allCards())
+    {
+        if (!card.kind.startsWithIgnoreCase("cookbook"))
+            continue;
+
+        ++cookbookEntryCount;
+        const auto parsedCard = juce::JSON::parse(card.rawJson);
+        auto category = parsedCard.getProperty("category", {}).toString().trim();
+        if (category.isEmpty())
+            category = "Uncategorized";
+        entriesByCategory[category].add(card.id);
+    }
+
+    juce::StringArray missingCategories;
+    juce::StringArray coveredCategories;
+    for (const auto& category : requiredCategories)
+    {
+        if (entriesByCategory[category].isEmpty())
+            missingCategories.add(category);
+        else
+            coveredCategories.add(category);
+    }
+
+    const auto requiredCount = requiredCategories.size();
+    const auto coveredCount = coveredCategories.size();
+    const auto coverageRatio = requiredCount == 0 ? 0.0 : (double)coveredCount / (double)requiredCount;
+
+    auto appendStringArray = [](juce::String& out, const juce::StringArray& values) {
+        out << "[";
+        for (int index = 0; index < values.size(); ++index)
+        {
+            if (index > 0)
+                out << ", ";
+            out << jsonQuote(values[index]);
+        }
+        out << "]";
+    };
+
+    juce::String result;
+    result << "{\n";
+    result << "  \"ok\": true,\n";
+    result << "  \"schemaVersion\": 1,\n";
+    result << "  \"kind\": \"djehuti_assistant_tool_result\",\n";
+    result << "  \"tool\": \"cookbook_coverage\",\n";
+    result << "  \"displayTool\": \"cookbook.coverage\",\n";
+    result << "  \"taxonomyFile\": " << jsonQuote(taxonomyFile.getFullPathName()) << ",\n";
+    result << "  \"cookbookEntryCount\": " << cookbookEntryCount << ",\n";
+    result << "  \"requiredCategoryCount\": " << requiredCount << ",\n";
+    result << "  \"coveredCategoryCount\": " << coveredCount << ",\n";
+    result << "  \"missingCategoryCount\": " << missingCategories.size() << ",\n";
+    result << "  \"coverageRatio\": " << numberText(coverageRatio, 6) << ",\n";
+    result << "  \"coveredCategories\": ";
+    appendStringArray(result, coveredCategories);
+    result << ",\n";
+    result << "  \"missingCategories\": ";
+    appendStringArray(result, missingCategories);
+    result << ",\n";
+    result << "  \"categories\": [\n";
+
+    for (int index = 0; index < requiredCategories.size(); ++index)
+    {
+        const auto category = requiredCategories[index];
+        const auto ids = entriesByCategory[category];
+        result << "    {\n";
+        result << "      \"name\": " << jsonQuote(category) << ",\n";
+        result << "      \"entryCount\": " << ids.size() << ",\n";
+        result << "      \"entryIds\": ";
+        appendStringArray(result, ids);
+        result << "\n";
+        result << "    }";
+        if (index + 1 < requiredCategories.size())
             result << ",";
         result << "\n";
     }

@@ -48,6 +48,7 @@ private:
     void exportAssistantToolManifest();
     juce::String buildAssistantToolManifestJson() const;
     juce::String cookbookLookupTool(const juce::String& query, int maxCards) const;
+    juce::String cookbookCoverageTool() const;
     juce::String runElectricalRuleCheckTool();
     juce::String exportCircuitArtifactsTool();
     juce::String designRlcHighPassFilterTool(double cutoffHz, double impedanceOhms);

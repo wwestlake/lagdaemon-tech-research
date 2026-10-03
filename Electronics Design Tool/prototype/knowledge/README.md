@@ -34,3 +34,5 @@ truth.
 
 See `COOKBOOK_SCHEMA.md` for the structured cookbook entry model. The BYOK
 agent can explicitly search this knowledge through the `cookbook_lookup` tool.
+See `COOKBOOK_TAXONOMY.json` for the target coverage map. The BYOK agent can
+inspect current coverage and missing categories through `cookbook_coverage`.

@@ -204,6 +204,11 @@ juce::File getProjectMemoryCardsFile()
         .getChildFile("MEMORY_PROJECT_CARDS.jsonl");
 }
 
+std::vector<Card> allCards()
+{
+    return loadAllCards();
+}
+
 RetrievalResult retrieve(const juce::String& query, int maxCards)
 {
     RetrievalResult result;
