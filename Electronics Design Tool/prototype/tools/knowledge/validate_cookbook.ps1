@@ -67,6 +67,7 @@ $requiredAgentTools = @(
     "circuit_inspect",
     "circuit_run_erc",
     "simulation_export_artifacts",
+    "filter_design_high_pass",
     "schematic_place_symbol",
     "schematic_connect",
     "instrument_open_panel"
