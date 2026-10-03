@@ -23,6 +23,11 @@ endif()
 if(NOT TARGET CreationDock)
     add_subdirectory("${FRUSTLANG_ROOT}/projects/03_creation_dock" creation_dock_build)
 endif()
+get_target_property(CREATION_DOCK_INTERFACE_DEFS CreationDock INTERFACE_COMPILE_DEFINITIONS)
+if(CREATION_DOCK_INTERFACE_DEFS)
+    list(REMOVE_ITEM CREATION_DOCK_INTERFACE_DEFS JUCE_WEB_BROWSER=0)
+    set_property(TARGET CreationDock PROPERTY INTERFACE_COMPILE_DEFINITIONS "${CREATION_DOCK_INTERFACE_DEFS}")
+endif()
 
 if(NOT TARGET ai_provider)
     add_subdirectory("${FRUSTLANG_ROOT}/projects/04_ai_provider" ai_provider_build)
@@ -81,7 +86,7 @@ target_sources(DjehutiElectronicsLab PRIVATE
 )
 
 target_compile_definitions(DjehutiElectronicsLab PRIVATE
-    JUCE_WEB_BROWSER=0
+    JUCE_WEB_BROWSER=1
     JUCE_USE_CURL=0
     JUCE_VST3_CAN_REPLACE_VST2=0
     ELECTRONICS_RESEARCH_ROOT="${CMAKE_CURRENT_SOURCE_DIR}/.."

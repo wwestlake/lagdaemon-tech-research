@@ -61,6 +61,241 @@ juce::String jsonQuote(const juce::String& text)
     return "\"" + text.replace("\\", "\\\\").replace("\"", "\\\"") + "\"";
 }
 
+juce::String htmlEscape(const juce::String& text)
+{
+    return text.replace("&", "&amp;")
+               .replace("<", "&lt;")
+               .replace(">", "&gt;")
+               .replace("\"", "&quot;");
+}
+
+juce::String htmlDecode(juce::String text)
+{
+    return text.replace("&amp;", "&")
+               .replace("&quot;", "\"")
+               .replace("&#39;", "'")
+               .replace("&#x27;", "'")
+               .replace("&lt;", "<")
+               .replace("&gt;", ">")
+               .replace("&nbsp;", " ");
+}
+
+juce::String stripHtmlTags(const juce::String& html)
+{
+    juce::String result;
+    bool insideTag = false;
+    for (int i = 0; i < html.length(); ++i)
+    {
+        const auto ch = html[i];
+        if (ch == '<')
+        {
+            insideTag = true;
+            continue;
+        }
+        if (ch == '>')
+        {
+            insideTag = false;
+            continue;
+        }
+        if (!insideTag)
+            result << ch;
+    }
+    return htmlDecode(result).trim();
+}
+
+juce::String decodeDuckDuckGoRedirect(juce::String url)
+{
+    url = htmlDecode(url.trim());
+    if (url.startsWith("//"))
+        url = "https:" + url;
+
+    const auto marker = juce::String("uddg=");
+    const auto index = url.indexOf(marker);
+    if (index >= 0)
+    {
+        const auto encoded = url.substring(index + marker.length())
+            .upToFirstOccurrenceOf("&", false, false);
+        return juce::URL::removeEscapeChars(encoded);
+    }
+
+    return url;
+}
+
+void collectDuckDuckGoHtmlResults(const juce::String& html, int limit, juce::StringArray& rows)
+{
+    int cursor = 0;
+    while (rows.size() < limit)
+    {
+        const auto anchorStart = html.indexOf(cursor, "class=\"result__a\"");
+        if (anchorStart < 0)
+            break;
+
+        const auto hrefStart = html.indexOf(anchorStart, "href=\"");
+        const auto hrefEnd = hrefStart >= 0 ? html.indexOf(hrefStart + 6, "\"") : -1;
+        const auto titleStart = hrefEnd >= 0 ? html.indexOf(hrefEnd, ">") : -1;
+        const auto titleEnd = titleStart >= 0 ? html.indexOf(titleStart, "</a>") : -1;
+        if (hrefStart < 0 || hrefEnd < 0 || titleStart < 0 || titleEnd < 0)
+            break;
+
+        const auto url = decodeDuckDuckGoRedirect(html.substring(hrefStart + 6, hrefEnd));
+        const auto title = stripHtmlTags(html.substring(titleStart + 1, titleEnd));
+        cursor = titleEnd + 4;
+
+        juce::String snippet;
+        const auto snippetClass = html.indexOf(cursor, "class=\"result__snippet\"");
+        const auto nextAnchor = html.indexOf(cursor, "class=\"result__a\"");
+        if (snippetClass >= 0 && (nextAnchor < 0 || snippetClass < nextAnchor))
+        {
+            const auto snippetStart = html.indexOf(snippetClass, ">");
+            const auto snippetEnd = snippetStart >= 0 ? html.indexOf(snippetStart, "</a>") : -1;
+            if (snippetStart >= 0 && snippetEnd >= 0)
+                snippet = stripHtmlTags(html.substring(snippetStart + 1, snippetEnd));
+        }
+
+        if (title.isNotEmpty() && url.startsWithIgnoreCase("http"))
+        {
+            juce::String row;
+            row << "{ \"title\": " << jsonQuote(title)
+                << ", \"snippet\": " << jsonQuote(snippet)
+                << ", \"url\": " << jsonQuote(url) << " }";
+            rows.add(row);
+        }
+    }
+}
+
+juce::String inlineMarkdownToHtml(juce::String text)
+{
+    text = htmlEscape(text);
+
+    juce::String out;
+    bool inCode = false;
+    bool inMath = false;
+    for (int i = 0; i < text.length(); ++i)
+    {
+        const auto c = text[i];
+        if (c == '`')
+        {
+            out << (inCode ? "</code>" : "<code>");
+            inCode = !inCode;
+        }
+        else if (c == '$')
+        {
+            out << (inMath ? "\\)" : "\\(");
+            inMath = !inMath;
+        }
+        else
+        {
+            out << juce::String::charToString(c);
+        }
+    }
+    if (inCode) out << "</code>";
+    if (inMath) out << "\\)";
+    return out;
+}
+
+juce::String markdownToHtmlDocument(const juce::String& title, const juce::String& markdown)
+{
+    const auto lines = juce::StringArray::fromLines(markdown);
+    juce::String body;
+    bool inList = false;
+    bool inCode = false;
+    bool inMathBlock = false;
+
+    auto closeList = [&] {
+        if (inList)
+        {
+            body << "</ul>\n";
+            inList = false;
+        }
+    };
+
+    for (const auto& rawLine : lines)
+    {
+        const auto trimmed = rawLine.trim();
+
+        if (trimmed.startsWith("```"))
+        {
+            closeList();
+            body << (inCode ? "</code></pre>\n" : "<pre><code>");
+            inCode = !inCode;
+            continue;
+        }
+        if (inCode)
+        {
+            body << htmlEscape(rawLine) << "\n";
+            continue;
+        }
+
+        if (trimmed == "$$")
+        {
+            closeList();
+            body << (inMathBlock ? "\\]</div>\n" : "<div class=\"math-block\">\\[");
+            inMathBlock = !inMathBlock;
+            continue;
+        }
+        if (inMathBlock)
+        {
+            body << htmlEscape(rawLine) << "\n";
+            continue;
+        }
+
+        if (trimmed.isEmpty())
+        {
+            closeList();
+            continue;
+        }
+
+        if (trimmed.startsWith("# "))
+        {
+            closeList();
+            body << "<h1>" << inlineMarkdownToHtml(trimmed.substring(2)) << "</h1>\n";
+        }
+        else if (trimmed.startsWith("## "))
+        {
+            closeList();
+            body << "<h2>" << inlineMarkdownToHtml(trimmed.substring(3)) << "</h2>\n";
+        }
+        else if (trimmed.startsWith("### "))
+        {
+            closeList();
+            body << "<h3>" << inlineMarkdownToHtml(trimmed.substring(4)) << "</h3>\n";
+        }
+        else if (trimmed.startsWith("- ") || trimmed.startsWith("* "))
+        {
+            if (!inList)
+            {
+                body << "<ul>\n";
+                inList = true;
+            }
+            body << "<li>" << inlineMarkdownToHtml(trimmed.substring(2)) << "</li>\n";
+        }
+        else
+        {
+            closeList();
+            body << "<p>" << inlineMarkdownToHtml(trimmed) << "</p>\n";
+        }
+    }
+
+    closeList();
+    if (inCode) body << "</code></pre>\n";
+    if (inMathBlock) body << "\\]</div>\n";
+
+    juce::String html;
+    html << "<!doctype html><html><head><meta charset=\"utf-8\"><title>" << htmlEscape(title) << "</title>"
+         << "<link rel=\"stylesheet\" href=\"https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css\">"
+         << "<script defer src=\"https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js\"></script>"
+         << "<script defer src=\"https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/contrib/auto-render.min.js\" "
+         << "onload=\"renderMathInElement(document.body,{delimiters:[{left:'\\\\[',right:'\\\\]',display:true},{left:'\\\\(',right:'\\\\)',display:false}]});\"></script>"
+         << "<style>"
+         << "body{margin:0;padding:24px;background:#10161d;color:#dce9ee;font:15px/1.55 Segoe UI,Arial,sans-serif;}"
+         << "h1,h2,h3{color:#78dcca;margin:0 0 12px;}h1{font-size:24px;}h2{font-size:19px;margin-top:24px;}h3{font-size:16px;margin-top:18px;}"
+         << "p,ul{max-width:920px;}code{background:#1d2a33;border:1px solid #33424d;border-radius:4px;padding:1px 4px;}"
+         << "pre{background:#0b1117;border:1px solid #33424d;border-radius:6px;padding:12px;overflow:auto;}"
+         << ".math-block{margin:16px 0;padding:12px;background:#0b1117;border-left:3px solid #78dcca;overflow:auto;}"
+         << "a{color:#8fd8ff;}</style></head><body>" << body << "</body></html>";
+    return html;
+}
+
 struct RlcHighPassDesign
 {
     double cutoffHz = 10.0;
@@ -336,6 +571,54 @@ public:
 private:
     juce::Label title;
     juce::TextEditor text;
+};
+
+class MarkdownReportPanel final : public juce::Component
+{
+public:
+    MarkdownReportPanel()
+    {
+        title.setText("Agent Reports", juce::dontSendNotification);
+        title.setFont(juce::Font(16.0f, juce::Font::bold));
+        title.setColour(juce::Label::textColourId, juce::Colour(0xff78dcca));
+        addAndMakeVisible(title);
+
+        pathLabel.setJustificationType(juce::Justification::centredLeft);
+        pathLabel.setColour(juce::Label::textColourId, juce::Colour(0xff93a7b0));
+        addAndMakeVisible(pathLabel);
+
+        addAndMakeVisible(browser);
+    }
+
+    void setReport(const juce::File& markdownFile, const juce::File& htmlFile)
+    {
+        currentMarkdown = markdownFile;
+        currentHtml = htmlFile;
+        pathLabel.setText("Markdown: " + markdownFile.getFullPathName(), juce::dontSendNotification);
+        browser.goToURL(juce::URL(htmlFile).toString(true));
+    }
+
+    void paint(juce::Graphics& g) override
+    {
+        g.fillAll(juce::Colour(0xff151a20));
+    }
+
+    void resized() override
+    {
+        auto area = getLocalBounds().reduced(8);
+        title.setBounds(area.removeFromTop(24));
+        area.removeFromTop(4);
+        pathLabel.setBounds(area.removeFromTop(22));
+        area.removeFromTop(6);
+        browser.setBounds(area);
+    }
+
+private:
+    juce::Label title;
+    juce::Label pathLabel;
+    juce::WebBrowserComponent browser;
+    juce::File currentMarkdown;
+    juce::File currentHtml;
 };
 
 class ComponentLibraryPanel final : public juce::Component
@@ -4706,6 +4989,8 @@ public:
         std::function<juce::String()> inspectCircuit;
         std::function<juce::String()> runErc;
         std::function<juce::String()> exportArtifacts;
+        std::function<juce::String(const juce::String&, const juce::String&)> writeMarkdown;
+        std::function<juce::String(const juce::String&, int)> webSearch;
         std::function<juce::String(const juce::String&, float, float, const juce::String&,
                                    const juce::String&, const juce::String&)> placeSymbol;
         std::function<juce::String(const juce::String&, const juce::String&, const juce::String&,
@@ -5116,6 +5401,8 @@ private:
                "Use cookbook_acceptance_start before executing an acceptance goal so evidence has a durable report scaffold. "
                "Use cookbook_acceptance_record to append retrieved cards, tool calls, artifacts, criteria, notes, and capability gaps to that report. "
                "Use capability_gap_record when a missing reusable app capability blocks a cookbook step or validation claim. "
+               "Use agent_write_markdown when producing a report, derivation, or equation-rich explanation that should be rendered in the app. "
+               "Use research_web_search only when current external information, standards references, datasheets, or source links are needed; summarize sources conservatively. "
                "Use filesystem LiteSemRAG cards as retrieved guidance; do not assume Suite VFS storage. "
                "Be concise, report tool results plainly, and do not claim a circuit is ready for solver-backed "
                "analysis until circuit_run_erc has passed or you have explained the remaining warnings.";
@@ -5178,6 +5465,16 @@ private:
                 "simulation_export_artifacts",
                 "Export circuit JSON, Xyce netlist, lab instruments JSON, and assistant tool manifest.",
                 R"({"type":"object","properties":{},"additionalProperties":false})"
+            },
+            {
+                "agent_write_markdown",
+                "Write a markdown report into the agent workspace and render it as HTML with KaTeX equation support in the Agent Reports panel.",
+                R"({"type":"object","properties":{"title":{"type":"string","description":"Short report title used for filenames and HTML title."},"markdown":{"type":"string","description":"Markdown content. Use $...$ for inline math and $$ on separate lines for display equations."}},"required":["title","markdown"],"additionalProperties":false})"
+            },
+            {
+                "research_web_search",
+                "Search the web for current external references. Use sparingly for standards, datasheets, current facts, or source links; prefer app/cookbook tools for local circuit facts.",
+                R"({"type":"object","properties":{"query":{"type":"string","description":"Focused search query."},"maxResults":{"type":"integer","description":"Maximum compact results to return, 1 to 8."}},"required":["query"],"additionalProperties":false})"
             },
             {
                 "filter_design_high_pass",
@@ -5333,6 +5630,32 @@ private:
 
         if (name == "simulation_export_artifacts")
             return tools.exportArtifacts != nullptr ? tools.exportArtifacts() : "{ \"ok\": false, \"error\": \"Export tool unavailable.\" }";
+
+        if (name == "agent_write_markdown")
+        {
+            if (!parsed.isObject())
+                return "{ \"ok\": false, \"error\": \"agent_write_markdown arguments must be a JSON object.\" }";
+            const auto title = parsed.getProperty("title", {}).toString().trim();
+            const auto markdown = parsed.getProperty("markdown", {}).toString();
+            if (title.isEmpty() || markdown.trim().isEmpty())
+                return "{ \"ok\": false, \"error\": \"title and markdown are required.\" }";
+            return tools.writeMarkdown != nullptr
+                ? tools.writeMarkdown(title, markdown)
+                : "{ \"ok\": false, \"error\": \"Markdown writing is unavailable.\" }";
+        }
+
+        if (name == "research_web_search")
+        {
+            if (!parsed.isObject())
+                return "{ \"ok\": false, \"error\": \"research_web_search arguments must be a JSON object.\" }";
+            const auto query = parsed.getProperty("query", {}).toString().trim();
+            const auto maxResults = (int)parsed.getProperty("maxResults", 5);
+            if (query.isEmpty())
+                return "{ \"ok\": false, \"error\": \"query is required.\" }";
+            return tools.webSearch != nullptr
+                ? tools.webSearch(query, maxResults)
+                : "{ \"ok\": false, \"error\": \"Web search is unavailable.\" }";
+        }
 
         if (name == "filter_design_high_pass")
         {
@@ -5953,6 +6276,8 @@ ElectronicsWorkbench::ElectronicsWorkbench()
     auto* instrumentPanel = instruments.get();
     auto analysis = std::make_unique<FrequencyResponsePanel>();
     auto* analysisPanel = analysis.get();
+    auto reports = std::make_unique<MarkdownReportPanel>();
+    auto* reportsPanel = reports.get();
     analysisPanel->onRun = [this] { designRlcHighPassFilter(); };
     showFrequencyResponse = [analysisPanel](const juce::File& csvFile,
                                             const juce::File& reportFile,
@@ -6025,6 +6350,19 @@ ElectronicsWorkbench::ElectronicsWorkbench()
     };
     agentTools.runErc = [this] { return runElectricalRuleCheckTool(); };
     agentTools.exportArtifacts = [this] { return exportCircuitArtifactsTool(); };
+    agentTools.writeMarkdown = [this, reportsPanel](const juce::String& title, const juce::String& markdown) {
+        const auto result = writeAgentMarkdownTool(title, markdown);
+        const auto parsed = juce::JSON::parse(result);
+        if (parsed.isObject() && (bool)parsed.getProperty("ok", false) && reportsPanel != nullptr)
+        {
+            reportsPanel->setReport(juce::File(parsed.getProperty("markdownPath", {}).toString()),
+                                    juce::File(parsed.getProperty("htmlPath", {}).toString()));
+        }
+        return result;
+    };
+    agentTools.webSearch = [this](const juce::String& query, int maxResults) {
+        return researchWebSearchTool(query, maxResults);
+    };
     agentTools.placeSymbol = [this](const juce::String& symbolId,
                                     float x,
                                     float y,
@@ -6110,6 +6448,7 @@ ElectronicsWorkbench::ElectronicsWorkbench()
     openAgentSettingsDialog = [agentPanel] { agentPanel->showAiSettingsForSelected(); };
     dockManager->registerPanel("schematic", "Schematic", std::move(schematic), CreationDock::DockTargetZone::CenterTab);
     dockManager->registerPanel("simulation", "Simulation", std::move(analysis), CreationDock::DockTargetZone::CenterTab);
+    dockManager->registerPanel("agent_reports", "Agent Reports", std::move(reports), CreationDock::DockTargetZone::CenterTab);
     dockManager->registerPanel("console", "Frust Math Console", std::make_unique<ConsolePanel>(logConsole), CreationDock::DockTargetZone::Bottom);
     dockManager->registerPanel("agent", "BYOK Agent", std::move(agent), CreationDock::DockTargetZone::Right);
     dockManager->registerPanel("properties", "Properties", std::move(properties), CreationDock::DockTargetZone::Right);
@@ -6472,6 +6811,24 @@ juce::String ElectronicsWorkbench::buildAssistantToolManifestJson() const
     text << "        \"xyceNetlist\": " << jsonQuote(runDir.getChildFile("generated.cir").getFullPathName()) << ",\n";
     text << "        \"instrumentJson\": " << jsonQuote(runDir.getChildFile("lab_instruments.json").getFullPathName()) << "\n";
     text << "      }\n";
+    text << "    },\n";
+    text << "    {\n";
+    text << "      \"name\": \"agent_write_markdown\",\n";
+    text << "      \"displayName\": \"agent.write_markdown\",\n";
+    text << "      \"description\": \"Write markdown into the agent workspace and render it as HTML with KaTeX equation support.\",\n";
+    text << "      \"mode\": \"write_generated_artifacts_and_update_report_panel\",\n";
+    text << "      \"status\": \"active\",\n";
+    text << "      \"inputs\": { \"title\": \"report title\", \"markdown\": \"markdown source with $...$ or $$ display equations\" },\n";
+    text << "      \"outputs\": { \"markdownPath\": \"written markdown source\", \"htmlPath\": \"rendered HTML report\" }\n";
+    text << "    },\n";
+    text << "    {\n";
+    text << "      \"name\": \"research_web_search\",\n";
+    text << "      \"displayName\": \"research.web_search\",\n";
+    text << "      \"description\": \"Search the web for current references, standards, datasheets, or source links when local cookbook/app state is not enough.\",\n";
+    text << "      \"mode\": \"read_external_web\",\n";
+    text << "      \"status\": \"active\",\n";
+    text << "      \"inputs\": { \"query\": \"focused search query\", \"maxResults\": \"1 to 8 compact results\" },\n";
+    text << "      \"outputs\": { \"results\": \"title/snippet/url entries\" }\n";
     text << "    },\n";
     text << "    {\n";
     text << "      \"name\": \"filter_design_high_pass\",\n";
@@ -7502,6 +7859,146 @@ juce::String ElectronicsWorkbench::exportCircuitArtifactsTool()
     result << "  \"xyceNetlist\": " << jsonQuote(netlistFile.getFullPathName()) << ",\n";
     result << "  \"instrumentJson\": " << jsonQuote(instrumentsFile.getFullPathName()) << ",\n";
     result << "  \"toolManifest\": " << jsonQuote(manifestFile.getFullPathName()) << "\n";
+    result << "}\n";
+    return result;
+}
+
+juce::String ElectronicsWorkbench::writeAgentMarkdownTool(const juce::String& title, const juce::String& markdown)
+{
+    const auto runDir = generatedRunDirectory().getChildFile("agent_reports");
+    if (!runDir.createDirectory())
+    {
+        return "{ \"ok\": false, \"tool\": \"agent_write_markdown\", \"displayTool\": \"agent.write_markdown\", \"error\": "
+            + jsonQuote("Could not create report directory: " + runDir.getFullPathName()) + " }";
+    }
+
+    auto safeName = title.retainCharacters("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 -_").trim();
+    if (safeName.isEmpty())
+        safeName = "agent-report";
+    safeName = safeName.replace(" ", "_").substring(0, 64);
+
+    const auto stamp = juce::Time::getCurrentTime().formatted("%Y%m%d_%H%M%S");
+    const auto markdownFile = runDir.getChildFile(safeName + "_" + stamp + ".md");
+    const auto htmlFile = runDir.getChildFile(safeName + "_" + stamp + ".html");
+    const auto html = markdownToHtmlDocument(title, markdown);
+
+    if (!markdownFile.replaceWithText(markdown))
+    {
+        return "{ \"ok\": false, \"tool\": \"agent_write_markdown\", \"displayTool\": \"agent.write_markdown\", \"error\": "
+            + jsonQuote("Could not write markdown: " + markdownFile.getFullPathName()) + " }";
+    }
+    if (!htmlFile.replaceWithText(html))
+    {
+        return "{ \"ok\": false, \"tool\": \"agent_write_markdown\", \"displayTool\": \"agent.write_markdown\", \"error\": "
+            + jsonQuote("Could not write rendered HTML: " + htmlFile.getFullPathName()) + " }";
+    }
+
+    juce::String result;
+    result << "{\n";
+    result << "  \"ok\": true,\n";
+    result << "  \"schemaVersion\": 1,\n";
+    result << "  \"kind\": \"djehuti_assistant_tool_result\",\n";
+    result << "  \"tool\": \"agent_write_markdown\",\n";
+    result << "  \"displayTool\": \"agent.write_markdown\",\n";
+    result << "  \"status\": \"written_and_rendered\",\n";
+    result << "  \"markdownPath\": " << jsonQuote(markdownFile.getFullPathName()) << ",\n";
+    result << "  \"htmlPath\": " << jsonQuote(htmlFile.getFullPathName()) << ",\n";
+    result << "  \"renderer\": \"markdown_html_katex\"\n";
+    result << "}\n";
+    return result;
+}
+
+juce::String ElectronicsWorkbench::researchWebSearchTool(const juce::String& query, int maxResults) const
+{
+    const auto limit = juce::jlimit(1, 8, maxResults <= 0 ? 5 : maxResults);
+    const auto instantUrl = juce::URL("https://api.duckduckgo.com/?q="
+        + juce::URL::addEscapeChars(query, true)
+        + "&format=json&no_html=1&skip_disambig=1");
+
+    const auto response = instantUrl.readEntireTextStream(false);
+    if (response.trim().isEmpty())
+    {
+        return "{ \"ok\": false, \"tool\": \"research_web_search\", \"displayTool\": \"research.web_search\", \"error\": "
+            + jsonQuote("No response for query: " + query) + " }";
+    }
+
+    const auto parsed = juce::JSON::parse(response);
+    if (!parsed.isObject())
+    {
+        return "{ \"ok\": false, \"tool\": \"research_web_search\", \"displayTool\": \"research.web_search\", \"error\": \"Search response was not JSON.\" }";
+    }
+
+    juce::StringArray rows;
+    const auto abstractText = parsed.getProperty("AbstractText", {}).toString().trim();
+    const auto abstractUrl = parsed.getProperty("AbstractURL", {}).toString().trim();
+    const auto heading = parsed.getProperty("Heading", {}).toString().trim();
+    if (abstractText.isNotEmpty())
+    {
+        juce::String row;
+        row << "{ \"title\": " << jsonQuote(heading.isNotEmpty() ? heading : query)
+            << ", \"snippet\": " << jsonQuote(abstractText)
+            << ", \"url\": " << jsonQuote(abstractUrl) << " }";
+        rows.add(row);
+    }
+
+    std::function<void(const juce::var&)> collect;
+    collect = [&](const juce::var& item) {
+        if (rows.size() >= limit)
+            return;
+        if (const auto* object = item.getDynamicObject())
+        {
+            if (object->hasProperty("Topics"))
+            {
+                if (const auto* nested = object->getProperty("Topics").getArray())
+                    for (const auto& child : *nested)
+                        collect(child);
+                return;
+            }
+
+            const auto text = object->getProperty("Text").toString().trim();
+            const auto firstUrl = object->getProperty("FirstURL").toString().trim();
+            if (text.isNotEmpty())
+            {
+                juce::String row;
+                row << "{ \"title\": " << jsonQuote(text.upToFirstOccurrenceOf(" - ", false, false))
+                    << ", \"snippet\": " << jsonQuote(text)
+                    << ", \"url\": " << jsonQuote(firstUrl) << " }";
+                rows.add(row);
+            }
+        }
+    };
+
+    if (const auto* topics = parsed.getProperty("RelatedTopics", {}).getArray())
+        for (const auto& item : *topics)
+            collect(item);
+
+    juce::String source = "DuckDuckGo Instant Answer API";
+    if (rows.isEmpty())
+    {
+        const auto htmlUrl = juce::URL("https://html.duckduckgo.com/html/?q="
+            + juce::URL::addEscapeChars(query, true));
+        const auto html = htmlUrl.readEntireTextStream(false);
+        collectDuckDuckGoHtmlResults(html, limit, rows);
+        if (!rows.isEmpty())
+            source = "DuckDuckGo HTML search";
+    }
+
+    juce::String result;
+    result << "{\n";
+    result << "  \"ok\": true,\n";
+    result << "  \"schemaVersion\": 1,\n";
+    result << "  \"kind\": \"djehuti_assistant_tool_result\",\n";
+    result << "  \"tool\": \"research_web_search\",\n";
+    result << "  \"displayTool\": \"research.web_search\",\n";
+    result << "  \"query\": " << jsonQuote(query) << ",\n";
+    result << "  \"source\": " << jsonQuote(source) << ",\n";
+    result << "  \"results\": [";
+    for (int i = 0; i < rows.size(); ++i)
+    {
+        if (i != 0) result << ", ";
+        result << rows[i];
+    }
+    result << "]\n";
     result << "}\n";
     return result;
 }

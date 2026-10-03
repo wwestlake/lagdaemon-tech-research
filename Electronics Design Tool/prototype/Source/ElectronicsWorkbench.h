@@ -68,6 +68,8 @@ private:
                                          const juce::String& status) const;
     juce::String runElectricalRuleCheckTool();
     juce::String exportCircuitArtifactsTool();
+    juce::String writeAgentMarkdownTool(const juce::String& title, const juce::String& markdown);
+    juce::String researchWebSearchTool(const juce::String& query, int maxResults) const;
     juce::String designRlcHighPassFilterTool(double cutoffHz, double impedanceOhms);
     juce::String designPushPullAmplifierTool();
     juce::String autoLayoutDiagramTool();
