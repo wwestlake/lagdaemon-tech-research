@@ -85,6 +85,7 @@ private:
     std::function<juce::String(const juce::String&, const juce::String&)> connectNodesTool;
     std::function<juce::String(const juce::String&)> openInstrumentTool;
     std::function<juce::String(double, double)> designHighPassTool;
+    std::function<void(const juce::File&, const juce::File&, double, double, double, double)> showFrequencyResponse;
     std::function<void()> openAgentSettingsDialog;
     std::function<void(bool)> setSnapEnabled;
     std::function<void(float)> setSchematicZoom;

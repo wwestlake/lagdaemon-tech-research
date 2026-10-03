@@ -4572,6 +4572,198 @@ public:
     }
 };
 
+class FrequencyResponsePanel final : public juce::Component
+{
+public:
+    FrequencyResponsePanel()
+    {
+        title.setText("Analysis / Frequency Response", juce::dontSendNotification);
+        title.setFont(juce::Font(16.0f, juce::Font::bold));
+        title.setColour(juce::Label::textColourId, juce::Colour(0xff78dcca));
+        addAndMakeVisible(title);
+
+        runButton.setButtonText("Run 10 Hz / 8 Ohm HPF");
+        runButton.setColour(juce::TextButton::buttonColourId, juce::Colour(0xff253341));
+        runButton.setColour(juce::TextButton::textColourOffId, juce::Colour(0xffdce9ee));
+        runButton.onClick = [this] {
+            if (onRun != nullptr)
+                onRun();
+        };
+        addAndMakeVisible(runButton);
+
+        status.setText("No sweep loaded.", juce::dontSendNotification);
+        status.setColour(juce::Label::textColourId, juce::Colour(0xff93a7b0));
+        status.setJustificationType(juce::Justification::centredLeft);
+        addAndMakeVisible(status);
+    }
+
+    void setResponse(const juce::File& csvFile,
+                     const juce::File& reportFile,
+                     double cutoffHz,
+                     double impedanceOhms,
+                     double capacitanceFarads,
+                     double inductanceHenries)
+    {
+        samples.clear();
+        const auto lines = juce::StringArray::fromLines(csvFile.loadFileAsString());
+        for (int index = 1; index < lines.size(); ++index)
+        {
+            const auto columns = juce::StringArray::fromTokens(lines[index], ",", "");
+            if (columns.size() < 2)
+                continue;
+            samples.push_back({ columns[0].getDoubleValue(), columns[1].getDoubleValue() });
+        }
+
+        currentCutoffHz = cutoffHz;
+        currentImpedanceOhms = impedanceOhms;
+        currentCapacitanceFarads = capacitanceFarads;
+        currentInductanceHenries = inductanceHenries;
+        currentCsv = csvFile;
+        currentReport = reportFile;
+        status.setText(samples.empty()
+            ? "Sweep CSV had no samples: " + csvFile.getFullPathName()
+            : "Showing " + juce::String((int)samples.size()) + " AC sweep points from " + csvFile.getFileName(),
+            juce::dontSendNotification);
+        repaint();
+    }
+
+    std::function<void()> onRun;
+
+    void paint(juce::Graphics& g) override
+    {
+        g.fillAll(juce::Colour(0xff10161d));
+        auto area = getLocalBounds().reduced(12);
+        area.removeFromTop(68);
+
+        g.setColour(juce::Colour(0xffdce9ee));
+        g.setFont(juce::Font(14.0f, juce::Font::bold));
+        g.drawText("2nd Order RLC High-Pass AC Analysis", area.removeFromTop(24), juce::Justification::centredLeft);
+
+        g.setColour(juce::Colour(0xff93a7b0));
+        g.setFont(juce::Font(12.5f));
+        const auto summary = samples.empty()
+            ? juce::String("Run the analysis to draw the response curve here.")
+            : "fc " + numberText(currentCutoffHz, 3) + " Hz, Z0 " + numberText(currentImpedanceOhms, 3)
+                + " ohm, C1 " + humanCapacitance(currentCapacitanceFarads)
+                + ", L1 " + humanInductance(currentInductanceHenries);
+        g.drawText(summary, area.removeFromTop(22), juce::Justification::centredLeft);
+        area.removeFromTop(8);
+
+        auto graph = area.removeFromTop(std::max(260, area.getHeight() - 86)).toFloat();
+        drawGraph(g, graph);
+
+        area.removeFromTop(8);
+        g.setColour(juce::Colour(0xff93a7b0));
+        g.setFont(juce::Font(11.5f));
+        if (currentReport.existsAsFile())
+            g.drawText("Report: " + currentReport.getFullPathName(), area.removeFromTop(18), juce::Justification::centredLeft, true);
+        if (currentCsv.existsAsFile())
+            g.drawText("CSV: " + currentCsv.getFullPathName(), area.removeFromTop(18), juce::Justification::centredLeft, true);
+    }
+
+    void resized() override
+    {
+        auto area = getLocalBounds().reduced(8);
+        auto header = area.removeFromTop(28);
+        title.setBounds(header.removeFromLeft(245));
+        header.removeFromLeft(8);
+        runButton.setBounds(header.removeFromLeft(180));
+        header.removeFromLeft(8);
+        status.setBounds(header);
+    }
+
+private:
+    struct Point
+    {
+        double frequencyHz = 0.0;
+        double gainDb = 0.0;
+    };
+
+    void drawGraph(juce::Graphics& g, juce::Rectangle<float> graph)
+    {
+        g.setColour(juce::Colour(0xff111922));
+        g.fillRect(graph);
+        g.setColour(juce::Colour(0xff33424d));
+        g.drawRect(graph, 1.0f);
+
+        constexpr double minDb = -60.0;
+        constexpr double maxDb = 3.0;
+        const auto startHz = samples.empty() ? 0.1 : std::max(0.001, samples.front().frequencyHz);
+        const auto stopHz = samples.empty() ? 1000.0 : std::max(startHz * 10.0, samples.back().frequencyHz);
+        const auto logStart = std::log10(startHz);
+        const auto logStop = std::log10(stopHz);
+
+        auto xFor = [&](double frequency) {
+            return graph.getX() + (float)((std::log10(std::clamp(frequency, startHz, stopHz)) - logStart) / (logStop - logStart)) * graph.getWidth();
+        };
+        auto yFor = [&](double db) {
+            const auto clamped = std::clamp(db, minDb, maxDb);
+            return graph.getY() + (float)((maxDb - clamped) / (maxDb - minDb)) * graph.getHeight();
+        };
+
+        g.setFont(juce::Font(11.0f));
+        for (double db : { 0.0, -3.0, -10.0, -20.0, -40.0, -60.0 })
+        {
+            const auto y = yFor(db);
+            g.setColour(db == -3.0 ? juce::Colour(0xffffc857) : juce::Colour(0xff26323d));
+            g.drawHorizontalLine((int)y, graph.getX(), graph.getRight());
+            g.setColour(juce::Colour(0xff93a7b0));
+            g.drawText(numberText(db, 0) + " dB", (int)graph.getX() + 6, (int)y - 14, 62, 14, juce::Justification::centredLeft);
+        }
+
+        for (double frequency : { startHz, currentCutoffHz / 10.0, currentCutoffHz, currentCutoffHz * 10.0, stopHz })
+        {
+            if (frequency < startHz * 0.999 || frequency > stopHz * 1.001)
+                continue;
+            const auto x = xFor(frequency);
+            g.setColour(std::abs(frequency - currentCutoffHz) < 0.001 ? juce::Colour(0xff78dcca) : juce::Colour(0xff26323d));
+            g.drawVerticalLine((int)x, graph.getY(), graph.getBottom());
+            g.setColour(juce::Colour(0xff93a7b0));
+            g.drawText(numberText(frequency, frequency < 1.0 ? 2 : 0) + " Hz", (int)x - 25, (int)graph.getBottom() - 18, 58, 14, juce::Justification::centred);
+        }
+
+        if (samples.empty())
+        {
+            g.setColour(juce::Colour(0xff93a7b0));
+            g.setFont(juce::Font(15.0f));
+            g.drawText("No AC sweep loaded", graph.toNearestInt(), juce::Justification::centred);
+            return;
+        }
+
+        juce::Path curve;
+        for (size_t index = 0; index < samples.size(); ++index)
+        {
+            const auto x = xFor(samples[index].frequencyHz);
+            const auto y = yFor(samples[index].gainDb);
+            if (index == 0)
+                curve.startNewSubPath(x, y);
+            else
+                curve.lineTo(x, y);
+        }
+
+        g.setColour(juce::Colour(0xff78dcca));
+        g.strokePath(curve, juce::PathStrokeType(2.5f));
+        g.setColour(juce::Colour(0xffffc857));
+        g.fillEllipse(xFor(currentCutoffHz) - 4.5f, yFor(-3.01029995664) - 4.5f, 9.0f, 9.0f);
+
+        g.setColour(juce::Colour(0xffdce9ee));
+        g.setFont(juce::Font(13.0f, juce::Font::bold));
+        g.drawText("Normalized gain response", graph.withTrimmedLeft(14.0f).withTrimmedTop(10.0f).toNearestInt(),
+                   juce::Justification::topLeft);
+    }
+
+    juce::Label title;
+    juce::Label status;
+    juce::TextButton runButton;
+    std::vector<Point> samples;
+    double currentCutoffHz = 10.0;
+    double currentImpedanceOhms = 8.0;
+    double currentCapacitanceFarads = 0.0;
+    double currentInductanceHenries = 0.0;
+    juce::File currentCsv;
+    juce::File currentReport;
+};
+
 class SpecIngestionPanel final : public NotesPanel
 {
 public:
@@ -4698,6 +4890,17 @@ ElectronicsWorkbench::ElectronicsWorkbench()
     };
     auto instruments = std::make_unique<InstrumentPanel>();
     auto* instrumentPanel = instruments.get();
+    auto analysis = std::make_unique<FrequencyResponsePanel>();
+    auto* analysisPanel = analysis.get();
+    analysisPanel->onRun = [this] { designRlcHighPassFilter(); };
+    showFrequencyResponse = [analysisPanel](const juce::File& csvFile,
+                                            const juce::File& reportFile,
+                                            double cutoffHz,
+                                            double impedanceOhms,
+                                            double capacitanceFarads,
+                                            double inductanceHenries) {
+        analysisPanel->setResponse(csvFile, reportFile, cutoffHz, impedanceOhms, capacitanceFarads, inductanceHenries);
+    };
     schematicPanel->setProbeListener([instrumentPanel](juce::String id, juce::String, juce::String target) {
         instrumentPanel->setProbeTarget(id, target);
     });
@@ -4771,7 +4974,7 @@ ElectronicsWorkbench::ElectronicsWorkbench()
     auto* agentPanel = agent.get();
     openAgentSettingsDialog = [agentPanel] { agentPanel->showAiSettingsForSelected(); };
     dockManager->registerPanel("schematic", "Schematic", std::move(schematic), CreationDock::DockTargetZone::CenterTab);
-    dockManager->registerPanel("simulation", "Simulation", std::make_unique<SimulationPanel>(), CreationDock::DockTargetZone::CenterTab);
+    dockManager->registerPanel("simulation", "Simulation", std::move(analysis), CreationDock::DockTargetZone::CenterTab);
     dockManager->registerPanel("console", "Frust Math Console", std::make_unique<ConsolePanel>(logConsole), CreationDock::DockTargetZone::Bottom);
     dockManager->registerPanel("agent", "BYOK Agent", std::move(agent), CreationDock::DockTargetZone::Right);
     dockManager->registerPanel("properties", "Properties", std::move(properties), CreationDock::DockTargetZone::Right);
@@ -5341,6 +5544,10 @@ juce::String ElectronicsWorkbench::designRlcHighPassFilterTool(double cutoffHz, 
                 + jsonQuote("Could not write " + output.label + ": " + output.file.getFullPathName()) + " }";
         }
     }
+
+    if (showFrequencyResponse != nullptr)
+        showFrequencyResponse(csvFile, reportFile, design.cutoffHz, design.impedanceOhms,
+                              design.capacitanceFarads, design.inductanceHenries);
 
     juce::String result;
     result << "{\n";
