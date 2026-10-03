@@ -1206,7 +1206,7 @@ public:
         g.fillAll(juce::Colour(0xff0e141a));
 
         g.saveState();
-        g.addTransform(juce::AffineTransform::scale(canvasZoom));
+        g.addTransform(juce::AffineTransform::scale(canvasZoom).translated(viewOffset.x, viewOffset.y));
         drawGrid(g);
         drawWires(g);
         drawInstances(g);
@@ -1235,6 +1235,12 @@ public:
         grabKeyboardFocus();
         const auto modelPosition = viewToCanvas(event.position);
         const auto p = snapPoint(modelPosition);
+        if (event.mods.isMiddleButtonDown())
+        {
+            beginPan(event.position);
+            return;
+        }
+
         if (event.mods.isRightButtonDown())
         {
             if (releaseProbeAt(modelPosition))
@@ -1297,7 +1303,10 @@ public:
             const auto selected = getSelectedSymbolId != nullptr ? getSelectedSymbolId() : juce::String("resistor");
             placeSymbol(selected, p);
             repaint();
+            return;
         }
+
+        beginPan(event.position);
     }
 
     void mouseDoubleClick(const juce::MouseEvent& event) override
@@ -1322,6 +1331,13 @@ public:
 
     void mouseDrag(const juce::MouseEvent& event) override
     {
+        if (panning)
+        {
+            viewOffset = panStartOffset + (event.position - panStartMouse);
+            repaint();
+            return;
+        }
+
         const auto modelPosition = viewToCanvas(event.position);
         if (resizingRail)
         {
@@ -1358,6 +1374,19 @@ public:
         draggingInstance = false;
         resizingRail = false;
         resizingRailInstance = -1;
+        panning = false;
+    }
+
+    void mouseWheelMove(const juce::MouseEvent& event, const juce::MouseWheelDetails& wheel) override
+    {
+        if (std::abs(wheel.deltaY) <= 0.0001f)
+            return;
+
+        const auto before = viewToCanvas(event.position);
+        const auto factor = wheel.deltaY > 0.0f ? 1.1f : (1.0f / 1.1f);
+        canvasZoom = std::clamp(canvasZoom * factor, 0.5f, 2.5f);
+        viewOffset += event.position - canvasToView(before);
+        repaint();
     }
 
     bool keyPressed(const juce::KeyPress& key) override
@@ -1493,24 +1522,27 @@ public:
             return refdes;
         };
 
-        place("ac_voltage_source", "VIN1", { 96.0f, 264.0f }, "1", numberText(design.cutoffHz, 3));
-        place("resistor", "RS1", { 240.0f, 216.0f }, numberText(design.sourceOhms, 3));
-        place("capacitor", "C1", { 384.0f, 216.0f }, spiceCapacitance(design.capacitanceFarads));
-        place("inductor", "L1", { 504.0f, 288.0f }, spiceInductance(design.inductanceHenries), {}, 90);
-        place("resistor", "RL1", { 624.0f, 288.0f }, numberText(design.loadOhms, 3), {}, 90);
-        place("ground", "GND1", { 504.0f, 384.0f }, "0", {}, 0);
-        place("oscilloscope_2ch", "SCOPE1", { 792.0f, 240.0f }, "2ch", {}, 0);
+        place("ac_voltage_source", "VIN1", { 120.0f, 288.0f }, "1", numberText(design.cutoffHz, 3));
+        place("resistor", "RS1", { 312.0f, 216.0f }, numberText(design.sourceOhms, 3));
+        place("capacitor", "C1", { 504.0f, 216.0f }, spiceCapacitance(design.capacitanceFarads));
+        place("inductor", "L1", { 648.0f, 336.0f }, spiceInductance(design.inductanceHenries), {}, 90);
+        place("resistor", "RL1", { 816.0f, 336.0f }, numberText(design.loadOhms, 3), {}, 90);
+        place("ground", "GND_SRC", { 120.0f, 384.0f }, "0", {}, 0);
+        place("ground", "GND_L", { 648.0f, 480.0f }, "0", {}, 0);
+        place("ground", "GND_LOAD", { 816.0f, 480.0f }, "0", {}, 0);
+        place("ground", "GND_SCOPE", { 1032.0f, 360.0f }, "0", {}, 0);
+        place("oscilloscope_2ch", "SCOPE1", { 1032.0f, 216.0f }, "2ch", {}, 0);
 
-        connectNodesFromTool("VIN1.-", "GND1.0");
+        connectNodesFromTool("VIN1.-", "GND_SRC.0");
         connectNodesFromTool("VIN1.+", "RS1.1");
         connectNodesFromTool("RS1.2", "C1.1");
         connectNodesFromTool("C1.2", "L1.1");
         connectNodesFromTool("C1.2", "RL1.1");
         connectNodesFromTool("C1.2", "SCOPE1.CH1");
         connectNodesFromTool("VIN1.+", "SCOPE1.CH2");
-        connectNodesFromTool("L1.2", "GND1.0");
-        connectNodesFromTool("RL1.2", "GND1.0");
-        connectNodesFromTool("SCOPE1.REF", "GND1.0");
+        connectNodesFromTool("L1.2", "GND_L.0");
+        connectNodesFromTool("RL1.2", "GND_LOAD.0");
+        connectNodesFromTool("SCOPE1.REF", "GND_SCOPE.0");
 
         selectedInstance = instanceIndexForRefdes("C1");
         notifySelection();
@@ -1716,9 +1748,13 @@ private:
     bool resizingRail = false;
     bool resizingLeftRailEnd = false;
     bool snapEnabled = true;
+    bool panning = false;
     int resizingRailInstance = -1;
     float fixedRailEndX = 0.0f;
     float canvasZoom = 1.0f;
+    juce::Point<float> viewOffset { 0.0f, 0.0f };
+    juce::Point<float> panStartMouse;
+    juce::Point<float> panStartOffset;
     juce::Point<float> dragStartMouse;
     juce::Point<float> dragStartPosition;
     juce::Point<float> wireDragPosition;
@@ -1812,14 +1848,18 @@ private:
 
     void drawGrid(juce::Graphics& g)
     {
-        const auto logicalWidth = (int)std::ceil((float)getWidth() / std::max(0.001f, canvasZoom));
-        const auto logicalHeight = (int)std::ceil((float)getHeight() / std::max(0.001f, canvasZoom));
+        const auto topLeft = viewToCanvas({ 0.0f, 0.0f });
+        const auto bottomRight = viewToCanvas({ (float)getWidth(), (float)getHeight() });
+        const auto startX = (int)std::floor(topLeft.x / 24.0f) * 24 - 24;
+        const auto endX = (int)std::ceil(bottomRight.x / 24.0f) * 24 + 24;
+        const auto startY = (int)std::floor(topLeft.y / 24.0f) * 24 - 24;
+        const auto endY = (int)std::ceil(bottomRight.y / 24.0f) * 24 + 24;
         g.setColour(juce::Colour(0xff18222b));
-        for (int x = 0; x < logicalWidth; x += 24) g.drawVerticalLine(x, 0.0f, (float)logicalHeight);
-        for (int y = 0; y < logicalHeight; y += 24) g.drawHorizontalLine(y, 0.0f, (float)logicalWidth);
+        for (int x = startX; x <= endX; x += 24) g.drawVerticalLine(x, (float)startY, (float)endY);
+        for (int y = startY; y <= endY; y += 24) g.drawHorizontalLine(y, (float)startX, (float)endX);
         g.setColour(juce::Colour(0xff26323d));
-        for (int x = 0; x < logicalWidth; x += 120) g.drawVerticalLine(x, 0.0f, (float)logicalHeight);
-        for (int y = 0; y < logicalHeight; y += 120) g.drawHorizontalLine(y, 0.0f, (float)logicalWidth);
+        for (int x = ((startX / 120) - 1) * 120; x <= endX; x += 120) g.drawVerticalLine(x, (float)startY, (float)endY);
+        for (int y = ((startY / 120) - 1) * 120; y <= endY; y += 120) g.drawHorizontalLine(y, (float)startX, (float)endX);
     }
 
     static juce::Point<float> snap(juce::Point<float> p)
@@ -1835,7 +1875,23 @@ private:
     juce::Point<float> viewToCanvas(juce::Point<float> p) const
     {
         const auto scale = std::max(0.001f, canvasZoom);
-        return { p.x / scale, p.y / scale };
+        return { (p.x - viewOffset.x) / scale, (p.y - viewOffset.y) / scale };
+    }
+
+    juce::Point<float> canvasToView(juce::Point<float> p) const
+    {
+        return { p.x * canvasZoom + viewOffset.x, p.y * canvasZoom + viewOffset.y };
+    }
+
+    void beginPan(juce::Point<float> position)
+    {
+        panning = true;
+        draggingInstance = false;
+        wireDragging = false;
+        resizingRail = false;
+        panStartMouse = position;
+        panStartOffset = viewOffset;
+        if (onStatus) onStatus("Pan schematic canvas.");
     }
 
     float hitDistance(float modelPixels) const
