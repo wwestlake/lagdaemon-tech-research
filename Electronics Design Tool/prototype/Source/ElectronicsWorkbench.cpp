@@ -1296,13 +1296,7 @@ public:
 
         if (event.mods.isRightButtonDown())
         {
-            if (releaseProbeAt(modelPosition))
-            {
-                repaint();
-                return;
-            }
-            disconnectAt(modelPosition);
-            repaint();
+            showContextMenu(modelPosition);
             return;
         }
 
@@ -1459,6 +1453,28 @@ public:
         canvasZoom = std::clamp(canvasZoom * factor, 0.5f, 2.5f);
         viewOffset += event.position - canvasToView(before);
         repaint();
+    }
+
+    void showContextMenu(juce::Point<float> modelPosition)
+    {
+        juce::PopupMenu menu;
+        menu.addItem(1, "Auto Layout Diagram");
+        menu.addItem(2, "Auto Layout Selection", !selectedInstances.isEmpty());
+        menu.addSeparator();
+        menu.addItem(3, "Disconnect Here");
+        menu.addItem(4, "Release Probe Here");
+
+        menu.showMenuAsync(juce::PopupMenu::Options(), [this, modelPosition](int result) {
+            if (result == 1)
+                autoLayoutFromTool();
+            else if (result == 2)
+                autoLayoutSelectionFromTool();
+            else if (result == 3)
+                disconnectAt(modelPosition);
+            else if (result == 4)
+                releaseProbeAt(modelPosition);
+            repaint();
+        });
     }
 
     bool keyPressed(const juce::KeyPress& key) override
@@ -1658,6 +1674,27 @@ public:
     {
         if (instances.empty())
             return "{ \"ok\": false, \"error\": \"No schematic components to lay out.\" }";
+        return autoLayoutInstances({});
+    }
+
+    juce::String autoLayoutSelectionFromTool()
+    {
+        if (selectedInstances.isEmpty())
+            return "{ \"ok\": false, \"error\": \"No selected components to lay out.\" }";
+        juce::Array<int> selected = selectedInstances;
+        return autoLayoutInstances(selected);
+    }
+
+    juce::String autoLayoutInstances(juce::Array<int> scope)
+    {
+        if (instances.empty())
+            return "{ \"ok\": false, \"error\": \"No schematic components to lay out.\" }";
+
+        if (scope.isEmpty())
+        {
+            for (int i = 0; i < (int)instances.size(); ++i)
+                scope.add(i);
+        }
 
         auto roleColumn = [this](const Instance& instance) {
             const auto id = instance.symbolId;
@@ -1682,8 +1719,11 @@ public:
         };
 
         std::array<int, 6> rowCounts {};
-        for (auto& instance : instances)
+        for (int index : scope)
         {
+            if (index < 0 || index >= (int)instances.size())
+                continue;
+            auto& instance = instances[(size_t)index];
             const auto column = std::clamp(roleColumn(instance), 0, 5);
             const auto row = rowCounts[(size_t)column]++;
             float x = 144.0f + (float)column * 168.0f;
@@ -1694,9 +1734,8 @@ public:
             instance.position = snapPoint({ x, y });
         }
 
-        selectedInstances.clear();
-        selectedInstance = instances.empty() ? -1 : 0;
-        if (selectedInstance >= 0)
+        selectedInstance = selectedInstances.isEmpty() ? (instances.empty() ? -1 : 0) : selectedInstances.getLast();
+        if (selectedInstances.isEmpty() && selectedInstance >= 0)
             selectedInstances.add(selectedInstance);
         notifySelection();
         repaint();
@@ -1706,11 +1745,11 @@ public:
         result << "  \"ok\": true,\n";
         result << "  \"tool\": \"schematic_auto_layout\",\n";
         result << "  \"displayTool\": \"schematic.auto_layout\",\n";
-        result << "  \"scope\": \"diagram\",\n";
-        result << "  \"componentCount\": " << (int)instances.size() << ",\n";
+        result << "  \"scope\": " << quote(scope.size() == (int)instances.size() ? "diagram" : "selection") << ",\n";
+        result << "  \"componentCount\": " << scope.size() << ",\n";
         result << "  \"style\": \"left_to_right_standard_grid\"\n";
         result << "}";
-        if (onStatus) onStatus("Auto-laid out " + juce::String((int)instances.size()) + " schematic component(s).");
+        if (onStatus) onStatus("Auto-laid out " + juce::String(scope.size()) + " schematic component(s).");
         return result;
     }
 
@@ -4443,6 +4482,7 @@ public:
         std::function<juce::String(const juce::String&)> openInstrument;
         std::function<juce::String(double, double)> designHighPass;
         std::function<juce::String()> autoLayout;
+        std::function<juce::String()> autoLayoutSelection;
         std::function<juce::String(const juce::String&, int)> cookbookLookup;
         std::function<juce::String()> cookbookCoverage;
         std::function<juce::String()> cookbookValidate;
@@ -4916,6 +4956,11 @@ private:
                 R"({"type":"object","properties":{},"additionalProperties":false})"
             },
             {
+                "schematic_auto_layout_selection",
+                "Automatically arrange only the currently selected schematic components.",
+                R"({"type":"object","properties":{},"additionalProperties":false})"
+            },
+            {
                 "schematic_place_symbol",
                 "Place a schematic symbol or instrument node at a grid coordinate. Use deliberate layout spacing: keep symbols at least 144 px apart horizontally or 96 px vertically, arrange signal flow left-to-right, put sources on the left, outputs/load on the right, grounds below, instruments to the far right, and never reuse the same x/y for multiple parts.",
                 R"({"type":"object","properties":{"symbolId":{"type":"string","description":"Supported symbol id: resistor, potentiometer, capacitor, capacitor_polarized, variable_capacitor, inductor, coupled_inductor, transformer, diode, zener_diode, led, schottky_diode, power_bus, ground_bus, battery, voltage_source, ac_voltage_source, current_source, ac_current_source, vcvs, vccs, ccvs, cccs, signal_source, ground, opamp_741, npn, pnp, nmos, pmos, njfet, pjfet, switch_spst, switch_spdt, relay_spst, fuse, connector_2, connector_3, test_point, logic_not, logic_and, logic_or, logic_nand, logic_nor, logic_xor, oscilloscope_2ch, or digital_multimeter. Unsupported symbols are rejected, not substituted."},"x":{"type":"number","description":"Grid x coordinate. Leave at least 144 px horizontal space from other symbols."},"y":{"type":"number","description":"Grid y coordinate. Leave at least 96 px vertical space from other symbols."},"value":{"type":"string"},"frequency":{"type":"string"},"busName":{"type":"string"}},"required":["symbolId","x","y"],"additionalProperties":false})"
@@ -5061,6 +5106,11 @@ private:
             return tools.autoLayout != nullptr
                 ? tools.autoLayout()
                 : "{ \"ok\": false, \"error\": \"Schematic auto-layout is unavailable.\" }";
+
+        if (name == "schematic_auto_layout_selection")
+            return tools.autoLayoutSelection != nullptr
+                ? tools.autoLayoutSelection()
+                : "{ \"ok\": false, \"error\": \"Schematic selection auto-layout is unavailable.\" }";
 
         if (name == "schematic_place_symbol")
         {
@@ -5683,6 +5733,9 @@ ElectronicsWorkbench::ElectronicsWorkbench()
     autoLayoutTool = [panel = schematic.get()] {
         return panel->autoLayoutFromTool();
     };
+    auto autoLayoutSelectionTool = [panel = schematic.get()] {
+        return panel->autoLayoutSelectionFromTool();
+    };
     AgentPanel::HostTools agentTools;
     agentTools.inspectCircuit = [this] {
         return getCircuitJson != nullptr ? getCircuitJson() : juce::String("{}");
@@ -5718,6 +5771,9 @@ ElectronicsWorkbench::ElectronicsWorkbench()
         return autoLayoutTool != nullptr
             ? autoLayoutTool()
             : juce::String("{ \"ok\": false, \"error\": \"Schematic auto-layout is unavailable.\" }");
+    };
+    agentTools.autoLayoutSelection = [autoLayoutSelectionTool] {
+        return autoLayoutSelectionTool();
     };
     agentTools.cookbookLookup = [this](const juce::String& query, int maxCards) {
         return cookbookLookupTool(query, maxCards);
@@ -6144,6 +6200,15 @@ juce::String ElectronicsWorkbench::buildAssistantToolManifestJson() const
     text << "      \"status\": \"active\",\n";
     text << "      \"inputs\": {},\n";
     text << "      \"outputs\": { \"layout\": \"updated component coordinates\" }\n";
+    text << "    },\n";
+    text << "    {\n";
+    text << "      \"name\": \"schematic_auto_layout_selection\",\n";
+    text << "      \"displayName\": \"schematic.auto_layout_selection\",\n";
+    text << "      \"description\": \"Arrange only the currently selected schematic components.\",\n";
+    text << "      \"mode\": \"modify_schematic_model\",\n";
+    text << "      \"status\": \"active\",\n";
+    text << "      \"inputs\": {},\n";
+    text << "      \"outputs\": { \"layout\": \"updated selected component coordinates\" }\n";
     text << "    },\n";
     text << "    {\n";
     text << "      \"name\": \"schematic_place_symbol\",\n";
