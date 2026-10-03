@@ -741,7 +741,7 @@ public:
         instance.manufacturerPart = manufacturerPart.trim();
         if (onStatus) onStatus("Updated " + instance.refdes + " properties.");
         notifySelection();
-        repaint();
+        forceDeferredRepaint();
     }
 
     void rotateSelected()
@@ -1729,7 +1729,7 @@ public:
 
         selectedInstance = instanceIndexForRefdes("C1");
         notifySelection();
-        repaint();
+        forceDeferredRepaint();
 
         juce::String result;
         result << "{\n";
@@ -1817,7 +1817,7 @@ public:
         if (selectedInstances.isEmpty() && selectedInstance >= 0)
             selectedInstances.add(selectedInstance);
         notifySelection();
-        repaint();
+        forceDeferredRepaint();
 
         juce::String result;
         result << "{\n";
@@ -1857,7 +1857,7 @@ public:
             onStatus(alreadyConnected
                 ? "Connection already exists: " + firstResolved + " to " + secondResolved + "."
                 : "Connected " + firstResolved + " to " + secondResolved + ".");
-        repaint();
+        forceDeferredRepaint();
 
         juce::String result;
         result << "{\n";
@@ -2057,6 +2057,20 @@ private:
     {
         return "{ \"ok\": false, \"tool\": " + quote(toolName)
             + ", \"error\": " + quote(message) + " }";
+    }
+
+    void forceDeferredRepaint()
+    {
+        repaint();
+        juce::Component::SafePointer<juce::Component> safeThis(this);
+        juce::MessageManager::callAsync([safeThis] {
+            if (safeThis == nullptr)
+                return;
+
+            safeThis->repaint();
+            if (auto* topLevel = safeThis->getTopLevelComponent())
+                topLevel->repaint();
+        });
     }
 
     static juce::String nullableQuote(const juce::String& text)

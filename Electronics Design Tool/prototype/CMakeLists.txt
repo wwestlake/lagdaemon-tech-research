@@ -31,6 +31,34 @@ endif()
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY_DEBUG   "${CMAKE_CURRENT_SOURCE_DIR}/bin/Debug")
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY_RELEASE "${CMAKE_CURRENT_SOURCE_DIR}/bin/Release")
 
+set(LIBAVOID_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/third_party/libavoid")
+add_library(libavoid STATIC
+    "${LIBAVOID_ROOT}/actioninfo.cpp"
+    "${LIBAVOID_ROOT}/connectionpin.cpp"
+    "${LIBAVOID_ROOT}/connector.cpp"
+    "${LIBAVOID_ROOT}/connend.cpp"
+    "${LIBAVOID_ROOT}/geometry.cpp"
+    "${LIBAVOID_ROOT}/geomtypes.cpp"
+    "${LIBAVOID_ROOT}/graph.cpp"
+    "${LIBAVOID_ROOT}/hyperedge.cpp"
+    "${LIBAVOID_ROOT}/hyperedgeimprover.cpp"
+    "${LIBAVOID_ROOT}/hyperedgetree.cpp"
+    "${LIBAVOID_ROOT}/junction.cpp"
+    "${LIBAVOID_ROOT}/makepath.cpp"
+    "${LIBAVOID_ROOT}/obstacle.cpp"
+    "${LIBAVOID_ROOT}/orthogonal.cpp"
+    "${LIBAVOID_ROOT}/router.cpp"
+    "${LIBAVOID_ROOT}/scanline.cpp"
+    "${LIBAVOID_ROOT}/shape.cpp"
+    "${LIBAVOID_ROOT}/timer.cpp"
+    "${LIBAVOID_ROOT}/vertices.cpp"
+    "${LIBAVOID_ROOT}/visibility.cpp"
+    "${LIBAVOID_ROOT}/viscluster.cpp"
+    "${LIBAVOID_ROOT}/vpsc.cpp"
+)
+target_include_directories(libavoid PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/third_party")
+target_compile_definitions(libavoid PUBLIC LIBAVOID_NO_DLL)
+
 juce_add_gui_app(DjehutiElectronicsLab
     PRODUCT_NAME "Djehuti Electronics Lab"
     VERSION 0.1.0
@@ -61,6 +89,7 @@ target_compile_definitions(DjehutiElectronicsLab PRIVATE
 target_link_libraries(DjehutiElectronicsLab PRIVATE
     CreationDock
     ai_provider
+    libavoid
     juce::juce_core
     juce::juce_data_structures
     juce::juce_events
