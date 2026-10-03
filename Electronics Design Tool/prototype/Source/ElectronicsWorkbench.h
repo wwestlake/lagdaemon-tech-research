@@ -50,6 +50,7 @@ private:
     juce::String cookbookLookupTool(const juce::String& query, int maxCards) const;
     juce::String cookbookCoverageTool() const;
     juce::String cookbookValidateTool() const;
+    juce::String cookbookAcceptanceGoalsTool(const juce::String& domainOrId) const;
     juce::String runElectricalRuleCheckTool();
     juce::String exportCircuitArtifactsTool();
     juce::String designRlcHighPassFilterTool(double cutoffHz, double impedanceOhms);

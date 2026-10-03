@@ -4113,6 +4113,7 @@ public:
         std::function<juce::String(const juce::String&, int)> cookbookLookup;
         std::function<juce::String()> cookbookCoverage;
         std::function<juce::String()> cookbookValidate;
+        std::function<juce::String(const juce::String&)> cookbookAcceptanceGoals;
         std::function<juce::String()> toolManifest;
         std::function<void(const juce::String&)> log;
     };
@@ -4496,6 +4497,7 @@ private:
                "or when you need to compare established circuit candidates before building. "
                "Use cookbook_coverage to inspect cookbook domain coverage and identify missing recipe areas. "
                "Use cookbook_validate to check cookbook schema quality and taxonomy alignment after cookbook edits. "
+               "Use cookbook_acceptance_goals to inspect representative engineering goals for agent validation. "
                "Use filesystem LiteSemRAG cards as retrieved guidance; do not assume Suite VFS storage. "
                "Be concise, report tool results plainly, and do not claim a circuit is ready for solver-backed "
                "analysis until circuit_run_erc has passed or you have explained the remaining warnings.";
@@ -4518,6 +4520,11 @@ private:
                 "cookbook_validate",
                 "Validate cookbook entries for required structured fields, taxonomy alignment, duplicate ids, and malformed raw entries.",
                 R"({"type":"object","properties":{},"additionalProperties":false})"
+            },
+            {
+                "cookbook_acceptance_goals",
+                "List representative agent acceptance goals, optionally filtered by domain or goal id.",
+                R"({"type":"object","properties":{"domainOrId":{"type":"string","description":"Optional acceptance domain such as passive_filter, or exact goal id."}},"additionalProperties":false})"
             },
             {
                 "circuit_inspect",
@@ -4593,6 +4600,16 @@ private:
             return tools.cookbookValidate != nullptr
                 ? tools.cookbookValidate()
                 : "{ \"ok\": false, \"error\": \"Cookbook validation is unavailable.\" }";
+
+        if (name == "cookbook_acceptance_goals")
+        {
+            const auto domainOrId = parsed.isObject()
+                ? parsed.getProperty("domainOrId", {}).toString().trim()
+                : juce::String();
+            return tools.cookbookAcceptanceGoals != nullptr
+                ? tools.cookbookAcceptanceGoals(domainOrId)
+                : "{ \"ok\": false, \"error\": \"Cookbook acceptance goals are unavailable.\" }";
+        }
 
         if (name == "circuit_run_erc")
             return tools.runErc != nullptr ? tools.runErc() : "{ \"ok\": false, \"error\": \"ERC tool unavailable.\" }";
@@ -5266,6 +5283,9 @@ ElectronicsWorkbench::ElectronicsWorkbench()
     };
     agentTools.cookbookCoverage = [this] { return cookbookCoverageTool(); };
     agentTools.cookbookValidate = [this] { return cookbookValidateTool(); };
+    agentTools.cookbookAcceptanceGoals = [this](const juce::String& domainOrId) {
+        return cookbookAcceptanceGoalsTool(domainOrId);
+    };
     agentTools.toolManifest = [this] { return buildAssistantToolManifestJson(); };
     agentTools.log = [this](const juce::String& text) { appendLog(text); };
     auto agent = std::make_unique<AgentPanel>(std::move(agentTools));
@@ -5548,6 +5568,14 @@ juce::String ElectronicsWorkbench::buildAssistantToolManifestJson() const
     text << "      \"mode\": \"read_only_knowledge\",\n";
     text << "      \"inputs\": {},\n";
     text << "      \"outputs\": { \"status\": \"passed or failed\", \"errors\": \"array\", \"warnings\": \"array\" }\n";
+    text << "    },\n";
+    text << "    {\n";
+    text << "      \"name\": \"cookbook_acceptance_goals\",\n";
+    text << "      \"displayName\": \"cookbook.acceptance_goals\",\n";
+    text << "      \"description\": \"List representative agent acceptance goals, optionally filtered by domain or exact goal id.\",\n";
+    text << "      \"mode\": \"read_only_knowledge\",\n";
+    text << "      \"inputs\": { \"domainOrId\": \"optional domain or exact goal id\" },\n";
+    text << "      \"outputs\": { \"goals\": \"matching acceptance goals\", \"requiredDomains\": \"array\" }\n";
     text << "    },\n";
     text << "    {\n";
     text << "      \"name\": \"circuit_inspect\",\n";
@@ -5914,6 +5942,69 @@ juce::String ElectronicsWorkbench::cookbookValidateTool() const
     result << "  \"warnings\": ";
     appendStringArray(result, warnings);
     result << "\n";
+    result << "}\n";
+    return result;
+}
+
+juce::String ElectronicsWorkbench::cookbookAcceptanceGoalsTool(const juce::String& domainOrId) const
+{
+    const auto acceptanceFile = electronics_knowledge::getKnowledgeRoot().getChildFile("COOKBOOK_ACCEPTANCE_GOALS.json");
+    const auto parsedAcceptance = juce::JSON::parse(acceptanceFile.loadFileAsString());
+    if (!parsedAcceptance.isObject())
+    {
+        return "{ \"ok\": false, \"tool\": \"cookbook_acceptance_goals\", \"displayTool\": \"cookbook.acceptance_goals\", \"error\": "
+            + jsonQuote("Could not read cookbook acceptance goals: " + acceptanceFile.getFullPathName()) + " }";
+    }
+
+    const auto filter = domainOrId.trim();
+    const auto requiredDomains = parsedAcceptance.getProperty("requiredDomains", {});
+    const auto goals = parsedAcceptance.getProperty("goals", {});
+    auto* goalArray = goals.getArray();
+
+    if (goalArray == nullptr)
+    {
+        return "{ \"ok\": false, \"tool\": \"cookbook_acceptance_goals\", \"displayTool\": \"cookbook.acceptance_goals\", \"error\": "
+            + jsonQuote("Acceptance goals file has no goals array: " + acceptanceFile.getFullPathName()) + " }";
+    }
+
+    auto appendArray = [](juce::String& out, const juce::var& value) {
+        const auto text = juce::JSON::toString(value, true);
+        out << (text.isNotEmpty() ? text : "[]");
+    };
+
+    juce::String result;
+    result << "{\n";
+    result << "  \"ok\": true,\n";
+    result << "  \"schemaVersion\": 1,\n";
+    result << "  \"kind\": \"djehuti_assistant_tool_result\",\n";
+    result << "  \"tool\": \"cookbook_acceptance_goals\",\n";
+    result << "  \"displayTool\": \"cookbook.acceptance_goals\",\n";
+    result << "  \"acceptanceFile\": " << jsonQuote(acceptanceFile.getFullPathName()) << ",\n";
+    result << "  \"filter\": " << jsonQuote(filter) << ",\n";
+    result << "  \"requiredDomains\": ";
+    appendArray(result, requiredDomains);
+    result << ",\n";
+    result << "  \"goals\": [\n";
+
+    int matched = 0;
+    for (const auto& goal : *goalArray)
+    {
+        const auto id = goal.getProperty("id", {}).toString();
+        const auto domain = goal.getProperty("domain", {}).toString();
+        const auto include = filter.isEmpty()
+            || id.equalsIgnoreCase(filter)
+            || domain.equalsIgnoreCase(filter);
+        if (!include)
+            continue;
+
+        if (matched > 0)
+            result << ",\n";
+        result << juce::JSON::toString(goal, true);
+        ++matched;
+    }
+
+    result << "\n  ],\n";
+    result << "  \"goalCount\": " << matched << "\n";
     result << "}\n";
     return result;
 }
