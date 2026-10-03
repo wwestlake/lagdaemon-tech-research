@@ -5,6 +5,7 @@
 #include <ai_provider/AiConfig.h>
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <cmath>
 #include <complex>
@@ -916,6 +917,9 @@ public:
         wires = std::move(loadedWires);
         probes = std::move(loadedProbes);
         selectedInstance = instances.empty() ? -1 : 0;
+        selectedInstances.clear();
+        if (selectedInstance >= 0)
+            selectedInstances.add(selectedInstance);
         nextRef = std::max(1, highestRefNumber + 1);
         wireDragging = false;
         draggingInstance = false;
@@ -1260,6 +1264,7 @@ public:
         drawInstances(g);
         drawProbes(g);
         drawPendingWire(g);
+        drawSelectionBox(g);
         g.restoreState();
 
         g.setColour(juce::Colour(0xff93a7b0));
@@ -1338,9 +1343,16 @@ public:
         if (const auto instanceIndex = hitTestInstance(modelPosition); instanceIndex >= 0)
         {
             selectedInstance = instanceIndex;
+            if (!event.mods.isShiftDown() && !isInstanceSelected(instanceIndex))
+                selectedInstances.clear();
+            if (event.mods.isShiftDown())
+                toggleInstanceSelection(instanceIndex);
+            else
+                selectedInstances.addIfNotAlreadyThere(instanceIndex);
             draggingInstance = true;
             dragStartMouse = modelPosition;
             dragStartPosition = instances[(size_t)selectedInstance].position;
+            captureSelectedDragStarts();
             notifySelection();
             repaint();
             return;
@@ -1354,7 +1366,7 @@ public:
             return;
         }
 
-        beginPan(event.position);
+        beginSelectionBox(modelPosition);
     }
 
     void mouseDoubleClick(const juce::MouseEvent& event) override
@@ -1401,11 +1413,22 @@ public:
             return;
         }
 
+        if (selectingBox)
+        {
+            selectionBoxEnd = modelPosition;
+            updateSelectionFromBox();
+            repaint();
+            return;
+        }
+
         if (!draggingInstance || selectedInstance < 0 || selectedInstance >= (int)instances.size())
             return;
 
-        auto& instance = instances[(size_t)selectedInstance];
-        instance.position = snapPoint(dragStartPosition + (modelPosition - dragStartMouse));
+        const auto delta = snapPoint(dragStartPosition + (modelPosition - dragStartMouse)) - dragStartPosition;
+        if (selectedInstances.size() > 1)
+            moveSelectedInstances(delta);
+        else
+            instances[(size_t)selectedInstance].position = snapPoint(dragStartPosition + (modelPosition - dragStartMouse));
         notifySelection();
         repaint();
     }
@@ -1420,6 +1443,7 @@ public:
         }
 
         draggingInstance = false;
+        selectingBox = false;
         resizingRail = false;
         resizingRailInstance = -1;
         panning = false;
@@ -1630,6 +1654,66 @@ public:
         return result;
     }
 
+    juce::String autoLayoutFromTool()
+    {
+        if (instances.empty())
+            return "{ \"ok\": false, \"error\": \"No schematic components to lay out.\" }";
+
+        auto roleColumn = [this](const Instance& instance) {
+            const auto id = instance.symbolId;
+            if (id == "power_bus") return 1;
+            if (id == "voltage_source" || id == "ac_voltage_source" || id == "signal_source"
+                || id == "current_source" || id == "ac_current_source" || id == "battery"
+                || id.startsWith("connector"))
+                return 0;
+            if (id == "ground" || id == "ground_bus") return 2;
+            if (isInstrumentNode(id)) return 5;
+            if (id == "resistor" || id == "capacitor" || id == "inductor" || id == "diode"
+                || id == "zener_diode" || id == "led" || id == "schottky_diode"
+                || id == "potentiometer" || id == "fuse" || id.startsWith("switch"))
+                return 2;
+            if (id == "npn" || id == "pnp" || id == "nmos" || id == "pmos" || id == "njfet"
+                || id == "pjfet" || id == "opamp_741" || id.startsWith("logic")
+                || id == "vcvs" || id == "vccs" || id == "ccvs" || id == "cccs")
+                return 3;
+            if (id == "transformer" || id == "coupled_inductor" || id.startsWith("relay"))
+                return 3;
+            return 4;
+        };
+
+        std::array<int, 6> rowCounts {};
+        for (auto& instance : instances)
+        {
+            const auto column = std::clamp(roleColumn(instance), 0, 5);
+            const auto row = rowCounts[(size_t)column]++;
+            float x = 144.0f + (float)column * 168.0f;
+            float y = 144.0f + (float)row * 120.0f;
+            if (instance.symbolId == "power_bus") y = 72.0f;
+            if (instance.symbolId == "ground" || instance.symbolId == "ground_bus") y += 96.0f;
+            if (isInstrumentNode(instance.symbolId)) y = 144.0f + (float)row * 144.0f;
+            instance.position = snapPoint({ x, y });
+        }
+
+        selectedInstances.clear();
+        selectedInstance = instances.empty() ? -1 : 0;
+        if (selectedInstance >= 0)
+            selectedInstances.add(selectedInstance);
+        notifySelection();
+        repaint();
+
+        juce::String result;
+        result << "{\n";
+        result << "  \"ok\": true,\n";
+        result << "  \"tool\": \"schematic_auto_layout\",\n";
+        result << "  \"displayTool\": \"schematic.auto_layout\",\n";
+        result << "  \"scope\": \"diagram\",\n";
+        result << "  \"componentCount\": " << (int)instances.size() << ",\n";
+        result << "  \"style\": \"left_to_right_standard_grid\"\n";
+        result << "}";
+        if (onStatus) onStatus("Auto-laid out " + juce::String((int)instances.size()) + " schematic component(s).");
+        return result;
+    }
+
     juce::String connectNodesFromTool(const juce::String& firstLabel, const juce::String& secondLabel)
     {
         WireNode first;
@@ -1804,11 +1888,13 @@ private:
     std::vector<Probe> probes;
     WireNode wireDragStart;
     int selectedInstance = -1;
+    juce::Array<int> selectedInstances;
     int nextRef = 1;
     bool dragHover = false;
     juce::String dragMessage = "Drop symbol on schematic";
     bool wireDragging = false;
     bool draggingInstance = false;
+    bool selectingBox = false;
     bool resizingRail = false;
     bool resizingLeftRailEnd = false;
     bool snapEnabled = true;
@@ -1818,6 +1904,9 @@ private:
     float canvasZoom = 1.0f;
     juce::Point<float> viewOffset { 0.0f, 0.0f };
     juce::Point<float> panStartMouse;
+    juce::Point<float> selectionBoxStart;
+    juce::Point<float> selectionBoxEnd;
+    std::vector<juce::Point<float>> selectedDragStartPositions;
     juce::Point<float> panStartOffset;
     juce::Point<float> dragStartMouse;
     juce::Point<float> dragStartPosition;
@@ -1896,6 +1985,7 @@ private:
         junctions.clear();
         probes.clear();
         selectedInstance = -1;
+        selectedInstances.clear();
         nextRef = 1;
         wireDragging = false;
         draggingInstance = false;
@@ -2572,6 +2662,83 @@ private:
         return -1;
     }
 
+    bool isInstanceSelected(int index) const
+    {
+        return selectedInstances.contains(index);
+    }
+
+    void toggleInstanceSelection(int index)
+    {
+        if (selectedInstances.contains(index))
+            selectedInstances.removeFirstMatchingValue(index);
+        else
+            selectedInstances.add(index);
+
+        selectedInstance = selectedInstances.isEmpty() ? -1 : selectedInstances.getLast();
+    }
+
+    void beginSelectionBox(juce::Point<float> start)
+    {
+        selectedInstances.clear();
+        selectedInstance = -1;
+        selectingBox = true;
+        selectionBoxStart = start;
+        selectionBoxEnd = start;
+        notifySelection();
+        repaint();
+    }
+
+    juce::Rectangle<float> currentSelectionBox() const
+    {
+        return juce::Rectangle<float>::leftTopRightBottom(std::min(selectionBoxStart.x, selectionBoxEnd.x),
+                                                          std::min(selectionBoxStart.y, selectionBoxEnd.y),
+                                                          std::max(selectionBoxStart.x, selectionBoxEnd.x),
+                                                          std::max(selectionBoxStart.y, selectionBoxEnd.y));
+    }
+
+    void updateSelectionFromBox()
+    {
+        const auto box = currentSelectionBox();
+        selectedInstances.clear();
+        for (int i = 0; i < (int)instances.size(); ++i)
+        {
+            const auto symbol = symbolFor(instances[(size_t)i].symbolId);
+            if (box.intersects(orientedBounds(instances[(size_t)i], symbol).expanded(4.0f)))
+                selectedInstances.add(i);
+        }
+        selectedInstance = selectedInstances.isEmpty() ? -1 : selectedInstances.getLast();
+        notifySelection();
+    }
+
+    void captureSelectedDragStarts()
+    {
+        selectedDragStartPositions.clear();
+        selectedDragStartPositions.resize((size_t)instances.size());
+        for (int i = 0; i < (int)instances.size(); ++i)
+            selectedDragStartPositions[(size_t)i] = instances[(size_t)i].position;
+    }
+
+    void moveSelectedInstances(juce::Point<float> delta)
+    {
+        for (int index : selectedInstances)
+        {
+            if (index >= 0 && index < (int)instances.size())
+                instances[(size_t)index].position = snapPoint(selectedDragStartPositions[(size_t)index] + delta);
+        }
+    }
+
+    void drawSelectionBox(juce::Graphics& g)
+    {
+        if (!selectingBox)
+            return;
+
+        const auto box = currentSelectionBox();
+        g.setColour(juce::Colour(0x3329b6f6));
+        g.fillRect(box);
+        g.setColour(juce::Colour(0xff29b6f6));
+        g.drawRect(box, 1.5f);
+    }
+
     WireNode nodeAt(juce::Point<float> rawPosition, juce::Point<float> snappedPosition)
     {
         if (auto pin = hitTestPin(rawPosition); pin.instanceIndex >= 0)
@@ -2917,6 +3084,7 @@ private:
             adjustNodeAfterDeletingInstance(probe.node, selectedInstance);
 
         selectedInstance = -1;
+        selectedInstances.clear();
         notifySelection();
         for (const auto& probeId : returnedProbes)
             if (onProbeChanged) onProbeChanged(probeId, {}, {});
@@ -2970,6 +3138,8 @@ private:
                               0,
                               isRailBus(symbol.id) ? 420.0f : 0.0f });
         selectedInstance = (int)instances.size() - 1;
+        selectedInstances.clear();
+        selectedInstances.add(selectedInstance);
         notifySelection();
         if (onStatus) onStatus("Placed " + symbol.title + (snapEnabled ? " at schematic grid." : "."));
     }
@@ -2988,8 +3158,8 @@ private:
     void drawSymbolBody(juce::Graphics& g, const Instance& instance, const SymbolDef& symbol)
     {
         const auto selectionBounds = orientedBounds(instance, symbol).expanded(8.0f);
-        if (selectedInstance >= 0 && selectedInstance < (int)instances.size()
-            && &instance == &instances[(size_t)selectedInstance])
+        const auto instanceIndex = (int)(&instance - instances.data());
+        if (instanceIndex >= 0 && instanceIndex < (int)instances.size() && isInstanceSelected(instanceIndex))
         {
             g.setColour(juce::Colour(0xffffc857));
             const auto r = selectionBounds;
@@ -4272,6 +4442,7 @@ public:
         std::function<juce::String(const juce::String&, const juce::String&)> connectNodes;
         std::function<juce::String(const juce::String&)> openInstrument;
         std::function<juce::String(double, double)> designHighPass;
+        std::function<juce::String()> autoLayout;
         std::function<juce::String(const juce::String&, int)> cookbookLookup;
         std::function<juce::String()> cookbookCoverage;
         std::function<juce::String()> cookbookValidate;
@@ -4661,6 +4832,7 @@ private:
                "for scopes and meters, wire pins by labels such as R1.1 or SCOPE2.CH1, and remember "
                "that floating instrument windows are preferred. "
                "Use filter_design_high_pass when asked to synthesize a matched RLC high-pass filter and produce AC response artifacts. "
+               "Use schematic_auto_layout after creating or editing a diagram so the result is readable and spaced. "
                "Use cookbook_lookup when requirements imply topology selection, design equations, validation recipes, troubleshooting, "
                "or when you need to compare established circuit candidates before building. "
                "Use cookbook_coverage to inspect cookbook domain coverage and identify missing recipe areas. "
@@ -4737,6 +4909,11 @@ private:
                 "filter_design_high_pass",
                 "Design and draw a matched RLC 2nd order high-pass filter, then run the internal AC sweep and export response artifacts.",
                 R"({"type":"object","properties":{"cutoffHz":{"type":"number","description":"Target -3 dB cutoff frequency in Hz."},"impedanceOhms":{"type":"number","description":"Matched source/load impedance in ohms."}},"required":["cutoffHz","impedanceOhms"],"additionalProperties":false})"
+            },
+            {
+                "schematic_auto_layout",
+                "Automatically arrange the current schematic into a readable left-to-right diagram using standard spacing conventions.",
+                R"({"type":"object","properties":{},"additionalProperties":false})"
             },
             {
                 "schematic_place_symbol",
@@ -4879,6 +5056,11 @@ private:
                 ? tools.designHighPass(cutoffHz, impedanceOhms)
                 : "{ \"ok\": false, \"error\": \"High-pass filter design tool unavailable.\" }";
         }
+
+        if (name == "schematic_auto_layout")
+            return tools.autoLayout != nullptr
+                ? tools.autoLayout()
+                : "{ \"ok\": false, \"error\": \"Schematic auto-layout is unavailable.\" }";
 
         if (name == "schematic_place_symbol")
         {
@@ -5498,6 +5680,9 @@ ElectronicsWorkbench::ElectronicsWorkbench()
             return schematicResult;
         return designRlcHighPassFilterTool(cutoffHz, impedanceOhms);
     };
+    autoLayoutTool = [panel = schematic.get()] {
+        return panel->autoLayoutFromTool();
+    };
     AgentPanel::HostTools agentTools;
     agentTools.inspectCircuit = [this] {
         return getCircuitJson != nullptr ? getCircuitJson() : juce::String("{}");
@@ -5528,6 +5713,11 @@ ElectronicsWorkbench::ElectronicsWorkbench()
         return designHighPassTool != nullptr
             ? designHighPassTool(cutoffHz, impedanceOhms)
             : juce::String("{ \"ok\": false, \"error\": \"High-pass filter design is unavailable.\" }");
+    };
+    agentTools.autoLayout = [this] {
+        return autoLayoutTool != nullptr
+            ? autoLayoutTool()
+            : juce::String("{ \"ok\": false, \"error\": \"Schematic auto-layout is unavailable.\" }");
     };
     agentTools.cookbookLookup = [this](const juce::String& query, int maxCards) {
         return cookbookLookupTool(query, maxCards);
@@ -5654,6 +5844,8 @@ juce::PopupMenu ElectronicsWorkbench::getMenuForIndex(int, const juce::String& m
     {
         menu.addItem(importComponent, "Import / Fetch Component Spec...");
         menu.addSeparator();
+        menu.addItem(autoLayoutDiagramItem, "Auto Layout Diagram");
+        menu.addSeparator();
         menu.addItem(runErc, "Run ERC");
     }
     else if (menuName == "Simulation")
@@ -5692,6 +5884,7 @@ void ElectronicsWorkbench::menuItemSelected(int menuItemID, int)
             appendLog("Dock layout reset.");
             break;
         case importComponent: appendLog("Component ingestion stub: BYOK agent/provider workflow pending."); break;
+        case autoLayoutDiagramItem: autoLayoutDiagram(); break;
         case runErc: runElectricalRuleCheck(); break;
         case designRlcHighPass: designRlcHighPassFilter(); break;
         case runOperatingPoint: exportCircuitArtifacts(); break;
@@ -5942,6 +6135,15 @@ juce::String ElectronicsWorkbench::buildAssistantToolManifestJson() const
     text << "        \"svg\": " << jsonQuote(runDir.getChildFile("rlc_high_pass_response.svg").getFullPathName()) << ",\n";
     text << "        \"report\": " << jsonQuote(runDir.getChildFile("rlc_high_pass_report.md").getFullPathName()) << "\n";
     text << "      }\n";
+    text << "    },\n";
+    text << "    {\n";
+    text << "      \"name\": \"schematic_auto_layout\",\n";
+    text << "      \"displayName\": \"schematic.auto_layout\",\n";
+    text << "      \"description\": \"Arrange the current schematic into a readable left-to-right diagram using standard spacing conventions.\",\n";
+    text << "      \"mode\": \"modify_schematic_model\",\n";
+    text << "      \"status\": \"active\",\n";
+    text << "      \"inputs\": {},\n";
+    text << "      \"outputs\": { \"layout\": \"updated component coordinates\" }\n";
     text << "    },\n";
     text << "    {\n";
     text << "      \"name\": \"schematic_place_symbol\",\n";
@@ -7052,6 +7254,28 @@ void ElectronicsWorkbench::designRlcHighPassFilter()
               + " dB. Graph: " + parsed.getProperty("responseSvg", {}).toString());
 }
 
+juce::String ElectronicsWorkbench::autoLayoutDiagramTool()
+{
+    return autoLayoutTool != nullptr
+        ? autoLayoutTool()
+        : juce::String("{ \"ok\": false, \"tool\": \"schematic_auto_layout\", \"displayTool\": \"schematic.auto_layout\", \"error\": \"Schematic auto-layout is unavailable.\" }");
+}
+
+void ElectronicsWorkbench::autoLayoutDiagram()
+{
+    const auto result = autoLayoutDiagramTool();
+    const auto parsed = juce::JSON::parse(result);
+    if (!parsed.isObject() || !(bool)parsed.getProperty("ok", false))
+    {
+        appendLog("Auto layout failed: " + parsed.getProperty("error", result).toString());
+        return;
+    }
+
+    appendLog("Auto-laid out "
+              + parsed.getProperty("componentCount", {}).toString()
+              + " schematic component(s).");
+}
+
 void ElectronicsWorkbench::showSpecDocument()
 {
     const auto spec = juce::File::getSpecialLocation(juce::File::currentExecutableFile)
@@ -7062,3 +7286,4 @@ void ElectronicsWorkbench::showSpecDocument()
         .getChildFile("ELECTRONICS_DESIGN_TOOL_SPEC.md");
     appendLog("Research spec path: " + spec.getFullPathName());
 }
+

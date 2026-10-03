@@ -31,6 +31,7 @@ private:
         runTransient,
         runCompiledPreview,
         designRlcHighPass,
+        autoLayoutDiagramItem,
         openAgentSettings,
         exportAgentTools,
         openResearchSpec
@@ -68,9 +69,11 @@ private:
     juce::String runElectricalRuleCheckTool();
     juce::String exportCircuitArtifactsTool();
     juce::String designRlcHighPassFilterTool(double cutoffHz, double impedanceOhms);
+    juce::String autoLayoutDiagramTool();
     void showSpecDocument();
     void exportCircuitArtifacts();
     void designRlcHighPassFilter();
+    void autoLayoutDiagram();
     void applySchematicZoom(float zoom);
     void adjustSchematicZoom(float factor);
 
@@ -103,6 +106,7 @@ private:
     std::function<juce::String(const juce::String&, const juce::String&)> connectNodesTool;
     std::function<juce::String(const juce::String&)> openInstrumentTool;
     std::function<juce::String(double, double)> designHighPassTool;
+    std::function<juce::String()> autoLayoutTool;
     std::function<void(const juce::File&, const juce::File&, double, double, double, double)> showFrequencyResponse;
     std::function<void()> openAgentSettingsDialog;
     std::function<void(bool)> setSnapEnabled;
@@ -111,3 +115,4 @@ private:
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(ElectronicsWorkbench)
 };
+
