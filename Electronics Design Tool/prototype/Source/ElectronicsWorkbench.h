@@ -104,6 +104,8 @@ private:
     std::function<bool(const juce::String&, juce::String&)> loadCircuitJson;
     std::function<juce::String(const juce::String&, float, float, const juce::String&,
                                const juce::String&, const juce::String&)> placeSymbolTool;
+    std::function<juce::String(const juce::String&, const juce::String&, const juce::String&,
+                               const juce::String&, const juce::String&, const juce::String&)> setComponentPropertiesTool;
     std::function<juce::String(const juce::String&, const juce::String&)> connectNodesTool;
     std::function<juce::String(const juce::String&)> openInstrumentTool;
     std::function<juce::String(double, double)> designHighPassTool;

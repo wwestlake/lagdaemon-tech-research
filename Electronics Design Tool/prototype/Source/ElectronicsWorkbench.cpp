@@ -1696,6 +1696,52 @@ public:
         return result;
     }
 
+    juce::String setComponentPropertiesFromTool(const juce::String& refdes,
+                                                const juce::String& value,
+                                                const juce::String& frequency,
+                                                const juce::String& busName,
+                                                const juce::String& family,
+                                                const juce::String& manufacturerPart)
+    {
+        const auto index = instanceIndexForRefdes(refdes.trim());
+        if (index < 0)
+            return toolFailure("schematic_set_component_properties", "No placed instance has reference designator " + refdes.trim() + ".");
+
+        auto& instance = instances[(size_t)index];
+        auto applyIfNotVoid = [](const juce::String& incoming, juce::String& target) {
+            if (incoming.isNotEmpty())
+                target = incoming.trim();
+        };
+
+        applyIfNotVoid(value, instance.value);
+        applyIfNotVoid(frequency, instance.frequency);
+        applyIfNotVoid(busName, instance.busName);
+        applyIfNotVoid(family, instance.family);
+        applyIfNotVoid(manufacturerPart, instance.manufacturerPart);
+
+        selectedInstance = index;
+        selectedInstances.clear();
+        selectedInstances.add(index);
+        selectedGroup = -1;
+        notifySelection();
+        forceDeferredRepaint();
+
+        juce::String result;
+        result << "{\n";
+        result << "  \"ok\": true,\n";
+        result << "  \"tool\": \"schematic_set_component_properties\",\n";
+        result << "  \"displayTool\": \"schematic.set_component_properties\",\n";
+        result << "  \"refdes\": " << quote(instance.refdes) << ",\n";
+        result << "  \"symbolId\": " << quote(instance.symbolId) << ",\n";
+        result << "  \"value\": " << quote(instance.value) << ",\n";
+        result << "  \"frequency\": " << quote(instance.frequency) << ",\n";
+        result << "  \"busName\": " << quote(instance.busName) << ",\n";
+        result << "  \"family\": " << quote(instance.family) << ",\n";
+        result << "  \"manufacturerPart\": " << quote(instance.manufacturerPart) << "\n";
+        result << "}";
+        return result;
+    }
+
     juce::String createRlcHighPassFilterFromTool(double cutoffHz, double impedanceOhms)
     {
         if (cutoffHz <= 0.0 || impedanceOhms <= 0.0)
@@ -4662,6 +4708,8 @@ public:
         std::function<juce::String()> exportArtifacts;
         std::function<juce::String(const juce::String&, float, float, const juce::String&,
                                    const juce::String&, const juce::String&)> placeSymbol;
+        std::function<juce::String(const juce::String&, const juce::String&, const juce::String&,
+                                   const juce::String&, const juce::String&, const juce::String&)> setComponentProperties;
         std::function<juce::String(const juce::String&, const juce::String&)> connectNodes;
         std::function<juce::String(const juce::String&)> openInstrument;
         std::function<juce::String(double, double)> designHighPass;
@@ -5157,9 +5205,14 @@ private:
                 R"({"type":"object","properties":{"symbolId":{"type":"string","description":"Supported symbol id: resistor, potentiometer, capacitor, capacitor_polarized, variable_capacitor, inductor, coupled_inductor, transformer, diode, zener_diode, led, schottky_diode, power_bus, ground_bus, power_port, battery, voltage_source, ac_voltage_source, current_source, ac_current_source, vcvs, vccs, ccvs, cccs, signal_source, ground, opamp_741, npn, pnp, nmos, pmos, njfet, pjfet, switch_spst, switch_spdt, relay_spst, fuse, connector_2, connector_3, test_point, logic_not, logic_and, logic_or, logic_nand, logic_nor, logic_xor, oscilloscope_2ch, or digital_multimeter. Use ground and power_port symbols at each pin that needs ground or a supply instead of long wires: power_port takes busName like +12V (drawn pointing up) or -12V (place with a leading minus; drawn pointing down); ports with the same busName are the same net. Unsupported symbols are rejected, not substituted."},"x":{"type":"number","description":"Grid x coordinate. Leave at least 144 px horizontal space from other symbols."},"y":{"type":"number","description":"Grid y coordinate. Leave at least 96 px vertical space from other symbols."},"value":{"type":"string"},"frequency":{"type":"string"},"busName":{"type":"string"}},"required":["symbolId","x","y"],"additionalProperties":false})"
             },
             {
+                "schematic_set_component_properties",
+                "Set value, source frequency, bus/net name, family, or manufacturer part for an existing schematic component by reference designator. Omitted or empty properties leave the existing value unchanged.",
+                R"({"type":"object","properties":{"refdes":{"type":"string","description":"Reference designator such as R1, C2, V1, PWR3, or SCOPE1."},"value":{"type":"string","description":"Component value, source amplitude, model name, or instrument function."},"frequency":{"type":"string","description":"Source frequency such as 1k or 10."},"busName":{"type":"string","description":"Net label or rail name such as +12V, -12V, Input, or Output."},"family":{"type":"string","description":"Component family/model family."},"manufacturerPart":{"type":"string","description":"Specific manufacturer part number."}},"required":["refdes"],"additionalProperties":false})"
+            },
+            {
                 "schematic_connect",
                 "Connect two schematic pins or junctions by label, such as R1.1 to GND2.0.",
-                R"({"type":"object","properties":{"a":{"type":"string","description":"First node label such as R1.1, V2.+, GND3.0, SCOPE4.CH1, or J1."},"b":{"type":"string","description":"Second node label."}},"required":["a","b"],"additionalProperties":false})"
+                R"({"type":"object","properties":{"a":{"type":"string","description":"First node label such as R1.1, V2.+, GND3.0, SCOPE4.CH1, or N1."},"b":{"type":"string","description":"Second node label."}},"required":["a","b"],"additionalProperties":false})"
             },
             {
                 "instrument_open_panel",
@@ -5324,6 +5377,25 @@ private:
             return tools.placeSymbol != nullptr
                 ? tools.placeSymbol(symbolId, x, y, value, frequency, busName)
                 : "{ \"ok\": false, \"error\": \"Schematic placement tool unavailable.\" }";
+        }
+
+        if (name == "schematic_set_component_properties")
+        {
+            if (!parsed.isObject())
+                return "{ \"ok\": false, \"error\": \"schematic_set_component_properties arguments must be a JSON object.\" }";
+
+            const auto refdes = parsed.getProperty("refdes", {}).toString().trim();
+            if (refdes.isEmpty())
+                return "{ \"ok\": false, \"error\": \"refdes is required.\" }";
+
+            return tools.setComponentProperties != nullptr
+                ? tools.setComponentProperties(refdes,
+                                               parsed.getProperty("value", {}).toString(),
+                                               parsed.getProperty("frequency", {}).toString(),
+                                               parsed.getProperty("busName", {}).toString(),
+                                               parsed.getProperty("family", {}).toString(),
+                                               parsed.getProperty("manufacturerPart", {}).toString())
+                : "{ \"ok\": false, \"error\": \"Schematic property editing is unavailable.\" }";
         }
 
         if (name == "schematic_connect")
@@ -5912,6 +5984,14 @@ ElectronicsWorkbench::ElectronicsWorkbench()
                                                 const juce::String& busName) {
         return panel->placeSymbolFromTool(symbolId, x, y, value, frequency, busName);
     };
+    setComponentPropertiesTool = [panel = schematic.get()](const juce::String& refdes,
+                                                           const juce::String& value,
+                                                           const juce::String& frequency,
+                                                           const juce::String& busName,
+                                                           const juce::String& family,
+                                                           const juce::String& manufacturerPart) {
+        return panel->setComponentPropertiesFromTool(refdes, value, frequency, busName, family, manufacturerPart);
+    };
     connectNodesTool = [panel = schematic.get()](const juce::String& firstLabel,
                                                  const juce::String& secondLabel) {
         return panel->connectNodesFromTool(firstLabel, secondLabel);
@@ -5954,6 +6034,16 @@ ElectronicsWorkbench::ElectronicsWorkbench()
         return placeSymbolTool != nullptr
             ? placeSymbolTool(symbolId, x, y, value, frequency, busName)
             : juce::String("{ \"ok\": false, \"error\": \"Schematic placement is unavailable.\" }");
+    };
+    agentTools.setComponentProperties = [this](const juce::String& refdes,
+                                               const juce::String& value,
+                                               const juce::String& frequency,
+                                               const juce::String& busName,
+                                               const juce::String& family,
+                                               const juce::String& manufacturerPart) {
+        return setComponentPropertiesTool != nullptr
+            ? setComponentPropertiesTool(refdes, value, frequency, busName, family, manufacturerPart)
+            : juce::String("{ \"ok\": false, \"error\": \"Schematic property editing is unavailable.\" }");
     };
     agentTools.connectNodes = [this](const juce::String& firstLabel, const juce::String& secondLabel) {
         return connectNodesTool != nullptr
@@ -6448,13 +6538,28 @@ juce::String ElectronicsWorkbench::buildAssistantToolManifestJson() const
     text << "      }\n";
     text << "    },\n";
     text << "    {\n";
+    text << "      \"name\": \"schematic_set_component_properties\",\n";
+    text << "      \"displayName\": \"schematic.set_component_properties\",\n";
+    text << "      \"description\": \"Set component value, source frequency, bus/net name, family, or manufacturer part by reference designator.\",\n";
+    text << "      \"mode\": \"modify_schematic_model\",\n";
+    text << "      \"status\": \"active\",\n";
+    text << "      \"inputs\": {\n";
+    text << "        \"refdes\": \"existing component reference designator\",\n";
+    text << "        \"value\": \"optional component value or instrument mode\",\n";
+    text << "        \"frequency\": \"optional source frequency\",\n";
+    text << "        \"busName\": \"optional rail/net label\",\n";
+    text << "        \"family\": \"optional component family\",\n";
+    text << "        \"manufacturerPart\": \"optional manufacturer part number\"\n";
+    text << "      }\n";
+    text << "    },\n";
+    text << "    {\n";
     text << "      \"name\": \"schematic_connect\",\n";
     text << "      \"displayName\": \"schematic.connect\",\n";
     text << "      \"description\": \"Connect two schematic pins or junctions by label.\",\n";
     text << "      \"mode\": \"modify_schematic_model\",\n";
     text << "      \"status\": \"active\",\n";
     text << "      \"inputs\": {\n";
-    text << "        \"a\": \"node label such as R1.1, V2.+, GND3.0, SCOPE4.CH1, or J1\",\n";
+    text << "        \"a\": \"node label such as R1.1, V2.+, GND3.0, SCOPE4.CH1, or N1\",\n";
     text << "        \"b\": \"node label\"\n";
     text << "      }\n";
     text << "    },\n";
