@@ -46,6 +46,8 @@ The build-time validator also checks acceptance-goal coverage and verifies that
 each goal references real cookbook cards.
 The BYOK agent can inspect the representative acceptance suite through
 `cookbook_acceptance_goals`, optionally filtered by domain or exact goal id.
+Before executing an acceptance goal, use `cookbook_acceptance_start` to create a
+JSON and Markdown evidence scaffold under the generated run artifacts folder.
 
 For build-time validation, run:
 

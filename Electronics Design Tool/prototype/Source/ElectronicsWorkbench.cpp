@@ -4114,6 +4114,7 @@ public:
         std::function<juce::String()> cookbookCoverage;
         std::function<juce::String()> cookbookValidate;
         std::function<juce::String(const juce::String&)> cookbookAcceptanceGoals;
+        std::function<juce::String(const juce::String&)> cookbookAcceptanceStart;
         std::function<juce::String()> toolManifest;
         std::function<void(const juce::String&)> log;
     };
@@ -4498,6 +4499,7 @@ private:
                "Use cookbook_coverage to inspect cookbook domain coverage and identify missing recipe areas. "
                "Use cookbook_validate to check cookbook schema quality and taxonomy alignment after cookbook edits. "
                "Use cookbook_acceptance_goals to inspect representative engineering goals for agent validation. "
+               "Use cookbook_acceptance_start before executing an acceptance goal so evidence has a durable report scaffold. "
                "Use filesystem LiteSemRAG cards as retrieved guidance; do not assume Suite VFS storage. "
                "Be concise, report tool results plainly, and do not claim a circuit is ready for solver-backed "
                "analysis until circuit_run_erc has passed or you have explained the remaining warnings.";
@@ -4525,6 +4527,11 @@ private:
                 "cookbook_acceptance_goals",
                 "List representative agent acceptance goals, optionally filtered by domain or goal id.",
                 R"({"type":"object","properties":{"domainOrId":{"type":"string","description":"Optional acceptance domain such as passive_filter, or exact goal id."}},"additionalProperties":false})"
+            },
+            {
+                "cookbook_acceptance_start",
+                "Create a structured acceptance report scaffold for a representative goal id.",
+                R"({"type":"object","properties":{"goalId":{"type":"string","description":"Exact acceptance goal id to start."}},"required":["goalId"],"additionalProperties":false})"
             },
             {
                 "circuit_inspect",
@@ -4609,6 +4616,19 @@ private:
             return tools.cookbookAcceptanceGoals != nullptr
                 ? tools.cookbookAcceptanceGoals(domainOrId)
                 : "{ \"ok\": false, \"error\": \"Cookbook acceptance goals are unavailable.\" }";
+        }
+
+        if (name == "cookbook_acceptance_start")
+        {
+            if (!parsed.isObject())
+                return "{ \"ok\": false, \"error\": \"cookbook_acceptance_start arguments must be a JSON object.\" }";
+
+            const auto goalId = parsed.getProperty("goalId", {}).toString().trim();
+            if (goalId.isEmpty())
+                return "{ \"ok\": false, \"error\": \"goalId is required.\" }";
+            return tools.cookbookAcceptanceStart != nullptr
+                ? tools.cookbookAcceptanceStart(goalId)
+                : "{ \"ok\": false, \"error\": \"Cookbook acceptance start is unavailable.\" }";
         }
 
         if (name == "circuit_run_erc")
@@ -5286,6 +5306,9 @@ ElectronicsWorkbench::ElectronicsWorkbench()
     agentTools.cookbookAcceptanceGoals = [this](const juce::String& domainOrId) {
         return cookbookAcceptanceGoalsTool(domainOrId);
     };
+    agentTools.cookbookAcceptanceStart = [this](const juce::String& goalId) {
+        return cookbookAcceptanceStartTool(goalId);
+    };
     agentTools.toolManifest = [this] { return buildAssistantToolManifestJson(); };
     agentTools.log = [this](const juce::String& text) { appendLog(text); };
     auto agent = std::make_unique<AgentPanel>(std::move(agentTools));
@@ -5576,6 +5599,14 @@ juce::String ElectronicsWorkbench::buildAssistantToolManifestJson() const
     text << "      \"mode\": \"read_only_knowledge\",\n";
     text << "      \"inputs\": { \"domainOrId\": \"optional domain or exact goal id\" },\n";
     text << "      \"outputs\": { \"goals\": \"matching acceptance goals\", \"requiredDomains\": \"array\" }\n";
+    text << "    },\n";
+    text << "    {\n";
+    text << "      \"name\": \"cookbook_acceptance_start\",\n";
+    text << "      \"displayName\": \"cookbook.acceptance_start\",\n";
+    text << "      \"description\": \"Create a structured acceptance report scaffold for a representative goal id.\",\n";
+    text << "      \"mode\": \"write_generated_artifacts\",\n";
+    text << "      \"inputs\": { \"goalId\": \"exact acceptance goal id\" },\n";
+    text << "      \"outputs\": { \"jsonReport\": \"acceptance report scaffold\", \"markdownReport\": \"human-readable checklist\" }\n";
     text << "    },\n";
     text << "    {\n";
     text << "      \"name\": \"circuit_inspect\",\n";
@@ -6005,6 +6036,121 @@ juce::String ElectronicsWorkbench::cookbookAcceptanceGoalsTool(const juce::Strin
 
     result << "\n  ],\n";
     result << "  \"goalCount\": " << matched << "\n";
+    result << "}\n";
+    return result;
+}
+
+juce::String ElectronicsWorkbench::cookbookAcceptanceStartTool(const juce::String& goalId) const
+{
+    const auto acceptanceFile = electronics_knowledge::getKnowledgeRoot().getChildFile("COOKBOOK_ACCEPTANCE_GOALS.json");
+    const auto parsedAcceptance = juce::JSON::parse(acceptanceFile.loadFileAsString());
+    auto* goals = parsedAcceptance.getProperty("goals", {}).getArray();
+    if (!parsedAcceptance.isObject() || goals == nullptr)
+    {
+        return "{ \"ok\": false, \"tool\": \"cookbook_acceptance_start\", \"displayTool\": \"cookbook.acceptance_start\", \"error\": "
+            + jsonQuote("Could not read cookbook acceptance goals: " + acceptanceFile.getFullPathName()) + " }";
+    }
+
+    juce::var selectedGoal;
+    for (const auto& goal : *goals)
+    {
+        if (goal.getProperty("id", {}).toString().equalsIgnoreCase(goalId))
+        {
+            selectedGoal = goal;
+            break;
+        }
+    }
+
+    if (!selectedGoal.isObject())
+    {
+        return "{ \"ok\": false, \"tool\": \"cookbook_acceptance_start\", \"displayTool\": \"cookbook.acceptance_start\", \"error\": "
+            + jsonQuote("Unknown acceptance goal id: " + goalId) + " }";
+    }
+
+    auto safeName = goalId.retainCharacters("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_.-");
+    if (safeName.isEmpty())
+        safeName = "acceptance_goal";
+
+    const auto runDir = generatedRunDirectory().getChildFile("acceptance").getChildFile(safeName);
+    if (!runDir.createDirectory())
+    {
+        return "{ \"ok\": false, \"tool\": \"cookbook_acceptance_start\", \"displayTool\": \"cookbook.acceptance_start\", \"error\": "
+            + jsonQuote("Could not create acceptance run directory: " + runDir.getFullPathName()) + " }";
+    }
+
+    const auto jsonReport = runDir.getChildFile("acceptance_report.json");
+    const auto markdownReport = runDir.getChildFile("acceptance_report.md");
+
+    auto appendJsonArray = [](juce::String& out, const juce::var& value) {
+        const auto text = juce::JSON::toString(value, true);
+        out << (text.isNotEmpty() ? text : "[]");
+    };
+
+    auto markdownChecklist = [](const juce::var& value) {
+        juce::String text;
+        if (auto* array = value.getArray())
+        {
+            for (const auto& item : *array)
+                text << "- [ ] " << item.toString() << "\n";
+        }
+        return text;
+    };
+
+    juce::String json;
+    json << "{\n";
+    json << "  \"schemaVersion\": 1,\n";
+    json << "  \"kind\": \"djehuti_acceptance_run_report\",\n";
+    json << "  \"status\": \"not_started\",\n";
+    json << "  \"goal\": ";
+    appendJsonArray(json, selectedGoal);
+    json << ",\n";
+    json << "  \"evidence\": {\n";
+    json << "    \"retrievedCards\": [],\n";
+    json << "    \"toolCalls\": [],\n";
+    json << "    \"artifacts\": [],\n";
+    json << "    \"capabilityGaps\": [],\n";
+    json << "    \"notes\": []\n";
+    json << "  },\n";
+    json << "  \"criteriaResults\": [],\n";
+    json << "  \"finalDetermination\": \"unverified\"\n";
+    json << "}\n";
+
+    juce::String markdown;
+    markdown << "# Acceptance Run: " << selectedGoal.getProperty("id", goalId).toString() << "\n\n";
+    markdown << "- Domain: `" << selectedGoal.getProperty("domain", {}).toString() << "`\n";
+    markdown << "- Status: `not_started`\n";
+    markdown << "- Determination: `unverified`\n\n";
+    markdown << "## Prompt\n\n" << selectedGoal.getProperty("prompt", {}).toString() << "\n\n";
+    markdown << "## Required Cookbook Retrieval\n\n" << markdownChecklist(selectedGoal.getProperty("mustRetrieve", {})) << "\n";
+    markdown << "## Required Tool Evidence\n\n" << markdownChecklist(selectedGoal.getProperty("requiredToolEvidence", {})) << "\n";
+    markdown << "## Pass Criteria\n\n" << markdownChecklist(selectedGoal.getProperty("passCriteria", {})) << "\n";
+    markdown << "## Expected Capability Gaps\n\n" << markdownChecklist(selectedGoal.getProperty("expectedCapabilityGaps", {})) << "\n";
+    markdown << "## Evidence Log\n\n- [ ] Record cookbook cards retrieved.\n- [ ] Record tool calls and result paths.\n- [ ] Record generated plots/data and whether they came from real tool output.\n- [ ] Record capability gaps instead of filling missing steps manually.\n";
+
+    if (!jsonReport.replaceWithText(json))
+    {
+        return "{ \"ok\": false, \"tool\": \"cookbook_acceptance_start\", \"displayTool\": \"cookbook.acceptance_start\", \"error\": "
+            + jsonQuote("Could not write acceptance JSON report: " + jsonReport.getFullPathName()) + " }";
+    }
+
+    if (!markdownReport.replaceWithText(markdown))
+    {
+        return "{ \"ok\": false, \"tool\": \"cookbook_acceptance_start\", \"displayTool\": \"cookbook.acceptance_start\", \"error\": "
+            + jsonQuote("Could not write acceptance markdown report: " + markdownReport.getFullPathName()) + " }";
+    }
+
+    juce::String result;
+    result << "{\n";
+    result << "  \"ok\": true,\n";
+    result << "  \"schemaVersion\": 1,\n";
+    result << "  \"kind\": \"djehuti_assistant_tool_result\",\n";
+    result << "  \"tool\": \"cookbook_acceptance_start\",\n";
+    result << "  \"displayTool\": \"cookbook.acceptance_start\",\n";
+    result << "  \"status\": \"started\",\n";
+    result << "  \"goalId\": " << jsonQuote(goalId) << ",\n";
+    result << "  \"artifactDirectory\": " << jsonQuote(runDir.getFullPathName()) << ",\n";
+    result << "  \"jsonReport\": " << jsonQuote(jsonReport.getFullPathName()) << ",\n";
+    result << "  \"markdownReport\": " << jsonQuote(markdownReport.getFullPathName()) << "\n";
     result << "}\n";
     return result;
 }

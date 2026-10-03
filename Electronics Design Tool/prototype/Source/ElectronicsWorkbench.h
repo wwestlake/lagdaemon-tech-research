@@ -51,6 +51,7 @@ private:
     juce::String cookbookCoverageTool() const;
     juce::String cookbookValidateTool() const;
     juce::String cookbookAcceptanceGoalsTool(const juce::String& domainOrId) const;
+    juce::String cookbookAcceptanceStartTool(const juce::String& goalId) const;
     juce::String runElectricalRuleCheckTool();
     juce::String exportCircuitArtifactsTool();
     juce::String designRlcHighPassFilterTool(double cutoffHz, double impedanceOhms);
