@@ -37,6 +37,23 @@ void showCursorForEvent(const juce::MouseEvent& event, juce::MouseCursor cursor)
         source.showMouseCursor(cursor);
 }
 
+juce::Colour dmmLeadColour(bool positive)
+{
+    return positive ? juce::Colour(0xffd85f5f) : juce::Colour(0xff1a1f25);
+}
+
+juce::Colour scopeChannelColour(int channelIndex)
+{
+    static const juce::Colour colours[] = {
+        juce::Colour(0xffc86a6a),
+        juce::Colour(0xff6fac7d),
+        juce::Colour(0xff6687c6),
+        juce::Colour(0xffc4ad58)
+    };
+
+    return colours[(size_t)juce::jlimit(0, 3, channelIndex % 4)];
+}
+
 juce::String jsonQuote(const juce::String& text)
 {
     return "\"" + text.replace("\\", "\\\\").replace("\"", "\\\"") + "\"";
@@ -2652,10 +2669,10 @@ private:
 
     static juce::Colour probeColour(const juce::String& id)
     {
-        if (id == "DMM_HI") return juce::Colour(0xffffc857);
-        if (id == "DMM_LO") return juce::Colour(0xff93a7b0);
-        if (id == "SCOPE_CH1") return juce::Colour(0xff78dcca);
-        if (id == "SCOPE_CH2") return juce::Colour(0xffff6b6b);
+        if (id == "DMM_HI") return dmmLeadColour(true);
+        if (id == "DMM_LO") return dmmLeadColour(false);
+        if (id == "SCOPE_CH1") return scopeChannelColour(0);
+        if (id == "SCOPE_CH2") return scopeChannelColour(1);
         return juce::Colour(0xffdce9ee);
     }
 
@@ -3221,7 +3238,8 @@ private:
     */
 };
 
-class InstrumentPanel final : public juce::Component
+class InstrumentPanel final : public juce::Component,
+                              public juce::Timer
 {
 public:
     InstrumentPanel()
@@ -3338,6 +3356,20 @@ public:
         dmmTrueRms.setToggleState(true, juce::dontSendNotification);
         dmmAutoRange.setToggleState(true, juce::dontSendNotification);
         dmmContinuityBeep.setToggleState(true, juce::dontSendNotification);
+
+        stripRecord.setButtonText("Record");
+        stripRecord.setToggleState(true, juce::dontSendNotification);
+        stripRecord.setColour(juce::ToggleButton::textColourId, juce::Colour(0xffdce9ee));
+        addAndMakeVisible(stripRecord);
+
+        stripScale.addItem("Per channel", 1);
+        stripScale.addItem("Shared", 2);
+        stripScale.setSelectedId(1, juce::dontSendNotification);
+        stripScale.setColour(juce::ComboBox::backgroundColourId, juce::Colour(0xff253341));
+        stripScale.setColour(juce::ComboBox::textColourId, juce::Colour(0xffdce9ee));
+        addAndMakeVisible(stripScale);
+
+        startTimerHz(5);
     }
 
     void setProbeTarget(const juce::String& id, const juce::String& target)
@@ -3403,20 +3435,28 @@ public:
         text << "        \"nplc\": " << quote(dmmNplc.getText().trim()) << ",\n";
         text << "        \"sampleRate\": " << quote(dmmSampleRate.getText().trim() + "Sa/s") << ",\n";
         text << "        \"digitizer\": { \"enabled\": true, \"resolutionBits\": 16 },\n";
+        text << "        \"slowRecording\": { \"enabled\": " << (stripRecord.getToggleState() ? "true" : "false")
+             << ", \"sampleRateHz\": 5, \"stripChart\": { \"enabled\": true, \"scaleMode\": "
+             << quote(stripScale.getSelectedId() == 2 ? "shared" : "per_channel") << ", \"windowSeconds\": 60 } },\n";
         text << "        \"statistics\": [\"min\", \"max\", \"average\", \"peakToPeak\", \"standardDeviation\"],\n";
         text << "        \"logging\": true,\n";
         text << "        \"graphing\": true,\n";
-        text << "        \"displayViews\": [\"numeric\", \"trend\", \"histogram\", \"bar\", \"waveform\"]\n";
+        text << "        \"displayViews\": [\"numeric\", \"trend\", \"histogram\", \"bar\", \"waveform\", \"strip_chart\"]\n";
         text << "      }\n";
         text << "    },\n";
         text << "    {\n";
         text << "      \"id\": \"SCOPE1\",\n";
         text << "      \"type\": \"digital_oscilloscope\",\n";
         text << "      \"channels\": [\n";
-        text << "        { \"name\": \"CH1\", \"target\": " << quote(scopeCh1Target.isEmpty() ? "bench" : scopeCh1Target) << " },\n";
-        text << "        { \"name\": \"CH2\", \"target\": " << quote(scopeCh2Target.isEmpty() ? "bench" : scopeCh2Target) << " }\n";
+        text << "        { \"name\": \"CH1\", \"target\": " << quote(scopeCh1Target.isEmpty() ? "bench" : scopeCh1Target)
+             << ", \"colour\": \"#c86a6a\" },\n";
+        text << "        { \"name\": \"CH2\", \"target\": " << quote(scopeCh2Target.isEmpty() ? "bench" : scopeCh2Target)
+             << ", \"colour\": \"#6fac7d\" }\n";
         text << "      ],\n";
-        text << "      \"display\": { \"view\": \"waveform\", \"grid\": true }\n";
+        text << "      \"display\": { \"view\": \"strip_chart\", \"grid\": true, \"recording\": "
+             << (stripRecord.getToggleState() ? "true" : "false") << ", \"scaleMode\": "
+             << quote(stripScale.getSelectedId() == 2 ? "shared" : "per_channel")
+             << ", \"windowSeconds\": 60, \"channelsExpandable\": true }\n";
         text << "    }\n";
         text << "  ]\n";
         text << "}\n";
@@ -3448,37 +3488,39 @@ public:
         g.drawText("NPLC", 248, 280, 70, 16, juce::Justification::centredLeft);
         g.drawText("Sa/s", 326, 280, 90, 16, juce::Justification::centredLeft);
 
-        drawProbeLead(g, dmmHiLead, "DMM+", juce::Colour(0xffffc857), dmmHighNet.getText().trim());
-        drawProbeLead(g, dmmLoLead, "DMM-", juce::Colour(0xff93a7b0), dmmLowNet.getText().trim());
-        drawProbeLead(g, scopeCh1Lead, "CH1", juce::Colour(0xff78dcca), scopeCh1Target);
-        drawProbeLead(g, scopeCh2Lead, "CH2", juce::Colour(0xffff6b6b), scopeCh2Target);
+        drawProbeLead(g, dmmHiLead, "DMM+", dmmLeadColour(true), dmmHighNet.getText().trim());
+        drawProbeLead(g, dmmLoLead, "DMM-", dmmLeadColour(false), dmmLowNet.getText().trim());
+        drawProbeLead(g, scopeCh1Lead, "CH1", scopeChannelColour(0), scopeCh1Target);
+        drawProbeLead(g, scopeCh2Lead, "CH2", scopeChannelColour(1), scopeCh2Target);
 
         area.removeFromTop(scopeZone.getY() - 12);
         g.setColour(juce::Colour(0xffdce9ee));
         g.setFont(juce::Font(15.0f, juce::Font::bold));
-        g.drawText("Oscilloscope / Dataset Viewer", area.removeFromTop(24), juce::Justification::centredLeft);
+        g.drawText("Slow Strip Recorder", area.removeFromTop(24), juce::Justification::centredLeft);
+        drawStripChart(g, area.reduced(0, 10).toFloat());
+    }
 
-        auto graph = area.reduced(0, 10).toFloat();
-        g.setColour(juce::Colour(0xff26323d));
-        g.drawRect(graph, 1.0f);
-        for (int i = 1; i < 10; ++i)
-        {
-            const auto x = graph.getX() + graph.getWidth() * (float)i / 10.0f;
-            const auto y = graph.getY() + graph.getHeight() * (float)i / 10.0f;
-            g.drawVerticalLine((int)x, graph.getY(), graph.getBottom());
-            g.drawHorizontalLine((int)y, graph.getX(), graph.getRight());
-        }
+    void timerCallback() override
+    {
+        if (!stripRecord.getToggleState())
+            return;
 
-        juce::Path wave;
-        for (int i = 0; i < 360; ++i)
-        {
-            const auto t = (float)i / 359.0f;
-            const auto x = graph.getX() + t * graph.getWidth();
-            const auto y = graph.getCentreY() - std::sin(t * juce::MathConstants<float>::twoPi * 3.0f) * graph.getHeight() * 0.28f;
-            if (i == 0) wave.startNewSubPath(x, y); else wave.lineTo(x, y);
-        }
-        g.setColour(juce::Colour(0xff78dcca));
-        g.strokePath(wave, juce::PathStrokeType(2.0f));
+        stripTimeSeconds += 0.2;
+
+        const auto t = stripTimeSeconds;
+        StripSample sample;
+        sample.timeSeconds = t;
+        sample.dmmHi = (float)(1.8 + std::sin(t * 0.42) * 0.38 + std::sin(t * 0.07) * 0.18);
+        sample.dmmLo = (float)(std::sin(t * 0.11) * 0.018);
+        sample.scopeCh1 = (float)(std::sin(t * 1.15) * 1.6 + std::sin(t * 0.18) * 0.42);
+        sample.scopeCh2 = (float)(std::cos(t * 0.77) * 0.95 + std::sin(t * 0.31) * 0.35);
+        stripSamples.push_back(sample);
+
+        while (!stripSamples.empty() && stripSamples.front().timeSeconds < stripTimeSeconds - stripWindowSeconds)
+            stripSamples.erase(stripSamples.begin());
+
+        dmmDisplay.setText(juce::String(sample.dmmHi - sample.dmmLo, 3) + " V", juce::dontSendNotification);
+        repaint(scopeZone);
     }
 
     void mouseDown(const juce::MouseEvent& event) override
@@ -3578,9 +3620,24 @@ public:
         scopeCh1Lead = scopeLeads.removeFromLeft(58);
         scopeLeads.removeFromLeft(10);
         scopeCh2Lead = scopeLeads.removeFromLeft(58);
+
+        auto scopeControls = scopeZone.reduced(10).removeFromTop(34);
+        scopeControls.removeFromLeft(150);
+        stripRecord.setBounds(scopeControls.removeFromLeft(84));
+        scopeControls.removeFromLeft(8);
+        stripScale.setBounds(scopeControls.removeFromLeft(128));
     }
 
 private:
+    struct StripSample
+    {
+        double timeSeconds = 0.0;
+        float dmmHi = 0.0f;
+        float dmmLo = 0.0f;
+        float scopeCh1 = 0.0f;
+        float scopeCh2 = 0.0f;
+    };
+
     static juce::String quote(const juce::String& text)
     {
         return "\"" + text.replace("\\", "\\\\").replace("\"", "\\\"") + "\"";
@@ -3642,7 +3699,136 @@ private:
             g.fillEllipse(jack.reduced(3.0f));
 
         g.setFont(juce::Font(11.0f, juce::Font::bold));
+        g.setColour(activeColour.contrasting(0.82f));
         g.drawText(inUse ? "out" : label, area.withTrimmedLeft(20), juce::Justification::centredLeft, true);
+    }
+
+    void drawStripChart(juce::Graphics& g, juce::Rectangle<float> graph)
+    {
+        if (graph.isEmpty())
+            return;
+
+        auto plot = graph.withTrimmedLeft(82.0f).reduced(0.0f, 4.0f);
+        g.setColour(juce::Colour(0xff0d1319));
+        g.fillRoundedRectangle(graph, 5.0f);
+        g.setColour(juce::Colour(0xff26323d));
+        g.drawRoundedRectangle(graph, 5.0f, 1.0f);
+
+        for (int i = 0; i <= 6; ++i)
+        {
+            const auto x = plot.getX() + plot.getWidth() * (float)i / 6.0f;
+            g.setColour(i == 6 ? juce::Colour(0xff465866) : juce::Colour(0xff22303a));
+            g.drawVerticalLine((int)x, plot.getY(), plot.getBottom());
+        }
+
+        for (int i = 1; i < 4; ++i)
+        {
+            const auto y = plot.getY() + plot.getHeight() * (float)i / 4.0f;
+            g.setColour(juce::Colour(0xff22303a));
+            g.drawHorizontalLine((int)y, plot.getX(), plot.getRight());
+        }
+
+        const Channel channels[] = {
+            { "DMM+", dmmLeadColour(true), getProbeDisplayTarget(dmmHighNet.getText().trim()), &StripSample::dmmHi, "V" },
+            { "DMM-", dmmLeadColour(false), getProbeDisplayTarget(dmmLowNet.getText().trim()), &StripSample::dmmLo, "V" },
+            { "CH1", scopeChannelColour(0), getProbeDisplayTarget(scopeCh1Target), &StripSample::scopeCh1, "V" },
+            { "CH2", scopeChannelColour(1), getProbeDisplayTarget(scopeCh2Target), &StripSample::scopeCh2, "V" }
+        };
+
+        g.setFont(juce::Font(11.0f, juce::Font::bold));
+        const auto laneHeight = plot.getHeight() / 4.0f;
+        float sharedAbs = 0.001f;
+        if (stripScale.getSelectedId() == 2)
+        {
+            for (const auto& sample : stripSamples)
+                for (const auto& channel : channels)
+                    sharedAbs = std::max(sharedAbs, std::abs(sample.*(channel.member)));
+        }
+
+        for (int i = 0; i < 4; ++i)
+        {
+            const auto lane = juce::Rectangle<float>(plot.getX(), plot.getY() + laneHeight * (float)i,
+                                                     plot.getWidth(), laneHeight);
+            drawStripChannel(g, lane, graph.getX(), channels[i], sharedAbs);
+        }
+
+        g.setColour(juce::Colour(0xff93a7b0));
+        g.setFont(juce::Font(10.5f));
+        g.drawText("60 s", (int)plot.getX(), (int)plot.getBottom() - 18, 60, 14, juce::Justification::centredLeft);
+        g.drawText("now", (int)plot.getRight() - 42, (int)plot.getBottom() - 18, 40, 14, juce::Justification::centredRight);
+    }
+
+    struct Channel
+    {
+        const char* label;
+        juce::Colour colour;
+        juce::String target;
+        float StripSample::* member;
+        const char* unit;
+    };
+
+    void drawStripChannel(juce::Graphics& g,
+                          juce::Rectangle<float> lane,
+                          float labelLeft,
+                          const Channel& channel,
+                          float sharedAbs)
+    {
+        const auto centreY = lane.getCentreY();
+        g.setColour(juce::Colour(0xff1b2730));
+        g.drawHorizontalLine((int)centreY, lane.getX(), lane.getRight());
+
+        g.setColour(channel.colour);
+        g.fillRoundedRectangle(labelLeft + 10.0f, centreY - 5.0f, 10.0f, 10.0f, 2.0f);
+        g.setFont(juce::Font(10.5f, juce::Font::bold));
+        g.drawText(channel.label, (int)labelLeft + 26, (int)lane.getY() + 4, 48, 14, juce::Justification::centredLeft);
+
+        g.setColour(juce::Colour(0xff93a7b0));
+        g.setFont(juce::Font(9.5f));
+        g.drawText(channel.target, (int)labelLeft + 26, (int)lane.getY() + 18, 52, 14, juce::Justification::centredLeft, true);
+
+        if (stripSamples.size() < 2)
+            return;
+
+        float peak = sharedAbs;
+        if (stripScale.getSelectedId() != 2)
+        {
+            peak = 0.001f;
+            for (const auto& sample : stripSamples)
+                peak = std::max(peak, std::abs(sample.*(channel.member)));
+        }
+
+        g.setColour(juce::Colour(0xff6f7f89));
+        g.drawText("+/-" + juce::String(peak, 2) + channel.unit,
+                   (int)labelLeft + 26, (int)lane.getBottom() - 16, 52, 12, juce::Justification::centredLeft, true);
+
+        juce::Path trace;
+        bool started = false;
+        const auto startTime = stripTimeSeconds - stripWindowSeconds;
+        for (const auto& sample : stripSamples)
+        {
+            const auto x = lane.getX() + (float)((sample.timeSeconds - startTime) / stripWindowSeconds) * lane.getWidth();
+            const auto normalized = juce::jlimit(-1.0f, 1.0f, (sample.*(channel.member)) / peak);
+            const auto y = centreY - normalized * lane.getHeight() * 0.38f;
+            if (!started)
+            {
+                trace.startNewSubPath(x, y);
+                started = true;
+            }
+            else
+            {
+                trace.lineTo(x, y);
+            }
+        }
+
+        g.setColour(channel.colour.withAlpha(0.88f));
+        g.strokePath(trace, juce::PathStrokeType(1.8f));
+    }
+
+    static juce::String getProbeDisplayTarget(const juce::String& target)
+    {
+        if (target.isEmpty() || target == "bench" || target == "probe")
+            return "floating";
+        return target;
     }
 
     juce::String probeAt(juce::Point<int> p) const
@@ -3718,8 +3904,13 @@ private:
     juce::ToggleButton dmmLowPass { "LPF" };
     juce::ToggleButton dmmLoZ { "LoZ" };
     juce::ToggleButton dmmContinuityBeep { "Beep" };
+    juce::ToggleButton stripRecord;
+    juce::ComboBox stripScale;
     juce::String scopeCh1Target;
     juce::String scopeCh2Target;
+    std::vector<StripSample> stripSamples;
+    double stripTimeSeconds = 0.0;
+    static constexpr double stripWindowSeconds = 60.0;
     juce::Rectangle<int> dmmHiLead;
     juce::Rectangle<int> dmmLoLead;
     juce::Rectangle<int> scopeCh1Lead;
