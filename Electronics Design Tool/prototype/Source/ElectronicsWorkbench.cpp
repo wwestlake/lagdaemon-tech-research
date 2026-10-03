@@ -5811,6 +5811,8 @@ juce::String ElectronicsWorkbench::cookbookLookupTool(const juce::String& query,
     result << "  \"displayTool\": \"cookbook.lookup\",\n";
     result << "  \"query\": " << jsonQuote(query.trim()) << ",\n";
     result << "  \"knowledgeRoot\": " << jsonQuote(electronics_knowledge::getKnowledgeRoot().getFullPathName()) << ",\n";
+    result << "  \"projectMemoryCards\": " << jsonQuote(electronics_knowledge::getProjectMemoryCardsFile().getFullPathName()) << ",\n";
+    result << "  \"capabilityGapRegistry\": " << jsonQuote(electronics_knowledge::getCapabilityGapsFile().getFullPathName()) << ",\n";
     result << "  \"cards\": [\n";
 
     for (size_t index = 0; index < retrieved.cards.size(); ++index)

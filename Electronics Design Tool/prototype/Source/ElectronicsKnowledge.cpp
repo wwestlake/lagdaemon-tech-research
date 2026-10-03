@@ -100,6 +100,40 @@ Card cardFromJson(const juce::var& parsed, const juce::File& sourceFile, const j
     return card;
 }
 
+Card cardFromCapabilityGapJson(const juce::var& parsed, const juce::File& sourceFile, const juce::String& rawJson)
+{
+    const auto id = parsed.getProperty("id", {}).toString();
+    const auto category = parsed.getProperty("category", "unspecified").toString();
+    const auto status = parsed.getProperty("status", "open").toString();
+    const auto description = parsed.getProperty("description", {}).toString();
+    const auto neededCapability = parsed.getProperty("neededCapability", {}).toString();
+    const auto evidence = parsed.getProperty("evidence", {}).toString();
+    const auto source = parsed.getProperty("source", {}).toString();
+
+    Card card;
+    card.id = id.isNotEmpty() ? id : "gap." + juce::String(rawJson.hashCode());
+    card.kind = "capability_gap";
+    card.title = "Capability Gap: " + category;
+    card.source = sourceFile.getFullPathName();
+    card.rawJson = rawJson;
+    card.priority = status.equalsIgnoreCase("open") ? 97 : 70;
+    card.tokens.add("capability_gap");
+    card.tokens.add("gap");
+    card.tokens.add(category);
+    card.tokens.add(status);
+    card.tokens.addTokens(neededCapability.toLowerCase(), " \t\r\n.,!?;:()[]{}<>+-=*/\\|&^%\"'", "");
+    card.tokens.trim();
+    card.tokens.removeEmptyStrings();
+    card.tokens.removeDuplicates(false);
+    card.text = "Capability gap (" + status + ", " + category + "): " + description
+        + "\nNeeded capability: " + neededCapability;
+    if (evidence.isNotEmpty())
+        card.text << "\nEvidence: " << evidence;
+    if (source.isNotEmpty())
+        card.text << "\nSource: " << source;
+    return card;
+}
+
 std::vector<Card> loadCards(const juce::File& file)
 {
     std::vector<Card> cards;
@@ -130,6 +164,36 @@ std::vector<Card> loadCards(const juce::File& file)
     return cards;
 }
 
+std::vector<Card> loadCapabilityGapCards(const juce::File& file)
+{
+    std::vector<Card> cards;
+    if (!file.existsAsFile())
+        return cards;
+
+    juce::StringArray lines;
+    lines.addLines(file.loadFileAsString());
+    for (const auto& rawLine : lines)
+    {
+        const auto line = rawLine.trim();
+        if (line.isEmpty())
+            continue;
+
+        const auto parsed = juce::JSON::parse(line);
+        if (!parsed.isObject())
+            continue;
+
+        const auto kind = parsed.getProperty("kind", {}).toString();
+        if (!kind.equalsIgnoreCase("djehuti_capability_gap"))
+            continue;
+
+        auto card = cardFromCapabilityGapJson(parsed, file, line);
+        if (card.id.isNotEmpty() && card.text.isNotEmpty())
+            cards.push_back(std::move(card));
+    }
+
+    return cards;
+}
+
 std::vector<Card> loadAllCards()
 {
     std::vector<Card> cards;
@@ -150,6 +214,10 @@ std::vector<Card> loadAllCards()
     cards.insert(cards.end(),
                  std::make_move_iterator(projectCards.begin()),
                  std::make_move_iterator(projectCards.end()));
+    auto gapCards = loadCapabilityGapCards(getCapabilityGapsFile());
+    cards.insert(cards.end(),
+                 std::make_move_iterator(gapCards.begin()),
+                 std::make_move_iterator(gapCards.end()));
     return cards;
 }
 
@@ -202,6 +270,16 @@ juce::File getProjectMemoryCardsFile()
         .getChildFile("current")
         .getChildFile(".djehuti")
         .getChildFile("MEMORY_PROJECT_CARDS.jsonl");
+}
+
+juce::File getCapabilityGapsFile()
+{
+    return juce::File(ELECTRONICS_RESEARCH_ROOT)
+        .getChildFile("prototype")
+        .getChildFile("projects")
+        .getChildFile("current")
+        .getChildFile(".djehuti")
+        .getChildFile("CAPABILITY_GAPS.jsonl");
 }
 
 std::vector<Card> allCards()

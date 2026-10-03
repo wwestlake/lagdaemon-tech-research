@@ -32,6 +32,8 @@ $taxonomyPath = Join-Path $KnowledgeRoot "COOKBOOK_TAXONOMY.json"
 $acceptancePath = Join-Path $KnowledgeRoot "COOKBOOK_ACCEPTANCE_GOALS.json"
 $cardsPath = Join-Path $KnowledgeRoot "cards\electronics_cookbook_seed.jsonl"
 $toolCardsPath = Join-Path $KnowledgeRoot "cards\electronics_tool_cards.jsonl"
+$projectRoot = Split-Path -Parent $KnowledgeRoot
+$capabilityGapsPath = Join-Path $projectRoot "projects\current\.djehuti\CAPABILITY_GAPS.jsonl"
 $taxonomy = Read-JsonFile $taxonomyPath
 
 $requiredFields = @(
@@ -89,6 +91,7 @@ $toolCardIds = @{}
 $toolNamesWithCards = @{}
 $toolCardCount = 0
 $cookbookToolReferences = @{}
+$capabilityGapCount = 0
 $lineNo = 0
 
 if (-not (Test-Path -LiteralPath $cardsPath -PathType Leaf)) {
@@ -248,6 +251,45 @@ foreach ($entry in $entries) {
     }
 }
 
+if (Test-Path -LiteralPath $capabilityGapsPath -PathType Leaf) {
+    $gapLineNo = 0
+    foreach ($line in Get-Content -LiteralPath $capabilityGapsPath) {
+        $gapLineNo++
+        if ([string]::IsNullOrWhiteSpace($line)) {
+            continue
+        }
+
+        try {
+            $gap = $line | ConvertFrom-Json
+        } catch {
+            Add-Finding $errors "capability_gap.jsonl.parse" "Line $gapLineNo is not valid JSON: $($_.Exception.Message)"
+            continue
+        }
+
+        $capabilityGapCount++
+        foreach ($field in @("kind", "id", "status", "category", "description", "neededCapability")) {
+            $property = $gap.PSObject.Properties[$field]
+            $missing = $null -eq $property
+            if (-not $missing) {
+                $value = $property.Value
+                if ($null -eq $value) {
+                    $missing = $true
+                } elseif ($value -is [string] -and [string]::IsNullOrWhiteSpace($value)) {
+                    $missing = $true
+                }
+            }
+
+            if ($missing) {
+                Add-Finding $errors "capability_gap.field.required" "Capability gap line $gapLineNo is missing required field '$field'."
+            }
+        }
+
+        if ([string]$gap.kind -ne "djehuti_capability_gap") {
+            Add-Finding $errors "capability_gap.kind.invalid" "Capability gap line $gapLineNo has unexpected kind: $($gap.kind)"
+        }
+    }
+}
+
 $coveredSet = @{}
 foreach ($entry in $entries) {
     $category = [string]$entry.category
@@ -396,8 +438,10 @@ $report = [pscustomobject]@{
     acceptanceFile = $acceptancePath
     cookbookFile = $cardsPath
     toolCardsFile = $toolCardsPath
+    capabilityGapsFile = $capabilityGapsPath
     cookbookEntryCount = $entries.Count
     toolCardCount = $toolCardCount
+    capabilityGapCount = $capabilityGapCount
     requiredAgentToolCount = $requiredAgentTools.Count
     toolCardCoverageCount = $toolNamesWithCards.Count
     cookbookToolReferenceCount = $cookbookToolReferences.Count

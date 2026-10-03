@@ -29,6 +29,7 @@ struct RetrievalResult
 juce::File getKnowledgeRoot();
 juce::File getCardsDirectory();
 juce::File getProjectMemoryCardsFile();
+juce::File getCapabilityGapsFile();
 std::vector<Card> allCards();
 RetrievalResult retrieve(const juce::String& query, int maxCards = 8);
 juce::String contextForQuery(const juce::String& query, int maxCards = 8);

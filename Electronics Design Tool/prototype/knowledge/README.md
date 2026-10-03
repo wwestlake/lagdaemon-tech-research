@@ -10,6 +10,7 @@ app on normal files:
 ```text
 prototype/knowledge/cards/*.jsonl
 prototype/projects/current/.djehuti/MEMORY_PROJECT_CARDS.jsonl
+prototype/projects/current/.djehuti/CAPABILITY_GAPS.jsonl
 ```
 
 Each JSONL line is one durable card. Cards are intentionally small so the agent
@@ -31,10 +32,12 @@ stuffing the whole project spec into every model call.
   transistor amplifiers, op-amp circuits, rectifier supplies, regulators,
   oscillators, control loops, and sensor interfaces.
 - project memory cards: project-local notes approved or authored during work.
+- project capability gaps: project-local missing-capability records converted
+  into retrievable `capability_gap` cards by the runtime.
 
-The runtime currently reads cards directly from JSONL. A disposable SQLite
-LiteSemRAG read model can be added later without changing the card source of
-truth.
+The runtime currently reads source cards and project-local memory/gap JSONL
+directly. A disposable SQLite LiteSemRAG read model can be added later without
+changing those files as the source of truth.
 
 See `COOKBOOK_SCHEMA.md` for the structured cookbook entry model. The BYOK
 agent can explicitly search this knowledge through the `cookbook_lookup` tool.
