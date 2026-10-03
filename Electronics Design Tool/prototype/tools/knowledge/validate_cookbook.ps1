@@ -64,6 +64,7 @@ $requiredAgentTools = @(
     "cookbook_acceptance_goals",
     "cookbook_acceptance_start",
     "cookbook_acceptance_record",
+    "capability_gap_record",
     "circuit_inspect",
     "circuit_run_erc",
     "simulation_export_artifacts",

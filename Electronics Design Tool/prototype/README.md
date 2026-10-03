@@ -69,8 +69,10 @@ The first live schematic tools are `circuit_inspect`, `schematic_place_symbol`,
 `simulation_export_artifacts`.
 The cookbook validation tools add `cookbook_lookup`, `cookbook_coverage`,
 `cookbook_validate`, `cookbook_acceptance_goals`,
-`cookbook_acceptance_start`, and `cookbook_acceptance_record` so acceptance
-runs can create durable reports and record tool-derived evidence.
+`cookbook_acceptance_start`, `cookbook_acceptance_record`, and
+`capability_gap_record` so acceptance runs can create durable reports, record
+tool-derived evidence, and preserve reusable missing-capability gaps in project
+memory.
 
 Assistant knowledge uses filesystem cards instead of Suite VFS storage:
 

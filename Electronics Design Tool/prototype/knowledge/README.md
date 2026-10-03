@@ -51,6 +51,8 @@ JSON and Markdown evidence scaffold under the generated run artifacts folder.
 During the run, use `cookbook_acceptance_record` to append retrieved cards,
 tool calls, artifacts, criteria results, notes, and capability gaps to that
 report so validation does not depend on chat transcript memory.
+When a gap should become reusable engineering work, use `capability_gap_record`
+to append it to the project-local `.djehuti/CAPABILITY_GAPS.jsonl` registry.
 
 For build-time validation, run:
 

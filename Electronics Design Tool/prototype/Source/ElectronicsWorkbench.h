@@ -58,6 +58,12 @@ private:
                                               const juce::String& detail,
                                               const juce::String& pathOrValue,
                                               const juce::String& status) const;
+    juce::String capabilityGapRecordTool(const juce::String& category,
+                                         const juce::String& description,
+                                         const juce::String& neededCapability,
+                                         const juce::String& evidence,
+                                         const juce::String& source,
+                                         const juce::String& status) const;
     juce::String runElectricalRuleCheckTool();
     juce::String exportCircuitArtifactsTool();
     juce::String designRlcHighPassFilterTool(double cutoffHz, double impedanceOhms);

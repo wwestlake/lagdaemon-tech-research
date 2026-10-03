@@ -4117,6 +4117,8 @@ public:
         std::function<juce::String(const juce::String&)> cookbookAcceptanceStart;
         std::function<juce::String(const juce::String&, const juce::String&, const juce::String&,
                                    const juce::String&, const juce::String&, const juce::String&)> cookbookAcceptanceRecord;
+        std::function<juce::String(const juce::String&, const juce::String&, const juce::String&,
+                                   const juce::String&, const juce::String&, const juce::String&)> capabilityGapRecord;
         std::function<juce::String()> toolManifest;
         std::function<void(const juce::String&)> log;
     };
@@ -4503,6 +4505,7 @@ private:
                "Use cookbook_acceptance_goals to inspect representative engineering goals for agent validation. "
                "Use cookbook_acceptance_start before executing an acceptance goal so evidence has a durable report scaffold. "
                "Use cookbook_acceptance_record to append retrieved cards, tool calls, artifacts, criteria, notes, and capability gaps to that report. "
+               "Use capability_gap_record when a missing reusable app capability blocks a cookbook step or validation claim. "
                "Use filesystem LiteSemRAG cards as retrieved guidance; do not assume Suite VFS storage. "
                "Be concise, report tool results plainly, and do not claim a circuit is ready for solver-backed "
                "analysis until circuit_run_erc has passed or you have explained the remaining warnings.";
@@ -4540,6 +4543,11 @@ private:
                 "cookbook_acceptance_record",
                 "Append structured evidence to an acceptance report created by cookbook_acceptance_start.",
                 R"({"type":"object","properties":{"reportPath":{"type":"string","description":"Path returned as jsonReport by cookbook_acceptance_start."},"evidenceType":{"type":"string","description":"retrieved_card, tool_call, artifact, capability_gap, criterion, or note."},"label":{"type":"string","description":"Short evidence label."},"detail":{"type":"string","description":"Evidence details."},"pathOrValue":{"type":"string","description":"Artifact path, tool result path, card id, or measured value."},"status":{"type":"string","description":"observed, passed, failed, gap, unverified, or not_started."}},"required":["reportPath","evidenceType","label"],"additionalProperties":false})"
+            },
+            {
+                "capability_gap_record",
+                "Append a reusable missing-capability record to the project gap registry.",
+                R"({"type":"object","properties":{"category":{"type":"string","description":"Gap category such as solver, component_model, analysis, plotting, instrument, ui, or agent_workflow."},"description":{"type":"string","description":"What blocked the engineering step."},"neededCapability":{"type":"string","description":"Reusable tool or app capability needed to close the gap."},"evidence":{"type":"string","description":"Tool result, report path, or observation proving the gap."},"source":{"type":"string","description":"Acceptance goal id, report path, cookbook card id, or user goal that exposed the gap."},"status":{"type":"string","description":"open, planned, in_progress, closed, or deferred."}},"required":["description","neededCapability"],"additionalProperties":false})"
             },
             {
                 "circuit_inspect",
@@ -4655,6 +4663,24 @@ private:
             return tools.cookbookAcceptanceRecord != nullptr
                 ? tools.cookbookAcceptanceRecord(reportPath, evidenceType, label, detail, pathOrValue, status)
                 : "{ \"ok\": false, \"error\": \"Cookbook acceptance record is unavailable.\" }";
+        }
+
+        if (name == "capability_gap_record")
+        {
+            if (!parsed.isObject())
+                return "{ \"ok\": false, \"error\": \"capability_gap_record arguments must be a JSON object.\" }";
+
+            const auto category = parsed.getProperty("category", {}).toString().trim();
+            const auto description = parsed.getProperty("description", {}).toString().trim();
+            const auto neededCapability = parsed.getProperty("neededCapability", {}).toString().trim();
+            const auto evidence = parsed.getProperty("evidence", {}).toString().trim();
+            const auto source = parsed.getProperty("source", {}).toString().trim();
+            const auto status = parsed.getProperty("status", {}).toString().trim();
+            if (description.isEmpty() || neededCapability.isEmpty())
+                return "{ \"ok\": false, \"error\": \"description and neededCapability are required.\" }";
+            return tools.capabilityGapRecord != nullptr
+                ? tools.capabilityGapRecord(category, description, neededCapability, evidence, source, status)
+                : "{ \"ok\": false, \"error\": \"Capability gap recording is unavailable.\" }";
         }
 
         if (name == "circuit_run_erc")
@@ -5343,6 +5369,14 @@ ElectronicsWorkbench::ElectronicsWorkbench()
                                                  const juce::String& status) {
         return cookbookAcceptanceRecordTool(reportPath, evidenceType, label, detail, pathOrValue, status);
     };
+    agentTools.capabilityGapRecord = [this](const juce::String& category,
+                                            const juce::String& description,
+                                            const juce::String& neededCapability,
+                                            const juce::String& evidence,
+                                            const juce::String& source,
+                                            const juce::String& status) {
+        return capabilityGapRecordTool(category, description, neededCapability, evidence, source, status);
+    };
     agentTools.toolManifest = [this] { return buildAssistantToolManifestJson(); };
     agentTools.log = [this](const juce::String& text) { appendLog(text); };
     auto agent = std::make_unique<AgentPanel>(std::move(agentTools));
@@ -5656,6 +5690,21 @@ juce::String ElectronicsWorkbench::buildAssistantToolManifestJson() const
     text << "        \"status\": \"observed, passed, failed, gap, unverified, or not_started\"\n";
     text << "      },\n";
     text << "      \"outputs\": { \"jsonReport\": \"updated acceptance report\", \"markdownReport\": \"updated human-readable log\" }\n";
+    text << "    },\n";
+    text << "    {\n";
+    text << "      \"name\": \"capability_gap_record\",\n";
+    text << "      \"displayName\": \"capability_gap.record\",\n";
+    text << "      \"description\": \"Append a reusable missing-capability record to the project gap registry.\",\n";
+    text << "      \"mode\": \"write_project_memory\",\n";
+    text << "      \"inputs\": {\n";
+    text << "        \"category\": \"solver, component_model, analysis, plotting, instrument, ui, or agent_workflow\",\n";
+    text << "        \"description\": \"what blocked the engineering step\",\n";
+    text << "        \"neededCapability\": \"reusable tool or app capability needed to close the gap\",\n";
+    text << "        \"evidence\": \"tool result, report path, or observation proving the gap\",\n";
+    text << "        \"source\": \"acceptance goal id, report path, cookbook card id, or user goal\",\n";
+    text << "        \"status\": \"open, planned, in_progress, closed, or deferred\"\n";
+    text << "      },\n";
+    text << "      \"outputs\": { \"gapRegistry\": \"project-local JSONL capability gap registry\" }\n";
     text << "    },\n";
     text << "    {\n";
     text << "      \"name\": \"circuit_inspect\",\n";
@@ -6328,6 +6377,77 @@ juce::String ElectronicsWorkbench::cookbookAcceptanceRecordTool(const juce::Stri
     result << "  \"evidenceType\": " << jsonQuote(normalizedType) << ",\n";
     result << "  \"targetArray\": " << jsonQuote(targetArray) << ",\n";
     result << "  \"status\": " << jsonQuote(normalizedStatus) << "\n";
+    result << "}\n";
+    return result;
+}
+
+juce::String ElectronicsWorkbench::capabilityGapRecordTool(const juce::String& category,
+                                                           const juce::String& description,
+                                                           const juce::String& neededCapability,
+                                                           const juce::String& evidence,
+                                                           const juce::String& source,
+                                                           const juce::String& status) const
+{
+    const auto trimmedDescription = description.trim();
+    const auto trimmedCapability = neededCapability.trim();
+    if (trimmedDescription.isEmpty() || trimmedCapability.isEmpty())
+    {
+        return "{ \"ok\": false, \"tool\": \"capability_gap_record\", \"displayTool\": \"capability_gap.record\", \"error\": \"description and neededCapability are required.\" }";
+    }
+
+    const auto memoryDir = savedProjectFile().getParentDirectory().getChildFile(".djehuti");
+    if (!memoryDir.createDirectory())
+    {
+        return "{ \"ok\": false, \"tool\": \"capability_gap_record\", \"displayTool\": \"capability_gap.record\", \"error\": "
+            + jsonQuote("Could not create project memory directory: " + memoryDir.getFullPathName()) + " }";
+    }
+
+    const auto registry = memoryDir.getChildFile("CAPABILITY_GAPS.jsonl");
+    auto normalizedCategory = category.trim().replaceCharacter(' ', '_').replaceCharacter('-', '_').toLowerCase();
+    if (normalizedCategory.isEmpty())
+        normalizedCategory = "unspecified";
+
+    auto normalizedStatus = status.trim().replaceCharacter(' ', '_').replaceCharacter('-', '_').toLowerCase();
+    if (normalizedStatus.isEmpty())
+        normalizedStatus = "open";
+
+    const auto now = juce::Time::getCurrentTime().toISO8601(true);
+    const auto seed = trimmedDescription + "|" + trimmedCapability + "|" + source.trim();
+    const auto id = "gap."
+        + juce::String::toHexString((int)std::abs((int)seed.hashCode())).paddedLeft('0', 8)
+        + "."
+        + juce::String(juce::Time::getCurrentTime().toMilliseconds());
+
+    auto* gap = new juce::DynamicObject();
+    gap->setProperty("schemaVersion", 1);
+    gap->setProperty("kind", "djehuti_capability_gap");
+    gap->setProperty("id", id);
+    gap->setProperty("createdAt", now);
+    gap->setProperty("status", normalizedStatus);
+    gap->setProperty("category", normalizedCategory);
+    gap->setProperty("description", trimmedDescription);
+    gap->setProperty("neededCapability", trimmedCapability);
+    gap->setProperty("evidence", evidence.trim());
+    gap->setProperty("source", source.trim());
+
+    const auto line = juce::JSON::toString(juce::var(gap), false).trim() + "\n";
+    if (!registry.appendText(line))
+    {
+        return "{ \"ok\": false, \"tool\": \"capability_gap_record\", \"displayTool\": \"capability_gap.record\", \"error\": "
+            + jsonQuote("Could not append capability gap registry: " + registry.getFullPathName()) + " }";
+    }
+
+    juce::String result;
+    result << "{\n";
+    result << "  \"ok\": true,\n";
+    result << "  \"schemaVersion\": 1,\n";
+    result << "  \"kind\": \"djehuti_assistant_tool_result\",\n";
+    result << "  \"tool\": \"capability_gap_record\",\n";
+    result << "  \"displayTool\": \"capability_gap.record\",\n";
+    result << "  \"gapId\": " << jsonQuote(id) << ",\n";
+    result << "  \"status\": " << jsonQuote(normalizedStatus) << ",\n";
+    result << "  \"category\": " << jsonQuote(normalizedCategory) << ",\n";
+    result << "  \"gapRegistry\": " << jsonQuote(registry.getFullPathName()) << "\n";
     result << "}\n";
     return result;
 }
