@@ -564,19 +564,50 @@ private:
     void addFallbackLibrary()
     {
         add({ "resistor", "Resistor", "Passive" });
+        add({ "potentiometer", "Potentiometer", "Passive" });
         add({ "capacitor", "Capacitor", "Passive" });
+        add({ "capacitor_polarized", "Polarized Capacitor", "Passive" });
+        add({ "variable_capacitor", "Variable Capacitor", "Passive" });
         add({ "inductor", "Inductor", "Passive" });
+        add({ "coupled_inductor", "Coupled Inductor", "Magnetics" });
+        add({ "transformer", "Transformer", "Magnetics" });
         add({ "diode", "Diode", "Discrete" });
+        add({ "zener_diode", "Zener Diode", "Discrete" });
+        add({ "led", "LED", "Discrete" });
+        add({ "schottky_diode", "Schottky Diode", "Discrete" });
         add({ "power_bus", "Power Bus", "Bus" });
         add({ "ground_bus", "Ground Bus", "Bus" });
         add({ "battery", "Battery", "Source" });
         add({ "voltage_source", "DC Voltage Source", "Source" });
         add({ "ac_voltage_source", "AC Voltage Source", "Source" });
+        add({ "current_source", "DC Current Source", "Source" });
+        add({ "ac_current_source", "AC Current Source", "Source" });
+        add({ "vcvs", "Voltage-Controlled Voltage Source", "Controlled Source" });
+        add({ "vccs", "Voltage-Controlled Current Source", "Controlled Source" });
+        add({ "ccvs", "Current-Controlled Voltage Source", "Controlled Source" });
+        add({ "cccs", "Current-Controlled Current Source", "Controlled Source" });
         add({ "signal_source", "Signal Source", "Source" });
         add({ "ground", "Ground", "Reference" });
         add({ "opamp_741", "741 Op Amp - provisional", "Analog IC" });
         add({ "npn", "NPN Transistor - generic", "Discrete" });
+        add({ "pnp", "PNP Transistor - generic", "Discrete" });
+        add({ "nmos", "N-Channel MOSFET - generic", "Discrete" });
+        add({ "pmos", "P-Channel MOSFET - generic", "Discrete" });
+        add({ "njfet", "N-Channel JFET - generic", "Discrete" });
+        add({ "pjfet", "P-Channel JFET - generic", "Discrete" });
+        add({ "switch_spst", "SPST Switch", "Switch" });
+        add({ "switch_spdt", "SPDT Switch", "Switch" });
+        add({ "relay_spst", "SPST Relay", "Switch" });
+        add({ "fuse", "Fuse", "Protection" });
+        add({ "connector_2", "2-Pin Connector", "Connector" });
+        add({ "connector_3", "3-Pin Connector", "Connector" });
+        add({ "test_point", "Test Point", "Connector" });
         add({ "logic_not", "Logic Inverter - behavioral", "Digital" });
+        add({ "logic_and", "AND Gate - behavioral", "Digital" });
+        add({ "logic_or", "OR Gate - behavioral", "Digital" });
+        add({ "logic_nand", "NAND Gate - behavioral", "Digital" });
+        add({ "logic_nor", "NOR Gate - behavioral", "Digital" });
+        add({ "logic_xor", "XOR Gate - behavioral", "Digital" });
         add({ "oscilloscope_2ch", "2-Channel Oscilloscope", "Instrument" });
         add({ "digital_multimeter", "Digital Multimeter", "Instrument" });
     }
@@ -1487,8 +1518,24 @@ public:
                                      const juce::String& frequency,
                                      const juce::String& busName)
     {
+        const auto requestedSymbol = symbolId.trim();
+        const juce::StringArray supported {
+            "resistor", "potentiometer", "capacitor", "capacitor_polarized", "variable_capacitor",
+            "inductor", "coupled_inductor", "transformer", "diode", "zener_diode", "led",
+            "schottky_diode", "power_bus", "ground_bus", "battery", "voltage_source",
+            "ac_voltage_source", "current_source", "ac_current_source", "vcvs", "vccs",
+            "ccvs", "cccs", "signal_source", "ground", "opamp_741", "npn", "pnp",
+            "nmos", "pmos", "njfet", "pjfet", "switch_spst", "switch_spdt", "relay_spst",
+            "fuse", "connector_2", "connector_3", "test_point", "logic_not", "logic_and",
+            "logic_or", "logic_nand", "logic_nor", "logic_xor", "oscilloscope_2ch",
+            "digital_multimeter"
+        };
+        if (!supported.contains(requestedSymbol))
+            return "{ \"ok\": false, \"error\": \"Unsupported symbolId; no substitute was placed.\", \"requestedSymbolId\": "
+                + quote(requestedSymbol) + " }";
+
         const auto before = instances.size();
-        placeSymbol(symbolId, snapPoint({ x, y }));
+        placeSymbol(requestedSymbol, snapPoint({ x, y }));
         if (instances.size() == before)
             return "{ \"ok\": false, \"error\": \"Could not place symbol.\" }";
 
@@ -1930,10 +1977,26 @@ private:
     {
         if (id == "capacitor")
             return { id, "C", { -30, -18, 60, 36 }, { { "1", { -42, 0 } }, { "2", { 42, 0 } } } };
+        if (id == "capacitor_polarized")
+            return { id, "C+", { -30, -22, 60, 44 }, { { "+", { -42, 0 } }, { "-", { 42, 0 } } } };
+        if (id == "variable_capacitor")
+            return { id, "CV", { -34, -22, 68, 44 }, { { "1", { -46, 0 } }, { "2", { 46, 0 } } }, 45 };
+        if (id == "potentiometer")
+            return { id, "POT", { -42, -18, 84, 36 }, { { "1", { -60, 0 } }, { "2", { 60, 0 } }, { "W", { 0, -48 } } } };
         if (id == "inductor")
             return { id, "L", { -34, -18, 68, 36 }, { { "1", { -54, 0 } }, { "2", { 54, 0 } } }, 45 };
+        if (id == "coupled_inductor")
+            return { id, "Lx2", { -42, -38, 84, 76 }, { { "1A", { -60, -22 } }, { "1B", { 60, -22 } }, { "2A", { -60, 22 } }, { "2B", { 60, 22 } } } };
+        if (id == "transformer")
+            return { id, "XFMR", { -48, -42, 96, 84 }, { { "P1", { -70, -24 } }, { "P2", { -70, 24 } }, { "S1", { 70, -24 } }, { "S2", { 70, 24 } } } };
         if (id == "diode")
             return { id, "D", { -28, -24, 56, 48 }, { { "A", { -54, 0 } }, { "K", { 54, 0 } } }, 45 };
+        if (id == "zener_diode")
+            return { id, "ZD", { -30, -24, 60, 48 }, { { "A", { -54, 0 } }, { "K", { 54, 0 } } }, 45 };
+        if (id == "led")
+            return { id, "LED", { -32, -26, 64, 52 }, { { "A", { -56, 0 } }, { "K", { 56, 0 } } }, 45 };
+        if (id == "schottky_diode")
+            return { id, "SD", { -30, -24, 60, 48 }, { { "A", { -54, 0 } }, { "K", { 54, 0 } } }, 45 };
         if (id == "power_bus")
             return { id, "PWR", { -210, -8, 420, 16 }, { { "VBUS", { 0, 0 } } } };
         if (id == "ground_bus")
@@ -1944,6 +2007,18 @@ private:
             return { id, "V", { -24, -24, 48, 48 }, { { "+", { 0, -42 } }, { "-", { 0, 42 } } } };
         if (id == "ac_voltage_source")
             return { id, "AC", { -28, -28, 56, 56 }, { { "+", { 0, -46 } }, { "-", { 0, 46 } } } };
+        if (id == "current_source")
+            return { id, "I", { -24, -24, 48, 48 }, { { "+", { 0, -42 } }, { "-", { 0, 42 } } } };
+        if (id == "ac_current_source")
+            return { id, "IAC", { -28, -28, 56, 56 }, { { "+", { 0, -46 } }, { "-", { 0, 46 } } } };
+        if (id == "vcvs")
+            return { id, "E", { -34, -34, 68, 68 }, { { "+", { 0, -56 } }, { "-", { 0, 56 } }, { "CP+", { -58, -18 } }, { "CP-", { -58, 18 } } } };
+        if (id == "vccs")
+            return { id, "G", { -34, -34, 68, 68 }, { { "+", { 0, -56 } }, { "-", { 0, 56 } }, { "CP+", { -58, -18 } }, { "CP-", { -58, 18 } } } };
+        if (id == "ccvs")
+            return { id, "H", { -34, -34, 68, 68 }, { { "+", { 0, -56 } }, { "-", { 0, 56 } }, { "S+", { -58, -18 } }, { "S-", { -58, 18 } } } };
+        if (id == "cccs")
+            return { id, "F", { -34, -34, 68, 68 }, { { "+", { 0, -56 } }, { "-", { 0, 56 } }, { "S+", { -58, -18 } }, { "S-", { -58, 18 } } } };
         if (id == "signal_source")
             return { id, "SIG", { -40, -24, 80, 48 }, { { "OUT", { 58, 0 } }, { "REF", { -58, 0 } } } };
         if (id == "ground")
@@ -1952,8 +2027,42 @@ private:
             return { id, "uA741", { -50, -42, 100, 84 }, { { "IN+", { -72, -20 } }, { "IN-", { -72, 20 } }, { "OUT", { 72, 0 } }, { "V+", { 0, -62 } }, { "V-", { 0, 62 } } } };
         if (id == "npn")
             return { id, "NPN", { -30, -36, 60, 72 }, { { "B", { -54, 0 } }, { "C", { 28, -48 } }, { "E", { 28, 48 } } } };
+        if (id == "pnp")
+            return { id, "PNP", { -30, -36, 60, 72 }, { { "B", { -54, 0 } }, { "C", { 28, -48 } }, { "E", { 28, 48 } } } };
+        if (id == "nmos")
+            return { id, "NMOS", { -32, -38, 64, 76 }, { { "G", { -58, 0 } }, { "D", { 30, -50 } }, { "S", { 30, 50 } } } };
+        if (id == "pmos")
+            return { id, "PMOS", { -32, -38, 64, 76 }, { { "G", { -58, 0 } }, { "D", { 30, -50 } }, { "S", { 30, 50 } } } };
+        if (id == "njfet")
+            return { id, "NJFET", { -32, -38, 64, 76 }, { { "G", { -58, 0 } }, { "D", { 30, -50 } }, { "S", { 30, 50 } } } };
+        if (id == "pjfet")
+            return { id, "PJFET", { -32, -38, 64, 76 }, { { "G", { -58, 0 } }, { "D", { 30, -50 } }, { "S", { 30, 50 } } } };
+        if (id == "switch_spst")
+            return { id, "SW", { -36, -20, 72, 40 }, { { "1", { -56, 0 } }, { "2", { 56, 0 } } }, 45 };
+        if (id == "switch_spdt")
+            return { id, "SWDT", { -42, -34, 84, 68 }, { { "C", { -62, 0 } }, { "A", { 62, -24 } }, { "B", { 62, 24 } } } };
+        if (id == "relay_spst")
+            return { id, "K", { -48, -42, 96, 84 }, { { "COIL+", { -68, -26 } }, { "COIL-", { -68, 26 } }, { "1", { 68, -18 } }, { "2", { 68, 18 } } } };
+        if (id == "fuse")
+            return { id, "FUSE", { -38, -14, 76, 28 }, { { "1", { -58, 0 } }, { "2", { 58, 0 } } } };
+        if (id == "connector_2")
+            return { id, "J2", { -28, -30, 56, 60 }, { { "1", { -48, -14 } }, { "2", { -48, 14 } } } };
+        if (id == "connector_3")
+            return { id, "J3", { -28, -42, 56, 84 }, { { "1", { -48, -24 } }, { "2", { -48, 0 } }, { "3", { -48, 24 } } } };
+        if (id == "test_point")
+            return { id, "TP", { -18, -18, 36, 36 }, { { "1", { -42, 0 } } } };
         if (id == "logic_not")
             return { id, "NOT", { -42, -30, 84, 60 }, { { "A", { -66, 0 } }, { "Y", { 66, 0 } } } };
+        if (id == "logic_and")
+            return { id, "AND", { -42, -34, 84, 68 }, { { "A", { -66, -18 } }, { "B", { -66, 18 } }, { "Y", { 66, 0 } } } };
+        if (id == "logic_or")
+            return { id, "OR", { -42, -34, 84, 68 }, { { "A", { -66, -18 } }, { "B", { -66, 18 } }, { "Y", { 66, 0 } } } };
+        if (id == "logic_nand")
+            return { id, "NAND", { -46, -34, 92, 68 }, { { "A", { -70, -18 } }, { "B", { -70, 18 } }, { "Y", { 70, 0 } } } };
+        if (id == "logic_nor")
+            return { id, "NOR", { -46, -34, 92, 68 }, { { "A", { -70, -18 } }, { "B", { -70, 18 } }, { "Y", { 70, 0 } } } };
+        if (id == "logic_xor")
+            return { id, "XOR", { -46, -34, 92, 68 }, { { "A", { -70, -18 } }, { "B", { -70, 18 } }, { "Y", { 70, 0 } } } };
         if (id == "oscilloscope_2ch")
             return { id, "SCOPE", { -58, -42, 116, 84 }, { { "CH1", { -82, -22 } }, { "CH2", { -82, 22 } }, { "REF", { 82, 0 } } } };
         if (id == "digital_multimeter")
@@ -1964,17 +2073,34 @@ private:
     juce::String defaultValueFor(const juce::String& symbolId) const
     {
         if (symbolId == "resistor") return "10k";
+        if (symbolId == "potentiometer") return "10k";
         if (symbolId == "capacitor") return "1u";
+        if (symbolId == "capacitor_polarized") return "10u";
+        if (symbolId == "variable_capacitor") return "100p";
         if (symbolId == "inductor") return "10m";
+        if (symbolId == "coupled_inductor") return "10m";
+        if (symbolId == "transformer") return "1:1";
         if (symbolId == "diode") return "1N4148";
+        if (symbolId == "zener_diode") return "5V1";
+        if (symbolId == "led") return "LED";
+        if (symbolId == "schottky_diode") return "BAT54";
         if (symbolId == "power_bus") return "+V";
         if (symbolId == "ground_bus") return "0";
         if (symbolId == "battery") return "9";
         if (symbolId == "voltage_source") return "10";
         if (symbolId == "ac_voltage_source") return "1";
+        if (symbolId == "current_source") return "1m";
+        if (symbolId == "ac_current_source") return "1m";
+        if (symbolId == "vcvs" || symbolId == "vccs" || symbolId == "ccvs" || symbolId == "cccs") return "1";
         if (symbolId == "signal_source") return "1";
         if (symbolId == "opamp_741") return "uA741";
         if (symbolId == "npn") return "generic_npn";
+        if (symbolId == "pnp") return "generic_pnp";
+        if (symbolId == "nmos") return "generic_nmos";
+        if (symbolId == "pmos") return "generic_pmos";
+        if (symbolId == "njfet") return "generic_njfet";
+        if (symbolId == "pjfet") return "generic_pjfet";
+        if (symbolId == "fuse") return "1A";
         if (symbolId == "oscilloscope_2ch") return "2ch";
         if (symbolId == "digital_multimeter") return "DCV";
         return "";
@@ -1983,18 +2109,49 @@ private:
     juce::String archetypeFor(const juce::String& symbolId) const
     {
         if (symbolId == "resistor") return "passive.resistor";
+        if (symbolId == "potentiometer") return "passive.potentiometer";
         if (symbolId == "capacitor") return "passive.capacitor";
+        if (symbolId == "capacitor_polarized") return "passive.capacitor.polarized";
+        if (symbolId == "variable_capacitor") return "passive.capacitor.variable";
         if (symbolId == "inductor") return "passive.inductor";
+        if (symbolId == "coupled_inductor") return "magnetics.coupled_inductor";
+        if (symbolId == "transformer") return "magnetics.transformer";
         if (symbolId == "diode") return "discrete.diode";
+        if (symbolId == "zener_diode") return "discrete.diode.zener";
+        if (symbolId == "led") return "discrete.diode.led";
+        if (symbolId == "schottky_diode") return "discrete.diode.schottky";
         if (symbolId == "power_bus") return "net.power_bus";
         if (symbolId == "ground" || symbolId == "ground_bus") return "net.ground_reference";
         if (symbolId == "battery") return "source.battery";
         if (symbolId == "voltage_source") return "source.dc_voltage";
         if (symbolId == "ac_voltage_source") return "source.ac_voltage";
+        if (symbolId == "current_source") return "source.dc_current";
+        if (symbolId == "ac_current_source") return "source.ac_current";
+        if (symbolId == "vcvs") return "source.controlled.vcvs";
+        if (symbolId == "vccs") return "source.controlled.vccs";
+        if (symbolId == "ccvs") return "source.controlled.ccvs";
+        if (symbolId == "cccs") return "source.controlled.cccs";
         if (symbolId == "signal_source") return "source.signal";
         if (symbolId == "opamp_741") return "analog.op_amp";
         if (symbolId == "npn") return "discrete.bjt.npn";
+        if (symbolId == "pnp") return "discrete.bjt.pnp";
+        if (symbolId == "nmos") return "discrete.fet.nmos";
+        if (symbolId == "pmos") return "discrete.fet.pmos";
+        if (symbolId == "njfet") return "discrete.fet.njfet";
+        if (symbolId == "pjfet") return "discrete.fet.pjfet";
+        if (symbolId == "switch_spst") return "switch.spst";
+        if (symbolId == "switch_spdt") return "switch.spdt";
+        if (symbolId == "relay_spst") return "switch.relay.spst";
+        if (symbolId == "fuse") return "protection.fuse";
+        if (symbolId == "connector_2") return "connector.2pin";
+        if (symbolId == "connector_3") return "connector.3pin";
+        if (symbolId == "test_point") return "connector.test_point";
         if (symbolId == "logic_not") return "digital.logic.not";
+        if (symbolId == "logic_and") return "digital.logic.and";
+        if (symbolId == "logic_or") return "digital.logic.or";
+        if (symbolId == "logic_nand") return "digital.logic.nand";
+        if (symbolId == "logic_nor") return "digital.logic.nor";
+        if (symbolId == "logic_xor") return "digital.logic.xor";
         if (symbolId == "oscilloscope_2ch") return "instrument.oscilloscope";
         if (symbolId == "digital_multimeter") return "instrument.multimeter";
         return "unknown";
@@ -2004,6 +2161,11 @@ private:
     {
         if (symbolId == "opamp_741") return "741";
         if (symbolId == "npn") return "generic_npn";
+        if (symbolId == "pnp") return "generic_pnp";
+        if (symbolId == "nmos") return "generic_nmos";
+        if (symbolId == "pmos") return "generic_pmos";
+        if (symbolId == "njfet") return "generic_njfet";
+        if (symbolId == "pjfet") return "generic_pjfet";
         return "";
     }
 
@@ -4578,8 +4740,8 @@ private:
             },
             {
                 "schematic_place_symbol",
-                "Place a schematic symbol or instrument node at a grid coordinate.",
-                R"({"type":"object","properties":{"symbolId":{"type":"string","description":"Symbol id such as resistor, capacitor, voltage_source, ground, oscilloscope_2ch, or digital_multimeter."},"x":{"type":"number"},"y":{"type":"number"},"value":{"type":"string"},"frequency":{"type":"string"},"busName":{"type":"string"}},"required":["symbolId","x","y"],"additionalProperties":false})"
+                "Place a schematic symbol or instrument node at a grid coordinate. Use deliberate layout spacing: keep symbols at least 144 px apart horizontally or 96 px vertically, arrange signal flow left-to-right, put sources on the left, outputs/load on the right, grounds below, instruments to the far right, and never reuse the same x/y for multiple parts.",
+                R"({"type":"object","properties":{"symbolId":{"type":"string","description":"Supported symbol id: resistor, potentiometer, capacitor, capacitor_polarized, variable_capacitor, inductor, coupled_inductor, transformer, diode, zener_diode, led, schottky_diode, power_bus, ground_bus, battery, voltage_source, ac_voltage_source, current_source, ac_current_source, vcvs, vccs, ccvs, cccs, signal_source, ground, opamp_741, npn, pnp, nmos, pmos, njfet, pjfet, switch_spst, switch_spdt, relay_spst, fuse, connector_2, connector_3, test_point, logic_not, logic_and, logic_or, logic_nand, logic_nor, logic_xor, oscilloscope_2ch, or digital_multimeter. Unsupported symbols are rejected, not substituted."},"x":{"type":"number","description":"Grid x coordinate. Leave at least 144 px horizontal space from other symbols."},"y":{"type":"number","description":"Grid y coordinate. Leave at least 96 px vertical space from other symbols."},"value":{"type":"string"},"frequency":{"type":"string"},"busName":{"type":"string"}},"required":["symbolId","x","y"],"additionalProperties":false})"
             },
             {
                 "schematic_connect",
