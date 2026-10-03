@@ -26,6 +26,10 @@ stuffing the whole project spec into every model call.
 - `electronics_cookbook_seed.jsonl`: structured engineering cookbook entries
   with topology selection guidance, equations, tool recipes, analysis recipes,
   validation criteria, failure modes, iteration rules, and capability gaps.
+- `COOKBOOK_ACCEPTANCE_GOALS.json`: representative unseen engineering goals
+  used to validate agent behavior across passive filters, active filters,
+  transistor amplifiers, op-amp circuits, rectifier supplies, regulators,
+  oscillators, control loops, and sensor interfaces.
 - project memory cards: project-local notes approved or authored during work.
 
 The runtime currently reads cards directly from JSONL. A disposable SQLite
@@ -38,6 +42,8 @@ See `COOKBOOK_TAXONOMY.json` for the target coverage map. The BYOK agent can
 inspect current coverage and missing categories through `cookbook_coverage`.
 After cookbook edits, use `cookbook_validate` to check required fields,
 taxonomy alignment, duplicate IDs, and malformed card entries.
+The build-time validator also checks acceptance-goal coverage and verifies that
+each goal references real cookbook cards.
 
 For build-time validation, run:
 

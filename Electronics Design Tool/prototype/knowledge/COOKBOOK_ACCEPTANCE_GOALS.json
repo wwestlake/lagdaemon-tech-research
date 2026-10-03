@@ -1,0 +1,226 @@
+{
+  "schemaVersion": 1,
+  "kind": "djehuti_electronics_cookbook_acceptance_goals",
+  "purpose": "Representative unseen engineering goals used to validate that the Electronics agent can retrieve cookbook knowledge, use real application tools, identify capability gaps, and produce evidence-backed engineering conclusions.",
+  "policy": {
+    "agentMustSelectTopology": true,
+    "agentMustUseCookbookLookup": true,
+    "agentMustUseRealToolEvidence": true,
+    "hiddenCodingAgentWorkAllowed": false,
+    "missingCapabilityMustBecomeGap": true
+  },
+  "requiredDomains": [
+    "passive_filter",
+    "active_filter",
+    "transistor_amplifier",
+    "op_amp_circuit",
+    "rectifier_power_supply",
+    "regulator",
+    "oscillator",
+    "control_loop",
+    "sensor_interface"
+  ],
+  "goals": [
+    {
+      "id": "acceptance.passive_filter.rc_low_pass_audio",
+      "domain": "passive_filter",
+      "prompt": "Design a passive first-order low-pass filter for a 1 kHz cutoff, source impedance no greater than 1 kOhm, and load impedance at least 100 kOhm. Build the circuit, run ERC, run an AC analysis, and show evidence for cutoff and rolloff.",
+      "mustRetrieve": [
+        "electronics.cookbook.filter.rc_low_pass"
+      ],
+      "requiredToolEvidence": [
+        "cookbook_lookup",
+        "schematic_place_symbol",
+        "schematic_connect",
+        "circuit_run_erc",
+        "simulation_export_artifacts"
+      ],
+      "expectedCapabilityGaps": [
+        "General arbitrary-circuit AC sweep and vector plotting may be missing."
+      ],
+      "passCriteria": [
+        "Topology selected without being told.",
+        "R and C are calculated from requirements.",
+        "ERC is run before solver-backed claims.",
+        "Cutoff and rolloff are measured from tool/solver data or reported as a capability gap."
+      ]
+    },
+    {
+      "id": "acceptance.active_filter.non_inverting_gain_bandwidth",
+      "domain": "active_filter",
+      "prompt": "Design an active non-inverting low-pass gain stage with gain 4, cutoff near 2 kHz, 5 V single-supply operation, and 10 kOhm load. Build what the app supports, identify required op-amp model/tool gaps, and validate as far as the app can honestly go.",
+      "mustRetrieve": [
+        "electronics.cookbook.opamp.non_inverting_amplifier",
+        "electronics.cookbook.filter.rc_low_pass"
+      ],
+      "requiredToolEvidence": [
+        "cookbook_lookup",
+        "circuit_run_erc",
+        "simulation_export_artifacts"
+      ],
+      "expectedCapabilityGaps": [
+        "Op-amp symbols/models and general AC/transient tools may be missing."
+      ],
+      "passCriteria": [
+        "Agent identifies active topology and op-amp practical limits.",
+        "Gain and cutoff calculations are explicit.",
+        "Missing op-amp/tool support is reported as a reusable capability gap."
+      ]
+    },
+    {
+      "id": "acceptance.transistor_amplifier.common_emitter_preamp",
+      "domain": "transistor_amplifier",
+      "prompt": "Design a single-transistor common-emitter preamp from a 9 V supply for small-signal voltage gain around 20, centered output swing, and 10 kOhm load. Use the cookbook, construct supported parts, and identify what analysis is still needed.",
+      "mustRetrieve": [
+        "electronics.cookbook.bjt.common_emitter_amplifier"
+      ],
+      "requiredToolEvidence": [
+        "cookbook_lookup",
+        "circuit_run_erc",
+        "simulation_export_artifacts"
+      ],
+      "expectedCapabilityGaps": [
+        "BJT model support, operating-point analysis, and AC/transient validation may be missing."
+      ],
+      "passCriteria": [
+        "Agent computes a bias strategy and gain estimate.",
+        "Agent does not claim transistor performance without actual model/solver evidence.",
+        "Capability gaps are specific and reusable."
+      ]
+    },
+    {
+      "id": "acceptance.op_amp_circuit.audio_mixer",
+      "domain": "op_amp_circuit",
+      "prompt": "Design a two-input inverting audio mixer for line-level signals with unity gain on each channel and 20 Hz to 20 kHz flat response. Use available tools where possible and identify op-amp/noise/headroom validation gaps.",
+      "mustRetrieve": [
+        "electronics.cookbook.audio.inverting_mixer",
+        "electronics.cookbook.opamp.non_inverting_amplifier"
+      ],
+      "requiredToolEvidence": [
+        "cookbook_lookup",
+        "circuit_run_erc",
+        "simulation_export_artifacts"
+      ],
+      "expectedCapabilityGaps": [
+        "Op-amp audio models, noise analysis, and multi-source transient support may be missing."
+      ],
+      "passCriteria": [
+        "Agent selects summing amplifier topology.",
+        "Input/feedback resistor reasoning is shown.",
+        "Headroom/noise/tool gaps are explicit."
+      ]
+    },
+    {
+      "id": "acceptance.rectifier_power_supply.bridge_ripple",
+      "domain": "rectifier_power_supply",
+      "prompt": "Design a bridge-rectifier capacitor-input supply from 12 Vrms AC at 60 Hz for a 100 mA load with less than 1 V peak-to-peak ripple. Build the circuit as far as supported and validate ripple from transient data or report the missing capability.",
+      "mustRetrieve": [
+        "electronics.cookbook.power.bridge_rectifier_capacitor_supply",
+        "electronics.cookbook.diode.bridge_rectifier"
+      ],
+      "requiredToolEvidence": [
+        "cookbook_lookup",
+        "schematic_place_symbol",
+        "schematic_connect",
+        "circuit_run_erc",
+        "simulation_export_artifacts"
+      ],
+      "expectedCapabilityGaps": [
+        "Diode models and transient waveform measurement may be missing."
+      ],
+      "passCriteria": [
+        "Agent calculates reservoir capacitance from ripple requirement.",
+        "Agent checks diode and capacitor stress conceptually.",
+        "Ripple is measured from transient data or marked as a capability gap."
+      ]
+    },
+    {
+      "id": "acceptance.regulator.zener_reference",
+      "domain": "regulator",
+      "prompt": "Design a simple 5.1 V Zener shunt reference from a 12 V input for a load between 0 and 5 mA. Verify Zener current and power over load range using real tool evidence or identify missing DC sweep support.",
+      "mustRetrieve": [
+        "electronics.cookbook.references.zener_reference"
+      ],
+      "requiredToolEvidence": [
+        "cookbook_lookup",
+        "circuit_run_erc",
+        "simulation_export_artifacts"
+      ],
+      "expectedCapabilityGaps": [
+        "DC load sweep and Zener model support may be missing."
+      ],
+      "passCriteria": [
+        "Agent computes series resistor bounds.",
+        "Agent checks min/max Zener current and power.",
+        "Sweep evidence or capability gap is provided."
+      ]
+    },
+    {
+      "id": "acceptance.oscillator.wien_1khz",
+      "domain": "oscillator",
+      "prompt": "Design a Wien bridge oscillator near 1 kHz with a clear startup and amplitude-stabilization plan. Use cookbook knowledge and app tools, and do not claim oscillation unless transient startup data exists.",
+      "mustRetrieve": [
+        "electronics.cookbook.oscillator.wien_bridge"
+      ],
+      "requiredToolEvidence": [
+        "cookbook_lookup",
+        "circuit_run_erc",
+        "simulation_export_artifacts"
+      ],
+      "expectedCapabilityGaps": [
+        "Op-amp models, transient startup, and distortion metrics may be missing."
+      ],
+      "passCriteria": [
+        "Agent calculates R/C for 1 kHz.",
+        "Agent explains loop gain and amplitude stabilization.",
+        "Startup/distortion claims are backed by data or flagged as gaps."
+      ]
+    },
+    {
+      "id": "acceptance.control_loop.pid_thermal",
+      "domain": "control_loop",
+      "prompt": "Create a PI/PID control-loop plan for a temperature-controlled fan system with overshoot under 5 percent and settling under 30 seconds. Use cookbook entries to decide required models, analyses, and validation evidence.",
+      "mustRetrieve": [
+        "electronics.cookbook.control.pid_loop",
+        "electronics.cookbook.thermal.fan_controller",
+        "electronics.cookbook.control.loop_frequency_response"
+      ],
+      "requiredToolEvidence": [
+        "cookbook_lookup",
+        "simulation_export_artifacts"
+      ],
+      "expectedCapabilityGaps": [
+        "Thermal plant model, step-response metrics, and loop-margin tools may be missing."
+      ],
+      "passCriteria": [
+        "Agent maps time-domain specs to validation metrics.",
+        "Agent identifies plant/controller/sensor/actuator needs.",
+        "Unsupported control analysis is reported as reusable gaps."
+      ]
+    },
+    {
+      "id": "acceptance.sensor_interface.ntc_adc",
+      "domain": "sensor_interface",
+      "prompt": "Design an NTC thermistor divider for 0 C to 70 C into a microcontroller ADC, choosing a bias resistor and checking self-heating, ADC range, and source impedance. Validate with available tools or report missing temperature-sweep capability.",
+      "mustRetrieve": [
+        "electronics.cookbook.sensor.thermistor_divider",
+        "electronics.cookbook.adc.sar_input_driver"
+      ],
+      "requiredToolEvidence": [
+        "cookbook_lookup",
+        "schematic_place_symbol",
+        "schematic_connect",
+        "circuit_run_erc",
+        "simulation_export_artifacts"
+      ],
+      "expectedCapabilityGaps": [
+        "Temperature-dependent thermistor sweeps and ADC sampling checks may be missing."
+      ],
+      "passCriteria": [
+        "Agent chooses a defensible bias resistor.",
+        "Agent evaluates ADC range and self-heating.",
+        "Temperature sweep evidence or gap is explicit."
+      ]
+    }
+  ]
+}
