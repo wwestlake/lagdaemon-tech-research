@@ -27,6 +27,11 @@ stuffing the whole project spec into every model call.
 - `electronics_cookbook_seed.jsonl`: structured engineering cookbook entries
   with topology selection guidance, equations, tool recipes, analysis recipes,
   validation criteria, failure modes, iteration rules, and capability gaps.
+- `COOKBOOK_CONTENT_LIST.md`: the user-authored cookbook coverage list. This
+  is the source of truth for what cookbook topics should exist for the AI and
+  for the user-facing reference collection.
+- `electronics_cookbook_content_items.jsonl`: one seed reference card per item
+  from `COOKBOOK_CONTENT_LIST.md`.
 - `COOKBOOK_ACCEPTANCE_GOALS.json`: representative unseen engineering goals
   used to validate agent behavior across passive filters, active filters,
   transistor amplifiers, op-amp circuits, rectifier supplies, regulators,
