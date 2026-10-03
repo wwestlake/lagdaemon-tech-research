@@ -30,6 +30,7 @@ private:
         runOperatingPoint,
         runTransient,
         runCompiledPreview,
+        designRlcHighPass,
         openAgentSettings,
         exportAgentTools,
         openResearchSpec
@@ -48,8 +49,10 @@ private:
     juce::String buildAssistantToolManifestJson() const;
     juce::String runElectricalRuleCheckTool();
     juce::String exportCircuitArtifactsTool();
+    juce::String designRlcHighPassFilterTool(double cutoffHz, double impedanceOhms);
     void showSpecDocument();
     void exportCircuitArtifacts();
+    void designRlcHighPassFilter();
     void applySchematicZoom(float zoom);
     void adjustSchematicZoom(float factor);
 
@@ -81,6 +84,7 @@ private:
                                const juce::String&, const juce::String&)> placeSymbolTool;
     std::function<juce::String(const juce::String&, const juce::String&)> connectNodesTool;
     std::function<juce::String(const juce::String&)> openInstrumentTool;
+    std::function<juce::String(double, double)> designHighPassTool;
     std::function<void()> openAgentSettingsDialog;
     std::function<void(bool)> setSnapEnabled;
     std::function<void(float)> setSchematicZoom;

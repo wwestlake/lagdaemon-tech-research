@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <atomic>
 #include <cmath>
+#include <complex>
 #include <memory>
 #include <map>
 #include <set>
@@ -39,6 +40,253 @@ void showCursorForEvent(const juce::MouseEvent& event, juce::MouseCursor cursor)
 juce::String jsonQuote(const juce::String& text)
 {
     return "\"" + text.replace("\\", "\\\\").replace("\"", "\\\"") + "\"";
+}
+
+struct RlcHighPassDesign
+{
+    double cutoffHz = 10.0;
+    double impedanceOhms = 8.0;
+    double sourceOhms = 8.0;
+    double loadOhms = 8.0;
+    double capacitanceFarads = 0.0;
+    double inductanceHenries = 0.0;
+};
+
+struct RlcAcSample
+{
+    double frequencyHz = 0.0;
+    double rawGainDb = 0.0;
+    double normalizedGainDb = 0.0;
+    double phaseDegrees = 0.0;
+    double inputImpedanceReal = 0.0;
+    double inputImpedanceImag = 0.0;
+    double inputImpedanceMag = 0.0;
+};
+
+RlcHighPassDesign makeRlcHighPassDesign(double cutoffHz, double impedanceOhms)
+{
+    RlcHighPassDesign design;
+    design.cutoffHz = std::max(0.001, cutoffHz);
+    design.impedanceOhms = std::max(0.001, impedanceOhms);
+    design.sourceOhms = design.impedanceOhms;
+    design.loadOhms = design.impedanceOhms;
+
+    const auto omega = juce::MathConstants<double>::twoPi * design.cutoffHz;
+    const auto butterworthQ = std::sqrt(2.0);
+    design.capacitanceFarads = 1.0 / (omega * design.impedanceOhms * butterworthQ);
+    design.inductanceHenries = design.impedanceOhms / (omega * butterworthQ);
+    return design;
+}
+
+juce::String numberText(double value, int decimals = 6)
+{
+    return juce::String(value, decimals).trimCharactersAtEnd("0").trimCharactersAtEnd(".");
+}
+
+juce::String spiceCapacitance(double farads)
+{
+    return numberText(farads * 1000.0, 6) + "m";
+}
+
+juce::String spiceInductance(double henries)
+{
+    return numberText(henries * 1000.0, 6) + "m";
+}
+
+juce::String humanCapacitance(double farads)
+{
+    return numberText(farads * 1000000.0, 2) + " uF";
+}
+
+juce::String humanInductance(double henries)
+{
+    return numberText(henries * 1000.0, 3) + " mH";
+}
+
+double dbFromMagnitude(double magnitude)
+{
+    return 20.0 * std::log10(std::max(1.0e-12, magnitude));
+}
+
+std::vector<RlcAcSample> sweepRlcHighPass(const RlcHighPassDesign& design)
+{
+    std::vector<RlcAcSample> samples;
+    constexpr int sampleCount = 481;
+    const auto startHz = std::max(0.01, design.cutoffHz / 100.0);
+    const auto stopHz = design.cutoffHz * 100.0;
+    const auto logStart = std::log10(startHz);
+    const auto logStop = std::log10(stopHz);
+    const std::complex<double> j(0.0, 1.0);
+    const auto passbandDivider = design.loadOhms / (design.sourceOhms + design.loadOhms);
+
+    samples.reserve(sampleCount);
+    for (int index = 0; index < sampleCount; ++index)
+    {
+        const auto t = (double)index / (double)(sampleCount - 1);
+        const auto frequency = std::pow(10.0, logStart + (logStop - logStart) * t);
+        const auto omega = juce::MathConstants<double>::twoPi * frequency;
+        const auto zc = 1.0 / (j * omega * design.capacitanceFarads);
+        const auto zl = j * omega * design.inductanceHenries;
+        const auto zLoad = std::complex<double>(design.loadOhms, 0.0);
+        const auto zParallel = 1.0 / (1.0 / zLoad + 1.0 / zl);
+        const auto inputImpedance = zc + zParallel;
+        const auto transfer = zParallel / (std::complex<double>(design.sourceOhms, 0.0) + inputImpedance);
+        const auto normalized = transfer / passbandDivider;
+
+        RlcAcSample sample;
+        sample.frequencyHz = frequency;
+        sample.rawGainDb = dbFromMagnitude(std::abs(transfer));
+        sample.normalizedGainDb = dbFromMagnitude(std::abs(normalized));
+        sample.phaseDegrees = std::atan2(normalized.imag(), normalized.real()) * 180.0 / juce::MathConstants<double>::pi;
+        sample.inputImpedanceReal = inputImpedance.real();
+        sample.inputImpedanceImag = inputImpedance.imag();
+        sample.inputImpedanceMag = std::abs(inputImpedance);
+        samples.push_back(sample);
+    }
+    return samples;
+}
+
+RlcAcSample sampleRlcHighPassAt(const RlcHighPassDesign& design, double frequency)
+{
+    const std::complex<double> j(0.0, 1.0);
+    const auto omega = juce::MathConstants<double>::twoPi * frequency;
+    const auto zc = 1.0 / (j * omega * design.capacitanceFarads);
+    const auto zl = j * omega * design.inductanceHenries;
+    const auto zLoad = std::complex<double>(design.loadOhms, 0.0);
+    const auto zParallel = 1.0 / (1.0 / zLoad + 1.0 / zl);
+    const auto inputImpedance = zc + zParallel;
+    const auto passbandDivider = design.loadOhms / (design.sourceOhms + design.loadOhms);
+    const auto transfer = zParallel / (std::complex<double>(design.sourceOhms, 0.0) + inputImpedance);
+    const auto normalized = transfer / passbandDivider;
+
+    RlcAcSample sample;
+    sample.frequencyHz = frequency;
+    sample.rawGainDb = dbFromMagnitude(std::abs(transfer));
+    sample.normalizedGainDb = dbFromMagnitude(std::abs(normalized));
+    sample.phaseDegrees = std::atan2(normalized.imag(), normalized.real()) * 180.0 / juce::MathConstants<double>::pi;
+    sample.inputImpedanceReal = inputImpedance.real();
+    sample.inputImpedanceImag = inputImpedance.imag();
+    sample.inputImpedanceMag = std::abs(inputImpedance);
+    return sample;
+}
+
+juce::String buildRlcHighPassSpiceNetlist(const RlcHighPassDesign& design)
+{
+    juce::String netlist;
+    netlist << "* Djehuti Electronics Lab generated AC analysis netlist\n";
+    netlist << "* 2nd order passive RLC high-pass, Butterworth alignment\n";
+    netlist << "* Cutoff: " << numberText(design.cutoffHz, 4) << " Hz, impedance: "
+            << numberText(design.impedanceOhms, 4) << " ohm\n\n";
+    netlist << "VIN vin 0 AC 1\n";
+    netlist << "RS vin in " << numberText(design.sourceOhms, 6) << "\n";
+    netlist << "C1 in out " << spiceCapacitance(design.capacitanceFarads) << "\n";
+    netlist << "L1 out 0 " << spiceInductance(design.inductanceHenries) << "\n";
+    netlist << "RL out 0 " << numberText(design.loadOhms, 6) << "\n\n";
+    netlist << ".AC DEC 80 " << numberText(std::max(0.01, design.cutoffHz / 100.0), 6)
+            << " " << numberText(design.cutoffHz * 100.0, 6) << "\n";
+    netlist << ".PRINT AC VM(out) VP(out) VM(in)\n";
+    netlist << ".END\n";
+    return netlist;
+}
+
+juce::String buildRlcHighPassCsv(const std::vector<RlcAcSample>& samples)
+{
+    juce::String csv;
+    csv << "frequency_hz,normalized_gain_db,raw_gain_db,phase_deg,input_impedance_mag_ohm,input_impedance_real_ohm,input_impedance_imag_ohm\n";
+    for (const auto& sample : samples)
+    {
+        csv << numberText(sample.frequencyHz, 8) << ","
+            << numberText(sample.normalizedGainDb, 8) << ","
+            << numberText(sample.rawGainDb, 8) << ","
+            << numberText(sample.phaseDegrees, 8) << ","
+            << numberText(sample.inputImpedanceMag, 8) << ","
+            << numberText(sample.inputImpedanceReal, 8) << ","
+            << numberText(sample.inputImpedanceImag, 8) << "\n";
+    }
+    return csv;
+}
+
+juce::String buildRlcHighPassSvg(const RlcHighPassDesign& design,
+                                 const std::vector<RlcAcSample>& samples)
+{
+    constexpr double width = 1100.0;
+    constexpr double height = 640.0;
+    constexpr double left = 82.0;
+    constexpr double right = 36.0;
+    constexpr double top = 44.0;
+    constexpr double bottom = 76.0;
+    constexpr double minDb = -60.0;
+    constexpr double maxDb = 3.0;
+    const auto plotWidth = width - left - right;
+    const auto plotHeight = height - top - bottom;
+    const auto startHz = std::max(0.01, design.cutoffHz / 100.0);
+    const auto stopHz = design.cutoffHz * 100.0;
+    const auto logStart = std::log10(startHz);
+    const auto logStop = std::log10(stopHz);
+
+    auto xFor = [&](double frequency) {
+        return left + (std::log10(std::clamp(frequency, startHz, stopHz)) - logStart) / (logStop - logStart) * plotWidth;
+    };
+    auto yFor = [&](double db) {
+        const auto clamped = std::clamp(db, minDb, maxDb);
+        return top + (maxDb - clamped) / (maxDb - minDb) * plotHeight;
+    };
+
+    juce::String points;
+    for (const auto& sample : samples)
+        points << numberText(xFor(sample.frequencyHz), 2) << "," << numberText(yFor(sample.normalizedGainDb), 2) << " ";
+
+    juce::String svg;
+    svg << "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"" << (int)width
+        << "\" height=\"" << (int)height << "\" viewBox=\"0 0 " << (int)width << " " << (int)height << "\">\n";
+    svg << "<rect width=\"100%\" height=\"100%\" fill=\"#0e141a\"/>\n";
+    svg << "<text x=\"32\" y=\"28\" fill=\"#e8f1f2\" font-family=\"Segoe UI, Arial\" font-size=\"20\" font-weight=\"700\">RLC 2nd Order High-Pass Response</text>\n";
+    svg << "<text x=\"32\" y=\"54\" fill=\"#93a7b0\" font-family=\"Segoe UI, Arial\" font-size=\"13\">"
+        << numberText(design.cutoffHz, 3) << " Hz cutoff, " << numberText(design.impedanceOhms, 3)
+        << " ohm matched source/load, C1 " << humanCapacitance(design.capacitanceFarads)
+        << ", L1 " << humanInductance(design.inductanceHenries) << "</text>\n";
+    svg << "<rect x=\"" << numberText(left, 1) << "\" y=\"" << numberText(top, 1)
+        << "\" width=\"" << numberText(plotWidth, 1) << "\" height=\"" << numberText(plotHeight, 1)
+        << "\" fill=\"#111922\" stroke=\"#33424d\" stroke-width=\"1\"/>\n";
+
+    for (double db : { 0.0, -3.0, -10.0, -20.0, -40.0, -60.0 })
+    {
+        const auto y = yFor(db);
+        svg << "<line x1=\"" << numberText(left, 1) << "\" y1=\"" << numberText(y, 1)
+            << "\" x2=\"" << numberText(left + plotWidth, 1) << "\" y2=\"" << numberText(y, 1)
+            << "\" stroke=\"" << (db == -3.0 ? "#ffc857" : "#26323d") << "\" stroke-width=\"" << (db == -3.0 ? "1.4" : "1") << "\"/>\n";
+        svg << "<text x=\"18\" y=\"" << numberText(y + 4.0, 1) << "\" fill=\"#93a7b0\" font-family=\"Segoe UI, Arial\" font-size=\"12\">"
+            << numberText(db, 0) << " dB</text>\n";
+    }
+
+    for (double frequency : { startHz, design.cutoffHz / 10.0, design.cutoffHz, design.cutoffHz * 10.0, stopHz })
+    {
+        if (frequency < startHz * 0.999 || frequency > stopHz * 1.001)
+            continue;
+        const auto x = xFor(frequency);
+        svg << "<line x1=\"" << numberText(x, 1) << "\" y1=\"" << numberText(top, 1)
+            << "\" x2=\"" << numberText(x, 1) << "\" y2=\"" << numberText(top + plotHeight, 1)
+            << "\" stroke=\"" << (std::abs(frequency - design.cutoffHz) < 0.001 ? "#78dcca" : "#26323d")
+            << "\" stroke-width=\"" << (std::abs(frequency - design.cutoffHz) < 0.001 ? "1.5" : "1") << "\"/>\n";
+        svg << "<text x=\"" << numberText(x - 22.0, 1) << "\" y=\"" << numberText(top + plotHeight + 24.0, 1)
+            << "\" fill=\"#93a7b0\" font-family=\"Segoe UI, Arial\" font-size=\"12\">"
+            << numberText(frequency, frequency < 1.0 ? 2 : 0) << " Hz</text>\n";
+    }
+
+    svg << "<polyline fill=\"none\" stroke=\"#78dcca\" stroke-width=\"3\" points=\"" << points.trim() << "\"/>\n";
+    svg << "<circle cx=\"" << numberText(xFor(design.cutoffHz), 2) << "\" cy=\"" << numberText(yFor(-3.01029995664), 2)
+        << "\" r=\"5\" fill=\"#ffc857\"/>\n";
+    svg << "<text x=\"" << numberText(left + plotWidth - 314.0, 1) << "\" y=\"" << numberText(top + 28.0, 1)
+        << "\" fill=\"#dce9ee\" font-family=\"Segoe UI, Arial\" font-size=\"13\">Normalized to matched passband, 0 dB at high frequency</text>\n";
+    svg << "<text x=\"" << numberText(left + plotWidth - 314.0, 1) << "\" y=\"" << numberText(top + 48.0, 1)
+        << "\" fill=\"#ffc857\" font-family=\"Segoe UI, Arial\" font-size=\"13\">Cutoff marker: -3.01 dB at "
+        << numberText(design.cutoffHz, 3) << " Hz</text>\n";
+    svg << "<text x=\"" << numberText(left + plotWidth * 0.45, 1) << "\" y=\"" << numberText(height - 22.0, 1)
+        << "\" fill=\"#dce9ee\" font-family=\"Segoe UI, Arial\" font-size=\"14\">Frequency (log scale)</text>\n";
+    svg << "<text transform=\"translate(20 " << numberText(top + plotHeight * 0.63, 1)
+        << ") rotate(-90)\" fill=\"#dce9ee\" font-family=\"Segoe UI, Arial\" font-size=\"14\">Gain (dB)</text>\n";
+    svg << "</svg>\n";
+    return svg;
 }
 
 class NotesPanel : public juce::Component
@@ -1218,6 +1466,70 @@ public:
         result << "  \"symbolId\": " << quote(instance.symbolId) << ",\n";
         result << "  \"x\": " << instance.position.x << ",\n";
         result << "  \"y\": " << instance.position.y << "\n";
+        result << "}";
+        return result;
+    }
+
+    juce::String createRlcHighPassFilterFromTool(double cutoffHz, double impedanceOhms)
+    {
+        if (cutoffHz <= 0.0 || impedanceOhms <= 0.0)
+            return toolFailure("filter_design_high_pass", "cutoffHz and impedanceOhms must be positive.");
+
+        const auto design = makeRlcHighPassDesign(cutoffHz, impedanceOhms);
+        clearModel();
+
+        auto place = [this](const juce::String& symbolId,
+                            const juce::String& refdes,
+                            juce::Point<float> position,
+                            const juce::String& value,
+                            const juce::String& frequency = {},
+                            int rotation = 0) {
+            placeSymbol(symbolId, position);
+            auto& instance = instances.back();
+            instance.refdes = refdes;
+            instance.value = value;
+            instance.frequency = frequency;
+            instance.rotation = rotation;
+            return refdes;
+        };
+
+        place("ac_voltage_source", "VIN1", { 96.0f, 264.0f }, "1", numberText(design.cutoffHz, 3));
+        place("resistor", "RS1", { 240.0f, 216.0f }, numberText(design.sourceOhms, 3));
+        place("capacitor", "C1", { 384.0f, 216.0f }, spiceCapacitance(design.capacitanceFarads));
+        place("inductor", "L1", { 504.0f, 288.0f }, spiceInductance(design.inductanceHenries), {}, 90);
+        place("resistor", "RL1", { 624.0f, 288.0f }, numberText(design.loadOhms, 3), {}, 90);
+        place("ground", "GND1", { 504.0f, 384.0f }, "0", {}, 0);
+        place("oscilloscope_2ch", "SCOPE1", { 792.0f, 240.0f }, "2ch", {}, 0);
+
+        connectNodesFromTool("VIN1.-", "GND1.0");
+        connectNodesFromTool("VIN1.+", "RS1.1");
+        connectNodesFromTool("RS1.2", "C1.1");
+        connectNodesFromTool("C1.2", "L1.1");
+        connectNodesFromTool("C1.2", "RL1.1");
+        connectNodesFromTool("C1.2", "SCOPE1.CH1");
+        connectNodesFromTool("VIN1.+", "SCOPE1.CH2");
+        connectNodesFromTool("L1.2", "GND1.0");
+        connectNodesFromTool("RL1.2", "GND1.0");
+        connectNodesFromTool("SCOPE1.REF", "GND1.0");
+
+        selectedInstance = instanceIndexForRefdes("C1");
+        notifySelection();
+        repaint();
+
+        juce::String result;
+        result << "{\n";
+        result << "  \"ok\": true,\n";
+        result << "  \"tool\": \"filter_design_high_pass\",\n";
+        result << "  \"displayTool\": \"filter.design_high_pass\",\n";
+        result << "  \"topology\": \"source_8ohm_series_cap_shunt_inductor_load_8ohm\",\n";
+        result << "  \"cutoffHz\": " << numberText(design.cutoffHz, 6) << ",\n";
+        result << "  \"impedanceOhms\": " << numberText(design.impedanceOhms, 6) << ",\n";
+        result << "  \"sourceOhms\": " << numberText(design.sourceOhms, 6) << ",\n";
+        result << "  \"loadOhms\": " << numberText(design.loadOhms, 6) << ",\n";
+        result << "  \"capacitanceFarads\": " << numberText(design.capacitanceFarads, 12) << ",\n";
+        result << "  \"inductanceHenries\": " << numberText(design.inductanceHenries, 12) << ",\n";
+        result << "  \"capacitanceLabel\": " << quote(humanCapacitance(design.capacitanceFarads)) << ",\n";
+        result << "  \"inductanceLabel\": " << quote(humanInductance(design.inductanceHenries)) << "\n";
         result << "}";
         return result;
     }
@@ -3550,6 +3862,7 @@ public:
                                    const juce::String&, const juce::String&)> placeSymbol;
         std::function<juce::String(const juce::String&, const juce::String&)> connectNodes;
         std::function<juce::String(const juce::String&)> openInstrument;
+        std::function<juce::String(double, double)> designHighPass;
         std::function<juce::String()> toolManifest;
         std::function<void(const juce::String&)> log;
     };
@@ -3928,6 +4241,7 @@ private:
                "electrical checks, exported artifacts, or diagram edits. Prefer schematic instrument nodes "
                "for scopes and meters, wire pins by labels such as R1.1 or SCOPE2.CH1, and remember "
                "that floating instrument windows are preferred. "
+               "Use filter_design_high_pass when asked to synthesize a matched RLC high-pass filter and produce AC response artifacts. "
                "Use filesystem LiteSemRAG cards as retrieved guidance; do not assume Suite VFS storage. "
                "Be concise, report tool results plainly, and do not claim a circuit is ready for solver-backed "
                "analysis until circuit_run_erc has passed or you have explained the remaining warnings.";
@@ -3950,6 +4264,11 @@ private:
                 "simulation_export_artifacts",
                 "Export circuit JSON, Xyce netlist, lab instruments JSON, and assistant tool manifest.",
                 R"({"type":"object","properties":{},"additionalProperties":false})"
+            },
+            {
+                "filter_design_high_pass",
+                "Design and draw a matched RLC 2nd order high-pass filter, then run the internal AC sweep and export response artifacts.",
+                R"({"type":"object","properties":{"cutoffHz":{"type":"number","description":"Target -3 dB cutoff frequency in Hz."},"impedanceOhms":{"type":"number","description":"Matched source/load impedance in ohms."}},"required":["cutoffHz","impedanceOhms"],"additionalProperties":false})"
             },
             {
                 "schematic_place_symbol",
@@ -3987,6 +4306,18 @@ private:
 
         if (name == "simulation_export_artifacts")
             return tools.exportArtifacts != nullptr ? tools.exportArtifacts() : "{ \"ok\": false, \"error\": \"Export tool unavailable.\" }";
+
+        if (name == "filter_design_high_pass")
+        {
+            if (!parsed.isObject())
+                return "{ \"ok\": false, \"error\": \"filter_design_high_pass arguments must be a JSON object.\" }";
+
+            const auto cutoffHz = (double)parsed.getProperty("cutoffHz", 10.0);
+            const auto impedanceOhms = (double)parsed.getProperty("impedanceOhms", 8.0);
+            return tools.designHighPass != nullptr
+                ? tools.designHighPass(cutoffHz, impedanceOhms)
+                : "{ \"ok\": false, \"error\": \"High-pass filter design tool unavailable.\" }";
+        }
 
         if (name == "schematic_place_symbol")
         {
@@ -4396,6 +4727,13 @@ ElectronicsWorkbench::ElectronicsWorkbench()
     openInstrumentTool = [panel = schematic.get()](const juce::String& refdes) {
         return panel->openInstrumentFromTool(refdes);
     };
+    designHighPassTool = [this, panel = schematic.get()](double cutoffHz, double impedanceOhms) {
+        const auto schematicResult = panel->createRlcHighPassFilterFromTool(cutoffHz, impedanceOhms);
+        const auto parsed = juce::JSON::parse(schematicResult);
+        if (!parsed.isObject() || !(bool)parsed.getProperty("ok", false))
+            return schematicResult;
+        return designRlcHighPassFilterTool(cutoffHz, impedanceOhms);
+    };
     AgentPanel::HostTools agentTools;
     agentTools.inspectCircuit = [this] {
         return getCircuitJson != nullptr ? getCircuitJson() : juce::String("{}");
@@ -4421,6 +4759,11 @@ ElectronicsWorkbench::ElectronicsWorkbench()
         return openInstrumentTool != nullptr
             ? openInstrumentTool(refdes)
             : juce::String("{ \"ok\": false, \"error\": \"Instrument opening is unavailable.\" }");
+    };
+    agentTools.designHighPass = [this](double cutoffHz, double impedanceOhms) {
+        return designHighPassTool != nullptr
+            ? designHighPassTool(cutoffHz, impedanceOhms)
+            : juce::String("{ \"ok\": false, \"error\": \"High-pass filter design is unavailable.\" }");
     };
     agentTools.toolManifest = [this] { return buildAssistantToolManifestJson(); };
     agentTools.log = [this](const juce::String& text) { appendLog(text); };
@@ -4521,6 +4864,8 @@ juce::PopupMenu ElectronicsWorkbench::getMenuForIndex(int, const juce::String& m
     }
     else if (menuName == "Simulation")
     {
+        menu.addItem(designRlcHighPass, "Design 10 Hz / 8 Ohm RLC High-Pass");
+        menu.addSeparator();
         menu.addItem(runOperatingPoint, "Run Operating Point");
         menu.addItem(runTransient, "Run Transient");
         menu.addItem(runCompiledPreview, "Compile Realtime Preview");
@@ -4554,6 +4899,7 @@ void ElectronicsWorkbench::menuItemSelected(int menuItemID, int)
             break;
         case importComponent: appendLog("Component ingestion stub: BYOK agent/provider workflow pending."); break;
         case runErc: runElectricalRuleCheck(); break;
+        case designRlcHighPass: designRlcHighPassFilter(); break;
         case runOperatingPoint: exportCircuitArtifacts(); break;
         case runTransient: exportCircuitArtifacts(); break;
         case runCompiledPreview: appendLog("Compiled preview stub: circuit IR -> Frust backend pending."); break;
@@ -4703,6 +5049,23 @@ juce::String ElectronicsWorkbench::buildAssistantToolManifestJson() const
     text << "        \"circuitJson\": " << jsonQuote(runDir.getChildFile("circuit.json").getFullPathName()) << ",\n";
     text << "        \"xyceNetlist\": " << jsonQuote(runDir.getChildFile("generated.cir").getFullPathName()) << ",\n";
     text << "        \"instrumentJson\": " << jsonQuote(runDir.getChildFile("lab_instruments.json").getFullPathName()) << "\n";
+    text << "      }\n";
+    text << "    },\n";
+    text << "    {\n";
+    text << "      \"name\": \"filter_design_high_pass\",\n";
+    text << "      \"displayName\": \"filter.design_high_pass\",\n";
+    text << "      \"description\": \"Design a matched RLC 2nd order high-pass filter, draw it on the schematic, run the internal AC sweep, and export graph/report artifacts.\",\n";
+    text << "      \"mode\": \"modify_schematic_model_and_write_generated_artifacts\",\n";
+    text << "      \"status\": \"active\",\n";
+    text << "      \"inputs\": {\n";
+    text << "        \"cutoffHz\": \"target cutoff frequency in Hz\",\n";
+    text << "        \"impedanceOhms\": \"matched source/load impedance in ohms\"\n";
+    text << "      },\n";
+    text << "      \"outputs\": {\n";
+    text << "        \"spiceNetlist\": " << jsonQuote(runDir.getChildFile("rlc_high_pass_ac.cir").getFullPathName()) << ",\n";
+    text << "        \"csv\": " << jsonQuote(runDir.getChildFile("rlc_high_pass_ac.csv").getFullPathName()) << ",\n";
+    text << "        \"svg\": " << jsonQuote(runDir.getChildFile("rlc_high_pass_response.svg").getFullPathName()) << ",\n";
+    text << "        \"report\": " << jsonQuote(runDir.getChildFile("rlc_high_pass_report.md").getFullPathName()) << "\n";
     text << "      }\n";
     text << "    },\n";
     text << "    {\n";
@@ -4903,6 +5266,109 @@ juce::String ElectronicsWorkbench::exportCircuitArtifactsTool()
     return result;
 }
 
+juce::String ElectronicsWorkbench::designRlcHighPassFilterTool(double cutoffHz, double impedanceOhms)
+{
+    if (getCircuitJson == nullptr)
+    {
+        return "{ \"ok\": false, \"tool\": \"filter_design_high_pass\", \"displayTool\": \"filter.design_high_pass\", \"error\": \"No schematic model is available.\" }";
+    }
+
+    const auto design = makeRlcHighPassDesign(cutoffHz, impedanceOhms);
+    const auto samples = sweepRlcHighPass(design);
+    const auto cutoffSample = sampleRlcHighPassAt(design, design.cutoffHz);
+    const auto runDir = generatedRunDirectory();
+    if (!runDir.createDirectory())
+    {
+        return "{ \"ok\": false, \"tool\": \"filter_design_high_pass\", \"displayTool\": \"filter.design_high_pass\", \"error\": "
+            + jsonQuote("Could not create run directory: " + runDir.getFullPathName()) + " }";
+    }
+
+    const auto circuitFile = runDir.getChildFile("rlc_high_pass_circuit.json");
+    const auto netlistFile = runDir.getChildFile("rlc_high_pass_ac.cir");
+    const auto csvFile = runDir.getChildFile("rlc_high_pass_ac.csv");
+    const auto svgFile = runDir.getChildFile("rlc_high_pass_response.svg");
+    const auto reportFile = runDir.getChildFile("rlc_high_pass_report.md");
+    const auto manifestFile = runDir.getChildFile("assistant_tools.json");
+
+    juce::String report;
+    report << "# RLC 2nd Order High-Pass Filter\n\n";
+    report << "- Topology: 8 ohm source, series capacitor, shunt inductor, 8 ohm load.\n";
+    report << "- Alignment: 2nd order Butterworth high-pass, normalized to matched passband.\n";
+    report << "- Cutoff: " << numberText(design.cutoffHz, 4) << " Hz.\n";
+    report << "- Matched impedance: " << numberText(design.impedanceOhms, 4) << " ohm.\n";
+    report << "- Source resistor: " << numberText(design.sourceOhms, 4) << " ohm.\n";
+    report << "- Load resistor: " << numberText(design.loadOhms, 4) << " ohm.\n";
+    report << "- Series capacitor C1: " << humanCapacitance(design.capacitanceFarads)
+           << " (`" << spiceCapacitance(design.capacitanceFarads) << "` F in SPICE suffix notation).\n";
+    report << "- Shunt inductor L1: " << humanInductance(design.inductanceHenries)
+           << " (`" << spiceInductance(design.inductanceHenries) << "` H in SPICE suffix notation).\n\n";
+    report << "## AC Sweep Result\n\n";
+    report << "- Gain at cutoff, normalized to matched passband: "
+           << numberText(cutoffSample.normalizedGainDb, 4) << " dB.\n";
+    report << "- Raw V(out)/V(source) at cutoff: " << numberText(cutoffSample.rawGainDb, 4)
+           << " dB. The extra ~6 dB loss is the intentional 8 ohm source/load division.\n";
+    report << "- Input impedance magnitude at cutoff: " << numberText(cutoffSample.inputImpedanceMag, 4)
+           << " ohm.\n";
+    report << "- Input impedance at cutoff: " << numberText(cutoffSample.inputImpedanceReal, 4)
+           << " + j" << numberText(cutoffSample.inputImpedanceImag, 4) << " ohm.\n\n";
+    report << "## Artifacts\n\n";
+    report << "- SPICE AC netlist: `" << netlistFile.getFullPathName() << "`\n";
+    report << "- Sweep CSV: `" << csvFile.getFullPathName() << "`\n";
+    report << "- Frequency response SVG: `" << svgFile.getFullPathName() << "`\n";
+    report << "- Schematic circuit JSON: `" << circuitFile.getFullPathName() << "`\n";
+
+    struct OutputFile
+    {
+        juce::File file;
+        juce::String text;
+        juce::String label;
+    };
+
+    const OutputFile files[] = {
+        { circuitFile, getCircuitJson(), "circuit JSON" },
+        { netlistFile, buildRlcHighPassSpiceNetlist(design), "SPICE netlist" },
+        { csvFile, buildRlcHighPassCsv(samples), "AC sweep CSV" },
+        { svgFile, buildRlcHighPassSvg(design, samples), "frequency response SVG" },
+        { reportFile, report, "analysis report" },
+        { manifestFile, buildAssistantToolManifestJson(), "assistant tool manifest" }
+    };
+
+    for (const auto& output : files)
+    {
+        if (!output.file.replaceWithText(output.text))
+        {
+            return "{ \"ok\": false, \"tool\": \"filter_design_high_pass\", \"displayTool\": \"filter.design_high_pass\", \"error\": "
+                + jsonQuote("Could not write " + output.label + ": " + output.file.getFullPathName()) + " }";
+        }
+    }
+
+    juce::String result;
+    result << "{\n";
+    result << "  \"ok\": true,\n";
+    result << "  \"schemaVersion\": 1,\n";
+    result << "  \"kind\": \"djehuti_assistant_tool_result\",\n";
+    result << "  \"tool\": \"filter_design_high_pass\",\n";
+    result << "  \"displayTool\": \"filter.design_high_pass\",\n";
+    result << "  \"status\": \"designed_and_analyzed\",\n";
+    result << "  \"analysisEngine\": \"internal_linear_ac_sweep\",\n";
+    result << "  \"cutoffHz\": " << numberText(design.cutoffHz, 6) << ",\n";
+    result << "  \"impedanceOhms\": " << numberText(design.impedanceOhms, 6) << ",\n";
+    result << "  \"capacitanceFarads\": " << numberText(design.capacitanceFarads, 12) << ",\n";
+    result << "  \"inductanceHenries\": " << numberText(design.inductanceHenries, 12) << ",\n";
+    result << "  \"capacitanceLabel\": " << jsonQuote(humanCapacitance(design.capacitanceFarads)) << ",\n";
+    result << "  \"inductanceLabel\": " << jsonQuote(humanInductance(design.inductanceHenries)) << ",\n";
+    result << "  \"cutoffGainDb\": " << numberText(cutoffSample.normalizedGainDb, 8) << ",\n";
+    result << "  \"cutoffInputImpedanceOhms\": " << numberText(cutoffSample.inputImpedanceMag, 8) << ",\n";
+    result << "  \"artifactDirectory\": " << jsonQuote(runDir.getFullPathName()) << ",\n";
+    result << "  \"circuitJson\": " << jsonQuote(circuitFile.getFullPathName()) << ",\n";
+    result << "  \"spiceNetlist\": " << jsonQuote(netlistFile.getFullPathName()) << ",\n";
+    result << "  \"csv\": " << jsonQuote(csvFile.getFullPathName()) << ",\n";
+    result << "  \"responseSvg\": " << jsonQuote(svgFile.getFullPathName()) << ",\n";
+    result << "  \"report\": " << jsonQuote(reportFile.getFullPathName()) << "\n";
+    result << "}\n";
+    return result;
+}
+
 void ElectronicsWorkbench::exportCircuitArtifacts()
 {
     const auto result = exportCircuitArtifactsTool();
@@ -4915,6 +5381,25 @@ void ElectronicsWorkbench::exportCircuitArtifacts()
 
     appendLog("Exported circuit JSON, Xyce netlist, and lab instruments to "
               + parsed.getProperty("artifactDirectory", generatedRunDirectory().getFullPathName()).toString());
+}
+
+void ElectronicsWorkbench::designRlcHighPassFilter()
+{
+    const auto result = designHighPassTool != nullptr
+        ? designHighPassTool(10.0, 8.0)
+        : juce::String("{ \"ok\": false, \"error\": \"High-pass filter design tool is unavailable.\" }");
+    const auto parsed = juce::JSON::parse(result);
+    if (!parsed.isObject() || !(bool)parsed.getProperty("ok", false))
+    {
+        appendLog("High-pass design failed: " + parsed.getProperty("error", result).toString());
+        return;
+    }
+
+    appendLog("Designed 10 Hz / 8 ohm RLC high-pass filter. "
+              "C1=" + parsed.getProperty("capacitanceLabel", {}).toString()
+              + ", L1=" + parsed.getProperty("inductanceLabel", {}).toString()
+              + ", cutoff gain=" + parsed.getProperty("cutoffGainDb", {}).toString()
+              + " dB. Graph: " + parsed.getProperty("responseSvg", {}).toString());
 }
 
 void ElectronicsWorkbench::showSpecDocument()
