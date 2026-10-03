@@ -6187,6 +6187,12 @@ juce::String ElectronicsWorkbench::cookbookAcceptanceSummaryTool(const juce::Str
         return arrayCount(evidence.getProperty(name, {}));
     };
 
+    auto ratioText = [](int actual, int required) {
+        if (required <= 0)
+            return juce::String("1");
+        return numberText(juce::jlimit(0.0, 1.0, (double)actual / (double)required), 6);
+    };
+
     juce::String result;
     result << "{\n";
     result << "  \"ok\": true,\n";
@@ -6219,12 +6225,19 @@ juce::String ElectronicsWorkbench::cookbookAcceptanceSummaryTool(const juce::Str
             continue;
 
         const auto evidence = parsed.getProperty("evidence", {});
+        const auto requiredCards = arrayCount(goal.getProperty("mustRetrieve", {}));
+        const auto requiredTools = arrayCount(goal.getProperty("requiredToolEvidence", {}));
+        const auto requiredCriteria = arrayCount(goal.getProperty("passCriteria", {}));
         const auto criteriaCount = arrayCount(parsed.getProperty("criteriaResults", {}));
         const auto retrievedCards = evidenceCount(evidence, "retrievedCards");
         const auto toolCalls = evidenceCount(evidence, "toolCalls");
         const auto artifacts = evidenceCount(evidence, "artifacts");
         const auto capabilityGaps = evidenceCount(evidence, "capabilityGaps");
         const auto notes = evidenceCount(evidence, "notes");
+        const auto retrievalRatio = requiredCards <= 0 ? 1.0 : juce::jlimit(0.0, 1.0, (double)retrievedCards / (double)requiredCards);
+        const auto toolRatio = requiredTools <= 0 ? 1.0 : juce::jlimit(0.0, 1.0, (double)toolCalls / (double)requiredTools);
+        const auto criteriaRatio = requiredCriteria <= 0 ? 1.0 : juce::jlimit(0.0, 1.0, (double)criteriaCount / (double)requiredCriteria);
+        const auto readinessScore = (retrievalRatio + toolRatio + criteriaRatio) / 3.0;
 
         if (matched > 0)
             result << ",\n";
@@ -6235,6 +6248,11 @@ juce::String ElectronicsWorkbench::cookbookAcceptanceSummaryTool(const juce::Str
         result << "      \"finalDetermination\": " << jsonQuote(parsed.getProperty("finalDetermination", "unverified").toString()) << ",\n";
         result << "      \"reportPath\": " << jsonQuote(report.getFullPathName()) << ",\n";
         result << "      \"markdownReport\": " << jsonQuote(report.getSiblingFile("acceptance_report.md").getFullPathName()) << ",\n";
+        result << "      \"requiredEvidenceCounts\": {\n";
+        result << "        \"retrievedCards\": " << requiredCards << ",\n";
+        result << "        \"toolCalls\": " << requiredTools << ",\n";
+        result << "        \"criteriaResults\": " << requiredCriteria << "\n";
+        result << "      },\n";
         result << "      \"evidenceCounts\": {\n";
         result << "        \"retrievedCards\": " << retrievedCards << ",\n";
         result << "        \"toolCalls\": " << toolCalls << ",\n";
@@ -6242,6 +6260,15 @@ juce::String ElectronicsWorkbench::cookbookAcceptanceSummaryTool(const juce::Str
         result << "        \"capabilityGaps\": " << capabilityGaps << ",\n";
         result << "        \"criteriaResults\": " << criteriaCount << ",\n";
         result << "        \"notes\": " << notes << "\n";
+        result << "      },\n";
+        result << "      \"evidenceReadiness\": {\n";
+        result << "        \"score\": " << numberText(readinessScore, 6) << ",\n";
+        result << "        \"retrievalRatio\": " << ratioText(retrievedCards, requiredCards) << ",\n";
+        result << "        \"toolEvidenceRatio\": " << ratioText(toolCalls, requiredTools) << ",\n";
+        result << "        \"criteriaRatio\": " << ratioText(criteriaCount, requiredCriteria) << ",\n";
+        result << "        \"needsRetrievedCards\": " << (retrievedCards < requiredCards ? "true" : "false") << ",\n";
+        result << "        \"needsToolEvidence\": " << (toolCalls < requiredTools ? "true" : "false") << ",\n";
+        result << "        \"needsCriteriaResults\": " << (criteriaCount < requiredCriteria ? "true" : "false") << "\n";
         result << "      }\n";
         result << "    }";
         ++matched;
