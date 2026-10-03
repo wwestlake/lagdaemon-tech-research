@@ -13,6 +13,7 @@ struct Card
     juce::String title;
     juce::String source;
     juce::String text;
+    juce::String rawJson;
     juce::StringArray tokens;
     int priority = 50;
 };

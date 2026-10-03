@@ -23,8 +23,14 @@ stuffing the whole project spec into every model call.
   tools exposed to the assistant.
 - `electronics_domain_cards.jsonl`: stable domain principles and design model
   facts.
+- `electronics_cookbook_seed.jsonl`: structured engineering cookbook entries
+  with topology selection guidance, equations, tool recipes, analysis recipes,
+  validation criteria, failure modes, iteration rules, and capability gaps.
 - project memory cards: project-local notes approved or authored during work.
 
 The runtime currently reads cards directly from JSONL. A disposable SQLite
 LiteSemRAG read model can be added later without changing the card source of
 truth.
+
+See `COOKBOOK_SCHEMA.md` for the structured cookbook entry model. The BYOK
+agent can explicitly search this knowledge through the `cookbook_lookup` tool.

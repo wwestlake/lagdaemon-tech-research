@@ -86,7 +86,7 @@ juce::StringArray arrayProperty(const juce::var& value)
     return result;
 }
 
-Card cardFromJson(const juce::var& parsed, const juce::File& sourceFile)
+Card cardFromJson(const juce::var& parsed, const juce::File& sourceFile, const juce::String& rawJson)
 {
     Card card;
     card.id = parsed.getProperty("id", {}).toString();
@@ -94,6 +94,7 @@ Card cardFromJson(const juce::var& parsed, const juce::File& sourceFile)
     card.title = parsed.getProperty("title", card.id).toString();
     card.source = parsed.getProperty("source", sourceFile.getFullPathName()).toString();
     card.text = parsed.getProperty("text", {}).toString();
+    card.rawJson = rawJson;
     card.tokens = arrayProperty(parsed.getProperty("tokens", {}));
     card.priority = static_cast<int>(parsed.getProperty("priority", 50));
     return card;
@@ -121,7 +122,7 @@ std::vector<Card> loadCards(const juce::File& file)
         if (status.equalsIgnoreCase("inactive") || status.equalsIgnoreCase("deprecated"))
             continue;
 
-        auto card = cardFromJson(parsed, file);
+        auto card = cardFromJson(parsed, file, line);
         if (card.id.isNotEmpty() && card.text.isNotEmpty())
             cards.push_back(std::move(card));
     }

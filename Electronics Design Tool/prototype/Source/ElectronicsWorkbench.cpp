@@ -4110,6 +4110,7 @@ public:
         std::function<juce::String(const juce::String&, const juce::String&)> connectNodes;
         std::function<juce::String(const juce::String&)> openInstrument;
         std::function<juce::String(double, double)> designHighPass;
+        std::function<juce::String(const juce::String&, int)> cookbookLookup;
         std::function<juce::String()> toolManifest;
         std::function<void(const juce::String&)> log;
     };
@@ -4489,6 +4490,8 @@ private:
                "for scopes and meters, wire pins by labels such as R1.1 or SCOPE2.CH1, and remember "
                "that floating instrument windows are preferred. "
                "Use filter_design_high_pass when asked to synthesize a matched RLC high-pass filter and produce AC response artifacts. "
+               "Use cookbook_lookup when requirements imply topology selection, design equations, validation recipes, troubleshooting, "
+               "or when you need to compare established circuit candidates before building. "
                "Use filesystem LiteSemRAG cards as retrieved guidance; do not assume Suite VFS storage. "
                "Be concise, report tool results plainly, and do not claim a circuit is ready for solver-backed "
                "analysis until circuit_run_erc has passed or you have explained the remaining warnings.";
@@ -4497,6 +4500,11 @@ private:
     std::vector<ai_provider::ToolDefinition> toolDefinitions() const
     {
         return {
+            {
+                "cookbook_lookup",
+                "Search structured electronics cookbook cards for topology candidates, design recipes, analysis steps, validation criteria, and known capability gaps.",
+                R"({"type":"object","properties":{"query":{"type":"string","description":"Engineering requirement or cookbook topic to retrieve."},"maxCards":{"type":"integer","description":"Maximum number of cookbook/knowledge cards to return."}},"required":["query"],"additionalProperties":false})"
+            },
             {
                 "circuit_inspect",
                 "Read the current authoritative circuit JSON without modifying it.",
@@ -4546,6 +4554,20 @@ private:
             const auto circuit = tools.inspectCircuit != nullptr ? tools.inspectCircuit() : "{}";
             return "{ \"ok\": true, \"tool\": \"circuit_inspect\", \"displayTool\": \"circuit.inspect\", \"circuit\": "
                 + (circuit.trim().isEmpty() ? juce::String("{}") : circuit.trim()) + " }";
+        }
+
+        if (name == "cookbook_lookup")
+        {
+            if (!parsed.isObject())
+                return "{ \"ok\": false, \"error\": \"cookbook_lookup arguments must be a JSON object.\" }";
+
+            const auto query = parsed.getProperty("query", {}).toString().trim();
+            const auto maxCards = (int)parsed.getProperty("maxCards", 6);
+            if (query.isEmpty())
+                return "{ \"ok\": false, \"error\": \"query is required.\" }";
+            return tools.cookbookLookup != nullptr
+                ? tools.cookbookLookup(query, maxCards)
+                : "{ \"ok\": false, \"error\": \"Cookbook lookup is unavailable.\" }";
         }
 
         if (name == "circuit_run_erc")
@@ -5215,6 +5237,9 @@ ElectronicsWorkbench::ElectronicsWorkbench()
             ? designHighPassTool(cutoffHz, impedanceOhms)
             : juce::String("{ \"ok\": false, \"error\": \"High-pass filter design is unavailable.\" }");
     };
+    agentTools.cookbookLookup = [this](const juce::String& query, int maxCards) {
+        return cookbookLookupTool(query, maxCards);
+    };
     agentTools.toolManifest = [this] { return buildAssistantToolManifestJson(); };
     agentTools.log = [this](const juce::String& text) { appendLog(text); };
     auto agent = std::make_unique<AgentPanel>(std::move(agentTools));
@@ -5472,6 +5497,17 @@ juce::String ElectronicsWorkbench::buildAssistantToolManifestJson() const
     text << "  },\n";
     text << "  \"tools\": [\n";
     text << "    {\n";
+    text << "      \"name\": \"cookbook_lookup\",\n";
+    text << "      \"displayName\": \"cookbook.lookup\",\n";
+    text << "      \"description\": \"Search structured electronics cookbook cards for topology candidates, equations, analysis recipes, validation criteria, and capability gaps.\",\n";
+    text << "      \"mode\": \"read_only_knowledge\",\n";
+    text << "      \"inputs\": {\n";
+    text << "        \"query\": \"engineering requirement or cookbook topic\",\n";
+    text << "        \"maxCards\": \"optional maximum number of cards\"\n";
+    text << "      },\n";
+    text << "      \"outputs\": { \"cards\": \"matching cookbook/knowledge cards with provenance\" }\n";
+    text << "    },\n";
+    text << "    {\n";
     text << "      \"name\": \"circuit_inspect\",\n";
     text << "      \"displayName\": \"circuit.inspect\",\n";
     text << "      \"description\": \"Read the current authoritative circuit JSON from the schematic model.\",\n";
@@ -5560,6 +5596,55 @@ juce::String ElectronicsWorkbench::buildAssistantToolManifestJson() const
     text << "  }\n";
     text << "}\n";
     return text;
+}
+
+juce::String ElectronicsWorkbench::cookbookLookupTool(const juce::String& query, int maxCards) const
+{
+    const auto limit = juce::jlimit(1, 12, maxCards <= 0 ? 6 : maxCards);
+    const auto retrieved = electronics_knowledge::retrieve(query, limit);
+
+    juce::String result;
+    result << "{\n";
+    result << "  \"ok\": true,\n";
+    result << "  \"schemaVersion\": 1,\n";
+    result << "  \"kind\": \"djehuti_assistant_tool_result\",\n";
+    result << "  \"tool\": \"cookbook_lookup\",\n";
+    result << "  \"displayTool\": \"cookbook.lookup\",\n";
+    result << "  \"query\": " << jsonQuote(query.trim()) << ",\n";
+    result << "  \"knowledgeRoot\": " << jsonQuote(electronics_knowledge::getKnowledgeRoot().getFullPathName()) << ",\n";
+    result << "  \"cards\": [\n";
+
+    for (size_t index = 0; index < retrieved.cards.size(); ++index)
+    {
+        const auto& card = retrieved.cards[index];
+        result << "    {\n";
+        result << "      \"id\": " << jsonQuote(card.id) << ",\n";
+        result << "      \"kind\": " << jsonQuote(card.kind) << ",\n";
+        result << "      \"title\": " << jsonQuote(card.title) << ",\n";
+        result << "      \"source\": " << jsonQuote(card.source) << ",\n";
+        result << "      \"priority\": " << card.priority << ",\n";
+        result << "      \"tokens\": [";
+        for (int tokenIndex = 0; tokenIndex < card.tokens.size(); ++tokenIndex)
+        {
+            if (tokenIndex > 0)
+                result << ", ";
+            result << jsonQuote(card.tokens[tokenIndex]);
+        }
+        result << "],\n";
+        result << "      \"text\": " << jsonQuote(card.text);
+        if (card.rawJson.isNotEmpty())
+            result << ",\n      \"entry\": " << card.rawJson << "\n";
+        else
+            result << "\n";
+        result << "    }";
+        if (index + 1 < retrieved.cards.size())
+            result << ",";
+        result << "\n";
+    }
+
+    result << "  ]\n";
+    result << "}\n";
+    return result;
 }
 
 void ElectronicsWorkbench::exportAssistantToolManifest()
