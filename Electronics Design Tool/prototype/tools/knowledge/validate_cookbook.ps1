@@ -87,6 +87,7 @@ $entries = @()
 $toolCardIds = @{}
 $toolNamesWithCards = @{}
 $toolCardCount = 0
+$cookbookToolReferences = @{}
 $lineNo = 0
 
 if (-not (Test-Path -LiteralPath $cardsPath -PathType Leaf)) {
@@ -222,6 +223,27 @@ foreach ($line in Get-Content -LiteralPath $toolCardsPath) {
 foreach ($toolName in $requiredAgentTools) {
     if (-not $toolNamesWithCards.ContainsKey($toolName)) {
         Add-Finding $errors "toolcard.required.missing" "Required agent tool has no retrievable tool card: $toolName"
+    }
+}
+
+foreach ($entry in $entries) {
+    $entryId = [string]$entry.id
+    if ([string]::IsNullOrWhiteSpace($entryId)) {
+        $entryId = "<cookbook entry without id>"
+    }
+
+    foreach ($toolName in @($entry.toolRecipe)) {
+        $toolNameText = [string]$toolName
+        if ([string]::IsNullOrWhiteSpace($toolNameText)) {
+            Add-Finding $errors "card.toolRecipe.empty" "$entryId has an empty toolRecipe item."
+            continue
+        }
+
+        if (-not $toolNamesWithCards.ContainsKey($toolNameText)) {
+            Add-Finding $errors "card.toolRecipe.unknown" "$entryId references a tool without a retrievable tool card: $toolNameText"
+        }
+
+        $cookbookToolReferences[$toolNameText] = $true
     }
 }
 
@@ -377,6 +399,7 @@ $report = [pscustomobject]@{
     toolCardCount = $toolCardCount
     requiredAgentToolCount = $requiredAgentTools.Count
     toolCardCoverageCount = $toolNamesWithCards.Count
+    cookbookToolReferenceCount = $cookbookToolReferences.Count
     requiredCategoryCount = $taxonomy.categories.Count
     coveredCategoryCount = $coveredCount
     missingCategoryCount = $missingCategories.Count
