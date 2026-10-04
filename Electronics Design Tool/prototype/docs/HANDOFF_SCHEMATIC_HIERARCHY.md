@@ -123,9 +123,18 @@ no separate "agent tools" pass.
    removed, Properties pane built from the catalog. Agent tools:
    simulation_operating_point/transient/ac, instrument_read,
    schematic_get/set_parameters, schematic_rename/rotate_component.
-4. **Save and load** the block hierarchy in `circuit.json` (groups already save).
-4. Agent tools for remaining existing features (delete, move, rotate, rename,
-   select, save/open/new) as those areas are touched.
+4. **Preferences - first pass done.** `Preferences.h/.cpp` store and
+   `PreferencesView` (File > Preferences..., search box, categories Layout /
+   Display / Units / Projects). Layout options feed `SchematicLayout::Options`
+   and `SchematicRouter::Style`; with "supply symbols" off, rails survive auto
+   layout. Units: capital M as Mega or Milli (SPICE). Agent tools:
+   preferences_list, preferences_set. Second pass (not started): Simulation
+   (AC points/decade, transient samples, tolerances, instrument refresh) and
+   Instruments (default scope settings, meter input resistance).
+5. Agent tools for remaining existing features (move, select) as those areas
+   are touched. `schematic_delete_components` added (blocks must be expanded
+   first; deleting a block in the UI still leaves its inner sheet behind -
+   open gap).
 
 Discuss real design choices with the user before building (see repo
 `AGENTS.md`); agree each milestone in words, then carry it through.

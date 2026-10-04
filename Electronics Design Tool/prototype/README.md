@@ -68,6 +68,14 @@ shows `Project > Diagram`; the last project and diagram reopen on start;
 switching diagrams saves the current one; closing asks about unsaved changes.
 The agent has matching `project_*` and `diagram_*` tools.
 
+`File > Preferences...` opens a searchable preferences window (Layout,
+Display, Units, Projects). Settings are stored in
+`%APPDATA%\DjehutiElectronicsLab\preferences.json` and take effect at once.
+Layout options include supply symbols vs. kept rails, instrument net labels,
+vertical chain stacking, supply block vs. left column, spacing, wire style and
+wire gap. The agent reads and changes them with `preferences_list` and
+`preferences_set`.
+
 The BYOK Agent panel now uses the FrustIDE `ai_provider` library for OpenAI
 profiles, API keys, model selection, and tool-calling. Keys are stored outside
 the repo in user app data.

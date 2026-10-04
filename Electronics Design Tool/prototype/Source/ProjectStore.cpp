@@ -1,5 +1,7 @@
 #include "ProjectStore.h"
 
+#include "Preferences.h"
+
 namespace project_store
 {
 namespace
@@ -45,9 +47,7 @@ const DiagramEntry* Project::find(const juce::String& diagramName) const
 
 juce::File defaultProjectsRoot()
 {
-    return juce::File::getSpecialLocation(juce::File::userDocumentsDirectory)
-        .getChildFile("Djehuti Electronics Lab")
-        .getChildFile("Projects");
+    return juce::File(prefs::get("projects.default_folder"));
 }
 
 juce::File manifestFile(const Project& project)

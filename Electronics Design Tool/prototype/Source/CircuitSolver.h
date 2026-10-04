@@ -163,5 +163,7 @@ AcResult solveAc(const Circuit& circuit, double startHz, double stopHz, int poin
 // Parses engineering values: 4.7k, 10u, 2.2n, 100p, 1meg, 3M (mega), 5m (milli),
 // optional trailing unit letters (4.7kohm, 10uF, 12V). Returns false if unparseable.
 bool parseValue(const std::string& text, double& out);
+// SPICE reads a capital M as milli; the default here reads it as mega.
+void setCapitalMIsMilli(bool milli);
 std::string formatValue(double value, const std::string& unit, int significant = 3);
 }

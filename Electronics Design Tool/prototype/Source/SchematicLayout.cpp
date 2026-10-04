@@ -21,6 +21,7 @@ struct Ctx
     const std::vector<Part>& parts;
     const std::vector<Net>& nets;
     float grid;
+    Options options;
 
     std::vector<Role> role;
     std::vector<int> rotation;
@@ -439,6 +440,8 @@ int terminalCount(const Ctx& c, int net)
 // two grid steps beyond it, instead of opening a new column.
 void computeStacks(Ctx& c, const std::vector<int>& component)
 {
+    if (!c.options.stackVerticalChains)
+        return;
     for (int part : component)
     {
         const auto& p = c.parts[(size_t)part];
@@ -605,7 +608,7 @@ juce::Rectangle<float> placeComponent(Ctx& c, const std::vector<int>& component)
             items.push_back({ part, desired, fp.getY(), fp.getBottom() });
         }
 
-        const auto ys = separate(items, c.grid);
+        const auto ys = separate(items, c.grid * c.options.spacing);
         for (size_t k = 0; k < items.size(); ++k)
             placeGroupY(c, items[k].part, snap(ys[k], c.grid));
     }
@@ -639,7 +642,7 @@ juce::Rectangle<float> placeComponent(Ctx& c, const std::vector<int>& component)
             for (auto net : before)
                 if (after.count(net) != 0)
                     ++crossing;
-            const auto gap = 48.0f + c.grid * (float)std::clamp(crossing - 1, 0, 6);
+            const auto gap = (48.0f + c.grid * (float)std::clamp(crossing - 1, 0, 6)) * c.options.spacing;
             x = previousRight + gap - left;
         }
         x = snap(x, c.grid);
@@ -703,6 +706,8 @@ void placeMarkers(Ctx& c, Result& result)
 
     // Instrument inputs: a label beside the instrument pin and a matching
     // label on the probed net, just past the pin that drives that net.
+    if (!c.options.instrumentLabels)
+        return;
     std::map<int, int> labelsOnNet;
     for (int part = 0; part < (int)c.parts.size(); ++part)
     {
@@ -756,9 +761,10 @@ void placeMarkers(Ctx& c, Result& result)
 
 }
 
-Result layoutSchematic(const std::vector<Part>& parts, const std::vector<Net>& nets, float gridSize)
+Result layoutSchematic(const std::vector<Part>& parts, const std::vector<Net>& nets, float gridSize, const Options& options)
 {
-    Ctx c { parts, nets, gridSize, {}, {}, {}, {}, {}, {}, {}, {} };
+    Ctx c { parts, nets, gridSize, options, {}, {}, {}, {}, {}, {}, {}, {} };
+    const auto space = std::max(0.25f, options.spacing);
     const auto n = parts.size();
     c.position.assign(n, {});
     c.placed.assign(n, false);
@@ -771,8 +777,27 @@ Result layoutSchematic(const std::vector<Part>& parts, const std::vector<Net>& n
     const auto components = layerComponents(c);
     orient(c);
 
-    // Components stacked top to bottom, each starting at the left margin.
+    // Supplies in a column on the left, when not in a block underneath.
     constexpr float margin = 96.0f;
+    float circuitLeft = margin;
+    if (!options.supplyBlock)
+    {
+        float y = margin, widest = 0.0f;
+        for (int i = 0; i < (int)n; ++i)
+        {
+            if (c.role[(size_t)i] != Role::Supply)
+                continue;
+            const auto fp = footprint(parts[(size_t)i], c.rotation[(size_t)i]);
+            c.position[(size_t)i] = { snap(margin - fp.getX(), gridSize), snap(y - fp.getY(), gridSize) };
+            c.placed[(size_t)i] = true;
+            y += fp.getHeight() + 72.0f * space;
+            widest = std::max(widest, fp.getWidth());
+        }
+        if (widest > 0.0f)
+            circuitLeft = margin + widest + 144.0f * space;
+    }
+
+    // Components stacked top to bottom, each starting at the left margin.
     float nextTop = margin;
     float rightmost = margin;
     for (const auto& component : components)
@@ -787,9 +812,9 @@ Result layoutSchematic(const std::vector<Part>& parts, const std::vector<Net>& n
                         members.push_back(i);
 
         const auto box = placeComponent(c, component);
-        const P delta { snap(margin - box.getX(), gridSize), snap(nextTop - box.getY(), gridSize) };
+        const P delta { snap(circuitLeft - box.getX(), gridSize), snap(nextTop - box.getY(), gridSize) };
         translateParts(c, members, delta);
-        nextTop = box.getBottom() + delta.y + 120.0f;
+        nextTop = box.getBottom() + delta.y + 120.0f * space;
         rightmost = std::max(rightmost, box.getRight() + delta.x);
     }
 
@@ -798,13 +823,13 @@ Result layoutSchematic(const std::vector<Part>& parts, const std::vector<Net>& n
     bool anySupply = false;
     for (int i = 0; i < (int)n; ++i)
     {
-        if (c.role[(size_t)i] != Role::Supply)
+        if (c.role[(size_t)i] != Role::Supply || c.placed[(size_t)i])
             continue;
         anySupply = true;
         const auto fp = footprint(parts[(size_t)i], c.rotation[(size_t)i]);
         c.position[(size_t)i] = { snap(supplyX - fp.getX(), gridSize), snap(nextTop + 48.0f - fp.getY(), gridSize) };
         c.placed[(size_t)i] = true;
-        supplyX += fp.getWidth() + 120.0f;
+        supplyX += fp.getWidth() + 120.0f * space;
     }
     juce::ignoreUnused(anySupply);
 
@@ -844,7 +869,7 @@ Result layoutSchematic(const std::vector<Part>& parts, const std::vector<Net>& n
         float left = 0.0f;
         for (const auto& item : instruments)
             left = std::min(left, footprint(parts[(size_t)item.part], 0).getX());
-        const auto x = snap(rightmost + 144.0f - left, gridSize);
+        const auto x = snap(rightmost + 144.0f * space - left, gridSize);
         for (size_t k = 0; k < instruments.size(); ++k)
         {
             c.position[(size_t)instruments[k].part] = { x, snap(ys[k], gridSize) };

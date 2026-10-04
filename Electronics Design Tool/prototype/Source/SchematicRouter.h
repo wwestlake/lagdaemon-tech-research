@@ -53,6 +53,12 @@ struct Connection
 
 using Polyline = std::vector<juce::Point<float>>;
 
+struct Style
+{
+    double segmentPenalty = 50.0; // higher: fewer bends, possibly longer wires
+    float wireGapGrids = 1.0f;    // spacing between parallel wires of different nets
+};
+
 struct Problem
 {
     std::vector<Obstacle> obstacles;
@@ -65,7 +71,7 @@ struct Problem
 // Junctions are slid along shared runs to where their wires actually part;
 // pass adjustedJunctions to receive those positions (same order).
 std::vector<Polyline> routeConnections(const Problem& problem, float gridSize,
-                                       std::vector<juce::Point<float>>* adjustedJunctions = nullptr);
+                                       std::vector<juce::Point<float>>* adjustedJunctions = nullptr, const Style& style = {});
 
 // One net to be routed as a tree.
 struct NetTerminals
@@ -90,5 +96,5 @@ struct TreeSolution
 // branch points. Junctions left with fewer than three edges are dissolved.
 std::vector<TreeSolution> routeNetTrees(const std::vector<Obstacle>& obstacles,
                                         const std::vector<NetTerminals>& nets,
-                                        float gridSize);
+                                        float gridSize, const Style& style = {});
 }

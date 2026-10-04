@@ -3,6 +3,7 @@
 
 #include "ElectronicsWorkbench.h"
 #include "ElectronicsKnowledge.h"
+#include "Preferences.h"
 
 namespace
 {
@@ -301,7 +302,7 @@ void ElectronicsWorkbench::openMostRecentProject()
 {
     const auto recent = project_store::recentProjects();
     juce::String error;
-    if (!recent.isEmpty() && !openProjectFolder(juce::File(recent[0]), error))
+    if (prefs::isOn("projects.reopen_last") && !recent.isEmpty() && !openProjectFolder(juce::File(recent[0]), error))
         appendLog("Could not reopen the last project: " + error);
     if (!project.isOpen())
         appendLog("No project open. Use File > New Project... to create one.");

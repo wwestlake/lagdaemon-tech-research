@@ -704,6 +704,16 @@ AcResult solveAc(const Circuit& circuit, double startHz, double stopHz, int poin
     return result;
 }
 
+namespace
+{
+bool capitalMIsMilli = false;
+}
+
+void setCapitalMIsMilli(bool milli)
+{
+    capitalMIsMilli = milli;
+}
+
 bool parseValue(const std::string& rawText, double& out)
 {
     std::string text;
@@ -736,7 +746,7 @@ bool parseValue(const std::string& rawText, double& out)
         {
             case 'T': multiplier = 1e12; used = 1; break;
             case 'G': multiplier = 1e9; used = 1; break;
-            case 'M': multiplier = 1e6; used = 1; break;
+            case 'M': multiplier = capitalMIsMilli ? 1e-3 : 1e6; used = 1; break;
             case 'k': case 'K': multiplier = 1e3; used = 1; break;
             case 'm': multiplier = 1e-3; used = 1; break;
             case 'u': multiplier = 1e-6; used = 1; break;

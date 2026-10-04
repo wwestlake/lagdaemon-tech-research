@@ -6,6 +6,7 @@
 #include "SchematicRouter.h"
 #include "PartCatalog.h"
 #include "CircuitSolver.h"
+#include "Preferences.h"
 
 #include <ai_provider/AiConfig.h>
 
@@ -116,6 +117,11 @@ const SchematicToolSpec schematicToolSpecs[] = {
         R"({"type":"object","properties":{},"additionalProperties":false})"
     },
     {
+        "schematic_delete_components",
+        "Delete components from the diagram, with the wires attached to them, exactly as pressing Delete on a selected part does. Sub-diagram blocks are refused: expand them first with schematic_subdiagram_expand.",
+        R"({"type":"object","properties":{"refdes":{"type":"array","items":{"type":"string"},"description":"Reference designators to delete, such as [\"R5\", \"GND7\"]."}},"required":["refdes"],"additionalProperties":false})"
+    },
+    {
         "schematic_export_image",
         "Render a schematic sheet to a PNG file exactly as it is drawn, to check readability or share it. Defaults to the sheet being viewed.",
         R"({"type":"object","properties":{"sheet":{"type":"string","description":"Optional: block refdes or name to render its sheet, or 'main'."}},"additionalProperties":false})"
@@ -204,6 +210,16 @@ const SchematicToolSpec schematicToolSpecs[] = {
         "instrument_read",
         "Read an instrument node exactly as its window shows it: oscilloscope channel Vpp/Vrms/mean/frequency at its time/div and trigger, multimeter reading in its function (DC V, AC V, DC A, Ohms), or frequency analyzer peak gain and -3 dB points. Change instrument settings with schematic_set_parameters.",
         R"({"type":"object","properties":{"refdes":{"type":"string","description":"Instrument reference designator, such as SCOPE1, DMM1, or FRA1."}},"required":["refdes"],"additionalProperties":false})"
+    },
+    {
+        "preferences_list",
+        "List the user's preferences (the Preferences window), optionally filtered by a search word: key, category, label, current value, choices and what each does. Categories: Layout, Display, Units, Projects.",
+        R"({"type":"object","properties":{"query":{"type":"string","description":"Optional search text, such as rail, spacing, grid, label."}},"additionalProperties":false})"
+    },
+    {
+        "preferences_set",
+        "Change one of the user's preferences by key, exactly like the Preferences window. Toggles take true/false; choices must match an option from preferences_list. Only change preferences the user asked for.",
+        R"({"type":"object","properties":{"key":{"type":"string","description":"Preference key, such as layout.supply_symbols or display.grid."},"value":{"type":"string"}},"required":["key","value"],"additionalProperties":false})"
     },
     {
         "schematic_convert_supply",
@@ -1136,7 +1152,39 @@ public:
           onStatus(std::move(onMessage))
     {
         setWantsKeyboardFocus(true);
+        snapEnabled = prefs::isOn("display.snap_default");
+        preferenceListener = prefs::addListener([safe = juce::Component::SafePointer<SchematicCanvasPanel>(this)](const juce::String&) {
+            if (safe == nullptr) return;
+            safe->routeSignature.clear();
+            safe->repaint();
+        });
     }
+
+    ~SchematicCanvasPanel() override
+    {
+        prefs::removeListener(preferenceListener);
+    }
+
+    static schematic::routing::Style routingStyle()
+    {
+        schematic::routing::Style style;
+        style.segmentPenalty = prefs::get("layout.wire_style") == "Shortest wires" ? 5.0 : 50.0;
+        style.wireGapGrids = prefs::get("layout.wire_gap") == "2 grid steps" ? 2.0f : 1.0f;
+        return style;
+    }
+
+    static schematic::layout::Options layoutOptions()
+    {
+        schematic::layout::Options options;
+        options.stackVerticalChains = prefs::isOn("layout.stack_vertical_chains");
+        options.supplyBlock = prefs::isOn("layout.supply_block");
+        options.instrumentLabels = prefs::isOn("layout.instrument_labels");
+        const auto spacing = prefs::get("layout.spacing");
+        options.spacing = spacing == "Compact" ? 0.7f : spacing == "Roomy" ? 1.5f : 1.0f;
+        return options;
+    }
+
+    static juce::String ohmText() { return prefs::get("units.ohm_symbol"); }
 
     void setSelectionListener(std::function<void(int, juce::String, juce::String, juce::String, juce::String, juce::String, juce::String, juce::String)> listener)
     {
@@ -2288,6 +2336,8 @@ public:
         connectNodesFromTool("RL1.2", "GND_LOAD.0");
         connectNodesFromTool("SCOPE1.REF", "GND_SCOPE.0");
 
+        if (prefs::isOn("layout.after_design_tools"))
+            autoLayoutInstances({});
         selectedInstance = instanceIndexForRefdes("C1");
         notifySelection();
         forceDeferredRepaint();
@@ -2416,6 +2466,8 @@ public:
         connectNodesFromTool("SCOPE1.CH2", "RL1.1");
         connectNodesFromTool("SCOPE1.REF", "GND4");
 
+        if (prefs::isOn("layout.after_design_tools"))
+            autoLayoutInstances({});
         selectedInstance = instanceIndexForRefdes("Q1");
         selectedInstances.clear();
         if (selectedInstance >= 0)
@@ -2596,7 +2648,7 @@ public:
         if (parts.empty())
             return "{ \"ok\": false, \"error\": \"No schematic parts to lay out.\" }";
 
-        const auto placement = schematic::layout::layoutSchematic(parts, layoutNets.nets, schematic::gridSize);
+        const auto placement = schematic::layout::layoutSchematic(parts, layoutNets.nets, schematic::gridSize, layoutOptions());
 
         if (!wholeDiagram)
         {
@@ -2646,6 +2698,18 @@ public:
             instances[(size_t)partInstance[k]].position = placement.positions[k];
             instances[(size_t)partInstance[k]].rotation = placement.rotations[k];
         }
+
+        // With "use symbols for rails" off, rails placed on this sheet come
+        // back as rails after layout (re-tapped to the pins they feed).
+        juce::StringArray keptPowerRails;
+        bool keptGroundRail = false;
+        if (!prefs::isOn("layout.supply_symbols"))
+            for (const auto& instance : instances)
+                if (instance.sheet == currentSheet)
+                {
+                    if (instance.symbolId == "power_bus") keptPowerRails.addIfNotAlreadyThere(instance.busName);
+                    if (instance.symbolId == "ground_bus") keptGroundRail = true;
+                }
 
         // This sheet's net markers, wires and junctions are rebuilt; every
         // other sheet is left exactly as it is.
@@ -2713,7 +2777,7 @@ public:
             schematic::routing::NetTerminals terminals;
             for (size_t k = 0; k < parts.size(); ++k)
             {
-                if (schematic::isInstrumentSymbol(parts[k].symbol.id))
+                if (schematic::isInstrumentSymbol(parts[k].symbol.id) && prefs::isOn("layout.instrument_labels"))
                     continue; // instruments connect through their probe labels
                 const auto obstacle = instanceObstacle[(size_t)partIndex[k]];
                 for (int p = 0; p < (int)parts[k].pinNets.size(); ++p)
@@ -2727,7 +2791,7 @@ public:
                 signalNets.push_back(terminals);
         }
 
-        const auto trees = schematic::routing::routeNetTrees(obstacles, signalNets, schematic::gridSize);
+        const auto trees = schematic::routing::routeNetTrees(obstacles, signalNets, schematic::gridSize, routingStyle());
         for (const auto& tree : trees)
         {
             const auto base = (int)junctions.size();
@@ -2740,6 +2804,23 @@ public:
             for (const auto& edge : tree.edges)
                 wires.push_back({ toNode(edge.a), toNode(edge.b) });
         }
+
+        for (const auto& railName : keptPowerRails)
+            for (int i = 0; i < (int)instances.size(); ++i)
+                if (instances[(size_t)i].sheet == currentSheet && instances[(size_t)i].symbolId == "power_port" && instances[(size_t)i].busName == railName)
+                {
+                    juce::String error;
+                    symbolsToRail(i, error);
+                    break;
+                }
+        if (keptGroundRail)
+            for (int i = 0; i < (int)instances.size(); ++i)
+                if (instances[(size_t)i].sheet == currentSheet && instances[(size_t)i].symbolId == "ground")
+                {
+                    juce::String error;
+                    symbolsToRail(i, error);
+                    break;
+                }
 
         // One full routing pass slides each junction onto the T its wires
         // actually form; keep those positions in the model.
@@ -2990,6 +3071,7 @@ private:
     std::vector<Wire> wires;
     std::vector<juce::Point<float>> junctions;
     std::vector<juce::String> junctionSheets;       // parallel to junctions
+    int preferenceListener = 0;
     juce::String currentSheet;                      // sheet shown in the canvas
     std::vector<Probe> probes;
     std::vector<Group> groups;
@@ -3117,6 +3199,17 @@ private:
         const auto endX = (int)std::ceil(bottomRight.x / 24.0f) * 24 + 24;
         const auto startY = (int)std::floor(topLeft.y / 24.0f) * 24 - 24;
         const auto endY = (int)std::ceil(bottomRight.y / 24.0f) * 24 + 24;
+        const auto style = prefs::get("display.grid");
+        if (style == "Hidden")
+            return;
+        if (style == "Dots")
+        {
+            g.setColour(juce::Colour(0xff2a3742));
+            for (int x = startX; x <= endX; x += 24)
+                for (int y = startY; y <= endY; y += 24)
+                    g.fillRect((float)x - 0.75f, (float)y - 0.75f, 1.5f, 1.5f);
+            return;
+        }
         g.setColour(juce::Colour(0xff18222b));
         for (int x = startX; x <= endX; x += 24) g.drawVerticalLine(x, (float)startY, (float)endY);
         for (int y = startY; y <= endY; y += 24) g.drawHorizontalLine(y, (float)startX, (float)endX);
@@ -3853,7 +3946,7 @@ private:
             problem.connections.push_back(connection);
         }
 
-        const auto routes = schematic::routing::routeConnections(problem, schematic::gridSize, &routedJunctions);
+        const auto routes = schematic::routing::routeConnections(problem, schematic::gridSize, &routedJunctions, routingStyle());
         routeCache.assign(wires.size(), {});
         for (size_t i = 0; i < wires.size(); ++i)
             if (connectionOfWire[i] >= 0)
@@ -4299,7 +4392,7 @@ private:
                 terminals.push_back(t);
         }
 
-        const auto trees = schematic::routing::routeNetTrees(obstacles, terminals, schematic::gridSize);
+        const auto trees = schematic::routing::routeNetTrees(obstacles, terminals, schematic::gridSize, routingStyle());
         for (const auto& tree : trees)
         {
             const auto base = (int)junctions.size();
@@ -4508,7 +4601,8 @@ private:
             insideNets.push_back(pins);
         }
         wireNetsOnCurrentSheet(insideNets);
-        autoLayoutInstances({});
+        if (prefs::isOn("layout.subdiagram_inner_layout"))
+            autoLayoutInstances({});
         currentSheet = parentSheet;
         routeSignature.clear();
         const auto finalBlock = blockForSheet(child); // the inner layout renumbered instances
@@ -4619,6 +4713,13 @@ private:
         if (!group.memberInstances.empty())
             groups.push_back(group);
 
+        if (prefs::isOn("layout.relayout_after_expand"))
+        {
+            const auto keep = currentSheet;
+            currentSheet = parent;
+            autoLayoutInstances({});
+            currentSheet = keep;
+        }
         currentSheet = viewing == child ? parent : viewing;
         routeSignature.clear();
         for (const auto& probeId : droppedProbes)
@@ -5738,7 +5839,7 @@ public:
             reading.ok = true;
             reading.value = value;
             reading.unit = unit;
-            reading.display = juce::String(circuit_sim::formatValue(value, unit.toStdString(), 4));
+            reading.display = juce::String(circuit_sim::formatValue(value, (unit == "ohm" ? ohmText() : unit).toStdString(), 4));
             return reading;
         };
 
@@ -5976,6 +6077,39 @@ public:
         if (name == "instrument_read")
             return instrumentReadJson(args.getProperty("refdes", {}).toString());
         auto arg = [&](const char* key) { return args.getProperty(key, {}).toString().trim(); };
+        if (name == "preferences_list")
+        {
+            const auto query = arg("query").toLowerCase();
+            juce::String list = "[";
+            bool first = true;
+            for (const auto& setting : prefs::all())
+            {
+                const auto haystack = (setting.key + " " + setting.category + " " + setting.label + " " + setting.description).toLowerCase();
+                if (query.isNotEmpty() && !haystack.contains(query))
+                    continue;
+                list << (first ? "" : ", ") << "{ \"key\": " << quote(setting.key) << ", \"category\": " << quote(setting.category)
+                     << ", \"label\": " << quote(setting.label) << ", \"value\": " << quote(prefs::get(setting.key))
+                     << ", \"description\": " << quote(setting.description);
+                if (setting.kind == prefs::Kind::Toggle) list << ", \"options\": [\"true\", \"false\"]";
+                if (setting.kind == prefs::Kind::Choice)
+                {
+                    juce::StringArray options;
+                    for (const auto& o : setting.options) options.add(quote(o));
+                    list << ", \"options\": [" << options.joinIntoString(", ") << "]";
+                }
+                list << " }";
+                first = false;
+            }
+            list << "]";
+            return "{ \"ok\": true, \"tool\": " + quote(name) + ", \"preferences\": " + list + " }";
+        }
+        if (name == "preferences_set")
+        {
+            juce::String error;
+            if (!prefs::set(arg("key"), arg("value"), error))
+                return toolFailure(name, error);
+            return "{ \"ok\": true, \"tool\": " + quote(name) + ", \"key\": " + quote(arg("key")) + ", \"value\": " + quote(prefs::get(arg("key"))) + " }";
+        }
         if (name == "schematic_convert_supply")
         {
             juce::String error;
@@ -6009,6 +6143,31 @@ public:
             if (!renamePart(arg("refdes"), arg("newRefdes"), error))
                 return toolFailure(name, error);
             return "{ \"ok\": true, \"tool\": " + quote(name) + ", \"refdes\": " + quote(arg("newRefdes")) + " }";
+        }
+        if (name == "schematic_delete_components")
+        {
+            const auto* list = args.getProperty("refdes", {}).getArray();
+            if (list == nullptr || list->isEmpty())
+                return toolFailure(name, "refdes must be a list such as [\"R5\"].");
+            juce::StringArray deleted;
+            for (const auto& item : *list)
+            {
+                const auto refdes = item.toString().trim();
+                const auto index = instanceIndexForRefdesAnySheet(refdes);
+                if (index < 0)
+                    return toolFailure(name, "No part " + refdes + (deleted.isEmpty() ? juce::String(".") : ". Already deleted: " + deleted.joinIntoString(", ")));
+                if (instances[(size_t)index].symbolId == "sub_block")
+                    return toolFailure(name, refdes + " is a sub-diagram block; expand it first with schematic_subdiagram_expand.");
+                selectedInstance = index;
+                deleteSelected();
+                deleted.add(refdes);
+            }
+            routeSignature.clear();
+            forceDeferredRepaint();
+            juce::StringArray quoted;
+            for (const auto& refdes : deleted)
+                quoted.add(quote(refdes));
+            return "{ \"ok\": true, \"tool\": " + quote(name) + ", \"deleted\": [" + quoted.joinIntoString(", ") + "] }";
         }
         if (name == "schematic_rotate_component")
         {
@@ -6813,11 +6972,16 @@ private:
             return;
         }
 
-        const auto valueText = displayValueFor(instance);
+        const auto valueText = prefs::isOn("display.show_values") ? displayValueFor(instance) : juce::String();
         const auto labels = schematic::labelRectsFor(symbol, instance.rotation);
-        g.setColour(juce::Colour(0xff93a7b0));
-        g.drawText(instance.refdes, labels.refdes.translated(instance.position.x, instance.position.y).toNearestInt(),
-                   labels.justification);
+        const auto size = prefs::get("display.label_size");
+        g.setFont(juce::Font(size == "Small" ? 10.5f : size == "Large" ? 14.0f : 12.0f));
+        if (prefs::isOn("display.show_refdes"))
+        {
+            g.setColour(juce::Colour(0xff93a7b0));
+            g.drawText(instance.refdes, labels.refdes.translated(instance.position.x, instance.position.y).toNearestInt(),
+                       labels.justification);
+        }
         if (valueText.isNotEmpty())
         {
             g.setColour(juce::Colour(0xffdce9ee));
@@ -6852,7 +7016,8 @@ private:
                     g.drawEllipse(pin.x - 3.0f, pin.y - 3.0f, 6.0f, 6.0f, 1.2f);
                 }
 
-                if (symbol.showPinNames)
+                const auto pinNames = prefs::get("display.pin_names");
+                if (pinNames == "Always" || (pinNames == "Auto" && symbol.showPinNames))
                 {
                     auto toward = instance.position - pin;
                     const auto len = std::sqrt(toward.x * toward.x + toward.y * toward.y);
@@ -7561,6 +7726,225 @@ private:
     SchematicCanvasPanel::BodeSweep sweep;
 };
 
+// Searchable preferences: categories on the left, settings on the right,
+// each with the control its kind calls for. Typing in the search box shows
+// matching settings from every category.
+class PreferencesView final : public juce::Component
+{
+public:
+    PreferencesView()
+    {
+        search.setTextToShowWhenEmpty("Search preferences (rail, spacing, grid, units...)", juce::Colour(0xff71808c));
+        styleTextEditor(search);
+        search.setMultiLine(false);
+        search.onTextChange = [this] { rebuild(); };
+        addAndMakeVisible(search);
+
+        for (const auto& category : prefs::categories())
+        {
+            auto* button = categoryButtons.add(new juce::TextButton(category));
+            button->setClickingTogglesState(true);
+            button->setRadioGroupId(2001);
+            button->setColour(juce::TextButton::buttonColourId, juce::Colour(0xff151a20));
+            button->setColour(juce::TextButton::buttonOnColourId, juce::Colour(0xff23394a));
+            button->setColour(juce::TextButton::textColourOffId, juce::Colour(0xffdce9ee));
+            button->setColour(juce::TextButton::textColourOnId, juce::Colour(0xff78dcca));
+            button->onClick = [this, category] { selectedCategory = category; search.clear(); rebuild(); };
+            addAndMakeVisible(button);
+        }
+        selectedCategory = prefs::categories()[0];
+        categoryButtons[0]->setToggleState(true, juce::dontSendNotification);
+
+        viewport.setViewedComponent(&content, false);
+        viewport.setScrollBarsShown(true, false);
+        addAndMakeVisible(viewport);
+        rebuild();
+        setSize(820, 560);
+    }
+
+    void paint(juce::Graphics& g) override
+    {
+        g.fillAll(juce::Colour(0xff10161d));
+        g.setColour(juce::Colour(0xff1d2731));
+        g.fillRect(getLocalBounds().withTrimmedTop(56).removeFromLeft(170));
+    }
+
+    void resized() override
+    {
+        auto area = getLocalBounds();
+        search.setBounds(area.removeFromTop(56).reduced(14, 12));
+        auto left = area.removeFromLeft(170).reduced(8);
+        for (auto* button : categoryButtons)
+            button->setBounds(left.removeFromTop(34).reduced(0, 2));
+        viewport.setBounds(area.reduced(8, 4));
+        layoutRows();
+    }
+
+private:
+    struct Row
+    {
+        juce::String key;     // empty for a category heading
+        std::unique_ptr<juce::Label> title, description;
+        std::unique_ptr<juce::Component> control;
+        std::unique_ptr<juce::TextButton> browse;
+    };
+
+    void rebuild()
+    {
+        rows.clear();
+        content.removeAllChildren();
+        const auto query = search.getText().trim().toLowerCase();
+        juce::String lastCategory;
+        for (const auto& setting : prefs::all())
+        {
+            const auto haystack = (setting.key + " " + setting.category + " " + setting.label + " " + setting.description).toLowerCase();
+            if (query.isNotEmpty() ? !haystack.contains(query) : setting.category != selectedCategory)
+                continue;
+            if (setting.category != lastCategory)
+            {
+                Row heading;
+                heading.title = std::make_unique<juce::Label>(juce::String(), setting.category);
+                heading.title->setFont(juce::Font(15.0f, juce::Font::bold));
+                heading.title->setColour(juce::Label::textColourId, juce::Colour(0xff78dcca));
+                content.addAndMakeVisible(*heading.title);
+                rows.push_back(std::move(heading));
+                lastCategory = setting.category;
+            }
+            rows.push_back(makeRow(setting));
+        }
+        if (rows.empty())
+        {
+            Row none;
+            none.title = std::make_unique<juce::Label>(juce::String(), "No preference matches \"" + search.getText() + "\".");
+            none.title->setColour(juce::Label::textColourId, juce::Colour(0xff93a7b0));
+            content.addAndMakeVisible(*none.title);
+            rows.push_back(std::move(none));
+        }
+        layoutRows();
+    }
+
+    Row makeRow(const prefs::Setting& setting)
+    {
+        Row row;
+        row.key = setting.key;
+        row.title = std::make_unique<juce::Label>(juce::String(), setting.label);
+        row.title->setFont(juce::Font(13.5f, juce::Font::bold));
+        row.title->setColour(juce::Label::textColourId, juce::Colour(0xffdce9ee));
+        row.description = std::make_unique<juce::Label>(juce::String(), setting.description);
+        row.description->setFont(juce::Font(12.0f));
+        row.description->setColour(juce::Label::textColourId, juce::Colour(0xff93a7b0));
+        row.description->setJustificationType(juce::Justification::topLeft);
+        row.description->setMinimumHorizontalScale(1.0f);
+        const auto key = setting.key;
+        const auto current = prefs::get(key);
+
+        switch (setting.kind)
+        {
+            case prefs::Kind::Toggle:
+            {
+                auto* toggle = new juce::TextButton();
+                toggle->setClickingTogglesState(true);
+                toggle->setColour(juce::TextButton::buttonColourId, juce::Colour(0xff1d2731));
+                toggle->setColour(juce::TextButton::buttonOnColourId, juce::Colour(0xff6fac7d));
+                toggle->setColour(juce::TextButton::textColourOffId, juce::Colour(0xffdce9ee));
+                toggle->setColour(juce::TextButton::textColourOnId, juce::Colour(0xff0e141a));
+                toggle->setToggleState(current == "true", juce::dontSendNotification);
+                toggle->setButtonText(current == "true" ? "On" : "Off");
+                toggle->onClick = [toggle, key] {
+                    juce::String error;
+                    prefs::set(key, toggle->getToggleState() ? "true" : "false", error);
+                    toggle->setButtonText(toggle->getToggleState() ? "On" : "Off");
+                };
+                row.control.reset(toggle);
+                break;
+            }
+            case prefs::Kind::Choice:
+            {
+                auto* box = new juce::ComboBox();
+                styleCombo(*box);
+                for (int i = 0; i < setting.options.size(); ++i)
+                    box->addItem(setting.options[i], i + 1);
+                box->setText(current, juce::dontSendNotification);
+                box->onChange = [box, key] {
+                    juce::String error;
+                    prefs::set(key, box->getText(), error);
+                };
+                row.control.reset(box);
+                break;
+            }
+            case prefs::Kind::Folder:
+            {
+                auto* field = new juce::TextEditor();
+                styleTextEditor(*field);
+                field->setMultiLine(false);
+                field->setText(current, false);
+                auto commit = [field, key] {
+                    juce::String error;
+                    if (!prefs::set(key, field->getText().trim(), error))
+                        field->setText(prefs::get(key), false);
+                };
+                field->onReturnKey = commit;
+                field->onFocusLost = commit;
+                row.control.reset(field);
+                row.browse = std::make_unique<juce::TextButton>("Browse...");
+                auto* browse = row.browse.get();
+                browse->onClick = [this, field, key] {
+                    chooser = std::make_unique<juce::FileChooser>("Choose a folder", juce::File(field->getText()));
+                    chooser->launchAsync(juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectDirectories,
+                                         [field, key](const juce::FileChooser& fc) {
+                                             if (fc.getResult() == juce::File()) return;
+                                             juce::String error;
+                                             if (prefs::set(key, fc.getResult().getFullPathName(), error))
+                                                 field->setText(fc.getResult().getFullPathName(), false);
+                                         });
+                };
+                content.addAndMakeVisible(*row.browse);
+                break;
+            }
+        }
+        content.addAndMakeVisible(*row.title);
+        content.addAndMakeVisible(*row.description);
+        content.addAndMakeVisible(*row.control);
+        return row;
+    }
+
+    void layoutRows()
+    {
+        const auto width = std::max(300, viewport.getWidth() - viewport.getScrollBarThickness() - 4);
+        int y = 6;
+        for (auto& row : rows)
+        {
+            if (row.key.isEmpty())
+            {
+                row.title->setBounds(8, y + 6, width - 16, 22);
+                y += 36;
+                continue;
+            }
+            const auto controlWidth = row.browse != nullptr ? 300 : 170;
+            const auto textWidth = width - controlWidth - 40;
+            row.title->setBounds(8, y, textWidth, 20);
+            row.description->setBounds(8, y + 20, textWidth, 36);
+            if (row.browse != nullptr)
+            {
+                row.control->setBounds(width - controlWidth - 8, y + 6, controlWidth - 96, 28);
+                row.browse->setBounds(width - 98, y + 6, 90, 28);
+            }
+            else
+                row.control->setBounds(width - controlWidth - 8, y + 6, controlWidth, 28);
+            y += 66;
+        }
+        content.setSize(width, y + 8);
+    }
+
+    juce::TextEditor search;
+    juce::OwnedArray<juce::TextButton> categoryButtons;
+    juce::String selectedCategory;
+    juce::Viewport viewport;
+    juce::Component content;
+    std::vector<Row> rows;
+    std::unique_ptr<juce::FileChooser> chooser;
+};
+
 class ConsolePanel final : public juce::Component
 {
 public:
@@ -7620,7 +8004,7 @@ public:
 private:
     static juce::String unitSymbol(const juce::String& unit)
     {
-        if (unit == "ohm") return juce::String::fromUTF8("\xce\xa9");
+        if (unit == "ohm") return prefs::get("units.ohm_symbol");
         return unit;
     }
 
@@ -9621,6 +10005,19 @@ ElectronicsWorkbench::ElectronicsWorkbench()
 
     dockManager->loadLayoutFromFile(layoutFile());
     appendLog("Electronics research shell initialized.");
+
+    circuit_sim::setCapitalMIsMilli(prefs::get("units.capital_m") != "Mega");
+    snapModeButton.setToggleState(prefs::isOn("display.snap_default"), juce::dontSendNotification);
+    preferenceListener = prefs::addListener([this](const juce::String& key) {
+        if (key == "units.capital_m")
+            circuit_sim::setCapitalMIsMilli(prefs::get(key) != "Mega");
+        if (key == "display.snap_default")
+        {
+            snapModeButton.setToggleState(prefs::isOn(key), juce::dontSendNotification);
+            if (setSnapEnabled != nullptr) setSnapEnabled(prefs::isOn(key));
+        }
+        appendLog("Preference " + key + " = " + prefs::get(key));
+    });
     auto safeThis = juce::Component::SafePointer<ElectronicsWorkbench>(this);
     juce::MessageManager::callAsync([safeThis] {
         if (safeThis != nullptr)
@@ -9628,8 +10025,23 @@ ElectronicsWorkbench::ElectronicsWorkbench()
     });
 }
 
+void ElectronicsWorkbench::showPreferences()
+{
+    if (preferencesWindow == nullptr)
+    {
+        auto* window = new FloatingInstrumentWindow("Preferences");
+        window->setContentOwned(new PreferencesView(), true);
+        window->centreWithSize(820, 560);
+        preferencesWindow.reset(window);
+    }
+    preferencesWindow->setVisible(true);
+    preferencesWindow->toFront(true);
+}
+
 ElectronicsWorkbench::~ElectronicsWorkbench()
 {
+    prefs::removeListener(preferenceListener);
+    preferencesWindow = nullptr;
     if (dockManager != nullptr)
         dockManager->saveLayoutToFile(layoutFile());
     menuBar = nullptr;
@@ -9700,6 +10112,8 @@ juce::PopupMenu ElectronicsWorkbench::getMenuForIndex(int, const juce::String& m
         addProjectMenuItems(menu);
         menu.addSeparator();
         menu.addItem(exportSchematicImageItem, "Export Schematic Image");
+        menu.addSeparator();
+        menu.addItem(preferencesItem, "Preferences...");
     }
     else if (menuName == "Circuit")
     {
@@ -9754,6 +10168,7 @@ void ElectronicsWorkbench::menuItemSelected(int menuItemID, int)
         case deleteDiagramItem:
             handleProjectMenu(menuItemID);
             break;
+        case preferencesItem: showPreferences(); break;
         case exportSchematicImageItem:
             if (exportSchematicImage != nullptr)
                 appendLog(exportSchematicImage());

@@ -63,5 +63,13 @@ struct Result
     std::vector<Marker> markers;
 };
 
-Result layoutSchematic(const std::vector<Part>& parts, const std::vector<Net>& nets, float gridSize);
+struct Options
+{
+    bool stackVerticalChains = true; // parts fed by a lone transistor pin stand in line with it
+    bool supplyBlock = true;         // DC supplies under the circuit (else a column on its left)
+    bool instrumentLabels = true;    // instrument inputs through net labels (else wired directly)
+    float spacing = 1.0f;            // multiplies gaps between parts, columns and blocks
+};
+
+Result layoutSchematic(const std::vector<Part>& parts, const std::vector<Net>& nets, float gridSize, const Options& options = {});
 }

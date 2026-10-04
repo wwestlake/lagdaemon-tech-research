@@ -37,6 +37,7 @@ private:
         duplicateDiagramItem,
         deleteDiagramItem,
         exportSchematicImageItem,
+        preferencesItem,
         resetLayout,
         importComponent,
         runErc,
@@ -77,6 +78,9 @@ private:
     void showOpenProjectDialog();
     void showNewDiagramDialog();
     void handleProjectMenu(int menuItemID);
+    void showPreferences();
+    std::unique_ptr<juce::DocumentWindow> preferencesWindow;
+    int preferenceListener = 0;
     void addProjectMenuItems(juce::PopupMenu& menu);
     juce::String projectInfoJson() const;
     juce::String projectTool(const juce::String& name, const juce::var& args);

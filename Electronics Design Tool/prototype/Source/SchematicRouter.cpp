@@ -17,14 +17,14 @@ using P = juce::Point<float>;
 
 constexpr float shapeBuffer = 12.0f;
 
-void configureRouter(Avoid::Router& router, float gridSize)
+void configureRouter(Avoid::Router& router, float gridSize, const Style& style)
 {
     // segmentPenalty keeps routes to few bends and is required for nudging.
-    router.setRoutingParameter(Avoid::segmentPenalty, 50.0);
+    router.setRoutingParameter(Avoid::segmentPenalty, std::max(1.0, style.segmentPenalty));
     router.setRoutingParameter(Avoid::shapeBufferDistance, shapeBuffer);
-    // Nudge parallel segments of different wires one grid step apart so the
-    // grid snap afterwards barely moves them.
-    router.setRoutingParameter(Avoid::idealNudgingDistance, gridSize);
+    // Nudge parallel segments of different wires a whole number of grid
+    // steps apart so the grid snap afterwards barely moves them.
+    router.setRoutingParameter(Avoid::idealNudgingDistance, gridSize * std::max(1.0f, style.wireGapGrids));
     // Pin stubs stay fixed: wires leave pins straight along the lead.
     router.setRoutingOption(Avoid::nudgeOrthogonalSegmentsConnectedToShapes, false);
     // Wires sharing an endpoint belong to the same net; let their shared
@@ -441,14 +441,14 @@ void slideJunctions(std::vector<Polyline>& routes, const Problem& problem, std::
 }
 }
 
-std::vector<Polyline> routeConnections(const Problem& problem, float gridSize, std::vector<juce::Point<float>>* adjustedJunctions)
+std::vector<Polyline> routeConnections(const Problem& problem, float gridSize, std::vector<juce::Point<float>>* adjustedJunctions, const Style& style)
 {
     std::vector<Polyline> result(problem.connections.size());
     if (problem.connections.empty())
         return result;
 
     Avoid::Router router(Avoid::OrthogonalRouting);
-    configureRouter(router, gridSize);
+    configureRouter(router, gridSize, style);
     const auto shapes = addShapes(router, problem.obstacles);
 
     std::vector<Avoid::JunctionRef*> junctions;
@@ -505,12 +505,12 @@ std::vector<Polyline> routeConnections(const Problem& problem, float gridSize, s
 
 std::vector<TreeSolution> routeNetTrees(const std::vector<Obstacle>& obstacles,
                                         const std::vector<NetTerminals>& nets,
-                                        float gridSize)
+                                        float gridSize, const Style& style)
 {
     std::vector<TreeSolution> solutions(nets.size());
 
     Avoid::Router router(Avoid::OrthogonalRouting);
-    configureRouter(router, gridSize);
+    configureRouter(router, gridSize, style);
     router.setRoutingOption(Avoid::improveHyperedgeRoutesMovingJunctions, true);
     const auto shapes = addShapes(router, obstacles);
     const std::vector<Avoid::JunctionRef*> noJunctions;
