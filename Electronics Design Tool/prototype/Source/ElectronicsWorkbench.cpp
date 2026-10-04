@@ -7091,6 +7091,10 @@ public:
         auto* snapshot = new juce::DynamicObject();
         snapshot->setProperty("profile", profileBox.getText());
         snapshot->setProperty("model", modelBox.getText());
+        juce::Array<juce::var> models;
+        for (int i = 0; i < modelBox.getNumItems(); ++i)
+            models.add(modelBox.getItemText(i));
+        snapshot->setProperty("availableModels", models);
         snapshot->setProperty("busy", requestInFlight);
         snapshot->setProperty("discoveryFile", LocalAgentApi::getDiscoveryFile().getFullPathName());
         snapshot->setProperty("knowledgeRoot", electronics_knowledge::getKnowledgeRoot().getFullPathName());
@@ -7203,13 +7207,69 @@ private:
             if (profile.name == profileName.toStdString())
                 selectedModel = profile.model;
 
+        const auto current = selectedModel.isNotEmpty() ? selectedModel : juce::String("gpt-4o-mini");
         modelBox.clear();
-        if (selectedModel.isNotEmpty())
-            modelBox.addItem(selectedModel, 1);
-        modelBox.addItem("gpt-4o-mini", 2);
-        modelBox.setText(selectedModel.isNotEmpty() ? selectedModel : "gpt-4o-mini",
-                         juce::dontSendNotification);
+        modelBox.addItem(current, 1);
+        modelBox.setText(current, juce::dontSendNotification);
+
+        // Ask the provider which models this key can use, off the message
+        // thread; the saved model stays selected while the list loads.
+        auto provider = std::shared_ptr<ai_provider::AiProvider>(aiConfig.createProvider(profileName.toStdString()));
+        if (provider == nullptr)
+            return;
+        const auto generation = ++modelListGeneration;
+        auto safeThis = juce::Component::SafePointer<AgentPanel>(this);
+        juce::Thread::launch([provider, generation, safeThis] {
+            const auto response = provider->listModels();
+            juce::MessageManager::callAsync([response, generation, safeThis] {
+                if (safeThis == nullptr || generation != safeThis->modelListGeneration)
+                    return;
+                safeThis->applyModelList(response);
+            });
+        });
     }
+
+    // Chat-capable model ids; embeddings, speech, image, moderation and
+    // legacy completion models are left out of the picker.
+    static bool isChatModelId(const juce::String& id)
+    {
+        static const char* excluded[] = { "embedding", "tts", "whisper", "dall-e", "moderation", "transcribe",
+                                          "audio", "realtime", "image", "search", "davinci", "babbage", "instruct" };
+        for (const auto* word : excluded)
+            if (id.containsIgnoreCase(word))
+                return false;
+        return id.startsWith("gpt-") || id.startsWith("chatgpt-") || id.startsWith("o1") || id.startsWith("o3")
+            || id.startsWith("o4") || id.startsWith("o5");
+    }
+
+    void applyModelList(const ai_provider::ModelListResponse& response)
+    {
+        const auto current = modelBox.getText();
+        if (!response.ok)
+        {
+            modelBox.setTooltip("Model list unavailable: " + juce::String(response.errorMessage));
+            return;
+        }
+
+        juce::StringArray models;
+        for (const auto& model : response.models)
+            if (isChatModelId(model))
+                models.add(model);
+        if (models.isEmpty())
+            for (const auto& model : response.models)
+                models.add(model);
+        models.addIfNotAlreadyThere(current);
+        models.sort(true);
+
+        modelBox.clear(juce::dontSendNotification);
+        int itemId = 1;
+        for (const auto& model : models)
+            modelBox.addItem(model, itemId++);
+        modelBox.setText(current, juce::dontSendNotification);
+        modelBox.setTooltip("Model used by the selected BYOK profile (" + juce::String(models.size()) + " available)");
+    }
+
+    int modelListGeneration = 0;
 
     void startLocalApi()
     {
