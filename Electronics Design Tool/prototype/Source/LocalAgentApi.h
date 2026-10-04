@@ -14,6 +14,9 @@ public:
     using PlanSnapshotHandler = std::function<void(Completion)>;
     using PlanDecisionHandler = std::function<void(const juce::var&, Completion)>;
     using CancelHandler = std::function<void()>;
+    // Runs one agent tool directly (no model in the loop) and reports its
+    // JSON result through the completion.
+    using ToolHandler = std::function<void(const juce::String& name, const juce::var& arguments, Completion)>;
 
     explicit LocalAgentApi(juce::File discoveryFileOverride = {});
     ~LocalAgentApi() override;
@@ -27,6 +30,7 @@ public:
     PlanDecisionHandler onPlanApprove;
     PlanDecisionHandler onPlanDeny;
     CancelHandler onCancel;
+    ToolHandler onToolCall;
 
     static juce::File getDiscoveryFile();
 

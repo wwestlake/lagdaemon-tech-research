@@ -69,6 +69,22 @@ struct LabelRects
 };
 LabelRects labelRectsFor(const SymbolDef& symbol, int rotation);
 
+// Sub-diagram block: one pin per port, inputs on the left, outputs on the
+// right, spaced two grid steps apart. Its body leaves a band on top for the
+// block name. Ports are named; pin names equal port names.
+struct BlockPort
+{
+    juce::String name;
+    bool rightSide = false;
+};
+SymbolDef blockSymbol(const std::vector<BlockPort>& ports);
+
+// The port bubble outline in symbol space (unrotated); the name goes inside.
+juce::Rectangle<float> portBubbleRect();
+
+// Draws a sub-diagram block (box, name band, pin names) in symbol space.
+void drawBlockArt(juce::Graphics& g, const SymbolDef& block, const juce::String& name);
+
 // Draws the symbol in symbol space; the caller applies rotation and
 // translation. `readout` is the live text for symbols that display one
 // (the multimeter). Rail buses are drawn by the canvas, not here.

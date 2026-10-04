@@ -291,7 +291,7 @@ const juce::StringArray& supportedSymbolIds()
     static const juce::StringArray ids {
         "resistor", "potentiometer", "capacitor", "capacitor_polarized", "variable_capacitor",
         "inductor", "coupled_inductor", "transformer", "diode", "zener_diode", "led",
-        "schottky_diode", "power_bus", "ground_bus", "power_port", "net_label", "battery", "voltage_source",
+        "schottky_diode", "power_bus", "ground_bus", "power_port", "net_label", "sub_block", "block_port", "battery", "voltage_source",
         "ac_voltage_source", "current_source", "ac_current_source", "vcvs", "vccs",
         "ccvs", "cccs", "signal_source", "ground", "opamp_741", "npn", "pnp",
         "nmos", "pmos", "njfet", "pjfet", "switch_spst", "switch_spdt", "relay_spst",
@@ -324,6 +324,11 @@ SymbolDef symbolFor(const juce::String& id)
     if (id == "ground_bus")          return make(id, "GND BUS", { -210, -8, 420, 16 }, { { "0", { 0, 0 } } });
     if (id == "power_port")          return make(id, "PWR", { -18, -24, 36, 24 }, { { "1", { 0, 0 } } });
     if (id == "net_label")           return make(id, "LABEL", { -12, -24, 24, 24 }, { { "1", { 0, 0 } } });
+    // Port bubble inside a sub-diagram; the pin is the bubble's right tip.
+    // Rotation 180 puts the bubble on the right (output ports).
+    if (id == "block_port")          return make(id, "PORT", { -120, -12, 120, 24 }, { { "1", { 0, 0 } } });
+    // Pins depend on the block's ports; see blockSymbol().
+    if (id == "sub_block")           return make(id, "BLOCK", { -72, -48, 144, 72 }, {});
     if (id == "ground")              return make(id, "GND", { -18, 0, 36, 30 }, { { "0", { 0, 0 } } });
     if (id == "battery")             return make(id, "BAT", { -24, -18, 48, 36 }, { { "+", { 0, -48 } }, { "-", { 0, 48 } } });
     if (id == "voltage_source")      return make(id, "V", { -24, -24, 48, 48 }, { { "+", { 0, -48 } }, { "-", { 0, 48 } } });
@@ -384,6 +389,8 @@ juce::String refdesPrefixFor(const juce::String& id)
     if (id == "ground") return "GND";
     if (id == "power_port") return "PWR";
     if (id == "net_label") return "LBL";
+    if (id == "sub_block") return "A";      // IEEE 315: assembly / subassembly
+    if (id == "block_port") return "PORT";
     if (id == "ground_bus") return "GBUS";
     if (id == "power_bus") return "PBUS";
     if (id == "oscilloscope_2ch") return "SCOPE";
@@ -477,8 +484,71 @@ juce::Point<float> pinLeadDirection(const SymbolDef& symbol, int pinIndex)
     return dirs[best];
 }
 
+juce::Rectangle<float> portBubbleRect()
+{
+    return { -118.0f, -11.0f, 108.0f, 22.0f };
+}
+
+SymbolDef blockSymbol(const std::vector<BlockPort>& ports)
+{
+    std::vector<const BlockPort*> left, right;
+    for (const auto& port : ports)
+        (port.rightSide ? right : left).push_back(&port);
+    const auto rows = std::max<size_t>({ left.size(), right.size(), (size_t)1 });
+    const auto half = (float)rows * 24.0f;
+
+    std::vector<PinDef> pins;
+    // Pins in port order so pin index == port index.
+    for (const auto& port : ports)
+    {
+        const auto& side = port.rightSide ? right : left;
+        const auto n = (int)side.size();
+        const auto k = (int)(std::find(side.begin(), side.end(), &port) - side.begin());
+        pins.push_back({ port.name, { port.rightSide ? 96.0f : -96.0f, (float)(2 * k - (n - 1)) * 24.0f } });
+    }
+
+    SymbolDef def;
+    def.id = "sub_block";
+    def.title = "BLOCK";
+    def.bounds = { -72.0f, -half - 24.0f, 144.0f, half * 2.0f + 24.0f };
+    def.pins = std::move(pins);
+    def.showPinNames = false; // drawBlockArt writes them inside the box
+    return def;
+}
+
+void drawBlockArt(juce::Graphics& g, const SymbolDef& block, const juce::String& name)
+{
+    const auto body = block.bounds;
+    g.setColour(juce::Colour(0xff17212b));
+    g.fillRoundedRectangle(body, 6.0f);
+    g.setColour(juce::Colour(0xff78dcca));
+    g.drawRoundedRectangle(body, 6.0f, 2.0f);
+    const auto band = body.withHeight(24.0f);
+    g.setColour(juce::Colour(0xff78dcca).withAlpha(0.18f));
+    g.fillRect(band.reduced(2.0f, 2.0f));
+    g.setColour(juce::Colour(0xffe8f1f2));
+    g.setFont(juce::Font(13.0f, juce::Font::bold));
+    g.drawText(name, band.reduced(8.0f, 0.0f).toNearestInt(), juce::Justification::centred, true);
+
+    g.setFont(juce::Font(11.0f));
+    for (const auto& pin : block.pins)
+    {
+        const auto onRight = pin.offset.x > 0.0f;
+        const auto edge = onRight ? body.getRight() : body.getX();
+        g.setColour(lineColour);
+        line(g, pin.offset, { edge, pin.offset.y });
+        g.setColour(juce::Colour(0xff93a7b0));
+        const auto textArea = juce::Rectangle<float>(onRight ? edge - 66.0f : edge + 6.0f, pin.offset.y - 8.0f, 60.0f, 16.0f);
+        g.drawText(pin.name, textArea.toNearestInt(), onRight ? juce::Justification::centredRight : juce::Justification::centredLeft, true);
+    }
+}
+
 LabelRects labelRectsFor(const SymbolDef& symbol, int rotation)
 {
+    // Ports and blocks carry their names inside their own art.
+    if (symbol.id == "block_port" || symbol.id == "sub_block")
+        return {};
+
     constexpr float w = 96.0f, h = 15.0f, gap = 4.0f;
     const auto body = rotateBounds(symbol.bounds, rotation);
     bool up = false, down = false, left = false, right = false;
@@ -605,6 +675,14 @@ void drawSymbolArt(juce::Graphics& g, const SymbolDef& symbol, const juce::Strin
         juce::Path arrow;
         arrow.addTriangle(-7.0f, -16.0f, 7.0f, -16.0f, 0.0f, -24.0f);
         g.fillPath(arrow);
+    }
+    else if (id == "block_port")
+    {
+        // Rounded bubble; the canvas writes the port name inside it.
+        g.setColour(juce::Colour(0xffffc857));
+        g.drawRoundedRectangle(portBubbleRect(), 11.0f, 1.8f);
+        g.setColour(lineColour);
+        line(g, { -10, 0 }, { 0, 0 });
     }
     else if (id == "net_label")
     {

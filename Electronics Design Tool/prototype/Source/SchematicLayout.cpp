@@ -205,8 +205,8 @@ std::vector<std::vector<int>> layerComponents(Ctx& c)
         if (c.role[(size_t)i] == Role::Main)
             order.push_back(i);
     std::stable_sort(order.begin(), order.end(), [&](int a, int b) {
-        const auto sa = isSourceSymbol(c.parts[(size_t)a].symbol.id);
-        const auto sb = isSourceSymbol(c.parts[(size_t)b].symbol.id);
+        const auto sa = isSourceSymbol(c.parts[(size_t)a].symbol.id) || c.parts[(size_t)a].pinnedColumn < 0;
+        const auto sb = isSourceSymbol(c.parts[(size_t)b].symbol.id) || c.parts[(size_t)b].pinnedColumn < 0;
         if (sa != sb) return sa;
         return c.parts[(size_t)a].originalPosition.x < c.parts[(size_t)b].originalPosition.x;
     });
@@ -216,12 +216,42 @@ std::vector<std::vector<int>> layerComponents(Ctx& c)
     {
         if (c.layer[(size_t)root] >= 0)
             continue;
-        std::vector<int> component;
-        std::deque<int> queue { root };
-        c.layer[(size_t)root] = 0;
+        // Find the whole connected component first, then walk it breadth
+        // first from all of its inputs at once, so every input sits in the
+        // first layer (multi-input circuits, sub-diagram port bubbles).
+        std::vector<int> members;
+        {
+            std::set<int> seen { root };
+            std::deque<int> pending { root };
+            while (!pending.empty())
+            {
+                const auto current = pending.front();
+                pending.pop_front();
+                members.push_back(current);
+                for (auto net : c.parts[(size_t)current].pinNets)
+                    if (isSignalNet(c, net))
+                        for (int next : partsOnNet(c, net))
+                            if (c.role[(size_t)next] == Role::Main && seen.insert(next).second)
+                                pending.push_back(next);
+            }
+        }
+        auto isInput = [&](int part) {
+            return isSourceSymbol(c.parts[(size_t)part].symbol.id) || c.parts[(size_t)part].pinnedColumn < 0;
+        };
+        std::deque<int> queue;
+        for (int part : order) // keeps the left-to-right preference among inputs
+            if (std::find(members.begin(), members.end(), part) != members.end() && isInput(part))
+            {
+                c.layer[(size_t)part] = 0;
+                queue.push_back(part);
+            }
+        if (queue.empty())
+        {
+            c.layer[(size_t)root] = 0;
+            queue.push_back(root);
+        }
 
-        // Seed with every unvisited source sharing a net with nothing yet, so
-        // multi-input circuits keep all inputs in the first layer.
+        std::vector<int> component;
         while (!queue.empty())
         {
             const auto current = queue.front();
@@ -237,14 +267,27 @@ std::vector<std::vector<int>> layerComponents(Ctx& c)
                 {
                     if (c.role[(size_t)next] != Role::Main || c.layer[(size_t)next] >= 0)
                         continue;
-                    c.layer[(size_t)next] = isSourceSymbol(c.parts[(size_t)next].symbol.id) && c.layer[(size_t)current] == 0
-                        ? 0
-                        : c.layer[(size_t)current] + 1;
+                    c.layer[(size_t)next] = c.layer[(size_t)current] + 1;
                     queue.push_back(next);
                 }
             }
         }
         components.push_back(component);
+    }
+
+    // Pinned parts (sub-diagram port bubbles): inputs in the first layer,
+    // outputs one layer past everything else in their component.
+    for (const auto& component : components)
+    {
+        int last = 0;
+        for (int part : component)
+            if (c.parts[(size_t)part].pinnedColumn == 0)
+                last = std::max(last, c.layer[(size_t)part]);
+        for (int part : component)
+        {
+            if (c.parts[(size_t)part].pinnedColumn < 0) c.layer[(size_t)part] = 0;
+            if (c.parts[(size_t)part].pinnedColumn > 0) c.layer[(size_t)part] = last + 1;
+        }
     }
     return components;
 }
@@ -256,6 +299,11 @@ void orient(Ctx& c)
     {
         const auto& part = c.parts[(size_t)i];
         const auto role = c.role[(size_t)i];
+        if (part.fixedRotation >= 0)
+        {
+            c.rotation[(size_t)i] = part.fixedRotation;
+            continue;
+        }
         if (role == Role::Instrument || pinCount(part) != 2)
             continue;
 
@@ -267,15 +315,19 @@ void orient(Ctx& c)
 
         if (naturallyHorizontal(part) && !isSourceSymbol(part.symbol.id))
         {
-            // Input pin (the net reached from an earlier part) on the left.
+            // Input pin on the left: the net driven from the earliest layer.
             int inputPin = 0;
+            int bestLayer = std::numeric_limits<int>::max();
             for (int p = 0; p < 2; ++p)
             {
                 const auto net = part.pinNets[(size_t)p];
-                if (isSignalNet(c, net) && c.netParent[(size_t)net] >= 0 && c.netParent[(size_t)net] != i)
+                if (!isSignalNet(c, net))
+                    continue;
+                const auto parent = c.netParent[(size_t)net];
+                if (parent >= 0 && parent != i && c.layer[(size_t)parent] < bestLayer)
                 {
+                    bestLayer = c.layer[(size_t)parent];
                     inputPin = p;
-                    break;
                 }
             }
             c.rotation[(size_t)i] = inputPin == 0 ? 0 : 180;

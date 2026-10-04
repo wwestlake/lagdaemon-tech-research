@@ -90,6 +90,29 @@ std::vector<Circuit> referenceCircuits()
         { "voltage_source", "V2", "12", { "+12V", "0" } },
     } });
 
+    // The inside of an "Output Stage" sub-diagram: port bubbles stand in
+    // for the block pins.
+    circuits.push_back({ "output_stage_block", {
+        { "block_port", "IN", "IN", { "b1" } },
+        { "block_port", "IN2", "IN2", { "b2" } },
+        { "block_port", "OUT", "OUT", { "out" } },
+        { "npn", "Q1", "generic_npn", { "b1", "+12V", "e1" } },
+        { "pnp", "Q2", "generic_pnp", { "b2", "e2", "-12V" } },
+        { "resistor", "R3", "0.47", { "e1", "out" } },
+        { "resistor", "R4", "0.47", { "out", "e2" } },
+        { "resistor", "RL1", "8", { "out", "0" } },
+    } });
+
+    // A nested sheet: the emitter network inside the output stage.
+    circuits.push_back({ "emitter_network_block", {
+        { "block_port", "IN", "IN", { "e1" } },
+        { "block_port", "IN2", "IN2", { "e2" } },
+        { "block_port", "OUT", "OUT", { "out" } },
+        { "resistor", "R3", "0.47", { "e1", "out" } },
+        { "resistor", "R4", "0.47", { "out", "e2" } },
+        { "resistor", "RL1", "8", { "out", "0" } },
+    } });
+
     circuits.push_back({ "battery_led", {
         { "battery", "BT1", "9", { "+9V", "0" } },
         { "resistor", "R1", "470", { "+9V", "a" } },
@@ -257,6 +280,14 @@ void render(const juce::File& file, const std::vector<Placed>& placed, const std
         g.setFont(juce::Font(12.0f));
         if (part.symbolId == "ground")
             continue;
+        if (part.symbolId == "block_port")
+        {
+            const auto bubble = rotateBounds(portBubbleRect(), part.rotation).translated(part.position.x, part.position.y);
+            g.setColour(juce::Colour(0xffffc857));
+            g.setFont(juce::Font(12.0f, juce::Font::bold));
+            g.drawText(part.label, bubble.toNearestInt(), juce::Justification::centred);
+            continue;
+        }
         if (part.symbolId == "net_label")
         {
             g.setColour(juce::Colour(0xff78dcca));
@@ -296,6 +327,12 @@ void runCircuit(const Circuit& circuit, const juce::File& outDir)
         layout::Part part;
         part.refdes = spec.refdes;
         part.symbol = symbolFor(spec.symbolId);
+        if (spec.symbolId == "block_port")
+        {
+            const auto output = spec.refdes.startsWith("OUT");
+            part.pinnedColumn = output ? 1 : -1;
+            part.fixedRotation = output ? 180 : 0;
+        }
         jassert(part.symbol.isValid());
         for (const auto& name : spec.pinNets)
         {

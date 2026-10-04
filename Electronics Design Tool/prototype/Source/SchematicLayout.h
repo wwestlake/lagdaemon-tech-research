@@ -37,6 +37,8 @@ struct Part
     SymbolDef symbol;
     std::vector<int> pinNets;            // net index per pin, -1 if unconnected
     juce::Point<float> originalPosition; // tie-breaks only
+    int pinnedColumn = 0;                // -1 first column (inputs), +1 last column (outputs)
+    int fixedRotation = -1;              // >= 0 keeps this rotation
 };
 
 // A net marker placed by the layout. Most attach to one part pin with a

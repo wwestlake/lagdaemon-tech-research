@@ -70,7 +70,7 @@ The app also starts a loopback local agent API and writes its discovery file to:
 %APPDATA%\DjehutiElectronicsLab\agent-api.json
 ```
 
-The API exposes message/session/cancel endpoints so external tools can talk to
+The API exposes message/session/cancel endpoints, plus `POST /v1/tools/call` to run any agent tool directly without the model, so external tools can talk to
 the embedded electronics agent with the same UI session and tool surface.
 The first live schematic tools are `circuit_inspect`, `schematic_place_symbol`,
 `schematic_connect`, `instrument_open_panel`, `circuit_run_erc`, and

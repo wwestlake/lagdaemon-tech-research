@@ -84,6 +84,56 @@ const SchematicToolSpec schematicToolSpecs[] = {
         R"({"type":"object","properties":{"group":{"type":"string","description":"Group id (G1) or name."}},"required":["group"],"additionalProperties":false})"
     },
     {
+        "schematic_subdiagram_create",
+        "Fold components into a sub-diagram block to make a complex schematic easier to read. The block shows one pin per signal net crossing its edge (ground and named supplies stay global and never become pins); double-clicking it opens its own sheet, where each pin appears as a port bubble with the pin name. Nothing about the circuit changes. Give members (reference designators on the sheet being viewed) or an existing group. Blocks can contain blocks.",
+        R"({"type":"object","properties":{"name":{"type":"string","description":"Block name, such as Output Stage."},"members":{"type":"array","items":{"type":"string"},"description":"Reference designators to fold into the block."},"group":{"type":"string","description":"Alternatively, a group id or name whose members become the block (the group box is replaced by the block)."}},"required":["name"],"additionalProperties":false})"
+    },
+    {
+        "schematic_subdiagram_expand",
+        "Put a sub-diagram block's contents back on the sheet it sits on, centred where the block was, inside a group box with the block's name.",
+        R"({"type":"object","properties":{"block":{"type":"string","description":"Block reference designator (A1) or name."}},"required":["block"],"additionalProperties":false})"
+    },
+    {
+        "schematic_subdiagram_open",
+        "Change which sheet is shown and edited: open a block's sheet, go up one level, or return to the main sheet. Placement, wiring, auto layout, and grouping tools act on the sheet being viewed.",
+        R"({"type":"object","properties":{"target":{"type":"string","description":"Block refdes or name to open, 'up' for the parent sheet, or 'main'."}},"required":["target"],"additionalProperties":false})"
+    },
+    {
+        "schematic_subdiagram_rename",
+        "Rename a sub-diagram block.",
+        R"({"type":"object","properties":{"block":{"type":"string","description":"Block refdes or current name."},"name":{"type":"string","description":"New name."}},"required":["block","name"],"additionalProperties":false})"
+    },
+    {
+        "schematic_subdiagram_rename_port",
+        "Rename one of a sub-diagram block's pins; the matching port bubble inside the block is renamed with it.",
+        R"({"type":"object","properties":{"block":{"type":"string","description":"Block refdes or name."},"port":{"type":"string","description":"Current pin name, such as IN or OUT2."},"name":{"type":"string","description":"New pin name."}},"required":["block","port","name"],"additionalProperties":false})"
+    },
+    {
+        "schematic_subdiagram_list",
+        "List every sub-diagram block with its name, the sheet it sits on, its pins, and its member components, plus which sheet is being viewed.",
+        R"({"type":"object","properties":{},"additionalProperties":false})"
+    },
+    {
+        "schematic_export_image",
+        "Render a schematic sheet to a PNG file exactly as it is drawn, to check readability or share it. Defaults to the sheet being viewed.",
+        R"({"type":"object","properties":{"sheet":{"type":"string","description":"Optional: block refdes or name to render its sheet, or 'main'."}},"additionalProperties":false})"
+    },
+    {
+        "project_save",
+        "Save the whole project (all sheets, sub-diagrams, groups, wiring) to the project file, like File > Save Project.",
+        R"({"type":"object","properties":{},"additionalProperties":false})"
+    },
+    {
+        "project_open",
+        "Open the saved project file, replacing the current schematic, like File > Open Project. The main sheet is shown afterwards.",
+        R"({"type":"object","properties":{},"additionalProperties":false})"
+    },
+    {
+        "project_new",
+        "Start a new empty project, like File > New Research Project. Unsaved work is discarded, so save first if the user wants to keep it.",
+        R"({"type":"object","properties":{},"additionalProperties":false})"
+    },
+    {
         "schematic_group_list",
         "List the group boxes on the schematic with their ids, names, categories, notes, and member reference designators.",
         R"({"type":"object","properties":{},"additionalProperties":false})"
@@ -1060,6 +1110,7 @@ public:
 
         std::vector<Instance> loadedInstances;
         std::vector<juce::Point<float>> loadedJunctions;
+        std::vector<juce::String> loadedJunctionSheets;
         std::vector<Wire> loadedWires;
         std::vector<Probe> loadedProbes;
         std::vector<Group> loadedGroups;
@@ -1084,6 +1135,12 @@ public:
             instance.position = { floatProperty(*object, "x", 120.0f), floatProperty(*object, "y", 120.0f) };
             instance.rotation = schematic::normalizedRotation((int)floatProperty(*object, "rotation", 0.0f));
             instance.busLength = floatProperty(*object, "length", isRailBus(instance.symbolId) ? 420.0f : 0.0f);
+            instance.sheet = stringProperty(*object, "sheet", {});
+            instance.childSheet = stringProperty(*object, "childSheet", {});
+            if (const auto* portArray = object->getProperty("ports").getArray())
+                for (const auto& port : *portArray)
+                    instance.ports.push_back({ port.getProperty("name", {}).toString(),
+                                               port.getProperty("side", {}).toString() == "right" });
 
             if (const auto* component = object->getProperty("component").getDynamicObject())
             {
@@ -1107,6 +1164,7 @@ public:
                     continue;
                 loadedJunctions.push_back({ floatProperty(*object, "x", 0.0f),
                                             floatProperty(*object, "y", 0.0f) });
+                loadedJunctionSheets.push_back(stringProperty(*object, "sheet", {}));
             }
         }
 
@@ -1133,7 +1191,7 @@ public:
                 if (loadedInstances[(size_t)i].refdes != refdes)
                     continue;
 
-                const auto symbol = symbolFor(loadedInstances[(size_t)i].symbolId);
+                const auto symbol = symbolForInstance(loadedInstances[(size_t)i]);
                 for (int p = 0; p < (int)symbol.pins.size(); ++p)
                 {
                     if (symbol.pins[(size_t)p].name == pinName)
@@ -1223,6 +1281,8 @@ public:
         const auto previousProbes = probes;
         instances = std::move(loadedInstances);
         junctions = std::move(loadedJunctions);
+        junctionSheets = std::move(loadedJunctionSheets);
+        currentSheet = {};
         wires = std::move(loadedWires);
         probes = std::move(loadedProbes);
         groups = std::move(loadedGroups);
@@ -1259,7 +1319,7 @@ public:
         for (size_t i = 0; i < instances.size(); ++i)
         {
             const auto& instance = instances[i];
-            const auto symbol = symbolFor(instance.symbolId);
+            const auto symbol = symbolForInstance(instance);
             if (i != 0) text << ",\n";
             text << "    {\n";
             text << "      \"id\": " << quote(instance.refdes) << ",\n";
@@ -1273,6 +1333,17 @@ public:
             text << "      \"x\": " << instance.position.x << ",\n";
             text << "      \"y\": " << instance.position.y << ",\n";
             text << "      \"rotation\": " << instance.rotation << ",\n";
+            if (instance.sheet.isNotEmpty())
+                text << "      \"sheet\": " << quote(instance.sheet) << ",\n";
+            if (instance.symbolId == "sub_block")
+            {
+                text << "      \"childSheet\": " << quote(instance.childSheet) << ",\n";
+                text << "      \"ports\": [";
+                for (size_t k = 0; k < instance.ports.size(); ++k)
+                    text << (k == 0 ? "" : ", ") << "{ \"name\": " << quote(instance.ports[k].name)
+                         << ", \"side\": " << quote(instance.ports[k].rightSide ? "right" : "left") << " }";
+                text << "],\n";
+            }
             if (isRailBus(instance.symbolId))
                 text << "      \"length\": " << instance.busLength << ",\n";
             text << "      \"value\": " << quote(instance.value) << ",\n";
@@ -1306,7 +1377,8 @@ public:
             if (i != 0) text << ",\n";
             text << "    { \"id\": " << quote("N" + juce::String((int)i + 1))
                  << ", \"x\": " << junction.x
-                 << ", \"y\": " << junction.y << " }";
+                 << ", \"y\": " << junction.y
+                 << ", \"sheet\": " << quote(i < junctionSheets.size() ? junctionSheets[i] : juce::String()) << " }";
         }
         text << "\n  ],\n";
         text << "  \"groups\": [\n";
@@ -1363,7 +1435,7 @@ public:
         for (size_t i = 0; i < instances.size(); ++i)
         {
             const auto& instance = instances[i];
-            const auto symbol = symbolFor(instance.symbolId);
+            const auto symbol = symbolForInstance(instance);
             auto pinNet = [&](const juce::String& pinName) {
                 for (size_t p = 0; p < symbol.pins.size(); ++p)
                     if (symbol.pins[p].name == pinName)
@@ -1381,7 +1453,8 @@ public:
                 netlist << "* " << instance.refdes << " " << instance.busName << " power bus on net " << pinNet("VBUS") << "\n";
                 continue;
             }
-            if (instance.symbolId == "power_port" || instance.symbolId == "net_label")
+            if (instance.symbolId == "power_port" || instance.symbolId == "net_label"
+                || instance.symbolId == "sub_block" || instance.symbolId == "block_port")
                 continue;
             if (instance.symbolId == "resistor")
             {
@@ -1481,7 +1554,7 @@ public:
         };
 
         auto pinNet = [&](int instanceIndex, const juce::String& pinName) {
-            const auto symbol = symbolFor(instances[(size_t)instanceIndex].symbolId);
+            const auto symbol = symbolForInstance(instances[(size_t)instanceIndex]);
             for (int p = 0; p < (int)symbol.pins.size(); ++p)
                 if (symbol.pins[(size_t)p].name == pinName)
                     return netFor({ instanceIndex, p }, netNames);
@@ -1521,7 +1594,7 @@ public:
         for (int i = 0; i < (int)instances.size(); ++i)
         {
             const auto& instance = instances[(size_t)i];
-            const auto symbol = symbolFor(instance.symbolId);
+            const auto symbol = symbolForInstance(instance);
 
             if (refdesSeen.count(instance.refdes) != 0)
                 addFinding("ERROR", "Duplicate reference designator found: " + instance.refdes + ".");
@@ -1532,7 +1605,8 @@ public:
                 && instance.symbolId != "ground_bus"
                 && instance.symbolId != "power_bus"
                 && instance.symbolId != "power_port"
-                && instance.symbolId != "net_label")
+                && instance.symbolId != "net_label"
+                && instance.symbolId != "block_port")
                 addFinding("WARN", instance.refdes + " has no value or model text.");
 
             if (instance.symbolId == "net_label" && instance.busName.trim().isEmpty())
@@ -1629,6 +1703,7 @@ public:
         drawPendingWire(g);
         drawSelectionBox(g);
         g.restoreState();
+        drawBreadcrumb(g);
 
         g.setColour(juce::Colour(0xff93a7b0));
         g.setFont(juce::Font(13.0f));
@@ -1649,6 +1724,12 @@ public:
     void mouseDown(const juce::MouseEvent& event) override
     {
         grabKeyboardFocus();
+        for (const auto& [area, sheet] : breadcrumbAreas)
+            if (area.contains(event.position))
+            {
+                openSheet(sheet);
+                return;
+            }
         const auto modelPosition = viewToCanvas(event.position);
         const auto p = snapPoint(modelPosition);
         if (event.mods.isMiddleButtonDown())
@@ -1749,6 +1830,11 @@ public:
             notifySelection();
 
             const auto& instance = instances[(size_t)instanceIndex];
+            if (instance.symbolId == "sub_block")
+            {
+                openSheet(instance.childSheet);
+                return;
+            }
             if (isInstrumentNode(instance.symbolId) && onInstrumentOpen)
             {
                 onInstrumentOpen(instance.refdes, instance.symbolId);
@@ -1841,10 +1927,38 @@ public:
         menu.addItem(6, "Rename / Edit Group Box...", selectedGroup >= 0 && selectedGroup < (int)groups.size());
         menu.addItem(7, "Ungroup", selectedGroup >= 0 && selectedGroup < (int)groups.size());
         menu.addSeparator();
+        const auto blockUnderMouse = [&] {
+            const auto hit = hitTestInstance(modelPosition);
+            return hit >= 0 && instances[(size_t)hit].symbolId == "sub_block" ? hit : -1;
+        }();
+        menu.addItem(8, (selectedGroup >= 0 ? "Make Sub-Diagram from Group..." : "Make Sub-Diagram from Selection..."),
+                     !selectedInstances.isEmpty() || selectedGroup >= 0);
+        menu.addItem(9, "Open Sub-Diagram", blockUnderMouse >= 0);
+        menu.addItem(10, "Rename Sub-Diagram...", blockUnderMouse >= 0);
+        menu.addItem(11, "Expand Sub-Diagram", blockUnderMouse >= 0);
+        menu.addItem(12, "Up One Level", currentSheet.isNotEmpty());
+        menu.addSeparator();
         menu.addItem(3, "Disconnect Here");
         menu.addItem(4, "Release Probe Here");
 
-        menu.showMenuAsync(juce::PopupMenu::Options(), [this, modelPosition](int result) {
+        menu.showMenuAsync(juce::PopupMenu::Options(), [this, modelPosition, blockUnderMouse](int result) {
+            const auto blockRefdes = blockUnderMouse >= 0 ? instances[(size_t)blockUnderMouse].refdes : juce::String();
+            if (result == 8)
+                promptSubDiagramFromSelection();
+            else if (result == 9 && blockIndexFor(blockRefdes) >= 0)
+                openSheet(instances[(size_t)blockIndexFor(blockRefdes)].childSheet);
+            else if (result == 10 && blockIndexFor(blockRefdes) >= 0)
+                promptRenameBlock(blockIndexFor(blockRefdes));
+            else if (result == 11 && blockIndexFor(blockRefdes) >= 0)
+            {
+                juce::String error;
+                expandSubDiagram(blockIndexFor(blockRefdes), error);
+            }
+            else if (result == 12)
+            {
+                const auto block = blockForSheet(currentSheet);
+                openSheet(block >= 0 ? instances[(size_t)block].sheet : juce::String());
+            }
             if (result == 1)
                 autoLayoutFromTool();
             else if (result == 2)
@@ -1865,6 +1979,12 @@ public:
 
     bool keyPressed(const juce::KeyPress& key) override
     {
+        if (key == juce::KeyPress::backspaceKey && currentSheet.isNotEmpty())
+        {
+            const auto block = blockForSheet(currentSheet);
+            openSheet(block >= 0 ? instances[(size_t)block].sheet : juce::String());
+            return true;
+        }
         if (key == juce::KeyPress::escapeKey)
         {
             wireDragging = false;
@@ -1945,6 +2065,8 @@ public:
                                      const juce::String& busName)
     {
         const auto requestedSymbol = symbolId.trim();
+        if (requestedSymbol == "sub_block" || requestedSymbol == "block_port")
+            return "{ \"ok\": false, \"error\": \"Sub-diagram blocks and ports are created with schematic_subdiagram_create, not placed directly.\" }";
         if (!schematic::isSupportedSymbol(requestedSymbol))
             return "{ \"ok\": false, \"error\": \"Unsupported symbolId; no substitute was placed.\", \"requestedSymbolId\": "
                 + quote(requestedSymbol) + " }";
@@ -2113,7 +2235,7 @@ public:
         };
 
         auto junction = [this](juce::Point<float> p) {
-            junctions.push_back(p);
+            addJunction(p);
             return "N" + juce::String((int)junctions.size());
         };
 
@@ -2273,7 +2395,7 @@ public:
             const auto& instance = instances[(size_t)i];
             if (instance.symbolId != "voltage_source" && instance.symbolId != "battery")
                 continue;
-            const auto symbol = symbolFor(instance.symbolId);
+            const auto symbol = symbolForInstance(instance);
             juce::String plusNet, minusNet;
             for (int p = 0; p < (int)symbol.pins.size(); ++p)
             {
@@ -2292,7 +2414,7 @@ public:
         {
             if (isNetMarker(instances[(size_t)i].symbolId))
                 continue;
-            const auto symbol = symbolFor(instances[(size_t)i].symbolId);
+            const auto symbol = symbolForInstance(instances[(size_t)i]);
             for (int p = 0; p < (int)symbol.pins.size(); ++p)
                 ++pinsOnNet[netFor({ i, p }, netNames)];
         }
@@ -2340,7 +2462,10 @@ public:
         for (int index : scope)
             if (index >= 0 && index < (int)instances.size())
                 scopeSet.insert(index);
-        const bool wholeDiagram = scopeSet.empty() || (int)scopeSet.size() == (int)instances.size();
+        int onThisSheet = 0;
+        for (int i = 0; i < (int)instances.size(); ++i)
+            if (onSheet(i)) ++onThisSheet;
+        const bool wholeDiagram = scopeSet.empty() || (int)scopeSet.size() >= onThisSheet;
 
         const auto netNames = computeNetNames();
         const auto layoutNets = classifyLayoutNets(netNames);
@@ -2350,12 +2475,19 @@ public:
         for (int i = 0; i < (int)instances.size(); ++i)
         {
             const auto& instance = instances[(size_t)i];
-            if (isNetMarker(instance.symbolId) || (!wholeDiagram && scopeSet.count(i) == 0))
+            if (instance.sheet != currentSheet || isNetMarker(instance.symbolId) || (!wholeDiagram && scopeSet.count(i) == 0))
                 continue;
             schematic::layout::Part part;
             part.refdes = instance.refdes;
-            part.symbol = symbolFor(instance.symbolId);
+            part.symbol = symbolForInstance(instance);
             part.originalPosition = instance.position;
+            if (instance.symbolId == "block_port")
+            {
+                // Inputs enter on the left, outputs leave on the right.
+                const auto output = schematic::normalizedRotation(instance.rotation) == 180;
+                part.pinnedColumn = output ? 1 : -1;
+                part.fixedRotation = output ? 180 : 0;
+            }
             for (int p = 0; p < (int)part.symbol.pins.size(); ++p)
             {
                 const auto found = layoutNets.indexOf.find(netFor({ i, p }, netNames));
@@ -2396,11 +2528,11 @@ public:
                 + juce::String((int)parts.size()) + ", \"style\": \"layered_signal_flow\" }";
         }
 
-        // Probes that sit on junctions move to a part pin on the same net,
-        // since junctions are rebuilt.
+        // Probes on this sheet's junctions move to a part pin on the same
+        // net, since this sheet's junctions are rebuilt.
         for (auto& probe : probes)
         {
-            if (!probe.node.isJunction())
+            if (!probe.node.isJunction() || !nodeOnSheet(probe.node))
                 continue;
             const auto net = netForNode(probe.node, netNames);
             for (size_t k = 0; k < partInstance.size() && probe.node.isJunction(); ++k)
@@ -2412,18 +2544,36 @@ public:
                     }
         }
 
-        std::vector<Instance> rebuilt;
-        std::vector<int> oldToNew(instances.size(), -1);
         for (size_t k = 0; k < parts.size(); ++k)
         {
-            auto instance = instances[(size_t)partInstance[k]];
-            instance.position = placement.positions[k];
-            instance.rotation = placement.rotations[k];
-            oldToNew[(size_t)partInstance[k]] = (int)rebuilt.size();
-            rebuilt.push_back(instance);
+            instances[(size_t)partInstance[k]].position = placement.positions[k];
+            instances[(size_t)partInstance[k]].rotation = placement.rotations[k];
         }
 
+        // This sheet's net markers, wires and junctions are rebuilt; every
+        // other sheet is left exactly as it is.
+        std::set<int> deadInstances, deadJunctions;
+        for (int i = 0; i < (int)instances.size(); ++i)
+            if (instances[(size_t)i].sheet == currentSheet && isNetMarker(instances[(size_t)i].symbolId))
+                deadInstances.insert(i);
+        for (int j = 0; j < (int)junctions.size(); ++j)
+            if (junctionSheet(j) == currentSheet)
+                deadJunctions.insert(j);
+        wires.erase(std::remove_if(wires.begin(), wires.end(), [this](const Wire& w) { return wireOnSheet(w); }), wires.end());
+        juce::StringArray droppedProbes;
+        const auto oldToNew = removeInstancesAndJunctions(deadInstances, deadJunctions, droppedProbes);
+        std::vector<int> partIndex(parts.size());
+        for (size_t k = 0; k < parts.size(); ++k)
+            partIndex[k] = oldToNew[(size_t)partInstance[k]];
+
         std::map<juce::String, int> nextNumber;
+        for (const auto& instance : instances)
+        {
+            const auto prefix = schematic::refdesPrefixFor(instance.symbolId);
+            if (isNetMarker(instance.symbolId) && instance.refdes.startsWith(prefix)
+                && instance.refdes.substring(prefix.length()).containsOnly("0123456789"))
+                nextNumber[prefix] = std::max(nextNumber[prefix], instance.refdes.substring(prefix.length()).getIntValue());
+        }
         std::vector<std::pair<int, PinRef>> markerWires;
         std::map<int, std::vector<int>> labelsOnNet; // layout net -> label instance index
         for (const auto& marker : placement.markers)
@@ -2440,38 +2590,14 @@ public:
             instance.position = marker.position;
             instance.rotation = marker.rotation;
             instance.busLength = 0.0f;
+            instance.sheet = currentSheet;
             if (marker.onNet)
-                labelsOnNet[marker.net].push_back((int)rebuilt.size());
+                labelsOnNet[marker.net].push_back((int)instances.size());
             else
-                markerWires.push_back({ (int)rebuilt.size(), PinRef { oldToNew[(size_t)partInstance[(size_t)marker.part]], marker.pin } });
-            rebuilt.push_back(instance);
+                markerWires.push_back({ (int)instances.size(), PinRef { partIndex[(size_t)marker.part], marker.pin } });
+            instances.push_back(instance);
         }
 
-        juce::StringArray droppedProbes;
-        for (auto& probe : probes)
-        {
-            if (probe.node.isPin())
-                probe.node.pin.instanceIndex = oldToNew[(size_t)probe.node.pin.instanceIndex];
-            if (!probe.node.isPin())
-                droppedProbes.add(probe.id);
-        }
-        probes.erase(std::remove_if(probes.begin(), probes.end(), [](const Probe& probe) { return !probe.node.isPin(); }), probes.end());
-
-        for (auto& group : groups)
-        {
-            std::vector<int> members;
-            for (int member : group.memberInstances)
-                if (member >= 0 && member < (int)oldToNew.size() && oldToNew[(size_t)member] >= 0)
-                    members.push_back(oldToNew[(size_t)member]);
-            group.memberInstances = members;
-        }
-        groups.erase(std::remove_if(groups.begin(), groups.end(), [](const Group& group) {
-            return group.memberInstances.size() < 2;
-        }), groups.end());
-
-        instances = std::move(rebuilt);
-        junctions.clear();
-        wires.clear();
         for (const auto& [markerIndex, pin] : markerWires)
             wires.push_back({ WireNode::forPin({ markerIndex, 0 }), WireNode::forPin(pin) });
 
@@ -2492,9 +2618,10 @@ public:
             {
                 if (schematic::isInstrumentSymbol(parts[k].symbol.id))
                     continue; // instruments connect through their probe labels
+                const auto obstacle = instanceObstacle[(size_t)partIndex[k]];
                 for (int p = 0; p < (int)parts[k].pinNets.size(); ++p)
-                    if (parts[k].pinNets[(size_t)p] == net && instanceObstacle[k] >= 0)
-                        terminals.terminals.push_back(schematic::routing::Endpoint::forPin(instanceObstacle[k], p));
+                    if (parts[k].pinNets[(size_t)p] == net && obstacle >= 0)
+                        terminals.terminals.push_back(schematic::routing::Endpoint::forPin(obstacle, p));
             }
             for (int label : labelsOnNet[net])
                 if (instanceObstacle[(size_t)label] >= 0)
@@ -2508,7 +2635,7 @@ public:
         {
             const auto base = (int)junctions.size();
             for (const auto& j : tree.junctions)
-                junctions.push_back(j);
+                addJunction(j);
             auto toNode = [&](const schematic::routing::Endpoint& e) {
                 return e.isJunction() ? WireNode::forJunction(base + e.junction)
                                       : WireNode::forPin({ obstacleInstance[(size_t)e.obstacle], e.pin });
@@ -2566,9 +2693,9 @@ public:
         for (int i = 0; i < (int)instances.size(); ++i)
         {
             const auto& instance = instances[(size_t)i];
-            if (isRailBus(instance.symbolId))
+            if (isRailBus(instance.symbolId) || instance.sheet != currentSheet)
                 continue;
-            const auto symbol = symbolFor(instance.symbolId);
+            const auto symbol = symbolForInstance(instance);
             schematic::routing::Obstacle obstacle;
             obstacle.bounds = schematic::rotateBounds(schematic::extentBounds(symbol), instance.rotation)
                                   .translated(instance.position.x, instance.position.y);
@@ -2592,6 +2719,9 @@ public:
             return toolFailure("schematic_connect", error);
         if (sameNode(first, second))
             return toolFailure("schematic_connect", "Cannot connect a node to itself: " + nodeLabel(first) + ".");
+        if (nodeSheet(first) != nodeSheet(second))
+            return toolFailure("schematic_connect", nodeLabel(first) + " and " + nodeLabel(second)
+                + " are on different sheets. Connect through the sub-diagram block's pins and port bubbles instead.");
 
         const auto alreadyConnected = std::any_of(wires.begin(), wires.end(), [&](const Wire& wire) {
             return (sameNode(wire.a, first) && sameNode(wire.b, second))
@@ -2630,7 +2760,7 @@ public:
         const auto& instance = instances[(size_t)index];
         if (!isInstrumentNode(instance.symbolId))
             return toolFailure("instrument_open_panel", instance.refdes + " is not an instrument node.");
-        const auto symbol = symbolFor(instance.symbolId);
+        const auto symbol = symbolForInstance(instance);
         int connectedPins = 0;
         for (int pin = 0; pin < (int)symbol.pins.size(); ++pin)
             if (wireCountAtPin({ index, pin }) > 0)
@@ -2672,6 +2802,9 @@ private:
         juce::Point<float> position;
         int rotation = 0;
         float busLength = 420.0f;
+        juce::String sheet;                         // "" = top level, else a sub-diagram sheet id
+        juce::String childSheet;                    // sub_block: the sheet it opens
+        std::vector<schematic::BlockPort> ports;    // sub_block: its ports, pin index == port index
     };
 
     struct PinRef
@@ -2758,6 +2891,8 @@ private:
     std::vector<Instance> instances;
     std::vector<Wire> wires;
     std::vector<juce::Point<float>> junctions;
+    std::vector<juce::String> junctionSheets;       // parallel to junctions
+    juce::String currentSheet;                      // sheet shown in the canvas
     std::vector<Probe> probes;
     std::vector<Group> groups;
     WireNode wireDragStart;
@@ -2856,6 +2991,8 @@ private:
         instances.clear();
         wires.clear();
         junctions.clear();
+        junctionSheets.clear();
+        currentSheet = {};
         probes.clear();
         groups.clear();
         selectedInstance = -1;
@@ -2935,6 +3072,13 @@ private:
     static bool isInstrumentNode(const juce::String& symbolId)
     {
         return schematic::isInstrumentSymbol(symbolId);
+    }
+
+    SymbolDef symbolForInstance(const Instance& instance) const
+    {
+        if (instance.symbolId == "sub_block")
+            return schematic::blockSymbol(instance.ports);
+        return symbolFor(instance.symbolId);
     }
 
     SymbolDef symbolFor(const juce::String& id) const
@@ -3090,7 +3234,7 @@ private:
     {
         int ordinal = 0;
         for (int i = 0; i < pin.instanceIndex; ++i)
-            ordinal += (int)symbolFor(instances[(size_t)i].symbolId).pins.size();
+            ordinal += (int)symbolForInstance(instances[(size_t)i]).pins.size();
         return ordinal + pin.pinIndex;
     }
 
@@ -3098,7 +3242,7 @@ private:
     {
         int count = 0;
         for (const auto& instance : instances)
-            count += (int)symbolFor(instance.symbolId).pins.size();
+            count += (int)symbolForInstance(instance).pins.size();
         return count;
     }
 
@@ -3153,6 +3297,20 @@ private:
         for (const auto& [name, ordinal] : namedSupplyPins)
             supplyNetNames[sets.find(ordinal)] = spiceNetName(name);
 
+        // A sub-diagram block pin and the port bubble of the same name inside
+        // its sheet are one net.
+        for (size_t i = 0; i < instances.size(); ++i)
+        {
+            const auto& block = instances[i];
+            if (block.symbolId != "sub_block")
+                continue;
+            for (size_t k = 0; k < block.ports.size(); ++k)
+                for (size_t j = 0; j < instances.size(); ++j)
+                    if (instances[j].symbolId == "block_port" && instances[j].sheet == block.childSheet
+                        && instances[j].busName == block.ports[k].name)
+                        sets.unite(pinOrdinal({ (int)i, (int)k }), pinOrdinal({ (int)j, 0 }));
+        }
+
         // Net labels with the same name are one net (probe connections).
         std::map<juce::String, int> labelPins;
         for (size_t i = 0; i < instances.size(); ++i)
@@ -3173,7 +3331,7 @@ private:
         {
             if (instances[i].symbolId != "ground" && instances[i].symbolId != "ground_bus")
                 continue;
-            const auto symbol = symbolFor(instances[i].symbolId);
+            const auto symbol = symbolForInstance(instances[i]);
             for (size_t p = 0; p < symbol.pins.size(); ++p)
                 groundRoots.insert(sets.find(pinOrdinal({ (int)i, (int)p })));
         }
@@ -3249,7 +3407,7 @@ private:
     {
         if (pin.instanceIndex < 0 || pin.instanceIndex >= (int)instances.size()) return {};
         const auto& instance = instances[(size_t)pin.instanceIndex];
-        const auto symbol = symbolFor(instance.symbolId);
+        const auto symbol = symbolForInstance(instance);
         if (pin.pinIndex < 0 || pin.pinIndex >= (int)symbol.pins.size()) return instance.position;
         return instance.position + rotateOffset(symbol.pins[(size_t)pin.pinIndex].offset, instance.rotation);
     }
@@ -3258,7 +3416,7 @@ private:
     {
         if (pin.instanceIndex < 0 || pin.instanceIndex >= (int)instances.size()) return {};
         const auto& instance = instances[(size_t)pin.instanceIndex];
-        const auto symbol = symbolFor(instance.symbolId);
+        const auto symbol = symbolForInstance(instance);
         if (pin.pinIndex < 0 || pin.pinIndex >= (int)symbol.pins.size()) return instance.refdes;
         return instance.refdes + "." + symbol.pins[(size_t)pin.pinIndex].name;
     }
@@ -3277,7 +3435,7 @@ private:
         juce::StringArray labels;
         for (int i = 0; i < (int)instances.size(); ++i)
         {
-            const auto symbol = symbolFor(instances[(size_t)i].symbolId);
+            const auto symbol = symbolForInstance(instances[(size_t)i]);
             for (int pin = 0; pin < (int)symbol.pins.size(); ++pin)
                 labels.add(pinLabel({ i, pin }));
         }
@@ -3315,7 +3473,7 @@ private:
             return false;
         }
 
-        const auto symbol = symbolFor(instances[(size_t)instanceIndex].symbolId);
+        const auto symbol = symbolForInstance(instances[(size_t)instanceIndex]);
         if (pinName.isEmpty() && symbol.pins.size() == 1)
         {
             node = WireNode::forPin({ instanceIndex, 0 });
@@ -3333,6 +3491,125 @@ private:
 
         error = "Unknown pin label " + label + ". Available labels: " + availableNodeSummary();
         return false;
+    }
+
+    // ---- Sheets: the flat circuit is viewed one sheet at a time ----
+
+    void addJunction(juce::Point<float> p)
+    {
+        junctionSheets.resize(junctions.size());
+        junctions.push_back(p);
+        junctionSheets.push_back(currentSheet);
+    }
+
+    juce::String junctionSheet(int j) const
+    {
+        return j >= 0 && j < (int)junctionSheets.size() ? junctionSheets[(size_t)j] : juce::String();
+    }
+
+    bool onSheet(int instanceIndex) const
+    {
+        return instanceIndex >= 0 && instanceIndex < (int)instances.size()
+            && instances[(size_t)instanceIndex].sheet == currentSheet;
+    }
+
+    juce::String nodeSheet(const WireNode& node) const
+    {
+        if (node.isPin() && node.pin.instanceIndex < (int)instances.size())
+            return instances[(size_t)node.pin.instanceIndex].sheet;
+        if (node.isJunction())
+            return junctionSheet(node.junctionIndex);
+        return currentSheet;
+    }
+
+    bool nodeOnSheet(const WireNode& node) const { return nodeSheet(node) == currentSheet; }
+    bool wireOnSheet(const Wire& wire) const { return nodeOnSheet(wire.a) && nodeOnSheet(wire.b); }
+
+    bool groupOnSheet(const Group& group) const
+    {
+        for (int member : group.memberInstances)
+            if (onSheet(member))
+                return true;
+        return false;
+    }
+
+    // Removes instances and junctions, dropping wires and probes that touch
+    // them and remapping every index in wires, probes, groups. Returns the
+    // old-to-new instance index map (-1 for removed).
+    std::vector<int> removeInstancesAndJunctions(const std::set<int>& deadInstances,
+                                                 const std::set<int>& deadJunctions,
+                                                 juce::StringArray& droppedProbes)
+    {
+        std::vector<int> instanceMap(instances.size(), -1);
+        std::vector<Instance> keptInstances;
+        for (int i = 0; i < (int)instances.size(); ++i)
+            if (deadInstances.count(i) == 0)
+            {
+                instanceMap[(size_t)i] = (int)keptInstances.size();
+                keptInstances.push_back(instances[(size_t)i]);
+            }
+
+        junctionSheets.resize(junctions.size());
+        std::vector<int> junctionMap(junctions.size(), -1);
+        std::vector<juce::Point<float>> keptJunctions;
+        std::vector<juce::String> keptJunctionSheets;
+        for (int j = 0; j < (int)junctions.size(); ++j)
+            if (deadJunctions.count(j) == 0)
+            {
+                junctionMap[(size_t)j] = (int)keptJunctions.size();
+                keptJunctions.push_back(junctions[(size_t)j]);
+                keptJunctionSheets.push_back(junctionSheets[(size_t)j]);
+            }
+
+        auto remap = [&](WireNode& node) {
+            if (node.isPin())
+            {
+                node.pin.instanceIndex = node.pin.instanceIndex < (int)instanceMap.size() ? instanceMap[(size_t)node.pin.instanceIndex] : -1;
+                return node.pin.instanceIndex >= 0;
+            }
+            if (node.isJunction())
+            {
+                node.junctionIndex = node.junctionIndex < (int)junctionMap.size() ? junctionMap[(size_t)node.junctionIndex] : -1;
+                return node.junctionIndex >= 0;
+            }
+            return false;
+        };
+
+        std::vector<Wire> keptWires;
+        for (auto wire : wires)
+            if (remap(wire.a) && remap(wire.b))
+                keptWires.push_back(wire);
+
+        std::vector<Probe> keptProbes;
+        for (auto probe : probes)
+        {
+            if (remap(probe.node))
+                keptProbes.push_back(probe);
+            else
+                droppedProbes.add(probe.id);
+        }
+
+        for (auto& group : groups)
+        {
+            std::vector<int> members;
+            for (int member : group.memberInstances)
+                if (member >= 0 && member < (int)instanceMap.size() && instanceMap[(size_t)member] >= 0)
+                    members.push_back(instanceMap[(size_t)member]);
+            group.memberInstances = members;
+        }
+        groups.erase(std::remove_if(groups.begin(), groups.end(), [](const Group& group) {
+            return group.memberInstances.empty();
+        }), groups.end());
+
+        instances = std::move(keptInstances);
+        junctions = std::move(keptJunctions);
+        junctionSheets = std::move(keptJunctionSheets);
+        wires = std::move(keptWires);
+        probes = std::move(keptProbes);
+        selectedInstance = -1;
+        selectedInstances.clear();
+        selectedGroup = -1;
+        return instanceMap;
     }
 
     juce::Point<float> nodePosition(const WireNode& node) const
@@ -3382,7 +3659,7 @@ private:
             return {};
 
         const auto& instance = instances[(size_t)node.pin.instanceIndex];
-        const auto symbol = symbolFor(instance.symbolId);
+        const auto symbol = symbolForInstance(instance);
         if (node.pin.pinIndex < 0 || node.pin.pinIndex >= (int)symbol.pins.size())
             return {};
 
@@ -3414,8 +3691,9 @@ private:
     {
         juce::String sig;
         sig.preallocateBytes(instances.size() * 32 + wires.size() * 16 + junctions.size() * 12);
+        sig << currentSheet << '#';
         for (const auto& instance : instances)
-            sig << instance.symbolId << ':' << instance.busName << ':' << (int)instance.position.x << ',' << (int)instance.position.y
+            sig << instance.symbolId << ':' << instance.sheet << ':' << instance.busName << ':' << (int)instance.position.x << ',' << (int)instance.position.y
                 << ',' << instance.rotation << ',' << (int)instance.busLength << ';';
         sig << '|';
         auto node = [&sig](const WireNode& n) {
@@ -3463,7 +3741,7 @@ private:
         for (size_t i = 0; i < wires.size(); ++i)
         {
             const auto& wire = wires[i];
-            if (isInternalRailTapWire(wire))
+            if (isInternalRailTapWire(wire) || !wireOnSheet(wire))
                 continue;
             schematic::routing::Connection connection;
             if (!endpointFor(wire.a, connection.a) || !endpointFor(wire.b, connection.b))
@@ -3519,10 +3797,10 @@ private:
     {
         for (int i = (int)instances.size() - 1; i >= 0; --i)
         {
-            if (isRailBus(instances[(size_t)i].symbolId))
+            if (isRailBus(instances[(size_t)i].symbolId) || !onSheet(i))
                 continue;
 
-            const auto symbol = symbolFor(instances[(size_t)i].symbolId);
+            const auto symbol = symbolForInstance(instances[(size_t)i]);
             for (int j = 0; j < (int)symbol.pins.size(); ++j)
             {
                 const auto pin = pinPosition({ i, j });
@@ -3536,7 +3814,7 @@ private:
     int hitTestJunction(juce::Point<float> p) const
     {
         for (int i = (int)junctions.size() - 1; i >= 0; --i)
-            if (junctions[(size_t)i].getDistanceFrom(p) <= hitDistance(12.0f))
+            if (junctionSheet(i) == currentSheet && junctions[(size_t)i].getDistanceFrom(p) <= hitDistance(12.0f))
                 return i;
         return -1;
     }
@@ -3568,7 +3846,7 @@ private:
     int hitTestWire(juce::Point<float> p) const
     {
         for (int i = (int)wires.size() - 1; i >= 0; --i)
-            if (distanceToWire(p, wires[(size_t)i]) <= hitDistance(8.0f))
+            if (wireOnSheet(wires[(size_t)i]) && distanceToWire(p, wires[(size_t)i]) <= hitDistance(8.0f))
                 return i;
         return -1;
     }
@@ -3578,7 +3856,9 @@ private:
         for (int i = (int)instances.size() - 1; i >= 0; --i)
         {
             const auto& instance = instances[(size_t)i];
-            const auto symbol = symbolFor(instance.symbolId);
+            if (instance.sheet != currentSheet)
+                continue;
+            const auto symbol = symbolForInstance(instance);
             if (orientedBounds(instance, symbol).expanded(hitDistance(4.0f)).contains(p))
                 return i;
         }
@@ -3625,7 +3905,9 @@ private:
         selectedInstances.clear();
         for (int i = 0; i < (int)instances.size(); ++i)
         {
-            const auto symbol = symbolFor(instances[(size_t)i].symbolId);
+            if (!onSheet(i))
+                continue;
+            const auto symbol = symbolForInstance(instances[(size_t)i]);
             if (box.intersects(orientedBounds(instances[(size_t)i], symbol).expanded(4.0f)))
                 selectedInstances.add(i);
         }
@@ -3674,7 +3956,7 @@ private:
             if (index < 0 || index >= (int)instances.size())
                 continue;
             const auto& instance = instances[(size_t)index];
-            const auto symbol = symbolFor(instance.symbolId);
+            const auto symbol = symbolForInstance(instance);
             auto box = schematic::rotateBounds(schematic::extentBounds(symbol), instance.rotation);
             if (!schematic::isPowerSymbol(instance.symbolId))
             {
@@ -3699,6 +3981,8 @@ private:
         for (int i = 0; i < (int)groups.size(); ++i)
         {
             const auto& group = groups[(size_t)i];
+            if (!groupOnSheet(group))
+                continue;
             const auto bounds = groupBounds(group);
             if (bounds.isEmpty())
                 continue;
@@ -3728,6 +4012,8 @@ private:
     {
         for (int i = (int)groups.size() - 1; i >= 0; --i)
         {
+            if (!groupOnSheet(groups[(size_t)i]))
+                continue;
             const auto bounds = groupBounds(groups[(size_t)i]);
             if (bounds.isEmpty())
                 continue;
@@ -3821,7 +4107,609 @@ private:
         return true;
     }
 
+    // ---- Sub-diagrams: blocks are views of the one flat circuit ----
+
+    juce::String nextSheetId() const
+    {
+        int highest = 0;
+        for (const auto& instance : instances)
+            if (instance.childSheet.startsWith("S") && instance.childSheet.substring(1).containsOnly("0123456789"))
+                highest = std::max(highest, instance.childSheet.substring(1).getIntValue());
+        return "S" + juce::String(highest + 1);
+    }
+
+    int blockIndexFor(const juce::String& key) const
+    {
+        const auto k = key.trim();
+        for (int i = 0; i < (int)instances.size(); ++i)
+            if (instances[(size_t)i].symbolId == "sub_block" && instances[(size_t)i].refdes.equalsIgnoreCase(k))
+                return i;
+        for (int i = 0; i < (int)instances.size(); ++i)
+            if (instances[(size_t)i].symbolId == "sub_block" && instances[(size_t)i].value.equalsIgnoreCase(k))
+                return i;
+        return -1;
+    }
+
+    int blockForSheet(const juce::String& sheet) const
+    {
+        for (int i = 0; i < (int)instances.size(); ++i)
+            if (instances[(size_t)i].symbolId == "sub_block" && instances[(size_t)i].childSheet == sheet)
+                return i;
+        return -1;
+    }
+
+    juce::String sheetName(const juce::String& sheet) const
+    {
+        if (sheet.isEmpty())
+            return "Main";
+        const auto block = blockForSheet(sheet);
+        return block >= 0 ? instances[(size_t)block].value : sheet;
+    }
+
+    // Sheets from the top level down to the one being viewed.
+    juce::StringArray sheetPath() const
+    {
+        juce::StringArray path;
+        auto sheet = currentSheet;
+        for (int guard = 0; guard < 64; ++guard)
+        {
+            path.insert(0, sheet);
+            if (sheet.isEmpty())
+                break;
+            const auto block = blockForSheet(sheet);
+            sheet = block >= 0 ? instances[(size_t)block].sheet : juce::String();
+        }
+        return path;
+    }
+
+    void openSheet(const juce::String& sheet)
+    {
+        currentSheet = sheet;
+        selectedInstance = -1;
+        selectedInstances.clear();
+        selectedGroup = -1;
+        wireDragging = false;
+        draggingInstance = false;
+        routeSignature.clear();
+        notifySelection();
+        juce::StringArray names;
+        for (const auto& s : sheetPath())
+            names.add(sheetName(s));
+        if (onStatus) onStatus("Viewing " + names.joinIntoString(" > ") + ".");
+        forceDeferredRepaint();
+    }
+
+    // Wires a set of pins on the current sheet together as libavoid trees.
+    void wireNetsOnCurrentSheet(const std::vector<std::vector<PinRef>>& nets)
+    {
+        std::vector<int> obstacleInstance;
+        const auto obstacles = buildRoutingObstacles(obstacleInstance);
+        std::vector<int> instanceObstacle(instances.size(), -1);
+        for (int o = 0; o < (int)obstacleInstance.size(); ++o)
+            instanceObstacle[(size_t)obstacleInstance[(size_t)o]] = o;
+
+        std::vector<schematic::routing::NetTerminals> terminals;
+        for (const auto& net : nets)
+        {
+            schematic::routing::NetTerminals t;
+            for (const auto& pin : net)
+                if (pin.instanceIndex >= 0 && instanceObstacle[(size_t)pin.instanceIndex] >= 0)
+                    t.terminals.push_back(schematic::routing::Endpoint::forPin(instanceObstacle[(size_t)pin.instanceIndex], pin.pinIndex));
+            if (t.terminals.size() >= 2)
+                terminals.push_back(t);
+        }
+
+        const auto trees = schematic::routing::routeNetTrees(obstacles, terminals, schematic::gridSize);
+        for (const auto& tree : trees)
+        {
+            const auto base = (int)junctions.size();
+            for (const auto& j : tree.junctions)
+                addJunction(j);
+            auto toNode = [&](const schematic::routing::Endpoint& e) {
+                return e.isJunction() ? WireNode::forJunction(base + e.junction)
+                                      : WireNode::forPin({ obstacleInstance[(size_t)e.obstacle], e.pin });
+            };
+            for (const auto& edge : tree.edges)
+                wires.push_back({ toNode(edge.a), toNode(edge.b) });
+        }
+    }
+
+    // Folds `members` (on the current sheet) into a block. Every signal net
+    // that crosses the boundary becomes a block pin outside and a port
+    // bubble of the same name inside. Ground and named supplies are global
+    // symbols and never become pins.
+    juce::String createSubDiagram(std::vector<int> members, juce::String name, juce::String& error)
+    {
+        std::set<int> inside;
+        for (int m : members)
+            if (onSheet(m) && instances[(size_t)m].symbolId != "block_port")
+                inside.insert(m);
+        if (inside.empty())
+        {
+            error = "Choose at least one component on the sheet being viewed.";
+            return {};
+        }
+        name = name.trim().isNotEmpty() ? name.trim() : juce::String("Sub-diagram");
+
+        // Ground symbols, supply ports and labels wired only to members go inside.
+        for (int i = 0; i < (int)instances.size(); ++i)
+        {
+            if (!onSheet(i) || inside.count(i) != 0 || !schematic::isPowerSymbol(instances[(size_t)i].symbolId))
+                continue;
+            bool any = false, allInside = true;
+            for (const auto& wire : wires)
+            {
+                const WireNode* other = nullptr;
+                if (wire.a.isPin() && wire.a.pin.instanceIndex == i) other = &wire.b;
+                if (wire.b.isPin() && wire.b.pin.instanceIndex == i) other = &wire.a;
+                if (other == nullptr) continue;
+                any = true;
+                allInside &= other->isPin() && inside.count(other->pin.instanceIndex) != 0;
+            }
+            if (any && allInside)
+                inside.insert(i);
+        }
+
+        const auto netNames = computeNetNames();
+        std::set<juce::String> supplyNets { "0" };
+        for (int i = 0; i < (int)instances.size(); ++i)
+            if (instances[(size_t)i].symbolId == "power_port" || instances[(size_t)i].symbolId == "power_bus")
+                supplyNets.insert(netFor({ i, 0 }, netNames));
+
+        struct NetSide { std::vector<PinRef> in, out; juce::String label; };
+        std::map<juce::String, NetSide> nets;
+        for (int i = 0; i < (int)instances.size(); ++i)
+        {
+            if (!onSheet(i))
+                continue;
+            const auto symbol = symbolForInstance(instances[(size_t)i]);
+            for (int p = 0; p < (int)symbol.pins.size(); ++p)
+            {
+                const auto net = netFor({ i, p }, netNames);
+                if (net == "floating")
+                    continue;
+                auto& side = nets[net];
+                (inside.count(i) != 0 ? side.in : side.out).push_back({ i, p });
+                // A user's net label names the pin; instrument probe labels
+                // (SCOPE1.CH1) do not.
+                if (instances[(size_t)i].symbolId == "net_label" && side.label.isEmpty()
+                    && !instances[(size_t)i].busName.containsChar('.'))
+                    side.label = instances[(size_t)i].busName;
+            }
+        }
+
+        juce::Rectangle<float> innerBox;
+        bool first = true;
+        for (int i : inside)
+        {
+            const auto p = instances[(size_t)i].position;
+            innerBox = first ? juce::Rectangle<float>(p.x, p.y, 1.0f, 1.0f) : innerBox.getUnion(juce::Rectangle<float>(p.x, p.y, 1.0f, 1.0f));
+            first = false;
+        }
+
+        struct Crossing { juce::String net; schematic::BlockPort port; std::vector<PinRef> in, out; };
+        std::vector<Crossing> crossings;
+        int inputs = 0, outputs = 0;
+        std::set<juce::String> usedNames;
+        for (const auto& [net, side] : nets)
+        {
+            if (side.in.empty() || side.out.empty() || supplyNets.count(net) != 0)
+                continue;
+            float outX = 0.0f;
+            for (const auto& pin : side.out) outX += pinPosition(pin).x;
+            outX /= (float)side.out.size();
+            const auto rightSide = outX > innerBox.getCentreX();
+            auto portName = side.label.isNotEmpty() ? side.label
+                          : rightSide ? (++outputs == 1 ? juce::String("OUT") : "OUT" + juce::String(outputs))
+                                      : (++inputs == 1 ? juce::String("IN") : "IN" + juce::String(inputs));
+            while (usedNames.count(portName) != 0)
+                portName << "_";
+            usedNames.insert(portName);
+            crossings.push_back({ net, { portName, rightSide }, side.in, side.out });
+        }
+
+        const auto child = nextSheetId();
+
+        // Wires and junctions of crossing nets on this sheet are rebuilt on
+        // both sides; junctions of nets wholly inside move with the parts.
+        std::set<juce::String> crossingNets;
+        for (const auto& c : crossings) crossingNets.insert(c.net);
+        std::set<int> deadJunctions;
+        for (int j = 0; j < (int)junctions.size(); ++j)
+        {
+            if (junctionSheet(j) != currentSheet)
+                continue;
+            const auto net = netForNode(WireNode::forJunction(j), netNames);
+            if (crossingNets.count(net) != 0)
+                deadJunctions.insert(j);
+            else if (nets.count(net) != 0 && nets[net].out.empty() && !nets[net].in.empty())
+            {
+                junctionSheets.resize(junctions.size());
+                junctionSheets[(size_t)j] = child;
+            }
+        }
+        wires.erase(std::remove_if(wires.begin(), wires.end(), [&](const Wire& w) {
+            return wireOnSheet(w) && crossingNets.count(netForNode(w.a, netNames)) != 0;
+        }), wires.end());
+
+        for (int i : inside)
+            instances[(size_t)i].sheet = child;
+
+        // Mixed groups lose the members that moved; wholly inside groups move along.
+        for (auto& group : groups)
+        {
+            const auto allInside = std::all_of(group.memberInstances.begin(), group.memberInstances.end(), [&](int m) { return inside.count(m) != 0; });
+            if (!allInside)
+                group.memberInstances.erase(std::remove_if(group.memberInstances.begin(), group.memberInstances.end(),
+                                                           [&](int m) { return inside.count(m) != 0; }),
+                                            group.memberInstances.end());
+        }
+
+        juce::StringArray droppedProbes;
+        const auto map = removeInstancesAndJunctions({}, deadJunctions, droppedProbes);
+        auto remapPins = [&](std::vector<PinRef>& pins) {
+            for (auto& pin : pins) pin.instanceIndex = map[(size_t)pin.instanceIndex];
+        };
+        for (auto& c : crossings) { remapPins(c.in); remapPins(c.out); }
+
+        // The block on this sheet.
+        Instance block;
+        block.symbolId = "sub_block";
+        block.refdes = nextRefdesFor("sub_block");
+        block.value = name;
+        block.family = familyFor("sub_block");
+        block.position = snapToGrid(innerBox.getCentre());
+        block.sheet = currentSheet;
+        block.childSheet = child;
+        for (const auto& c : crossings)
+            block.ports.push_back(c.port);
+        const auto blockIndex = (int)instances.size();
+        instances.push_back(block);
+
+        // Port bubbles inside: inputs left of the parts, outputs right.
+        std::vector<int> bubbleIndex;
+        int leftRow = 0, rightRow = 0;
+        for (const auto& c : crossings)
+        {
+            Instance bubble;
+            bubble.symbolId = "block_port";
+            bubble.busName = c.port.name;
+            bubble.value = c.port.name;
+            bubble.family = familyFor("block_port");
+            bubble.sheet = child;
+            bubble.rotation = c.port.rightSide ? 180 : 0;
+            const auto row = (float)(c.port.rightSide ? rightRow++ : leftRow++);
+            bubble.position = snapToGrid({ c.port.rightSide ? innerBox.getRight() + 168.0f : innerBox.getX() - 168.0f,
+                                           innerBox.getY() + row * 72.0f });
+            bubble.refdes = nextRefdesFor("block_port");
+            bubbleIndex.push_back((int)instances.size());
+            instances.push_back(bubble);
+        }
+
+        // Outside: each crossing net now runs to its block pin.
+        std::vector<std::vector<PinRef>> outsideNets;
+        for (size_t k = 0; k < crossings.size(); ++k)
+        {
+            auto pins = crossings[k].out;
+            pins.push_back({ blockIndex, (int)k });
+            outsideNets.push_back(pins);
+        }
+        wireNetsOnCurrentSheet(outsideNets);
+
+        // Inside: each crossing net runs to its port bubble, then the sheet
+        // is laid out on its own.
+        const auto parentSheet = currentSheet;
+        currentSheet = child;
+        std::vector<std::vector<PinRef>> insideNets;
+        for (size_t k = 0; k < crossings.size(); ++k)
+        {
+            auto pins = crossings[k].in;
+            pins.push_back({ bubbleIndex[k], 0 });
+            insideNets.push_back(pins);
+        }
+        wireNetsOnCurrentSheet(insideNets);
+        autoLayoutInstances({});
+        currentSheet = parentSheet;
+        routeSignature.clear();
+        const auto finalBlock = blockForSheet(child); // the inner layout renumbered instances
+
+        for (const auto& probeId : droppedProbes)
+            if (onProbeChanged) onProbeChanged(probeId, {}, {});
+        if (onStatus) onStatus("Made sub-diagram " + name + " (" + instances[(size_t)finalBlock].refdes + ") with "
+                               + juce::String((int)crossings.size()) + " pin(s).");
+        forceDeferredRepaint();
+        return blockJson(finalBlock);
+    }
+
+    // Puts a block's contents back on its parent sheet, centred where the
+    // block was, inside a group box of the same name.
+    juce::String expandSubDiagram(int blockIndex, juce::String& error)
+    {
+        if (blockIndex < 0 || blockIndex >= (int)instances.size() || instances[(size_t)blockIndex].symbolId != "sub_block")
+        {
+            error = "Not a sub-diagram block.";
+            return {};
+        }
+        const auto block = instances[(size_t)blockIndex];
+        const auto parent = block.sheet;
+        const auto child = block.childSheet;
+        const auto netNames = computeNetNames();
+
+        std::set<juce::String> portNets;
+        for (int k = 0; k < (int)block.ports.size(); ++k)
+            portNets.insert(netFor({ blockIndex, k }, netNames));
+
+        std::set<int> dead { blockIndex }, moved;
+        juce::Rectangle<float> box;
+        bool first = true;
+        for (int i = 0; i < (int)instances.size(); ++i)
+        {
+            if (instances[(size_t)i].sheet != child)
+                continue;
+            if (instances[(size_t)i].symbolId == "block_port") { dead.insert(i); continue; }
+            moved.insert(i);
+            const auto p = instances[(size_t)i].position;
+            box = first ? juce::Rectangle<float>(p.x, p.y, 1.0f, 1.0f) : box.getUnion(juce::Rectangle<float>(p.x, p.y, 1.0f, 1.0f));
+            first = false;
+        }
+        const auto offset = snapToGrid(block.position - box.getCentre());
+
+        // Terminals of each port net on the merged sheet, before indices change.
+        std::vector<std::vector<PinRef>> portNetPins(portNets.size());
+        {
+            int n = 0;
+            for (const auto& net : portNets)
+            {
+                for (int i = 0; i < (int)instances.size(); ++i)
+                {
+                    if (dead.count(i) != 0 || (instances[(size_t)i].sheet != parent && moved.count(i) == 0))
+                        continue;
+                    const auto symbol = symbolForInstance(instances[(size_t)i]);
+                    for (int p = 0; p < (int)symbol.pins.size(); ++p)
+                        if (netFor({ i, p }, netNames) == net)
+                            portNetPins[(size_t)n].push_back({ i, p });
+                }
+                ++n;
+            }
+        }
+
+        std::set<int> deadJunctions;
+        for (int j = 0; j < (int)junctions.size(); ++j)
+        {
+            const auto sheet = junctionSheet(j);
+            if (sheet != parent && sheet != child)
+                continue;
+            if (portNets.count(netForNode(WireNode::forJunction(j), netNames)) != 0)
+                deadJunctions.insert(j);
+            else if (sheet == child)
+            {
+                junctionSheets.resize(junctions.size());
+                junctionSheets[(size_t)j] = parent;
+                junctions[(size_t)j] += offset;
+            }
+        }
+        wires.erase(std::remove_if(wires.begin(), wires.end(), [&](const Wire& w) {
+            const auto sheet = nodeSheet(w.a);
+            return (sheet == parent || sheet == child) && portNets.count(netForNode(w.a, netNames)) != 0;
+        }), wires.end());
+
+        for (int i : moved)
+        {
+            instances[(size_t)i].sheet = parent;
+            instances[(size_t)i].position += offset;
+        }
+
+        juce::StringArray droppedProbes;
+        const auto map = removeInstancesAndJunctions(dead, deadJunctions, droppedProbes);
+        for (auto& pins : portNetPins)
+            for (auto& pin : pins)
+                pin.instanceIndex = map[(size_t)pin.instanceIndex];
+
+        const auto viewing = currentSheet;
+        currentSheet = parent;
+        wireNetsOnCurrentSheet(portNetPins);
+
+        Group group;
+        group.id = nextGroupId();
+        group.name = block.value;
+        group.category = "expanded_subdiagram";
+        for (int i : moved)
+            if (map[(size_t)i] >= 0)
+                group.memberInstances.push_back(map[(size_t)i]);
+        if (!group.memberInstances.empty())
+            groups.push_back(group);
+
+        currentSheet = viewing == child ? parent : viewing;
+        routeSignature.clear();
+        for (const auto& probeId : droppedProbes)
+            if (onProbeChanged) onProbeChanged(probeId, {}, {});
+        if (onStatus) onStatus("Expanded sub-diagram " + block.value + " back onto " + sheetName(parent) + ".");
+        forceDeferredRepaint();
+        return "{ \"expanded\": " + quote(block.refdes) + ", \"name\": " + quote(block.value)
+             + ", \"sheet\": " + quote(sheetName(parent)) + ", \"group\": " + quote(group.id) + " }";
+    }
+
+    juce::String blockJson(int blockIndex) const
+    {
+        const auto& block = instances[(size_t)blockIndex];
+        juce::String text;
+        text << "{ \"refdes\": " << quote(block.refdes)
+             << ", \"name\": " << quote(block.value)
+             << ", \"onSheet\": " << quote(sheetName(block.sheet))
+             << ", \"childSheet\": " << quote(block.childSheet)
+             << ", \"ports\": [";
+        for (size_t k = 0; k < block.ports.size(); ++k)
+            text << (k == 0 ? "" : ", ") << "{ \"name\": " << quote(block.ports[k].name)
+                 << ", \"side\": " << quote(block.ports[k].rightSide ? "output" : "input") << " }";
+        text << "], \"members\": [";
+        bool firstMember = true;
+        for (const auto& instance : instances)
+            if (instance.sheet == block.childSheet && instance.symbolId != "block_port" && !schematic::isPowerSymbol(instance.symbolId))
+            {
+                text << (firstMember ? "" : ", ") << quote(instance.refdes);
+                firstMember = false;
+            }
+        text << "] }";
+        return text;
+    }
+
+    void promptSubDiagramFromSelection()
+    {
+        std::vector<int> members;
+        for (int index : selectedInstances)
+            members.push_back(index);
+        auto defaultName = juce::String("Sub-diagram");
+        int fromGroup = -1;
+        if (selectedGroup >= 0 && selectedGroup < (int)groups.size())
+        {
+            fromGroup = selectedGroup;
+            defaultName = groups[(size_t)selectedGroup].name;
+            members = groups[(size_t)selectedGroup].memberInstances;
+        }
+        auto* dialog = new juce::AlertWindow("Make Sub-Diagram", "The selection becomes one block; wires crossing its edge become pins.", juce::AlertWindow::NoIcon);
+        dialog->addTextEditor("name", defaultName, "Name");
+        dialog->addButton("Create", 1, juce::KeyPress(juce::KeyPress::returnKey));
+        dialog->addButton("Cancel", 0, juce::KeyPress(juce::KeyPress::escapeKey));
+        dialog->enterModalState(true, juce::ModalCallbackFunction::create([this, dialog, members, fromGroup](int result) {
+            std::unique_ptr<juce::AlertWindow> owner(dialog);
+            if (result != 1)
+                return;
+            if (fromGroup >= 0 && fromGroup < (int)groups.size())
+                groups.erase(groups.begin() + fromGroup);
+            juce::String error;
+            if (createSubDiagram(members, owner->getTextEditor("name")->getText(), error).isEmpty() && onStatus)
+                onStatus("Could not make sub-diagram: " + error);
+        }), true);
+    }
+
+    void promptRenameBlock(int blockIndex)
+    {
+        auto* dialog = new juce::AlertWindow("Rename Sub-Diagram", {}, juce::AlertWindow::NoIcon);
+        dialog->addTextEditor("name", instances[(size_t)blockIndex].value, "Name");
+        dialog->addButton("Apply", 1, juce::KeyPress(juce::KeyPress::returnKey));
+        dialog->addButton("Cancel", 0, juce::KeyPress(juce::KeyPress::escapeKey));
+        const auto refdes = instances[(size_t)blockIndex].refdes;
+        dialog->enterModalState(true, juce::ModalCallbackFunction::create([this, dialog, refdes](int result) {
+            std::unique_ptr<juce::AlertWindow> owner(dialog);
+            const auto index = blockIndexFor(refdes);
+            const auto name = owner->getTextEditor("name")->getText().trim();
+            if (result == 1 && index >= 0 && name.isNotEmpty())
+            {
+                instances[(size_t)index].value = name;
+                forceDeferredRepaint();
+            }
+        }), true);
+    }
+
+    // Breadcrumb hit areas in view coordinates, rebuilt every paint.
+    std::vector<std::pair<juce::Rectangle<float>, juce::String>> breadcrumbAreas;
+
+    void drawBreadcrumb(juce::Graphics& g)
+    {
+        breadcrumbAreas.clear();
+        if (currentSheet.isEmpty())
+            return;
+        const juce::Font font(13.0f, juce::Font::bold);
+        g.setFont(font);
+        float x = 12.0f;
+        const float y = 10.0f;
+        const auto path = sheetPath();
+        for (int i = 0; i < path.size(); ++i)
+        {
+            const auto label = sheetName(path[i]);
+            const auto w = font.getStringWidthFloat(label) + 16.0f;
+            const juce::Rectangle<float> r { x, y, w, 22.0f };
+            const auto last = i == path.size() - 1;
+            g.setColour(last ? juce::Colour(0xff78dcca) : juce::Colour(0xff26323d));
+            g.fillRoundedRectangle(r, 5.0f);
+            g.setColour(last ? juce::Colour(0xff0e141a) : juce::Colour(0xffdce9ee));
+            g.drawText(label, r.toNearestInt(), juce::Justification::centred);
+            if (!last)
+            {
+                breadcrumbAreas.push_back({ r, path[i] });
+                g.setColour(juce::Colour(0xff93a7b0));
+                g.drawText(">", juce::Rectangle<float>(r.getRight(), y, 16.0f, 22.0f).toNearestInt(), juce::Justification::centred);
+            }
+            x = r.getRight() + 16.0f;
+        }
+    }
+
 public:
+    // Renders one sheet to a PNG exactly as the canvas draws it.
+    juce::String exportSheetImage(const juce::String& sheet, juce::File& written)
+    {
+        const auto viewing = currentSheet;
+        const auto savedSelection = selectedInstances;
+        const auto savedInstance = selectedInstance;
+        const auto savedGroup = selectedGroup;
+        currentSheet = sheet;
+        selectedInstances.clear();
+        selectedInstance = -1;
+        selectedGroup = -1;
+        routeSignature.clear();
+        ensureRoutes();
+
+        juce::Rectangle<float> box;
+        bool first = true;
+        auto add = [&](juce::Rectangle<float> r) { box = first ? r : box.getUnion(r); first = false; };
+        for (int i = 0; i < (int)instances.size(); ++i)
+            if (onSheet(i))
+            {
+                const auto symbol = symbolForInstance(instances[(size_t)i]);
+                add(schematic::rotateBounds(schematic::extentBounds(symbol), instances[(size_t)i].rotation)
+                        .translated(instances[(size_t)i].position.x, instances[(size_t)i].position.y).expanded(40.0f));
+            }
+        for (const auto& group : groups)
+            if (groupOnSheet(group))
+                add(groupBounds(group));
+        for (size_t w = 0; w < wires.size() && w < routeCache.size(); ++w)
+            for (const auto& point : routeCache[w])
+                add({ point.x - 1.0f, point.y - 1.0f, 2.0f, 2.0f });
+
+        juce::String result;
+        if (!first)
+        {
+            box = box.expanded(48.0f);
+            const auto width = juce::jlimit(64, 8000, (int)box.getWidth());
+            const auto height = juce::jlimit(64, 8000, (int)box.getHeight());
+            juce::Image image(juce::Image::ARGB, width, height, true);
+            {
+                juce::Graphics g(image);
+                g.fillAll(juce::Colour(0xff0e141a));
+                g.addTransform(juce::AffineTransform::translation(-box.getX(), -box.getY()));
+                g.setColour(juce::Colour(0xff1b2630));
+                for (float x = std::floor(box.getX() / 24.0f) * 24.0f; x < box.getRight(); x += 24.0f)
+                    for (float y = std::floor(box.getY() / 24.0f) * 24.0f; y < box.getBottom(); y += 24.0f)
+                        g.fillRect(x - 0.5f, y - 0.5f, 1.5f, 1.5f);
+                drawWires(g);
+                drawGroups(g);
+                drawInstances(g);
+                drawProbes(g);
+            }
+            written.getParentDirectory().createDirectory();
+            written.deleteFile();
+            juce::FileOutputStream out(written);
+            if (out.openedOk() && juce::PNGImageFormat().writeImageToStream(image, out))
+                result = written.getFullPathName();
+        }
+
+        currentSheet = viewing;
+        selectedInstances = savedSelection;
+        selectedInstance = savedInstance;
+        selectedGroup = savedGroup;
+        routeSignature.clear();
+        forceDeferredRepaint();
+        return result;
+    }
+
+    static juce::File schematicImageFile(const juce::String& sheetLabel)
+    {
+        return juce::File::getSpecialLocation(juce::File::currentExecutableFile)
+            .getParentDirectory().getParentDirectory().getParentDirectory()
+            .getChildFile("sim").getChildFile("xyce").getChildFile("runs").getChildFile("generated")
+            .getChildFile("schematic_" + juce::File::createLegalFileName(sheetLabel).replaceCharacter(' ', '_') + ".png");
+    }
+
     juce::String runSchematicTool(const juce::String& name, const juce::var& args)
     {
         auto text = [&](const juce::String& key) { return args.getProperty(juce::Identifier(key), {}).toString().trim(); };
@@ -3899,6 +4787,132 @@ public:
             juce::String list = "\"groups\": [";
             for (size_t i = 0; i < groups.size(); ++i)
                 list << (i == 0 ? "" : ", ") << groupJson(groups[i]);
+            list << "]";
+            return "{ \"ok\": true, \"tool\": " + quote(name) + ", " + list + " }";
+        }
+
+        if (name == "schematic_export_image")
+        {
+            auto sheet = currentSheet;
+            const auto target = text("sheet");
+            if (target.equalsIgnoreCase("main"))
+                sheet = {};
+            else if (target.isNotEmpty())
+            {
+                const auto block = blockIndexFor(target);
+                if (block < 0)
+                    return toolFailure(name, "No sub-diagram block " + target + ". Use a block refdes or name, or 'main'.");
+                sheet = instances[(size_t)block].childSheet;
+            }
+            auto file = schematicImageFile(sheetName(sheet));
+            const auto path = exportSheetImage(sheet, file);
+            if (path.isEmpty())
+                return toolFailure(name, "Nothing to render on " + sheetName(sheet) + ", or the image could not be written.");
+            if (onStatus) onStatus("Exported schematic image " + path);
+            return "{ \"ok\": true, \"tool\": " + quote(name) + ", \"sheet\": " + quote(sheetName(sheet)) + ", \"image\": " + quote(path) + " }";
+        }
+
+        if (name == "schematic_subdiagram_create")
+        {
+            std::vector<int> members;
+            juce::String error;
+            int groupIndex = -1;
+            if (text("group").isNotEmpty())
+            {
+                groupIndex = groupIndexFor(text("group"));
+                if (groupIndex < 0)
+                    return toolFailure(name, "No group with id or name " + text("group") + ".");
+                members = groups[(size_t)groupIndex].memberInstances;
+            }
+            else if (!membersFromRefdes(args.getProperty("members", {}), members, error))
+                return toolFailure(name, error);
+            auto blockName = text("name");
+            if (blockName.isEmpty() && groupIndex >= 0)
+                blockName = groups[(size_t)groupIndex].name;
+            if (groupIndex >= 0)
+                groups.erase(groups.begin() + groupIndex);
+            const auto block = createSubDiagram(members, blockName, error);
+            if (block.isEmpty())
+                return toolFailure(name, error);
+            return ok("\"block\": " + block);
+        }
+
+        if (name == "schematic_subdiagram_expand")
+        {
+            juce::String error;
+            const auto result = expandSubDiagram(blockIndexFor(text("block")), error);
+            if (result.isEmpty())
+                return toolFailure(name, "No sub-diagram block " + text("block") + ".");
+            return ok("\"result\": " + result);
+        }
+
+        if (name == "schematic_subdiagram_open")
+        {
+            const auto target = text("target");
+            if (target.equalsIgnoreCase("main") || target.equalsIgnoreCase("top") || target.equalsIgnoreCase("root"))
+                openSheet({});
+            else if (target.equalsIgnoreCase("up"))
+            {
+                const auto block = blockForSheet(currentSheet);
+                openSheet(block >= 0 ? instances[(size_t)block].sheet : juce::String());
+            }
+            else
+            {
+                const auto block = blockIndexFor(target);
+                if (block < 0)
+                    return toolFailure(name, "No sub-diagram block " + target + ". Use a block refdes or name, 'up', or 'main'.");
+                openSheet(instances[(size_t)block].childSheet);
+            }
+            juce::StringArray names;
+            for (const auto& sheet : sheetPath())
+                names.add(quote(sheetName(sheet)));
+            return ok("\"viewing\": " + quote(sheetName(currentSheet)) + ", \"path\": [" + names.joinIntoString(", ") + "]");
+        }
+
+        if (name == "schematic_subdiagram_rename")
+        {
+            const auto block = blockIndexFor(text("block"));
+            if (block < 0)
+                return toolFailure(name, "No sub-diagram block " + text("block") + ".");
+            if (text("name").isEmpty())
+                return toolFailure(name, "A new name is required.");
+            instances[(size_t)block].value = text("name");
+            return ok("\"block\": " + blockJson(block));
+        }
+
+        if (name == "schematic_subdiagram_rename_port")
+        {
+            const auto block = blockIndexFor(text("block"));
+            if (block < 0)
+                return toolFailure(name, "No sub-diagram block " + text("block") + ".");
+            const auto oldName = text("port");
+            const auto newName = text("name");
+            auto& ports = instances[(size_t)block].ports;
+            const auto found = std::find_if(ports.begin(), ports.end(), [&](const schematic::BlockPort& port) { return port.name == oldName; });
+            if (found == ports.end())
+                return toolFailure(name, "Block " + instances[(size_t)block].refdes + " has no port " + oldName + ".");
+            if (newName.isEmpty() || std::any_of(ports.begin(), ports.end(), [&](const schematic::BlockPort& port) { return port.name == newName; }))
+                return toolFailure(name, "The new port name must be non-empty and unique on the block.");
+            found->name = newName;
+            for (auto& instance : instances)
+                if (instance.symbolId == "block_port" && instance.sheet == instances[(size_t)block].childSheet && instance.busName == oldName)
+                {
+                    instance.busName = newName;
+                    instance.value = newName;
+                }
+            return ok("\"block\": " + blockJson(block));
+        }
+
+        if (name == "schematic_subdiagram_list")
+        {
+            juce::String list = "\"viewing\": " + quote(sheetName(currentSheet)) + ", \"blocks\": [";
+            bool first = true;
+            for (int i = 0; i < (int)instances.size(); ++i)
+                if (instances[(size_t)i].symbolId == "sub_block")
+                {
+                    list << (first ? "" : ", ") << blockJson(i);
+                    first = false;
+                }
             list << "]";
             return "{ \"ok\": true, \"tool\": " + quote(name) + ", " + list + " }";
         }
@@ -4018,7 +5032,7 @@ private:
         for (int i = (int)instances.size() - 1; i >= 0; --i)
         {
             const auto& instance = instances[(size_t)i];
-            if (!isRailBus(instance.symbolId))
+            if (!isRailBus(instance.symbolId) || instance.sheet != currentSheet)
                 continue;
 
             if (railBounds(instance).expanded(0.0f, hitDistance(12.0f)).contains(p))
@@ -4233,7 +5247,7 @@ private:
     WireNode createJunctionOnWire(int wireIndex, juce::Point<float> position)
     {
         const auto junctionIndex = (int)junctions.size();
-        junctions.push_back(position);
+        addJunction(position);
         const auto junction = WireNode::forJunction(junctionIndex);
 
         if (wireIndex >= 0 && wireIndex < (int)wires.size())
@@ -4259,7 +5273,7 @@ private:
         position.y = instance.position.y;
 
         const auto junctionIndex = (int)junctions.size();
-        junctions.push_back(position);
+        addJunction(position);
         const auto junction = WireNode::forJunction(junctionIndex);
         wires.push_back({ WireNode::forPin({ instanceIndex, 0 }), junction });
 
@@ -4318,7 +5332,7 @@ private:
                     --member;
         }
         groups.erase(std::remove_if(groups.begin(), groups.end(), [](const Group& group) {
-            return group.memberInstances.size() < 2;
+            return group.memberInstances.empty();
         }), groups.end());
 
         selectedInstance = -1;
@@ -4377,6 +5391,7 @@ private:
                               p,
                               0,
                               isRailBus(symbol.id) ? 420.0f : 0.0f });
+        instances.back().sheet = currentSheet;
         selectedInstance = (int)instances.size() - 1;
         selectedInstances.clear();
         selectedInstances.add(selectedInstance);
@@ -4434,7 +5449,10 @@ private:
         g.saveState();
         g.addTransform(juce::AffineTransform::rotation(juce::degreesToRadians((float)instance.rotation))
                            .translated(instance.position.x, instance.position.y));
-        schematic::drawSymbolArt(g, symbol, instance.value);
+        if (instance.symbolId == "sub_block")
+            schematic::drawBlockArt(g, symbol, instance.value);
+        else
+            schematic::drawSymbolArt(g, symbol, instance.value);
         g.restoreState();
 
         drawSymbolLabels(g, instance, symbol);
@@ -4469,6 +5487,20 @@ private:
 
         if (instance.symbolId == "ground")
             return;
+
+        if (instance.symbolId == "sub_block")
+            return; // name and pin names are drawn inside the block
+
+        if (instance.symbolId == "block_port")
+        {
+            // Port name inside the bubble, always upright.
+            const auto bubble = schematic::rotateBounds(schematic::portBubbleRect(), instance.rotation)
+                                    .translated(instance.position.x, instance.position.y);
+            g.setColour(juce::Colour(0xffffc857));
+            g.setFont(juce::Font(12.0f, juce::Font::bold));
+            g.drawText(instance.busName, bubble.toNearestInt(), juce::Justification::centred, true);
+            return;
+        }
 
         if (instance.symbolId == "net_label")
         {
@@ -4509,7 +5541,9 @@ private:
         for (int instanceIndex = 0; instanceIndex < (int)instances.size(); ++instanceIndex)
         {
             const auto& instance = instances[(size_t)instanceIndex];
-            const auto symbol = symbolFor(instance.symbolId);
+            if (instance.sheet != currentSheet)
+                continue;
+            const auto symbol = symbolForInstance(instance);
             drawSymbolBody(g, instance, symbol);
 
             if (isRailBus(instance.symbolId))
@@ -4586,7 +5620,7 @@ private:
             return false;
 
         const auto& instance = instances[(size_t)node.pin.instanceIndex];
-        const auto symbol = symbolFor(instance.symbolId);
+        const auto symbol = symbolForInstance(instance);
         if (node.pin.pinIndex < 0 || node.pin.pinIndex >= (int)symbol.pins.size())
             return false;
 
@@ -4640,7 +5674,7 @@ private:
     {
         for (const auto& wire : wires)
         {
-            if (isInternalRailTapWire(wire))
+            if (isInternalRailTapWire(wire) || !wireOnSheet(wire))
                 continue;
 
             drawRoutedWire(g, routedWirePoints(wire.a, wire.b), schematicWireColour(wire), 2.2f);
@@ -4649,6 +5683,8 @@ private:
         g.setColour(juce::Colour(0xffffc857));
         for (int i = 0; i < (int)junctions.size(); ++i)
         {
+            if (junctionSheet(i) != currentSheet)
+                continue;
             int degree = 0;
             for (const auto& wire : wires)
                 degree += (wire.a.isJunction() && wire.a.junctionIndex == i ? 1 : 0)
@@ -4659,9 +5695,9 @@ private:
 
         for (int instanceIndex = 0; instanceIndex < (int)instances.size(); ++instanceIndex)
         {
-            if (isRailBus(instances[(size_t)instanceIndex].symbolId))
+            if (isRailBus(instances[(size_t)instanceIndex].symbolId) || !onSheet(instanceIndex))
                 continue;
-            const auto symbol = symbolFor(instances[(size_t)instanceIndex].symbolId);
+            const auto symbol = symbolForInstance(instances[(size_t)instanceIndex]);
             for (int p = 0; p < (int)symbol.pins.size(); ++p)
             {
                 const PinRef ref { instanceIndex, p };
@@ -4678,6 +5714,8 @@ private:
     {
         for (const auto& probe : probes)
         {
+            if (!nodeOnSheet(probe.node))
+                continue;
             const auto p = nodePosition(probe.node);
             if (p == juce::Point<float>())
                 continue;
@@ -6195,6 +7233,14 @@ private:
             completion(true, "Session configured.", externalSessionSnapshot());
         };
         localApi->onCancel = [this] { requestStop("Stop requested through the local agent API."); };
+        localApi->onToolCall = [this](const juce::String& name, const juce::var& arguments, LocalAgentApi::Completion completion) {
+            ai_provider::ToolCall call;
+            call.name = name.toStdString();
+            call.argumentsJson = juce::JSON::toString(arguments, true).toStdString();
+            const auto result = executeToolNow(call);
+            const auto parsed = juce::JSON::parse(result);
+            completion(!parsed.isObject() || (bool)parsed.getProperty("ok", true), result, {});
+        };
 
         if (localApi->start())
             apiStatus.setText("API ready: " + LocalAgentApi::getDiscoveryFile().getFullPathName(),
@@ -7308,8 +8354,39 @@ ElectronicsWorkbench::ElectronicsWorkbench()
         return capabilityGapRecordTool(category, description, neededCapability, evidence, source, status);
     };
     agentTools.toolManifest = [this] { return buildAssistantToolManifestJson(); };
-    agentTools.schematicTool = [schematicPanel](const juce::String& name, const juce::var& args) {
+    agentTools.schematicTool = [this, schematicPanel](const juce::String& name, const juce::var& args) {
+        if (name == "project_save")
+        {
+            const auto file = savedProjectFile();
+            if (!file.getParentDirectory().createDirectory() || !file.replaceWithText(schematicPanel->buildCircuitJson()))
+                return juce::String("{ \"ok\": false, \"tool\": \"project_save\", \"error\": ") + jsonQuote("Could not write " + file.getFullPathName()) + " }";
+            appendLog("Saved project circuit to " + file.getFullPathName());
+            return juce::String("{ \"ok\": true, \"tool\": \"project_save\", \"file\": ") + jsonQuote(file.getFullPathName()) + " }";
+        }
+        if (name == "project_open")
+        {
+            const auto file = savedProjectFile();
+            if (!file.existsAsFile())
+                return juce::String("{ \"ok\": false, \"tool\": \"project_open\", \"error\": ") + jsonQuote("No saved project at " + file.getFullPathName()) + " }";
+            closeFloatingInstrumentWindows();
+            juce::String error;
+            if (!schematicPanel->loadCircuitJson(file.loadFileAsString(), error))
+                return juce::String("{ \"ok\": false, \"tool\": \"project_open\", \"error\": ") + jsonQuote(error) + " }";
+            appendLog("Opened project circuit from " + file.getFullPathName());
+            return juce::String("{ \"ok\": true, \"tool\": \"project_open\", \"file\": ") + jsonQuote(file.getFullPathName()) + " }";
+        }
+        if (name == "project_new")
+        {
+            resetResearchState();
+            return juce::String("{ \"ok\": true, \"tool\": \"project_new\" }");
+        }
         return schematicPanel->runSchematicTool(name, args);
+    };
+    exportSchematicImage = [schematicPanel] {
+        const auto result = juce::JSON::parse(schematicPanel->runSchematicTool("schematic_export_image", juce::var(new juce::DynamicObject())));
+        return (bool)result.getProperty("ok", false)
+            ? "Exported schematic image " + result.getProperty("image", {}).toString()
+            : "Schematic image export failed: " + result.getProperty("error", {}).toString();
     };
     agentTools.log = [this](const juce::String& text) { appendLog(text); };
     auto agent = std::make_unique<AgentPanel>(std::move(agentTools));
@@ -7400,6 +8477,8 @@ juce::PopupMenu ElectronicsWorkbench::getMenuForIndex(int, const juce::String& m
         menu.addItem(newProject, "New Research Project");
         menu.addItem(openProject, "Open Project...");
         menu.addItem(saveProject, "Save Project");
+        menu.addSeparator();
+        menu.addItem(exportSchematicImageItem, "Export Schematic Image");
     }
     else if (menuName == "Circuit")
     {
@@ -7439,6 +8518,10 @@ void ElectronicsWorkbench::menuItemSelected(int menuItemID, int)
     {
         case newProject: resetResearchState(); break;
         case saveProject: saveProjectFile(); break;
+        case exportSchematicImageItem:
+            if (exportSchematicImage != nullptr)
+                appendLog(exportSchematicImage());
+            break;
         case openProject: openProjectFile(); break;
         case resetLayout:
             if (dockManager != nullptr) dockManager->resetLayout();

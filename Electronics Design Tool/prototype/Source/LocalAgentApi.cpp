@@ -289,6 +289,55 @@ void LocalAgentApi::handleConnection(juce::StreamingSocket& socket)
         return;
     }
 
+    // Direct tool calls: the same tools the agent uses, run deterministically
+    // without the model, for scripts and tests. Body: {"name": ..., "arguments": {...}}.
+    if (request.method == "POST" && request.path == "/v1/tools/call")
+    {
+        const auto parsed = juce::JSON::parse(request.body);
+        const auto name = parsed.getProperty("name", {}).toString().trim();
+        if (!parsed.isObject() || name.isEmpty())
+        {
+            writeJson(socket, 400, "Bad Request", errorBody("Body must be {\"name\": tool, \"arguments\": {...}}."));
+            return;
+        }
+        auto handler = onToolCall;
+        if (!handler)
+        {
+            writeJson(socket, 503, "Service Unavailable", errorBody("Direct tool calls are unavailable."));
+            return;
+        }
+
+        auto arguments = parsed.getProperty("arguments", {});
+        if (!arguments.isObject())
+            arguments = juce::var(new juce::DynamicObject());
+
+        struct Wait
+        {
+            juce::WaitableEvent done;
+            bool ok = false;
+            juce::String result;
+        };
+        auto wait = std::make_shared<Wait>();
+        juce::MessageManager::callAsync([handler, name, arguments, wait] {
+            handler(name, arguments, [wait](bool ok, const juce::String& result, const juce::var&) {
+                wait->ok = ok;
+                wait->result = result;
+                wait->done.signal();
+            });
+        });
+        if (!wait->done.wait(120000))
+        {
+            writeJson(socket, 504, "Gateway Timeout", errorBody("Timed out waiting for the tool to finish."));
+            return;
+        }
+
+        auto* body = new juce::DynamicObject();
+        body->setProperty("tool", name);
+        body->setProperty("result", juce::JSON::parse(wait->result));
+        writeJson(socket, wait->ok ? 200 : 409, wait->ok ? "OK" : "Conflict", juce::var(body));
+        return;
+    }
+
     const juce::String requestPrefix = "/v1/requests/";
     if (request.method == "GET" && request.path.startsWith(requestPrefix))
     {

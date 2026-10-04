@@ -24,6 +24,7 @@ private:
         newProject = 100,
         openProject,
         saveProject,
+        exportSchematicImageItem,
         resetLayout,
         importComponent,
         runErc,
@@ -114,6 +115,7 @@ private:
     std::function<juce::String(double, double)> designHighPassTool;
     std::function<juce::String()> designPushPullTool;
     std::function<juce::String()> autoLayoutTool;
+    std::function<juce::String()> exportSchematicImage;
     std::function<void(const juce::File&, const juce::File&, double, double, double, double)> showFrequencyResponse;
     std::function<void()> openAgentSettingsDialog;
     std::function<void(bool)> setSnapEnabled;

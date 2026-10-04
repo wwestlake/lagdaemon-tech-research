@@ -59,6 +59,11 @@ agent instead of the UI:
 - `POST /v1/session`, `POST /v1/cancel`, `GET /v1/plan`,
   `POST /v1/plan/approve`, `POST /v1/plan/deny`
 
+- `POST /v1/tools/call` with `{"name": "<tool>", "arguments": {...}}` runs
+  one agent tool directly, no model in the loop. Use this for testing:
+  gpt-4o-mini sometimes skips requested tool calls and reports results it
+  never got.
+
 Header: `Authorization: Bearer <token>`. Never print the token. Each message
 costs the user's OpenAI key a little; do not spam it.
 
@@ -71,19 +76,24 @@ exist. This rule is also in the prototype README and the repo `AGENTS.md`.
 
 ## Agreed plan (in order)
 
-1. **Agent parity for existing features.** The agent has 21 tools today
-   (place, connect, set properties, auto layout, ERC, export, push-pull and
-   high-pass builders, cookbook, web search). Missing: delete part, delete
-   wire / disconnect, move, rotate, rename refdes, select, save / open / new
-   project. Add tools plus cards.
-2. **Group boxes.** Partly built by Codex: `Group` struct,
-   `createGroupFromSelection`, `editSelectedGroupMetadata`,
-   `ungroupSelectedGroup`, `drawGroups` (name in the top-left corner). Finish:
-   check it draws well over the new layout, keep groups with their members
-   through auto layout (`autoLayoutInstances` remaps member indices but does
-   not keep members near each other), and agent tools to create, rename,
-   add/remove members, ungroup.
-3. **Sub-diagrams.** Purely a view of one flat circuit, for readability:
+Every feature ships together with its agent tool(s) and tool card; there is
+no separate "agent tools" pass.
+
+1. **Group boxes - done (`f8a5658`).** Box around members' full footprints
+   with a name tab in the top-left corner; create from selection prompts for
+   the name; agent tools `schematic_group_create/update/delete/list`.
+   Known gap: auto layout does not yet keep a group's members together.
+2. **Sub-diagrams - done.** Sheets on the flat model (`Instance::sheet`,
+   `junctionSheets`), `sub_block` with per-instance pins from its ports,
+   `block_port` bubbles joined to block pins by name in `computeNetNames`.
+   Collapse (`createSubDiagram`), expand (`expandSubDiagram`, leaves a group
+   box), double-click / breadcrumb / Backspace navigation, nesting, save and
+   load. Agent tools `schematic_subdiagram_create/expand/open/rename/
+   rename_port/list`, plus `schematic_export_image` and `project_save/open/
+   new`. Verified with direct tool calls (below); ERC passes after a full
+   collapse / nest / save / load / expand round trip. Expanding keeps the
+   inner positions; run auto layout afterwards for a clean sheet.
+   **Sub-diagram details.** Purely a view of one flat circuit, for readability:
    - A selection or group collapses into a small named block. Every wire that
      crossed the boundary becomes a pin on the block; parent wires connect to
      those pins.
@@ -106,7 +116,9 @@ exist. This rule is also in the prototype README and the repo `AGENTS.md`.
      with pins. Expanding a block can return it to a group box.
    - Agent tools: create, open, close/up, rename, expand, list, and work
      inside a block.
-4. **Save and load** groups and the block hierarchy in `circuit.json`.
+3. **Save and load** the block hierarchy in `circuit.json` (groups already save).
+4. Agent tools for remaining existing features (delete, move, rotate, rename,
+   select, save/open/new) as those areas are touched.
 
 Discuss real design choices with the user before building (see repo
 `AGENTS.md`); agree each milestone in words, then carry it through.

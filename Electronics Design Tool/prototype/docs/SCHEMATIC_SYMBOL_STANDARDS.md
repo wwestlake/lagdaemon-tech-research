@@ -93,6 +93,14 @@ cite it (`SCH-G1`, `SCH-W3`, ...).
   at the instrument, one on the probed net. Probe leads are never drawn as
   wires across the circuit.
 
+### Sub-Diagrams
+
+- **SCH-H1** A sub-diagram block is a view of part of the one flat circuit,
+  not a reusable definition. Each signal net crossing its boundary is one
+  block pin (inputs left, outputs right); inside, the same net ends at a
+  port bubble carrying the pin name. Ground and named supplies are global
+  symbols and never become pins. Blocks nest; reference letter `A`.
+
 ### Placement and Flow
 
 - **SCH-F1** Signal flows left to right: sources and inputs on the left,
