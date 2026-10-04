@@ -58,6 +58,46 @@ juce::Colour scopeChannelColour(int channelIndex)
     return colours[(size_t)juce::jlimit(0, 3, channelIndex % 4)];
 }
 
+// Schematic tools handled generically by SchematicCanvasPanel::runSchematicTool.
+// One table feeds both the agent's tool definitions and the tool manifest.
+struct SchematicToolSpec
+{
+    const char* name;
+    const char* description;
+    const char* schema;
+};
+
+const SchematicToolSpec schematicToolSpecs[] = {
+    {
+        "schematic_group_create",
+        "Draw a named group box around existing components. Group boxes only label a region of the diagram; wiring and the circuit are unchanged. The name is shown in the box's top-left corner.",
+        R"({"type":"object","properties":{"name":{"type":"string","description":"Group name shown in the box corner, such as Output Stage."},"members":{"type":"array","items":{"type":"string"},"description":"Reference designators of the components to enclose, such as [\"Q1\", \"Q2\", \"R3\"]."},"category":{"type":"string","description":"Optional category such as amplifier_stage or bias_network."},"notes":{"type":"string","description":"Optional notes."}},"required":["name","members"],"additionalProperties":false})"
+    },
+    {
+        "schematic_group_update",
+        "Rename a group box, change its category or notes, or add/remove member components. Omitted fields stay unchanged.",
+        R"({"type":"object","properties":{"group":{"type":"string","description":"Group id (G1) or current name."},"name":{"type":"string","description":"New name."},"category":{"type":"string"},"notes":{"type":"string"},"addMembers":{"type":"array","items":{"type":"string"},"description":"Reference designators to add."},"removeMembers":{"type":"array","items":{"type":"string"},"description":"Reference designators to remove."}},"required":["group"],"additionalProperties":false})"
+    },
+    {
+        "schematic_group_delete",
+        "Remove a group box. Its components and wiring stay exactly as they are.",
+        R"({"type":"object","properties":{"group":{"type":"string","description":"Group id (G1) or name."}},"required":["group"],"additionalProperties":false})"
+    },
+    {
+        "schematic_group_list",
+        "List the group boxes on the schematic with their ids, names, categories, notes, and member reference designators.",
+        R"({"type":"object","properties":{},"additionalProperties":false})"
+    },
+};
+
+bool isSchematicTool(const juce::String& name)
+{
+    for (const auto& spec : schematicToolSpecs)
+        if (name == spec.name)
+            return true;
+    return false;
+}
+
 juce::String jsonQuote(const juce::String& text)
 {
     return "\"" + text.replace("\\", "\\\\").replace("\"", "\\\"") + "\"";
@@ -1797,8 +1837,8 @@ public:
         juce::PopupMenu menu;
         menu.addItem(1, "Auto Layout Diagram");
         menu.addItem(2, "Auto Layout Selection", !selectedInstances.isEmpty());
-        menu.addItem(5, "Create Group from Selection", selectedInstances.size() >= 2);
-        menu.addItem(6, "Edit Group Metadata...", selectedGroup >= 0 && selectedGroup < (int)groups.size());
+        menu.addItem(5, "Create Group Box from Selection...", !selectedInstances.isEmpty());
+        menu.addItem(6, "Rename / Edit Group Box...", selectedGroup >= 0 && selectedGroup < (int)groups.size());
         menu.addItem(7, "Ungroup", selectedGroup >= 0 && selectedGroup < (int)groups.size());
         menu.addSeparator();
         menu.addItem(3, "Disconnect Here");
@@ -3622,20 +3662,36 @@ private:
         g.drawRect(box, 1.5f);
     }
 
+    // Box around the members' full footprints (body, pin ends, labels),
+    // with a strip on top for the name tab so it never covers a part.
     juce::Rectangle<float> groupBounds(const Group& group) const
     {
-        juce::Rectangle<float> bounds;
-        bool hasBounds = false;
+        float left = std::numeric_limits<float>::max(), top = left;
+        float right = std::numeric_limits<float>::lowest(), bottom = right;
+        bool any = false;
         for (int index : group.memberInstances)
         {
             if (index < 0 || index >= (int)instances.size())
                 continue;
-            const auto symbol = symbolFor(instances[(size_t)index].symbolId);
-            const auto itemBounds = orientedBounds(instances[(size_t)index], symbol).expanded(28.0f);
-            bounds = hasBounds ? bounds.getUnion(itemBounds) : itemBounds;
-            hasBounds = true;
+            const auto& instance = instances[(size_t)index];
+            const auto symbol = symbolFor(instance.symbolId);
+            auto box = schematic::rotateBounds(schematic::extentBounds(symbol), instance.rotation);
+            if (!schematic::isPowerSymbol(instance.symbolId))
+            {
+                const auto labels = schematic::labelRectsFor(symbol, instance.rotation);
+                box = box.getUnion(labels.refdes).getUnion(labels.value);
+            }
+            box = box.translated(instance.position.x, instance.position.y);
+            left = std::min(left, box.getX());
+            top = std::min(top, box.getY());
+            right = std::max(right, box.getRight());
+            bottom = std::max(bottom, box.getBottom());
+            any = true;
         }
-        return hasBounds ? bounds.expanded(12.0f) : juce::Rectangle<float>();
+        if (!any)
+            return {};
+        constexpr float pad = 16.0f, titleStrip = 22.0f;
+        return { left - pad, top - pad - titleStrip, right - left + pad * 2.0f, bottom - top + pad * 2.0f + titleStrip };
     }
 
     void drawGroups(juce::Graphics& g)
@@ -3647,12 +3703,24 @@ private:
             if (bounds.isEmpty())
                 continue;
 
-            g.setColour(group.colour.withAlpha(0.08f));
+            const auto selected = i == selectedGroup;
+            const auto edge = selected ? juce::Colour(0xffffc857) : group.colour.withAlpha(0.75f);
+            g.setColour(group.colour.withAlpha(0.06f));
             g.fillRoundedRectangle(bounds, 6.0f);
-            g.setColour(i == selectedGroup ? juce::Colour(0xffffc857) : group.colour.withAlpha(0.7f));
-            g.drawRoundedRectangle(bounds, 6.0f, i == selectedGroup ? 2.5f : 1.5f);
-            g.setFont(juce::Font(13.0f, juce::Font::bold));
-            g.drawText(group.name, bounds.reduced(8.0f).removeFromTop(18.0f), juce::Justification::centredLeft);
+            g.setColour(edge);
+            g.drawRoundedRectangle(bounds, 6.0f, selected ? 2.5f : 1.5f);
+
+            // Name tab in the top-left corner.
+            const juce::Font font(13.0f, juce::Font::bold);
+            const auto textWidth = font.getStringWidthFloat(group.name);
+            const juce::Rectangle<float> tab { bounds.getX(), bounds.getY(), textWidth + 20.0f, 20.0f };
+            juce::Path tabPath;
+            tabPath.addRoundedRectangle(tab.getX(), tab.getY(), tab.getWidth(), tab.getHeight(), 6.0f, 6.0f, true, false, false, true);
+            g.setColour(edge.withAlpha(selected ? 0.9f : 0.55f));
+            g.fillPath(tabPath);
+            g.setColour(juce::Colour(0xff0e141a));
+            g.setFont(font);
+            g.drawText(group.name, tab.reduced(10.0f, 0.0f), juce::Justification::centredLeft, false);
         }
     }
 
@@ -3683,29 +3751,187 @@ private:
         selectedInstance = selectedInstances.isEmpty() ? -1 : selectedInstances.getLast();
     }
 
+    // ---- Group boxes: shared by the UI and the agent's schematic tools ----
+
+    juce::String nextGroupId() const
+    {
+        int highest = 0;
+        for (const auto& group : groups)
+            if (group.id.startsWith("G") && group.id.substring(1).containsOnly("0123456789"))
+                highest = std::max(highest, group.id.substring(1).getIntValue());
+        return "G" + juce::String(highest + 1);
+    }
+
+    int groupIndexFor(const juce::String& idOrName) const
+    {
+        const auto key = idOrName.trim();
+        for (int i = 0; i < (int)groups.size(); ++i)
+            if (groups[(size_t)i].id.equalsIgnoreCase(key))
+                return i;
+        for (int i = 0; i < (int)groups.size(); ++i)
+            if (groups[(size_t)i].name.equalsIgnoreCase(key))
+                return i;
+        return -1;
+    }
+
+    juce::String groupJson(const Group& group) const
+    {
+        juce::String text;
+        text << "{ \"id\": " << quote(group.id)
+             << ", \"name\": " << quote(group.name)
+             << ", \"category\": " << quote(group.category)
+             << ", \"notes\": " << quote(group.notes)
+             << ", \"members\": [";
+        bool first = true;
+        for (int member : group.memberInstances)
+        {
+            if (member < 0 || member >= (int)instances.size())
+                continue;
+            if (!first) text << ", ";
+            first = false;
+            text << quote(instances[(size_t)member].refdes);
+        }
+        text << "] }";
+        return text;
+    }
+
+    // Resolves refdes strings to instance indices; fills `error` with the
+    // first unknown one.
+    bool membersFromRefdes(const juce::var& list, std::vector<int>& members, juce::String& error) const
+    {
+        if (list.isVoid())
+            return true;
+        const auto* array = list.getArray();
+        if (array == nullptr)
+        {
+            error = "Members must be an array of reference designators.";
+            return false;
+        }
+        for (const auto& entry : *array)
+        {
+            const auto index = instanceIndexForRefdes(entry.toString().trim());
+            if (index < 0)
+            {
+                error = "No placed component has reference designator " + entry.toString().trim() + ".";
+                return false;
+            }
+            if (std::find(members.begin(), members.end(), index) == members.end())
+                members.push_back(index);
+        }
+        return true;
+    }
+
+public:
+    juce::String runSchematicTool(const juce::String& name, const juce::var& args)
+    {
+        auto text = [&](const juce::String& key) { return args.getProperty(juce::Identifier(key), {}).toString().trim(); };
+        auto ok = [&](const juce::String& body) {
+            forceDeferredRepaint();
+            return "{ \"ok\": true, \"tool\": " + quote(name) + ", " + body + " }";
+        };
+
+        if (name == "schematic_group_create")
+        {
+            std::vector<int> members;
+            juce::String error;
+            if (!membersFromRefdes(args.getProperty("members", {}), members, error))
+                return toolFailure(name, error);
+            if (members.empty())
+                return toolFailure(name, "A group needs at least one member component.");
+
+            Group group;
+            group.id = nextGroupId();
+            group.name = text("name").isNotEmpty() ? text("name") : group.id;
+            group.category = text("category").isNotEmpty() ? text("category") : juce::String("user_group");
+            group.notes = text("notes");
+            group.memberInstances = members;
+            groups.push_back(group);
+            selectedGroup = (int)groups.size() - 1;
+            if (onStatus) onStatus("Created group " + group.name + ".");
+            return ok("\"group\": " + groupJson(groups.back()));
+        }
+
+        if (name == "schematic_group_update")
+        {
+            const auto index = groupIndexFor(text("group"));
+            if (index < 0)
+                return toolFailure(name, "No group with id or name " + text("group") + ".");
+
+            std::vector<int> add, remove;
+            juce::String error;
+            if (!membersFromRefdes(args.getProperty("addMembers", {}), add, error)
+                || !membersFromRefdes(args.getProperty("removeMembers", {}), remove, error))
+                return toolFailure(name, error);
+
+            auto updated = groups[(size_t)index];
+            if (args.hasProperty("name") && text("name").isNotEmpty()) updated.name = text("name");
+            if (args.hasProperty("category") && text("category").isNotEmpty()) updated.category = text("category");
+            if (args.hasProperty("notes")) updated.notes = text("notes");
+            for (int member : add)
+                if (std::find(updated.memberInstances.begin(), updated.memberInstances.end(), member) == updated.memberInstances.end())
+                    updated.memberInstances.push_back(member);
+            updated.memberInstances.erase(std::remove_if(updated.memberInstances.begin(), updated.memberInstances.end(),
+                                                         [&](int m) { return std::find(remove.begin(), remove.end(), m) != remove.end(); }),
+                                          updated.memberInstances.end());
+            if (updated.memberInstances.empty())
+                return toolFailure(name, "That would leave the group empty; use schematic_group_delete instead.");
+
+            groups[(size_t)index] = updated;
+            if (onStatus) onStatus("Updated group " + updated.name + ".");
+            return ok("\"group\": " + groupJson(updated));
+        }
+
+        if (name == "schematic_group_delete")
+        {
+            const auto index = groupIndexFor(text("group"));
+            if (index < 0)
+                return toolFailure(name, "No group with id or name " + text("group") + ".");
+            const auto removed = groups[(size_t)index];
+            groups.erase(groups.begin() + index);
+            if (selectedGroup == index) selectedGroup = -1;
+            else if (selectedGroup > index) --selectedGroup;
+            if (onStatus) onStatus("Removed group box " + removed.name + "; components and wiring unchanged.");
+            return ok("\"removed\": " + groupJson(removed));
+        }
+
+        if (name == "schematic_group_list")
+        {
+            juce::String list = "\"groups\": [";
+            for (size_t i = 0; i < groups.size(); ++i)
+                list << (i == 0 ? "" : ", ") << groupJson(groups[i]);
+            list << "]";
+            return "{ \"ok\": true, \"tool\": " + quote(name) + ", " + list + " }";
+        }
+
+        return toolFailure(name, "Unknown schematic tool.");
+    }
+
+private:
+
     void createGroupFromSelection()
     {
-        if (selectedInstances.size() < 2)
+        if (selectedInstances.isEmpty())
         {
-            if (onStatus) onStatus("Select two or more components to create a group.");
+            if (onStatus) onStatus("Select the components to put in the group box.");
             return;
         }
 
         Group group;
-        group.id = "GRP" + juce::String((int)groups.size() + 1);
-        group.name = "Group " + juce::String((int)groups.size() + 1);
+        group.id = nextGroupId();
+        group.name = "Group " + group.id.substring(1);
         group.category = "user_group";
         for (int index : selectedInstances)
             if (index >= 0 && index < (int)instances.size())
                 group.memberInstances.push_back(index);
 
-        if (group.memberInstances.size() < 2)
+        if (group.memberInstances.empty())
             return;
 
         groups.push_back(std::move(group));
         selectedGroup = (int)groups.size() - 1;
         if (onStatus) onStatus("Created " + groups.back().name + " from " + juce::String((int)groups.back().memberInstances.size()) + " component(s).");
         repaint();
+        editSelectedGroupMetadata(); // name it now
     }
 
     void editSelectedGroupMetadata()
@@ -3714,8 +3940,8 @@ private:
             return;
 
         const auto groupIndex = selectedGroup;
-        auto* editor = new juce::AlertWindow("Group Metadata", "Edit the visual group box.", juce::AlertWindow::NoIcon);
-        editor->addTextEditor("name", groups[(size_t)groupIndex].name, "Title");
+        auto* editor = new juce::AlertWindow("Group Box", "Name shown in the box corner.", juce::AlertWindow::NoIcon);
+        editor->addTextEditor("name", groups[(size_t)groupIndex].name, "Name");
         editor->addTextEditor("category", groups[(size_t)groupIndex].category, "Category");
         editor->addTextEditor("notes", groups[(size_t)groupIndex].notes, "Notes");
         editor->addButton("Apply", 1, juce::KeyPress(juce::KeyPress::returnKey));
@@ -5591,6 +5817,7 @@ public:
         std::function<juce::String(const juce::String&, const juce::String&, const juce::String&,
                                    const juce::String&, const juce::String&, const juce::String&)> capabilityGapRecord;
         std::function<juce::String()> toolManifest;
+        std::function<juce::String(const juce::String&, const juce::var&)> schematicTool;
         std::function<void(const juce::String&)> log;
     };
 
@@ -6039,7 +6266,7 @@ private:
 
     std::vector<ai_provider::ToolDefinition> toolDefinitions() const
     {
-        return {
+        std::vector<ai_provider::ToolDefinition> definitions {
             {
                 "cookbook_lookup",
                 "Search structured electronics cookbook cards for topology candidates, design recipes, analysis steps, validation criteria, and known capability gaps.",
@@ -6146,6 +6373,9 @@ private:
                 R"({"type":"object","properties":{"refdes":{"type":"string","description":"Reference designator of an existing, wired instrument node, such as SCOPE2 or DMM3. Use only after an explicit user request to open the panel."}},"required":["refdes"],"additionalProperties":false})"
             }
         };
+        for (const auto& spec : schematicToolSpecs)
+            definitions.push_back({ spec.name, spec.description, spec.schema });
+        return definitions;
     }
 
     juce::String executeToolNow(const ai_provider::ToolCall& call)
@@ -6380,6 +6610,15 @@ private:
             return tools.openInstrument != nullptr
                 ? tools.openInstrument(refdes)
                 : "{ \"ok\": false, \"error\": \"Instrument opening tool unavailable.\" }";
+        }
+
+        if (isSchematicTool(name))
+        {
+            if (!parsed.isObject())
+                return "{ \"ok\": false, \"error\": \"" + name + " arguments must be a JSON object.\" }";
+            return tools.schematicTool != nullptr
+                ? tools.schematicTool(name, parsed)
+                : "{ \"ok\": false, \"error\": \"Schematic tools are unavailable.\" }";
         }
 
         return "{ \"ok\": false, \"error\": \"Unknown tool: " + originalName + "\" }";
@@ -7069,6 +7308,9 @@ ElectronicsWorkbench::ElectronicsWorkbench()
         return capabilityGapRecordTool(category, description, neededCapability, evidence, source, status);
     };
     agentTools.toolManifest = [this] { return buildAssistantToolManifestJson(); };
+    agentTools.schematicTool = [schematicPanel](const juce::String& name, const juce::var& args) {
+        return schematicPanel->runSchematicTool(name, args);
+    };
     agentTools.log = [this](const juce::String& text) { appendLog(text); };
     auto agent = std::make_unique<AgentPanel>(std::move(agentTools));
     auto* agentPanel = agent.get();
@@ -7562,8 +7804,19 @@ juce::String ElectronicsWorkbench::buildAssistantToolManifestJson() const
     text << "      \"description\": \"Open a floating instrument panel only for an existing wired schematic instrument node, and only after an explicit user request. Normal AI circuit creation should place and wire instrument nodes, not open panels.\",\n";
     text << "      \"status\": \"active\",\n";
     text << "      \"inputs\": { \"refdes\": \"existing wired instrument reference designator\" }\n";
-    text << "    }\n";
-    text << "  ],\n";
+    text << "    }";
+    for (const auto& spec : schematicToolSpecs)
+    {
+        text << ",\n    {\n";
+        text << "      \"name\": " << jsonQuote(spec.name) << ",\n";
+        text << "      \"displayName\": " << jsonQuote(juce::String(spec.name).replaceFirstOccurrenceOf("_", ".")) << ",\n";
+        text << "      \"description\": " << jsonQuote(spec.description) << ",\n";
+        text << "      \"mode\": \"modify_schematic_model\",\n";
+        text << "      \"status\": \"active\",\n";
+        text << "      \"inputSchema\": " << spec.schema << "\n";
+        text << "    }";
+    }
+    text << "\n  ],\n";
     text << "  \"instrumentPolicy\": {\n";
     text << "    \"preferredPlacement\": \"schematic_node\",\n";
     text << "    \"panelOpenRule\": \"user_double_clicks_placed_instrument_node\",\n";
