@@ -4,6 +4,8 @@
 #include "SchematicSymbols.h"
 #include "SchematicLayout.h"
 #include "SchematicRouter.h"
+#include "PartCatalog.h"
+#include "CircuitSolver.h"
 
 #include <ai_provider/AiConfig.h>
 
@@ -182,6 +184,21 @@ const SchematicToolSpec schematicToolSpecs[] = {
         "diagram_delete",
         "Remove a diagram from the open project. Its file is moved to the project's deleted folder, not erased.",
         R"({"type":"object","properties":{"name":{"type":"string","description":"Diagram name."}},"required":["name"],"additionalProperties":false})"
+    },
+    {
+        "simulation_operating_point",
+        "Solve the DC operating point of the whole circuit with the built-in simulator: every net's voltage (with the pins on it) and each voltage source's output current.",
+        R"({"type":"object","properties":{},"additionalProperties":false})"
+    },
+    {
+        "simulation_transient",
+        "Run a time-domain simulation with the built-in simulator and report min/max/peak-to-peak/mean/RMS/frequency of each probe over the second half of the run (past start-up). Writes transient.csv to the diagram's outputs.",
+        R"({"type":"object","properties":{"stop":{"type":"string","description":"Simulated time, such as 10m for 10 ms."},"step":{"type":"string","description":"Optional time step; defaults to stop/2000."},"probes":{"type":"array","items":{"type":"string"},"description":"Pin labels to measure, such as RL1.1 or Q1.E."}},"required":["stop","probes"],"additionalProperties":false})"
+    },
+    {
+        "simulation_ac",
+        "Run a small-signal AC sweep with the built-in simulator and report the gain (dB) and phase of output/input versus frequency, the peak gain, and the -3 dB frequencies. Writes ac_sweep.csv to the diagram's outputs.",
+        R"({"type":"object","properties":{"input":{"type":"string","description":"Input pin label, such as V1.+ or C1.1."},"output":{"type":"string","description":"Output pin label, such as RL1.1."},"start":{"type":"string","description":"Start frequency, default 10."},"stop":{"type":"string","description":"Stop frequency, default 100k."},"pointsPerDecade":{"type":"string","description":"Default 20."}},"required":["input","output"],"additionalProperties":false})"
     },
     {
         "schematic_group_list",
@@ -747,6 +764,8 @@ public:
             add({ "power_port", "Supply Port (+V / -V)", "Power & Ground" });
         if (std::none_of(allSymbols.begin(), allSymbols.end(), [](const SymbolInfo& s) { return s.id == "net_label"; }))
             add({ "net_label", "Net Label", "Power & Ground" });
+        if (std::none_of(allSymbols.begin(), allSymbols.end(), [](const SymbolInfo& s) { return s.id == "bode_analyzer"; }))
+            add({ "bode_analyzer", "Frequency Analyzer (Bode)", "Instrument" });
         content.rebuild();
 
         if (onSymbolSelected != nullptr)
@@ -1069,6 +1088,7 @@ private:
         add({ "logic_xor", "XOR Gate - behavioral", "Digital" });
         add({ "oscilloscope_2ch", "2-Channel Oscilloscope", "Instrument" });
         add({ "digital_multimeter", "Digital Multimeter", "Instrument" });
+        add({ "bode_analyzer", "Frequency Analyzer (Bode)", "Instrument" });
     }
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(ComponentLibraryPanel)
@@ -1209,6 +1229,9 @@ public:
             instance.rotation = schematic::normalizedRotation((int)floatProperty(*object, "rotation", 0.0f));
             instance.busLength = floatProperty(*object, "length", isRailBus(instance.symbolId) ? 420.0f : 0.0f);
             instance.sheet = stringProperty(*object, "sheet", {});
+            if (const auto* params = object->getProperty("params").getDynamicObject())
+                for (const auto& property : params->getProperties())
+                    instance.params[property.name.toString()] = property.value.toString();
             instance.childSheet = stringProperty(*object, "childSheet", {});
             if (const auto* portArray = object->getProperty("ports").getArray())
                 for (const auto& port : *portArray)
@@ -1422,6 +1445,17 @@ public:
             text << "      \"value\": " << quote(instance.value) << ",\n";
             text << "      \"frequency\": " << quote(instance.frequency) << ",\n";
             text << "      \"busName\": " << quote(instance.busName) << ",\n";
+            if (!instance.params.empty())
+            {
+                text << "      \"params\": {";
+                bool firstParam = true;
+                for (const auto& [key, val] : instance.params)
+                {
+                    text << (firstParam ? " " : ", ") << quote(key) << ": " << quote(val);
+                    firstParam = false;
+                }
+                text << " },\n";
+            }
             text << "      \"parameters\": " << parametersJsonFor(instance) << ",\n";
             text << "      \"pins\": {\n";
             for (size_t p = 0; p < symbol.pins.size(); ++p)
@@ -2878,6 +2912,7 @@ private:
         juce::String sheet;                         // "" = top level, else a sub-diagram sheet id
         juce::String childSheet;                    // sub_block: the sheet it opens
         std::vector<schematic::BlockPort> ports;    // sub_block: its ports, pin index == port index
+        std::map<juce::String, juce::String> params; // part properties beyond the fixed fields (PartCatalog)
     };
 
     struct PinRef
@@ -3193,7 +3228,7 @@ private:
         if (symbolId == "pjfet") return "generic_pjfet";
         if (symbolId == "fuse") return "1A";
         if (symbolId == "oscilloscope_2ch") return "2ch";
-        if (symbolId == "digital_multimeter") return "DCV";
+        if (symbolId == "digital_multimeter") return "DC V";
         return "";
     }
 
@@ -4709,6 +4744,512 @@ private:
         }
     }
 
+    // ---- Simulation: the schematic as a circuit_sim::Circuit ----
+
+    // A part's property value through the part catalog (stored field or param,
+    // falling back to the catalog default).
+    juce::String partValue(const Instance& instance, const juce::String& key) const
+    {
+        const auto* spec = parts::findParam(instance.symbolId, key);
+        juce::String value;
+        if (spec != nullptr)
+        {
+            switch (spec->storage)
+            {
+                case parts::Storage::Value: value = instance.value; break;
+                case parts::Storage::Frequency: value = instance.frequency; break;
+                case parts::Storage::BusName: value = instance.busName; break;
+                case parts::Storage::Family: value = instance.family; break;
+                case parts::Storage::ManufacturerPart: value = instance.manufacturerPart; break;
+                case parts::Storage::Param:
+                {
+                    const auto found = instance.params.find(key);
+                    if (found != instance.params.end()) value = found->second;
+                    break;
+                }
+            }
+            if (value.trim().isEmpty())
+                value = spec->defaultValue;
+        }
+        else if (const auto found = instance.params.find(key); found != instance.params.end())
+            value = found->second;
+        return value.trim();
+    }
+
+    void setPartValue(Instance& instance, const juce::String& key, const juce::String& value)
+    {
+        const auto* spec = parts::findParam(instance.symbolId, key);
+        const auto storage = spec != nullptr ? spec->storage : parts::Storage::Param;
+        switch (storage)
+        {
+            case parts::Storage::Value: instance.value = value; break;
+            case parts::Storage::Frequency: instance.frequency = value; break;
+            case parts::Storage::BusName: instance.busName = value; break;
+            case parts::Storage::Family: instance.family = value; break;
+            case parts::Storage::ManufacturerPart: instance.manufacturerPart = value; break;
+            case parts::Storage::Param: instance.params[key] = value; break;
+        }
+    }
+
+    static double parseQuantity(juce::String text, double fallback, bool* ok = nullptr)
+    {
+        text = text.trim();
+        if (text.containsChar('V') && text.upToFirstOccurrenceOf("V", false, false).containsOnly("0123456789")
+            && text.fromFirstOccurrenceOf("V", false, false).containsOnly("0123456789") && text.fromFirstOccurrenceOf("V", false, false).isNotEmpty())
+            text = text.replace("V", "."); // 5V1 = 5.1
+        double value = 0.0;
+        const auto parsed = circuit_sim::parseValue(text.toStdString(), value);
+        if (ok != nullptr) *ok = parsed;
+        return parsed ? value : fallback;
+    }
+
+    struct SimNetlist
+    {
+        circuit_sim::Circuit circuit;
+        std::map<juce::String, circuit_sim::Node> nodeOfNet;
+        std::map<juce::String, int> elementOfPart; // refdes -> element (ammeter source, source)
+        juce::StringArray warnings;
+    };
+
+    // `ohmmeter` >= 0 builds the resistance-measurement circuit for that
+    // multimeter: independent sources off, a 1 mA test current into HI.
+    SimNetlist buildSimNetlist(int ohmmeter = -1) const
+    {
+        SimNetlist sim;
+        const auto netNames = computeNetNames();
+        auto node = [&](int instanceIndex, const juce::String& pinName) -> circuit_sim::Node {
+            const auto symbol = symbolForInstance(instances[(size_t)instanceIndex]);
+            for (int p = 0; p < (int)symbol.pins.size(); ++p)
+                if (symbol.pins[(size_t)p].name == pinName)
+                {
+                    const auto net = netFor({ instanceIndex, p }, netNames);
+                    if (net == "0")
+                        return 0;
+                    if (net == "floating")
+                        return sim.circuit.addNode();
+                    const auto found = sim.nodeOfNet.find(net);
+                    if (found != sim.nodeOfNet.end())
+                        return found->second;
+                    const auto n = sim.circuit.addNode();
+                    sim.nodeOfNet[net] = n;
+                    return n;
+                }
+            return sim.circuit.addNode();
+        };
+        auto number = [&](const Instance& inst, const juce::String& key, double fallback) {
+            bool ok = true;
+            const auto v = parseQuantity(partValue(inst, key), fallback, &ok);
+            if (!ok)
+                sim.warnings.add(inst.refdes + ": \"" + partValue(inst, key) + "\" is not a valid " + key + "; using " + juce::String(fallback));
+            return v;
+        };
+        auto waveform = [&](const Instance& inst) {
+            circuit_sim::Waveform w;
+            w.kind = partValue(inst, "waveform") == "Square" ? circuit_sim::Waveform::Kind::Square : circuit_sim::Waveform::Kind::Sine;
+            w.amplitude = number(inst, "amplitude", 1.0);
+            w.frequency = number(inst, "frequency", 1000.0);
+            w.offset = number(inst, "offset", 0.0);
+            w.phaseDegrees = number(inst, "phase", 0.0);
+            w.duty = number(inst, "duty", 0.5);
+            w.acMagnitude = w.amplitude != 0.0 ? w.amplitude : 1.0;
+            return w;
+        };
+        auto dcWave = [](double v) { circuit_sim::Waveform w; w.offset = v; return w; };
+        const bool measuringOhms = ohmmeter >= 0;
+
+        for (int i = 0; i < (int)instances.size(); ++i)
+        {
+            const auto& inst = instances[(size_t)i];
+            const auto& id = inst.symbolId;
+            const auto name = inst.refdes.toStdString();
+            auto& c = sim.circuit;
+            int element = -1;
+
+            if (id == "resistor")
+                element = c.addResistor(name, node(i, "1"), node(i, "2"), number(inst, "value", 10e3));
+            else if (id == "potentiometer")
+            {
+                const auto total = number(inst, "value", 10e3);
+                const auto pos = juce::jlimit(0.0, 1.0, partValue(inst, "position").getDoubleValue());
+                c.addResistor(name + "_a", node(i, "1"), node(i, "W"), std::max(1e-3, total * pos));
+                element = c.addResistor(name + "_b", node(i, "W"), node(i, "2"), std::max(1e-3, total * (1.0 - pos)));
+            }
+            else if (id == "capacitor" || id == "variable_capacitor")
+                element = c.addCapacitor(name, node(i, "1"), node(i, "2"), number(inst, "value", 1e-6));
+            else if (id == "capacitor_polarized")
+                element = c.addCapacitor(name, node(i, "+"), node(i, "-"), number(inst, "value", 10e-6));
+            else if (id == "inductor")
+                element = c.addInductor(name, node(i, "1"), node(i, "2"), number(inst, "value", 10e-3));
+            else if (id == "coupled_inductor")
+            {
+                const auto l = number(inst, "value", 10e-3);
+                const auto a = c.addInductor(name + "_1", node(i, "1A"), node(i, "1B"), l);
+                const auto b = c.addInductor(name + "_2", node(i, "2A"), node(i, "2B"), l);
+                element = c.addCoupling(name, a, b, juce::jlimit(0.0, 0.9999, number(inst, "coupling", 0.99)));
+            }
+            else if (id == "transformer")
+            {
+                const auto ratio = partValue(inst, "value");
+                const auto primaryTurns = std::max(1e-6, ratio.upToFirstOccurrenceOf(":", false, false).getDoubleValue());
+                const auto secondaryTurns = std::max(1e-6, ratio.fromFirstOccurrenceOf(":", false, false).getDoubleValue());
+                const auto lp = number(inst, "primary_inductance", 1.0);
+                const auto ls = lp * std::pow(secondaryTurns / primaryTurns, 2.0);
+                const auto a = c.addInductor(name + "_p", node(i, "P1"), node(i, "P2"), lp);
+                const auto b = c.addInductor(name + "_s", node(i, "S1"), node(i, "S2"), ls);
+                element = c.addCoupling(name, a, b, juce::jlimit(0.0, 0.9999, number(inst, "coupling", 0.999)));
+            }
+            else if (id == "diode" || id == "schottky_diode" || id == "zener_diode")
+            {
+                circuit_sim::DiodeModel m;
+                m.saturationCurrent = number(inst, "saturation_current", 1e-14);
+                m.emission = number(inst, "emission", 1.0);
+                if (id == "zener_diode")
+                    m.breakdownVoltage = number(inst, "value", 5.1);
+                element = c.addDiode(name, node(i, "A"), node(i, "K"), m);
+            }
+            else if (id == "led")
+            {
+                // Forward drop near 10 mA by colour.
+                const auto colour = partValue(inst, "value");
+                const auto vf = colour == "Green" ? 2.1 : colour == "Yellow" ? 2.0 : (colour == "Blue" || colour == "White") ? 3.0 : 1.8;
+                circuit_sim::DiodeModel m;
+                m.emission = 2.0;
+                m.saturationCurrent = 0.01 / std::exp(vf / (m.emission * 0.025852));
+                element = c.addDiode(name, node(i, "A"), node(i, "K"), m);
+            }
+            else if (id == "battery" || id == "voltage_source")
+                element = c.addVoltageSource(name, node(i, "+"), node(i, "-"), dcWave(measuringOhms ? 0.0 : number(inst, "value", 5.0)));
+            else if (id == "current_source")
+            {
+                if (!measuringOhms)
+                    element = c.addCurrentSource(name, node(i, "+"), node(i, "-"), dcWave(number(inst, "value", 1e-3)));
+            }
+            else if (id == "ac_voltage_source" || id == "signal_source")
+            {
+                auto w = measuringOhms ? dcWave(0.0) : waveform(inst);
+                element = id == "signal_source" ? c.addVoltageSource(name, node(i, "OUT"), node(i, "REF"), w)
+                                                : c.addVoltageSource(name, node(i, "+"), node(i, "-"), w);
+            }
+            else if (id == "ac_current_source")
+            {
+                if (!measuringOhms)
+                    element = c.addCurrentSource(name, node(i, "+"), node(i, "-"), waveform(inst));
+            }
+            else if (id == "vcvs")
+                element = c.addVcvs(name, node(i, "+"), node(i, "-"), node(i, "CP+"), node(i, "CP-"), number(inst, "value", 10.0));
+            else if (id == "vccs")
+                element = c.addVccs(name, node(i, "+"), node(i, "-"), node(i, "CP+"), node(i, "CP-"), number(inst, "value", 1e-3));
+            else if (id == "ccvs" || id == "cccs")
+            {
+                const auto sense = c.addVoltageSource(name + "_sense", node(i, "S+"), node(i, "S-"), dcWave(0.0));
+                element = id == "ccvs" ? c.addCcvs(name, node(i, "+"), node(i, "-"), sense, number(inst, "value", 1e3))
+                                       : c.addCccs(name, node(i, "+"), node(i, "-"), sense, number(inst, "value", 10.0));
+            }
+            else if (id == "opamp_741")
+            {
+                circuit_sim::OpAmpModel m;
+                m.gain = number(inst, "gain", 2e5);
+                m.railDrop = number(inst, "headroom", 1.5);
+                element = c.addOpAmp(name, node(i, "IN+"), node(i, "IN-"), node(i, "OUT"), node(i, "V+"), node(i, "V-"), m);
+            }
+            else if (id == "npn" || id == "pnp")
+            {
+                circuit_sim::BjtModel m;
+                m.betaForward = number(inst, "beta", 100.0);
+                m.saturationCurrent = number(inst, "saturation_current", 1e-14);
+                element = c.addBjt(name, id == "npn", node(i, "C"), node(i, "B"), node(i, "E"), m);
+            }
+            else if (id == "nmos" || id == "pmos")
+            {
+                circuit_sim::MosModel m;
+                m.threshold = std::abs(number(inst, "threshold", 2.0));
+                m.transconductance = number(inst, "k", 20e-3);
+                m.lambda = number(inst, "lambda", 0.01);
+                element = c.addMosfet(name, id == "nmos", node(i, "D"), node(i, "G"), node(i, "S"), m);
+            }
+            else if (id == "njfet" || id == "pjfet")
+            {
+                const auto idss = number(inst, "idss", 10e-3);
+                const auto vp = std::max(0.05, std::abs(number(inst, "pinchoff", 2.0)));
+                circuit_sim::MosModel m;
+                m.threshold = -vp;
+                m.transconductance = 2.0 * idss / (vp * vp);
+                m.lambda = 0.0;
+                element = c.addMosfet(name, id == "njfet", node(i, "D"), node(i, "G"), node(i, "S"), m);
+            }
+            else if (id == "switch_spst")
+            {
+                if (partValue(inst, "state") == "Closed")
+                    element = c.addResistor(name, node(i, "1"), node(i, "2"), 1e-3);
+            }
+            else if (id == "switch_spdt")
+                element = c.addResistor(name, node(i, "C"), node(i, partValue(inst, "state") == "B" ? "B" : "A"), 1e-3);
+            else if (id == "relay_spst")
+            {
+                c.addResistor(name + "_coil", node(i, "COIL+"), node(i, "COIL-"), number(inst, "coil_resistance", 100.0));
+                if (partValue(inst, "state") == "Closed")
+                    element = c.addResistor(name, node(i, "1"), node(i, "2"), 1e-3);
+            }
+            else if (id == "fuse")
+                element = c.addResistor(name, node(i, "1"), node(i, "2"), 0.01);
+            else if (id == "oscilloscope_2ch")
+            {
+                c.addResistor(name + "_ch1", node(i, "CH1"), node(i, "REF"), 10e6);
+                element = c.addResistor(name + "_ch2", node(i, "CH2"), node(i, "REF"), 10e6);
+            }
+            else if (id == "bode_analyzer")
+            {
+                c.addResistor(name + "_in", node(i, "IN"), node(i, "REF"), 10e6);
+                element = c.addResistor(name + "_out", node(i, "OUT"), node(i, "REF"), 10e6);
+            }
+            else if (id == "digital_multimeter")
+            {
+                if (i == ohmmeter)
+                    element = c.addCurrentSource(name, node(i, "LO"), node(i, "HI"), dcWave(1e-3));
+                else if (partValue(inst, "value") == "DC A")
+                    element = c.addVoltageSource(name, node(i, "HI"), node(i, "LO"), dcWave(0.0));
+                else
+                    element = c.addResistor(name, node(i, "HI"), node(i, "LO"), 10e6);
+            }
+            else if (id.startsWith("logic_"))
+                sim.warnings.add(inst.refdes + " (" + parts::displayName(id) + ") is not simulated yet.");
+
+            if (element >= 0)
+                sim.elementOfPart[inst.refdes] = element;
+        }
+        return sim;
+    }
+
+    // Pin label (R1.2, SCOPE1.CH1) -> solver node, or -1.
+    int simNodeForLabel(const SimNetlist& sim, const juce::String& label, juce::String& error) const
+    {
+        WireNode n;
+        if (!nodeFromLabel(label, n, error))
+            return -1;
+        const auto net = netForNode(n, computeNetNames());
+        if (net == "0")
+            return 0;
+        const auto found = sim.nodeOfNet.find(net);
+        if (found == sim.nodeOfNet.end())
+        {
+            error = label + " is not connected to anything the simulator sees.";
+            return -1;
+        }
+        return found->second;
+    }
+
+    struct WaveStats
+    {
+        double minimum = 0, maximum = 0, mean = 0, rms = 0, frequency = 0;
+    };
+
+    static WaveStats statsOf(const std::vector<double>& t, const std::vector<double>& v, double fromTime)
+    {
+        WaveStats s;
+        std::vector<double> tt, vv;
+        for (size_t i = 0; i < t.size(); ++i)
+            if (t[i] >= fromTime) { tt.push_back(t[i]); vv.push_back(v[i]); }
+        if (vv.empty())
+            return s;
+        s.minimum = *std::min_element(vv.begin(), vv.end());
+        s.maximum = *std::max_element(vv.begin(), vv.end());
+        double sum = 0, sq = 0;
+        for (auto x : vv) { sum += x; sq += x * x; }
+        s.mean = sum / (double)vv.size();
+        s.rms = std::sqrt(sq / (double)vv.size());
+        // Frequency from rising crossings of the mean.
+        std::vector<double> crossings;
+        for (size_t i = 1; i < vv.size(); ++i)
+            if (vv[i - 1] < s.mean && vv[i] >= s.mean)
+            {
+                const auto f = (s.mean - vv[i - 1]) / (vv[i] - vv[i - 1]);
+                crossings.push_back(tt[i - 1] + f * (tt[i] - tt[i - 1]));
+            }
+        if (crossings.size() >= 2 && (s.maximum - s.minimum) > 1e-9)
+            s.frequency = (double)(crossings.size() - 1) / (crossings.back() - crossings.front());
+        return s;
+    }
+
+    juce::String netDisplayName(const juce::String& net, const std::map<int, juce::String>& netNames) const
+    {
+        if (net == "0")
+            return "GND";
+        for (int i = 0; i < (int)instances.size(); ++i)
+            if ((instances[(size_t)i].symbolId == "power_port" || instances[(size_t)i].symbolId == "net_label"
+                 || instances[(size_t)i].symbolId == "power_bus")
+                && netFor({ i, 0 }, netNames) == net)
+                return instances[(size_t)i].busName;
+        return net;
+    }
+
+    juce::StringArray pinsOnNet(const juce::String& net, const std::map<int, juce::String>& netNames, int limit = 6) const
+    {
+        juce::StringArray pins;
+        for (int i = 0; i < (int)instances.size() && pins.size() < limit; ++i)
+        {
+            if (isNetMarker(instances[(size_t)i].symbolId))
+                continue;
+            const auto symbol = symbolForInstance(instances[(size_t)i]);
+            for (int p = 0; p < (int)symbol.pins.size() && pins.size() < limit; ++p)
+                if (netFor({ i, p }, netNames) == net)
+                    pins.add(pinLabel({ i, p }));
+        }
+        return pins;
+    }
+
+    juce::File simulationOutputFile(const juce::String& name) const
+    {
+        const auto folder = outputDirectory != nullptr ? outputDirectory() : juce::File::getSpecialLocation(juce::File::tempDirectory);
+        folder.createDirectory();
+        return folder.getChildFile(name);
+    }
+
+    juce::String runSimulationTool(const juce::String& name, const juce::var& args)
+    {
+        auto text = [&](const char* key) { return args.getProperty(key, {}).toString().trim(); };
+        auto warningsJson = [](const SimNetlist& sim) {
+            juce::StringArray quoted;
+            for (const auto& w : sim.warnings) quoted.add(quote(w));
+            return "[" + quoted.joinIntoString(", ") + "]";
+        };
+        const auto netNames = computeNetNames();
+
+        if (name == "simulation_operating_point")
+        {
+            auto sim = buildSimNetlist();
+            const auto op = circuit_sim::solveOperatingPoint(sim.circuit);
+            if (!op.ok)
+                return toolFailure(name, "DC operating point failed: " + juce::String(op.error));
+            juce::String nets = "[";
+            bool first = true;
+            for (const auto& [net, n] : sim.nodeOfNet)
+            {
+                nets << (first ? "" : ", ") << "{ \"net\": " << quote(netDisplayName(net, netNames))
+                     << ", \"voltage\": " << juce::String(op.voltages[(size_t)n], 6)
+                     << ", \"pins\": " << quote(pinsOnNet(net, netNames).joinIntoString(" ")) << " }";
+                first = false;
+            }
+            nets << "]";
+            juce::String currents = "[";
+            first = true;
+            for (const auto& [refdes, element] : sim.elementOfPart)
+            {
+                const auto type = sim.circuit.elements()[(size_t)element].type;
+                if (type != circuit_sim::Element::Type::VoltageSource)
+                    continue;
+                // Report current delivered out of the + terminal.
+                currents << (first ? "" : ", ") << "{ \"part\": " << quote(refdes) << ", \"currentOutOfPlus\": "
+                         << juce::String(-op.sourceCurrents[(size_t)element], 9) << " }";
+                first = false;
+            }
+            currents << "]";
+            return "{ \"ok\": true, \"tool\": " + quote(name) + ", \"nets\": " + nets + ", \"sourceCurrents\": " + currents
+                 + ", \"warnings\": " + warningsJson(sim) + " }";
+        }
+
+        if (name == "simulation_transient")
+        {
+            auto sim = buildSimNetlist();
+            const auto stop = parseQuantity(text("stop"), 0.0);
+            if (stop <= 0.0)
+                return toolFailure(name, "stop must be a positive time such as 10m.");
+            const auto step = text("step").isNotEmpty() ? parseQuantity(text("step"), stop / 2000.0) : stop / 2000.0;
+            juce::StringArray probes;
+            if (const auto* list = args.getProperty("probes", {}).getArray())
+                for (const auto& p : *list) probes.add(p.toString().trim());
+            std::vector<int> probeNodes;
+            for (const auto& probe : probes)
+            {
+                juce::String error;
+                const auto n = simNodeForLabel(sim, probe, error);
+                if (n < 0)
+                    return toolFailure(name, error);
+                probeNodes.push_back(n);
+            }
+            const auto tr = circuit_sim::solveTransient(sim.circuit, stop, step);
+            if (!tr.ok)
+                return toolFailure(name, "Transient failed: " + juce::String(tr.error));
+
+            const auto csv = simulationOutputFile("transient.csv");
+            juce::String table = "time";
+            for (const auto& p : probes) table << "," << p;
+            table << "\n";
+            for (size_t s = 0; s < tr.time.size(); ++s)
+            {
+                table << juce::String(tr.time[s], 9);
+                for (auto n : probeNodes) table << "," << juce::String(tr.voltages[s][(size_t)n], 6);
+                table << "\n";
+            }
+            csv.replaceWithText(table);
+
+            juce::String stats = "[";
+            for (size_t k = 0; k < probes.size(); ++k)
+            {
+                std::vector<double> v;
+                for (const auto& sample : tr.voltages) v.push_back(sample[(size_t)probeNodes[k]]);
+                const auto s = statsOf(tr.time, v, stop * 0.5); // second half: past the start-up
+                stats << (k == 0 ? "" : ", ") << "{ \"probe\": " << quote(probes[(int)k])
+                      << ", \"min\": " << juce::String(s.minimum, 6) << ", \"max\": " << juce::String(s.maximum, 6)
+                      << ", \"peakToPeak\": " << juce::String(s.maximum - s.minimum, 6) << ", \"mean\": " << juce::String(s.mean, 6)
+                      << ", \"rms\": " << juce::String(s.rms, 6) << ", \"frequencyHz\": " << juce::String(s.frequency, 6) << " }";
+            }
+            stats << "]";
+            return "{ \"ok\": true, \"tool\": " + quote(name) + ", \"stop\": " + juce::String(stop, 9) + ", \"step\": " + juce::String(step, 9)
+                 + ", \"statsOverSecondHalf\": " + stats + ", \"csv\": " + quote(csv.getFullPathName()) + ", \"warnings\": " + warningsJson(sim) + " }";
+        }
+
+        if (name == "simulation_ac")
+        {
+            auto sim = buildSimNetlist();
+            juce::String error;
+            const auto in = simNodeForLabel(sim, text("input"), error);
+            if (in < 0) return toolFailure(name, "input: " + error);
+            const auto out = simNodeForLabel(sim, text("output"), error);
+            if (out < 0) return toolFailure(name, "output: " + error);
+            const auto start = parseQuantity(text("start"), 10.0);
+            const auto stop = parseQuantity(text("stop"), 100e3);
+            const auto ppd = text("pointsPerDecade").isNotEmpty() ? text("pointsPerDecade").getIntValue() : 20;
+            const auto ac = circuit_sim::solveAc(sim.circuit, start, stop, ppd);
+            if (!ac.ok)
+                return toolFailure(name, "AC sweep failed: " + juce::String(ac.error));
+
+            std::vector<double> gainDb, phase;
+            for (const auto& v : ac.voltages)
+            {
+                const auto h = std::abs(v[(size_t)in]) > 1e-15 ? v[(size_t)out] / v[(size_t)in] : std::complex<double>(0.0);
+                gainDb.push_back(20.0 * std::log10(std::max(1e-15, std::abs(h))));
+                phase.push_back(std::arg(h) * 180.0 / juce::MathConstants<double>::pi);
+            }
+            const auto peak = *std::max_element(gainDb.begin(), gainDb.end());
+            juce::StringArray corners;
+            for (size_t k = 1; k < gainDb.size(); ++k)
+            {
+                const auto a = gainDb[k - 1] - (peak - 3.0103), b = gainDb[k] - (peak - 3.0103);
+                if ((a < 0) != (b < 0))
+                {
+                    const auto f = std::exp(std::log(ac.frequency[k - 1]) + (std::log(ac.frequency[k]) - std::log(ac.frequency[k - 1])) * (a / (a - b)));
+                    corners.add(juce::String(f, 4));
+                }
+            }
+            const auto csv = simulationOutputFile("ac_sweep.csv");
+            juce::String table = "frequency,gain_db,phase_deg\n";
+            for (size_t k = 0; k < gainDb.size(); ++k)
+                table << juce::String(ac.frequency[k], 6) << "," << juce::String(gainDb[k], 4) << "," << juce::String(phase[k], 3) << "\n";
+            csv.replaceWithText(table);
+            juce::String rows = "[";
+            const auto stride = std::max<size_t>(1, gainDb.size() / 12);
+            for (size_t k = 0; k < gainDb.size(); k += stride)
+                rows << (k == 0 ? "" : ", ") << "{ \"hz\": " << juce::String(ac.frequency[k], 4) << ", \"db\": " << juce::String(gainDb[k], 3)
+                     << ", \"deg\": " << juce::String(phase[k], 2) << " }";
+            rows << "]";
+            return "{ \"ok\": true, \"tool\": " + quote(name) + ", \"peakGainDb\": " + juce::String(peak, 4)
+                 + ", \"minus3dBFrequenciesHz\": [" + corners.joinIntoString(", ") + "], \"samples\": " + rows
+                 + ", \"csv\": " + quote(csv.getFullPathName()) + ", \"warnings\": " + warningsJson(sim) + " }";
+        }
+
+        return toolFailure(name, "Unknown simulation tool.");
+    }
+
 public:
     // Renders one sheet to a PNG exactly as the canvas draws it.
     juce::String exportSheetImage(const juce::String& sheet, juce::File& written)
@@ -4789,6 +5330,8 @@ public:
 
     juce::String runSchematicTool(const juce::String& name, const juce::var& args)
     {
+        if (name == "simulation_operating_point" || name == "simulation_transient" || name == "simulation_ac")
+            return runSimulationTool(name, args);
         auto text = [&](const juce::String& key) { return args.getProperty(juce::Identifier(key), {}).toString().trim(); };
         auto ok = [&](const juce::String& body) {
             forceDeferredRepaint();

@@ -297,7 +297,7 @@ const juce::StringArray& supportedSymbolIds()
         "nmos", "pmos", "njfet", "pjfet", "switch_spst", "switch_spdt", "relay_spst",
         "fuse", "connector_2", "connector_3", "test_point", "logic_not", "logic_and",
         "logic_or", "logic_nand", "logic_nor", "logic_xor", "oscilloscope_2ch",
-        "digital_multimeter"
+        "digital_multimeter", "bode_analyzer"
     };
     return ids;
 }
@@ -361,6 +361,7 @@ SymbolDef symbolFor(const juce::String& id)
         return make(id, title, { -36, -30, 76, 60 }, { { "A", { -48, -24 } }, { "B", { -48, 24 } }, { "Y", { 48, 0 } } });
     }
     if (id == "oscilloscope_2ch")    return make(id, "SCOPE", { -60, -48, 120, 96 }, { { "CH1", { -72, -24 } }, { "CH2", { -72, 24 } }, { "REF", { 0, 72 } } }, true);
+    if (id == "bode_analyzer")       return make(id, "BODE", { -60, -48, 120, 96 }, { { "IN", { -72, -24 } }, { "OUT", { -72, 24 } }, { "REF", { 0, 72 } } }, true);
     if (id == "digital_multimeter")  return make(id, "DMM", { -48, -36, 96, 72 }, { { "HI", { -72, -24 } }, { "LO", { -72, 24 } } }, true);
     return {};
 }
@@ -395,6 +396,7 @@ juce::String refdesPrefixFor(const juce::String& id)
     if (id == "power_bus") return "PBUS";
     if (id == "oscilloscope_2ch") return "SCOPE";
     if (id == "digital_multimeter") return "DMM";
+    if (id == "bode_analyzer") return "FRA";
     return "U";
 }
 
@@ -405,7 +407,7 @@ bool isPowerSymbol(const juce::String& id)
 
 bool isInstrumentSymbol(const juce::String& id)
 {
-    return id == "oscilloscope_2ch" || id == "digital_multimeter";
+    return id == "oscilloscope_2ch" || id == "digital_multimeter" || id == "bode_analyzer";
 }
 
 bool isRailBus(const juce::String& id)
@@ -874,6 +876,28 @@ void drawSymbolArt(juce::Graphics& g, const SymbolDef& symbol, const juce::Strin
         g.setColour(juce::Colour(0xff78dcca));
         sineIn(g, screen.reduced(6.0f, 10.0f), 2.0f);
         text(g, "SCOPE", body.withHeight(20.0f), 11.0f);
+        g.setColour(lineColour);
+        line(g, { -72, -24 }, { -60, -24 });
+        line(g, { -72, 24 }, { -60, 24 });
+        line(g, { 0, 48 }, { 0, 72 });
+    }
+    else if (id == "bode_analyzer")
+    {
+        const juce::Rectangle<float> body { -60, -48, 120, 96 };
+        g.setColour(instrumentFill);
+        g.fillRoundedRectangle(body, 6.0f);
+        g.setColour(juce::Colour(0xff9b8cff));
+        g.drawRoundedRectangle(body, 6.0f, 2.0f);
+        const auto screen = body.reduced(12.0f, 18.0f).translated(0.0f, 6.0f);
+        g.setColour(juce::Colour(0xff26323d));
+        g.fillRoundedRectangle(screen, 4.0f);
+        juce::Path curve; // a low-pass magnitude response
+        curve.startNewSubPath(screen.getX() + 4.0f, screen.getY() + 12.0f);
+        curve.lineTo(screen.getCentreX(), screen.getY() + 12.0f);
+        curve.quadraticTo(screen.getCentreX() + 14.0f, screen.getY() + 12.0f, screen.getRight() - 6.0f, screen.getBottom() - 6.0f);
+        g.setColour(juce::Colour(0xff9b8cff));
+        strokePath(g, curve, 1.6f);
+        text(g, "BODE", body.withHeight(20.0f), 11.0f);
         g.setColour(lineColour);
         line(g, { -72, -24 }, { -60, -24 });
         line(g, { -72, 24 }, { -60, 24 });

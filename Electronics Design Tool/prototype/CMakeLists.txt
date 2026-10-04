@@ -81,6 +81,10 @@ target_sources(DjehutiElectronicsLab PRIVATE
     Source/ElectronicsWorkbenchProjects.cpp
     Source/ProjectStore.h
     Source/ProjectStore.cpp
+    Source/PartCatalog.h
+    Source/PartCatalog.cpp
+    Source/CircuitSolver.h
+    Source/CircuitSolver.cpp
     Source/SchematicSymbols.h
     Source/SchematicSymbols.cpp
     Source/SchematicLayout.h
