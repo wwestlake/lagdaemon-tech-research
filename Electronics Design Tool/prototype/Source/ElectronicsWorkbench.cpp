@@ -2239,12 +2239,28 @@ public:
             adjacency[(size_t)b].insert(a);
         }
 
+        float minX = std::numeric_limits<float>::max();
+        float maxX = std::numeric_limits<float>::lowest();
+        for (int index : scopeSet)
+        {
+            minX = std::min(minX, instances[(size_t)index].position.x);
+            maxX = std::max(maxX, instances[(size_t)index].position.x);
+        }
+        const auto originalSpan = std::max(1.0f, maxX - minX);
+
+        auto originalColumn = [&](int index) {
+            const auto normalized = (instances[(size_t)index].position.x - minX) / originalSpan;
+            return std::clamp((int)std::round(normalized * 5.0f), 0, 5);
+        };
+
         std::vector<int> rank(instances.size(), 3);
         std::vector<int> queue;
         for (int index : scopeSet)
         {
             const auto base = roleColumn(instances[(size_t)index]);
-            rank[(size_t)index] = base;
+            rank[(size_t)index] = base == 2 || base == 3 || base == 4
+                ? std::clamp(originalColumn(index), 1, 5)
+                : base;
             if (base == 0)
                 queue.push_back(index);
         }
@@ -2257,12 +2273,32 @@ public:
                 if (!scopeSet.count(next) || isInstrumentNode(instances[(size_t)next].symbolId))
                     continue;
                 const auto proposed = std::min(5, rank[(size_t)current] + 1);
-                if (proposed < rank[(size_t)next] || queue.size() == 1)
+                if (proposed > rank[(size_t)next])
                 {
-                    rank[(size_t)next] = std::max(rank[(size_t)next], proposed);
+                    rank[(size_t)next] = proposed;
                     if (std::find(queue.begin(), queue.end(), next) == queue.end())
                         queue.push_back(next);
                 }
+            }
+        }
+
+        for (int pass = 0; pass < 4; ++pass)
+        {
+            for (int index : scopeSet)
+            {
+                const auto role = roleColumn(instances[(size_t)index]);
+                if (role != 2)
+                    continue;
+
+                int connectedSignalRank = -1;
+                for (int next : adjacency[(size_t)index])
+                {
+                    const auto nextRole = roleColumn(instances[(size_t)next]);
+                    if (nextRole == 0 || nextRole == 3 || nextRole == 6)
+                        connectedSignalRank = std::max(connectedSignalRank, rank[(size_t)next]);
+                }
+                if (connectedSignalRank >= 0)
+                    rank[(size_t)index] = std::clamp(connectedSignalRank, 1, 5);
             }
         }
 
@@ -2291,6 +2327,20 @@ public:
                 const auto& ib = instances[(size_t)b];
                 const auto ra = roleColumn(ia);
                 const auto rb = roleColumn(ib);
+                const auto lane = [](const Instance& instance, int role) {
+                    if (role == 1) return 0;
+                    if (instance.busName.startsWith("+")) return 0;
+                    if (role == 0) return 2;
+                    if (role == 3) return 3;
+                    if (role == 6) return 3;
+                    if (instance.symbolId == "ground" || instance.symbolId == "ground_bus") return 7;
+                    if (instance.refdes.startsWithIgnoreCase("R")) return instance.position.y < 300.0f ? 1 : 5;
+                    if (instance.refdes.startsWithIgnoreCase("C")) return instance.position.y < 900.0f ? 3 : 5;
+                    return 4;
+                };
+                const auto la = lane(ia, ra);
+                const auto lb = lane(ib, rb);
+                if (la != lb) return la < lb;
                 if (ra != rb) return ra < rb;
                 if (ia.position.y != ib.position.y) return ia.position.y < ib.position.y;
                 return ia.refdes < ib.refdes;
@@ -2298,28 +2348,26 @@ public:
         }
 
         constexpr float x0 = 144.0f;
-        constexpr float y0 = 120.0f;
+        constexpr float y0 = 96.0f;
         constexpr float dx = 180.0f;
-        constexpr float dy = 132.0f;
+        constexpr float dy = 96.0f;
         for (size_t columnIndex = 0; columnIndex < columns.size(); ++columnIndex)
         {
             auto& column = columns[columnIndex];
-            const auto columnHeight = (float)std::max(0, (int)column.size() - 1) * dy;
-            const auto top = y0 + std::max(0.0f, 264.0f - columnHeight * 0.5f);
             for (size_t row = 0; row < column.size(); ++row)
             {
                 auto& instance = instances[(size_t)column[row]];
                 float x = x0 + (float)columnIndex * dx;
-                float y = top + (float)row * dy;
+                float y = y0 + (float)row * dy;
 
                 if (instance.symbolId == "power_port" || instance.symbolId == "power_bus")
                     y = 48.0f + (float)row * 72.0f;
                 else if (instance.symbolId == "ground" || instance.symbolId == "ground_bus")
-                    y += 96.0f;
+                    y = 624.0f + (float)row * 72.0f;
                 else if (isInstrumentNode(instance.symbolId))
-                    y = 132.0f + (float)row * 156.0f;
+                    y = 192.0f + (float)row * 156.0f;
 
-            instance.position = snapPoint({ x, y });
+                instance.position = snapPoint({ x, y });
             }
         }
 
