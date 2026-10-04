@@ -206,6 +206,11 @@ const SchematicToolSpec schematicToolSpecs[] = {
         R"({"type":"object","properties":{"refdes":{"type":"string","description":"Instrument reference designator, such as SCOPE1, DMM1, or FRA1."}},"required":["refdes"],"additionalProperties":false})"
     },
     {
+        "schematic_convert_supply",
+        "Switch how a supply or ground is drawn, like the right-click menu: a power/ground rail becomes a supply port or ground symbol at every pin it feeds (to: symbols), or the supply ports of one net / the ground symbols on a sheet become one rail with a tap to each pin (to: rail). The circuit is unchanged.",
+        R"({"type":"object","properties":{"refdes":{"type":"string","description":"A rail (PBUS1, GBUS1) or one of the symbols (PWR3, GND2)."},"to":{"type":"string","description":"rail or symbols."}},"required":["refdes","to"],"additionalProperties":false})"
+    },
+    {
         "schematic_get_parameters",
         "List a part's editable properties (key, label, current value, unit, choices), its rotation and its sheet - the same fields the Properties pane shows.",
         R"({"type":"object","properties":{"refdes":{"type":"string","description":"Reference designator such as R1, V1, Q2, SCOPE1."}},"required":["refdes"],"additionalProperties":false})"
@@ -2048,11 +2053,39 @@ public:
         menu.addItem(10, "Rename Sub-Diagram...", blockUnderMouse >= 0);
         menu.addItem(11, "Expand Sub-Diagram", blockUnderMouse >= 0);
         menu.addItem(12, "Up One Level", currentSheet.isNotEmpty());
+        const auto supplyUnderMouse = [&] {
+            for (int i = (int)instances.size() - 1; i >= 0; --i)
+            {
+                const auto& instance = instances[(size_t)i];
+                if (instance.sheet != currentSheet) continue;
+                if (isRailBus(instance.symbolId) && railBounds(instance).expanded(0.0f, hitDistance(12.0f)).contains(modelPosition)) return i;
+                if ((instance.symbolId == "ground" || instance.symbolId == "power_port")
+                    && orientedBounds(instance, symbolForInstance(instance)).expanded(hitDistance(6.0f)).contains(modelPosition)) return i;
+            }
+            return -1;
+        }();
+        if (supplyUnderMouse >= 0)
+        {
+            menu.addSeparator();
+            const auto& supply = instances[(size_t)supplyUnderMouse];
+            if (supply.symbolId == "power_bus") menu.addItem(13, "Change Rail to Supply Ports");
+            else if (supply.symbolId == "ground_bus") menu.addItem(13, "Change Rail to Ground Symbols");
+            else if (supply.symbolId == "ground") menu.addItem(14, "Change Ground Symbols to Ground Rail");
+            else menu.addItem(14, "Change " + supply.busName + " Ports to a Rail");
+        }
         menu.addSeparator();
         menu.addItem(3, "Disconnect Here");
 
-        menu.showMenuAsync(juce::PopupMenu::Options(), [this, modelPosition, blockUnderMouse](int result) {
+        const auto supplyRefdes = supplyUnderMouse >= 0 ? instances[(size_t)supplyUnderMouse].refdes : juce::String();
+        menu.showMenuAsync(juce::PopupMenu::Options(), [this, modelPosition, blockUnderMouse, supplyRefdes](int result) {
             const auto blockRefdes = blockUnderMouse >= 0 ? instances[(size_t)blockUnderMouse].refdes : juce::String();
+            if (result == 13 || result == 14)
+            {
+                juce::String error;
+                const auto index = instanceIndexForRefdesAnySheet(supplyRefdes);
+                const auto done = result == 13 ? railToSymbols(index, error) : symbolsToRail(index, error);
+                if (done.isEmpty() && onStatus) onStatus("Could not change the supply form: " + error);
+            }
             if (result == 8)
                 promptSubDiagramFromSelection();
             else if (result == 9 && blockIndexFor(blockRefdes) >= 0)
@@ -5208,6 +5241,150 @@ private:
     }
 
 public:
+    // ---- Supply forms: a rail, or a symbol at every pin (same net either way) ----
+
+    // Pins wired to a rail through its taps or its anchor.
+    std::vector<PinRef> railAttachedPins(int rail, std::set<int>& taps) const
+    {
+        for (const auto& wire : wires)
+        {
+            if (nodeTouchesInstance(wire.a, rail) && wire.b.isJunction()) taps.insert(wire.b.junctionIndex);
+            if (nodeTouchesInstance(wire.b, rail) && wire.a.isJunction()) taps.insert(wire.a.junctionIndex);
+        }
+        std::vector<PinRef> pins;
+        auto attached = [&](const WireNode& n) { return nodeTouchesInstance(n, rail) || (n.isJunction() && taps.count(n.junctionIndex) != 0); };
+        for (const auto& wire : wires)
+        {
+            if (attached(wire.a) && wire.b.isPin() && wire.b.pin.instanceIndex != rail) pins.push_back(wire.b.pin);
+            if (attached(wire.b) && wire.a.isPin() && wire.a.pin.instanceIndex != rail) pins.push_back(wire.a.pin);
+        }
+        return pins;
+    }
+
+    // A ground symbol or named supply port one grid step off `pin`, wired to it,
+    // pointing the way SCH-P1/P2 want (ground and negative supplies down).
+    void addSupplySymbol(const PinRef& pin, const juce::String& symbolId, const juce::String& netName)
+    {
+        const auto at = pinPosition(pin);
+        const auto dir = nodeLeadDirection(WireNode::forPin(pin));
+        const auto down = symbolId == "ground" || netName.startsWith("-");
+        const juce::Point<float> want { 0.0f, down ? 1.0f : -1.0f };
+        auto position = at + dir * schematic::gridSize;
+        if (!(dir.x * want.x + dir.y * want.y > 0.5f || std::abs(dir.x) > 0.5f))
+            position += juce::Point<float>(schematic::gridSize * 2.0f, 0.0f);
+
+        Instance marker;
+        marker.symbolId = symbolId;
+        marker.refdes = nextRefdesFor(symbolId);
+        marker.value = symbolId == "ground" ? juce::String("0") : juce::String();
+        marker.busName = symbolId == "ground" ? defaultBusNameFor("ground") : netName;
+        marker.family = familyFor(symbolId);
+        marker.position = snapToGrid(position);
+        marker.rotation = symbolId == "power_port" && down ? 180 : 0;
+        marker.busLength = 0.0f;
+        marker.sheet = currentSheet;
+        instances.push_back(marker);
+        wires.push_back({ WireNode::forPin({ (int)instances.size() - 1, 0 }), WireNode::forPin(pin) });
+    }
+
+    juce::String railToSymbols(int rail, juce::String& error)
+    {
+        if (rail < 0 || rail >= (int)instances.size() || !isRailBus(instances[(size_t)rail].symbolId))
+        {
+            error = "Not a power or ground rail.";
+            return {};
+        }
+        const auto ground = instances[(size_t)rail].symbolId == "ground_bus";
+        const auto netName = instances[(size_t)rail].busName;
+        const auto railName = instances[(size_t)rail].refdes;
+        std::set<int> taps;
+        auto pins = railAttachedPins(rail, taps);
+        if (pins.empty())
+        {
+            error = railName + " has nothing connected to it.";
+            return {};
+        }
+        juce::StringArray dropped;
+        const auto map = removeInstancesAndJunctions({ rail }, taps, dropped);
+        for (auto& pin : pins)
+            pin.instanceIndex = map[(size_t)pin.instanceIndex];
+        for (const auto& pin : pins)
+            addSupplySymbol(pin, ground ? "ground" : "power_port", netName);
+        notifySelection();
+        forceDeferredRepaint();
+        if (onStatus) onStatus("Changed " + railName + " into " + juce::String((int)pins.size()) + (ground ? " ground symbols." : " supply ports."));
+        return "{ \"converted\": " + quote(railName) + ", \"to\": \"symbols\", \"symbols\": " + juce::String((int)pins.size()) + " }";
+    }
+
+    juce::String symbolsToRail(int marker, juce::String& error)
+    {
+        if (marker < 0 || marker >= (int)instances.size()
+            || (instances[(size_t)marker].symbolId != "ground" && instances[(size_t)marker].symbolId != "power_port"))
+        {
+            error = "Not a ground symbol or supply port.";
+            return {};
+        }
+        const auto ground = instances[(size_t)marker].symbolId == "ground";
+        const auto netName = instances[(size_t)marker].busName;
+        const auto sheet = instances[(size_t)marker].sheet;
+
+        // Every symbol of this net on the sheet becomes part of one rail.
+        std::set<int> markers;
+        for (int i = 0; i < (int)instances.size(); ++i)
+            if (instances[(size_t)i].sheet == sheet && instances[(size_t)i].symbolId == instances[(size_t)marker].symbolId
+                && (ground || instances[(size_t)i].busName == netName))
+                markers.insert(i);
+        std::vector<PinRef> pins;
+        for (const auto& wire : wires)
+        {
+            if (wire.a.isPin() && markers.count(wire.a.pin.instanceIndex) != 0 && wire.b.isPin() && markers.count(wire.b.pin.instanceIndex) == 0) pins.push_back(wire.b.pin);
+            if (wire.b.isPin() && markers.count(wire.b.pin.instanceIndex) != 0 && wire.a.isPin() && markers.count(wire.a.pin.instanceIndex) == 0) pins.push_back(wire.a.pin);
+        }
+        if (pins.empty())
+        {
+            error = "Those symbols are not wired to any pins.";
+            return {};
+        }
+
+        float minX = std::numeric_limits<float>::max(), maxX = std::numeric_limits<float>::lowest();
+        float minY = minX, maxY = maxX;
+        for (const auto& pin : pins)
+        {
+            const auto p = pinPosition(pin);
+            minX = std::min(minX, p.x); maxX = std::max(maxX, p.x);
+            minY = std::min(minY, p.y); maxY = std::max(maxY, p.y);
+        }
+
+        juce::StringArray dropped;
+        const auto map = removeInstancesAndJunctions(markers, {}, dropped);
+        for (auto& pin : pins)
+            pin.instanceIndex = map[(size_t)pin.instanceIndex];
+
+        Instance rail;
+        rail.symbolId = ground ? "ground_bus" : "power_bus";
+        rail.refdes = nextRefdesFor(rail.symbolId);
+        rail.busName = ground ? defaultBusNameFor("ground_bus") : netName;
+        rail.value = rail.busName;
+        rail.family = familyFor(rail.symbolId);
+        rail.busLength = std::max(120.0f, std::round((maxX - minX + 96.0f) / 48.0f) * 48.0f);
+        rail.position = snapToGrid({ (minX + maxX) * 0.5f, ground ? maxY + 72.0f : minY - 72.0f });
+        rail.sheet = sheet;
+        const auto railIndex = (int)instances.size();
+        instances.push_back(rail);
+        const auto viewing = currentSheet;
+        currentSheet = sheet;
+        for (const auto& pin : pins)
+        {
+            const auto tap = createRailTap(railIndex, { pinPosition(pin).x, instances[(size_t)railIndex].position.y });
+            wires.push_back({ WireNode::forPin(pin), tap });
+        }
+        currentSheet = viewing;
+        notifySelection();
+        forceDeferredRepaint();
+        if (onStatus) onStatus("Changed " + juce::String((int)markers.size()) + (ground ? " ground symbols" : " " + netName + " ports") + " into rail " + rail.refdes + ".");
+        return "{ \"converted\": " + juce::String((int)markers.size()) + ", \"to\": \"rail\", \"rail\": " + quote(rail.refdes) + " }";
+    }
+
     // ---- Part editing: shared by the properties pane and the agent ----
 
     struct PartView
@@ -5799,6 +5976,17 @@ public:
         if (name == "instrument_read")
             return instrumentReadJson(args.getProperty("refdes", {}).toString());
         auto arg = [&](const char* key) { return args.getProperty(key, {}).toString().trim(); };
+        if (name == "schematic_convert_supply")
+        {
+            juce::String error;
+            const auto index = instanceIndexForRefdesAnySheet(arg("refdes"));
+            const auto to = arg("to").toLowerCase();
+            const auto done = to == "rail" ? symbolsToRail(index, error) : to == "symbols" ? railToSymbols(index, error)
+                                                                          : juce::String();
+            if (done.isEmpty())
+                return toolFailure(name, error.isNotEmpty() ? error : juce::String("to must be \"rail\" or \"symbols\"."));
+            return "{ \"ok\": true, \"tool\": " + quote(name) + ", \"result\": " + done + " }";
+        }
         if (name == "schematic_get_parameters")
             return parametersJson(arg("refdes"));
         if (name == "schematic_set_parameters")
