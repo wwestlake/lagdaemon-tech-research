@@ -2391,6 +2391,13 @@ public:
         const auto& instance = instances[(size_t)index];
         if (!isInstrumentNode(instance.symbolId))
             return toolFailure("instrument_open_panel", instance.refdes + " is not an instrument node.");
+        const auto symbol = symbolFor(instance.symbolId);
+        int connectedPins = 0;
+        for (int pin = 0; pin < (int)symbol.pins.size(); ++pin)
+            if (wireCountAtPin({ index, pin }) > 0)
+                ++connectedPins;
+        if (connectedPins == 0)
+            return toolFailure("instrument_open_panel", instance.refdes + " is an unconnected instrument node. Wire the instrument on the schematic first; users open panels by double-clicking placed instruments.");
         if (!onInstrumentOpen)
             return toolFailure("instrument_open_panel", "Instrument window host is unavailable.");
 
@@ -2404,7 +2411,8 @@ public:
         result << "  \"tool\": \"instrument_open_panel\",\n";
         result << "  \"displayTool\": \"instrument.open_panel\",\n";
         result << "  \"refdes\": " << quote(instance.refdes) << ",\n";
-        result << "  \"symbolId\": " << quote(instance.symbolId) << "\n";
+        result << "  \"symbolId\": " << quote(instance.symbolId) << ",\n";
+        result << "  \"connectedPins\": " << connectedPins << "\n";
         result << "}";
         return result;
     }
@@ -5690,12 +5698,15 @@ private:
     {
         return "You are the embedded BYOK assistant for Djehuti Electronics Lab. "
                "The circuit JSON model is authoritative. Use tools when you need current schematic facts, "
-               "electrical checks, exported artifacts, or diagram edits. Prefer schematic instrument nodes "
-               "for scopes and meters, wire pins by labels such as R1.1 or SCOPE2.CH1, and remember "
-               "that floating instrument windows are preferred. "
+               "electrical checks, exported artifacts, or diagram edits. Create instruments as schematic nodes "
+               "for scopes and meters, wire pins by labels such as R1.1 or SCOPE2.CH1, and do not open floating "
+               "instrument panels unless the user explicitly asks you to open a panel. In this system, users open "
+               "a scope or DMM panel by double-clicking the placed instrument node. "
                "Use filter_design_high_pass when asked to synthesize a matched RLC high-pass filter and produce AC response artifacts. "
                "Use amplifier_design_push_pull when asked for a push-pull, class B, class AB, or complementary emitter-follower audio output stage. "
                "Use schematic_auto_layout after creating or editing a diagram so the result is readable and spaced. "
+               "After placing or connecting a generated circuit, use circuit_inspect and circuit_run_erc before claiming the circuit exists or is ready. "
+               "If a schematic_connect call fails, correct the pin labels using the available-labels error; do not continue as if it succeeded. "
                "Use cookbook_lookup when requirements imply topology selection, design equations, validation recipes, troubleshooting, "
                "or when you need to compare established circuit candidates before building. "
                "Use cookbook_coverage to inspect cookbook domain coverage and identify missing recipe areas. "
@@ -5711,8 +5722,8 @@ private:
                "Use agent_write_markdown when producing a durable report, derivation, or equation-rich explanation that should be saved and rendered in this agent window. "
                "Use research_web_search only when current external information, standards references, datasheets, or source links are needed; summarize sources conservatively. "
                "Use filesystem LiteSemRAG cards as retrieved guidance; do not assume Suite VFS storage. "
-               "Be concise, report tool results plainly, and do not claim a circuit is ready for solver-backed "
-               "analysis until circuit_run_erc has passed or you have explained the remaining warnings.";
+               "Be concise, report tool results plainly, and do not claim a circuit is complete or ready for solver-backed "
+               "analysis until circuit_run_erc has passed or you have explicitly reported the remaining errors/warnings.";
     }
 
     std::vector<ai_provider::ToolDefinition> toolDefinitions() const
@@ -5820,8 +5831,8 @@ private:
             },
             {
                 "instrument_open_panel",
-                "Open the floating instrument panel for a placed instrument node.",
-                R"({"type":"object","properties":{"refdes":{"type":"string","description":"Reference designator of a placed instrument node, such as SCOPE2 or DMM3."}},"required":["refdes"],"additionalProperties":false})"
+                "Open the floating instrument panel for a placed and wired instrument node only when the user explicitly asks to open that panel. Do not call this as part of normal circuit creation; users open panels by double-clicking instrument nodes.",
+                R"({"type":"object","properties":{"refdes":{"type":"string","description":"Reference designator of an existing, wired instrument node, such as SCOPE2 or DMM3. Use only after an explicit user request to open the panel."}},"required":["refdes"],"additionalProperties":false})"
             }
         };
     }
@@ -6635,6 +6646,7 @@ ElectronicsWorkbench::ElectronicsWorkbench()
         return panel->openInstrumentFromTool(refdes);
     };
     designHighPassTool = [this, panel = schematic.get()](double cutoffHz, double impedanceOhms) {
+        closeFloatingInstrumentWindows();
         const auto schematicResult = panel->createRlcHighPassFilterFromTool(cutoffHz, impedanceOhms);
         const auto parsed = juce::JSON::parse(schematicResult);
         if (!parsed.isObject() || !(bool)parsed.getProperty("ok", false))
@@ -6642,6 +6654,7 @@ ElectronicsWorkbench::ElectronicsWorkbench()
         return designRlcHighPassFilterTool(cutoffHz, impedanceOhms);
     };
     designPushPullTool = [this, panel = schematic.get()] {
+        closeFloatingInstrumentWindows();
         const auto schematicResult = panel->createPushPullAmplifierFromTool();
         const auto parsed = juce::JSON::parse(schematicResult);
         if (!parsed.isObject() || !(bool)parsed.getProperty("ok", false))
@@ -6932,8 +6945,17 @@ void ElectronicsWorkbench::appendLog(const juce::String& text)
         logConsole->insertTextAtCaret("\n// " + text + "\n> ");
 }
 
+void ElectronicsWorkbench::closeFloatingInstrumentWindows()
+{
+    for (auto* window : floatingInstrumentWindows)
+        if (window != nullptr)
+            window->setVisible(false);
+    floatingInstrumentWindows.clear();
+}
+
 void ElectronicsWorkbench::resetResearchState()
 {
+    closeFloatingInstrumentWindows();
     if (resetCircuit != nullptr)
         resetCircuit();
     else
@@ -6979,6 +7001,7 @@ void ElectronicsWorkbench::openProjectFile()
         return;
     }
 
+    closeFloatingInstrumentWindows();
     juce::String error;
     if (!loadCircuitJson(file.loadFileAsString(), error))
     {
@@ -7225,14 +7248,15 @@ juce::String ElectronicsWorkbench::buildAssistantToolManifestJson() const
     text << "    {\n";
     text << "      \"name\": \"instrument_open_panel\",\n";
     text << "      \"displayName\": \"instrument.open_panel\",\n";
-    text << "      \"description\": \"Open a floating instrument panel for a schematic instrument node.\",\n";
+    text << "      \"description\": \"Open a floating instrument panel only for an existing wired schematic instrument node, and only after an explicit user request. Normal AI circuit creation should place and wire instrument nodes, not open panels.\",\n";
     text << "      \"status\": \"active\",\n";
-    text << "      \"inputs\": { \"refdes\": \"instrument reference designator\" }\n";
+    text << "      \"inputs\": { \"refdes\": \"existing wired instrument reference designator\" }\n";
     text << "    }\n";
     text << "  ],\n";
     text << "  \"instrumentPolicy\": {\n";
     text << "    \"preferredPlacement\": \"schematic_node\",\n";
-    text << "    \"preferredWindowMode\": \"floating\",\n";
+    text << "    \"panelOpenRule\": \"user_double_clicks_placed_instrument_node\",\n";
+    text << "    \"assistantPanelOpenPolicy\": \"only_after_explicit_user_request\",\n";
     text << "    \"dockableLater\": true,\n";
     text << "    \"supportedNodes\": [\"oscilloscope_2ch\", \"digital_multimeter\"]\n";
     text << "  }\n";

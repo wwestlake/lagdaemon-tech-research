@@ -46,6 +46,7 @@ private:
     void openProjectFile();
     void runElectricalRuleCheck();
     void openInstrumentWindow(juce::String refdes, juce::String symbolId);
+    void closeFloatingInstrumentWindows();
     void exportAssistantToolManifest();
     juce::String buildAssistantToolManifestJson() const;
     juce::String cookbookLookupTool(const juce::String& query, int maxCards) const;
