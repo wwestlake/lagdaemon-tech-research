@@ -4,6 +4,7 @@
 #include "SchematicSymbols.h"
 
 #include <ai_provider/AiConfig.h>
+#include <libavoid/libavoid.h>
 
 #include <algorithm>
 #include <array>
@@ -2226,6 +2227,25 @@ public:
             return 4;
         };
 
+        auto layoutLane = [](const Instance& instance, int role) {
+            const auto bus = instance.busName.trim();
+            if (role == 1 && bus.startsWith("+")) return 0;
+            if (role == 1 && bus.startsWith("-")) return 7;
+            if (role == 1) return 0;
+            if (instance.symbolId == "ground" || instance.symbolId == "ground_bus") return 8;
+            if (role == 0) return 3;
+            if (role == 3) return 3;
+            if (role == 6) return 3;
+            if (instance.symbolId == "resistor" || instance.symbolId == "diode"
+                || instance.symbolId == "zener_diode" || instance.symbolId == "led"
+                || instance.symbolId == "schottky_diode")
+                return instance.position.y < 360.0f ? 2 : 5;
+            if (instance.symbolId == "capacitor" || instance.symbolId == "inductor"
+                || instance.symbolId == "potentiometer")
+                return 4;
+            return 4;
+        };
+
         std::vector<std::set<int>> adjacency(instances.size());
         for (const auto& wire : wires)
         {
@@ -2237,6 +2257,32 @@ public:
                 continue;
             adjacency[(size_t)a].insert(b);
             adjacency[(size_t)b].insert(a);
+        }
+
+        const auto netNames = computeNetNames();
+        std::map<juce::String, std::vector<int>> netInstances;
+        for (int i = 0; i < (int)instances.size(); ++i)
+        {
+            const auto symbol = symbolFor(instances[(size_t)i].symbolId);
+            for (int p = 0; p < (int)symbol.pins.size(); ++p)
+            {
+                const auto net = netFor({ i, p }, netNames);
+                if (net.isEmpty() || net == "floating" || net == "0"
+                    || net.startsWithIgnoreCase("P") || net.startsWithIgnoreCase("N"))
+                    continue;
+                netInstances[net].push_back(i);
+            }
+        }
+        for (auto& [net, members] : netInstances)
+        {
+            std::sort(members.begin(), members.end());
+            members.erase(std::unique(members.begin(), members.end()), members.end());
+            for (size_t a = 0; a < members.size(); ++a)
+                for (size_t b = a + 1; b < members.size(); ++b)
+                {
+                    adjacency[(size_t)members[a]].insert(members[b]);
+                    adjacency[(size_t)members[b]].insert(members[a]);
+                }
         }
 
         float minX = std::numeric_limits<float>::max();
@@ -2327,19 +2373,8 @@ public:
                 const auto& ib = instances[(size_t)b];
                 const auto ra = roleColumn(ia);
                 const auto rb = roleColumn(ib);
-                const auto lane = [](const Instance& instance, int role) {
-                    if (role == 1) return 0;
-                    if (instance.busName.startsWith("+")) return 0;
-                    if (role == 0) return 2;
-                    if (role == 3) return 3;
-                    if (role == 6) return 3;
-                    if (instance.symbolId == "ground" || instance.symbolId == "ground_bus") return 7;
-                    if (instance.refdes.startsWithIgnoreCase("R")) return instance.position.y < 300.0f ? 1 : 5;
-                    if (instance.refdes.startsWithIgnoreCase("C")) return instance.position.y < 900.0f ? 3 : 5;
-                    return 4;
-                };
-                const auto la = lane(ia, ra);
-                const auto lb = lane(ib, rb);
+                const auto la = layoutLane(ia, ra);
+                const auto lb = layoutLane(ib, rb);
                 if (la != lb) return la < lb;
                 if (ra != rb) return ra < rb;
                 if (ia.position.y != ib.position.y) return ia.position.y < ib.position.y;
@@ -2347,27 +2382,50 @@ public:
             });
         }
 
-        constexpr float x0 = 144.0f;
-        constexpr float y0 = 96.0f;
-        constexpr float dx = 180.0f;
-        constexpr float dy = 96.0f;
+        constexpr float x0 = 168.0f;
+        constexpr float dx = 216.0f;
+        constexpr std::array<float, 9> laneY { 48.0f, 144.0f, 240.0f, 360.0f, 480.0f,
+                                               600.0f, 696.0f, 792.0f, 912.0f };
         for (size_t columnIndex = 0; columnIndex < columns.size(); ++columnIndex)
         {
             auto& column = columns[columnIndex];
+            std::array<int, laneY.size()> laneCounts {};
             for (size_t row = 0; row < column.size(); ++row)
             {
                 auto& instance = instances[(size_t)column[row]];
                 float x = x0 + (float)columnIndex * dx;
-                float y = y0 + (float)row * dy;
-
-                if (instance.symbolId == "power_port" || instance.symbolId == "power_bus")
-                    y = 48.0f + (float)row * 72.0f;
-                else if (instance.symbolId == "ground" || instance.symbolId == "ground_bus")
-                    y = 624.0f + (float)row * 72.0f;
-                else if (isInstrumentNode(instance.symbolId))
-                    y = 192.0f + (float)row * 156.0f;
+                const auto lane = (size_t)std::clamp(layoutLane(instance, roleColumn(instance)), 0, (int)laneY.size() - 1);
+                const auto y = laneY[lane] + (float)laneCounts[lane] * 72.0f;
+                ++laneCounts[lane];
 
                 instance.position = snapPoint({ x, y });
+            }
+        }
+
+        for (int pass = 0; pass < 3; ++pass)
+        {
+            for (int junctionIndex = 0; junctionIndex < (int)junctions.size(); ++junctionIndex)
+            {
+                juce::Array<juce::Point<float>> connectedPins;
+                for (const auto& wire : wires)
+                {
+                    if (wire.a.isJunction() && wire.a.junctionIndex == junctionIndex && wire.b.isPin())
+                        connectedPins.add(nodePosition(wire.b));
+                    if (wire.b.isJunction() && wire.b.junctionIndex == junctionIndex && wire.a.isPin())
+                        connectedPins.add(nodePosition(wire.a));
+                }
+                if (connectedPins.isEmpty())
+                    continue;
+
+                float x = 0.0f;
+                float y = 0.0f;
+                for (const auto& point : connectedPins)
+                {
+                    x += point.x;
+                    y += point.y;
+                }
+                junctions[(size_t)junctionIndex] = snapPoint({ x / (float)connectedPins.size(),
+                                                               y / (float)connectedPins.size() });
             }
         }
 
@@ -3190,6 +3248,9 @@ private:
 
     std::vector<juce::Point<float>> routedWirePoints(const WireNode& a, const WireNode& b) const
     {
+        auto routed = avoidRoutedWirePoints(a, b);
+        if (!routed.empty())
+            return routed;
         return routedWirePoints(a, nodePosition(b), nodeLeadDirection(b));
     }
 
@@ -3222,6 +3283,91 @@ private:
 
         if (b.getDistanceFrom(endRun) > 0.1f)
             points.push_back(b);
+
+        return points;
+    }
+
+    static Avoid::Polygon avoidRectangle(juce::Rectangle<float> bounds)
+    {
+        Avoid::Polygon polygon(4);
+        polygon.setPoint(0, Avoid::Point(bounds.getX(), bounds.getY()));
+        polygon.setPoint(1, Avoid::Point(bounds.getRight(), bounds.getY()));
+        polygon.setPoint(2, Avoid::Point(bounds.getRight(), bounds.getBottom()));
+        polygon.setPoint(3, Avoid::Point(bounds.getX(), bounds.getBottom()));
+        return polygon;
+    }
+
+    static unsigned int avoidDirectionForLead(juce::Point<float> lead)
+    {
+        if (std::abs(lead.x) > std::abs(lead.y))
+            return lead.x < 0.0f ? Avoid::ConnDirLeft : Avoid::ConnDirRight;
+        if (std::abs(lead.y) > 0.001f)
+            return lead.y < 0.0f ? Avoid::ConnDirUp : Avoid::ConnDirDown;
+        return Avoid::ConnDirAll;
+    }
+
+    std::vector<juce::Point<float>> avoidRoutedWirePoints(const WireNode& a, const WireNode& b) const
+    {
+        if (!a.isValid() || !b.isValid())
+            return {};
+
+        Avoid::Router router(Avoid::OrthogonalRouting);
+        router.setRoutingParameter(Avoid::segmentPenalty, 50.0);
+        router.setRoutingParameter(Avoid::shapeBufferDistance, 14.0);
+        router.setRoutingParameter(Avoid::idealNudgingDistance, 8.0);
+        router.setRoutingOption(Avoid::nudgeOrthogonalSegmentsConnectedToShapes, true);
+        router.setTransactionUse(true);
+
+        constexpr auto leadLength = 24.0f;
+        const auto start = nodePosition(a);
+        const auto end = nodePosition(b);
+        const auto aLead = nodeLeadDirection(a);
+        const auto bLead = nodeLeadDirection(b);
+        const auto startRun = aLead == juce::Point<float>() ? start : start + aLead * leadLength;
+        const auto endRun = bLead == juce::Point<float>() ? end : end + bLead * leadLength;
+
+        for (int i = 0; i < (int)instances.size(); ++i)
+        {
+            const auto symbol = symbolFor(instances[(size_t)i].symbolId);
+            auto bounds = orientedBounds(instances[(size_t)i], symbol).expanded(10.0f);
+            if (a.isPin() && a.pin.instanceIndex == i)
+                bounds = bounds.withSizeKeepingCentre(std::max(8.0f, bounds.getWidth() - 36.0f),
+                                                       std::max(8.0f, bounds.getHeight() - 36.0f));
+            if (b.isPin() && b.pin.instanceIndex == i)
+                bounds = bounds.withSizeKeepingCentre(std::max(8.0f, bounds.getWidth() - 36.0f),
+                                                       std::max(8.0f, bounds.getHeight() - 36.0f));
+            auto polygon = avoidRectangle(bounds);
+            new Avoid::ShapeRef(&router, polygon);
+        }
+
+        Avoid::ConnEnd source(Avoid::Point(startRun.x, startRun.y), avoidDirectionForLead(aLead));
+        Avoid::ConnEnd dest(Avoid::Point(endRun.x, endRun.y), avoidDirectionForLead(bLead));
+        auto* connector = new Avoid::ConnRef(&router, source, dest);
+        connector->setRoutingType(Avoid::ConnType_Orthogonal);
+        router.processTransaction();
+
+        auto& route = connector->displayRoute();
+        if (route.ps.size() < 2)
+            return {};
+
+        std::vector<juce::Point<float>> points;
+        points.push_back(start);
+        if (startRun.getDistanceFrom(start) > 0.1f)
+            points.push_back(startRun);
+
+        for (const auto& point : route.ps)
+        {
+            juce::Point<float> p { (float)point.x, (float)point.y };
+            if (points.empty() || p.getDistanceFrom(points.back()) > 0.1f)
+                points.push_back(p);
+        }
+
+        if (end.getDistanceFrom(points.back()) > 0.1f)
+        {
+            if (endRun.getDistanceFrom(points.back()) > 0.1f)
+                points.push_back(endRun);
+            points.push_back(end);
+        }
 
         return points;
     }
@@ -5590,6 +5736,24 @@ public:
         for (const auto& definition : toolDefinitions())
             toolNames.add(juce::String(definition.name));
         snapshot->setProperty("tools", toolNames);
+
+        if (tools.inspectCircuit != nullptr)
+        {
+            const auto circuit = juce::JSON::parse(tools.inspectCircuit());
+            auto* summary = new juce::DynamicObject();
+            if (const auto* circuitObject = circuit.getDynamicObject())
+            {
+                if (const auto* components = circuitObject->getProperty("components").getArray())
+                    summary->setProperty("componentCount", (int)components->size());
+                if (const auto* wires = circuitObject->getProperty("wires").getArray())
+                    summary->setProperty("wireCount", (int)wires->size());
+                if (const auto* junctions = circuitObject->getProperty("junctions").getArray())
+                    summary->setProperty("junctionCount", (int)junctions->size());
+                if (const auto* groups = circuitObject->getProperty("groups").getArray())
+                    summary->setProperty("groupCount", (int)groups->size());
+            }
+            snapshot->setProperty("circuitSummary", juce::var(summary));
+        }
         return juce::var(snapshot);
     }
 
@@ -5755,6 +5919,7 @@ private:
                "Use schematic_auto_layout after creating or editing a diagram so the result is readable and spaced. "
                "After placing or connecting a generated circuit, use circuit_inspect and circuit_run_erc before claiming the circuit exists or is ready. "
                "If a schematic_connect call fails, correct the pin labels using the available-labels error; do not continue as if it succeeded. "
+               "When reporting component counts, wire counts, ERC counts, or artifact paths, copy them from tool results or circuit_inspect; never infer or invent them. "
                "Use cookbook_lookup when requirements imply topology selection, design equations, validation recipes, troubleshooting, "
                "or when you need to compare established circuit candidates before building. "
                "Use cookbook_coverage to inspect cookbook domain coverage and identify missing recipe areas. "

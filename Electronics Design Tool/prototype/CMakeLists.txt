@@ -50,6 +50,7 @@ add_library(libavoid STATIC
     "${LIBAVOID_ROOT}/hyperedgetree.cpp"
     "${LIBAVOID_ROOT}/junction.cpp"
     "${LIBAVOID_ROOT}/makepath.cpp"
+    "${LIBAVOID_ROOT}/mtst.cpp"
     "${LIBAVOID_ROOT}/obstacle.cpp"
     "${LIBAVOID_ROOT}/orthogonal.cpp"
     "${LIBAVOID_ROOT}/router.cpp"
