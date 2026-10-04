@@ -732,12 +732,22 @@ public:
         filter.setTextToShowWhenEmpty("Search components, MPNs, aliases...", juce::Colour(0xff71808c));
         styleTextEditor(filter);
         filter.setMultiLine(false);
-        filter.onTextChange = [this] { refreshFilter(); };
+        filter.onTextChange = [this] { content.rebuild(); };
         addAndMakeVisible(filter);
+
+        viewport.setViewedComponent(&content, false);
+        viewport.setScrollBarsShown(true, false);
+        viewport.setScrollBarThickness(10);
+        addAndMakeVisible(viewport);
 
         if (!loadSeedLibrary())
             addFallbackLibrary();
-        refreshFilter();
+        // Placeable net markers that the seed list does not carry.
+        if (std::none_of(allSymbols.begin(), allSymbols.end(), [](const SymbolInfo& s) { return s.id == "power_port"; }))
+            add({ "power_port", "Supply Port (+V / -V)", "Power & Ground" });
+        if (std::none_of(allSymbols.begin(), allSymbols.end(), [](const SymbolInfo& s) { return s.id == "net_label"; }))
+            add({ "net_label", "Net Label", "Power & Ground" });
+        content.rebuild();
 
         if (onSymbolSelected != nullptr)
             onSymbolSelected("resistor");
@@ -749,23 +759,6 @@ public:
         g.setColour(juce::Colour(0xffdce9ee));
         g.setFont(juce::Font(14.0f, juce::Font::bold));
         g.drawText("Component Library", getLocalBounds().removeFromTop(24).reduced(8, 0), juce::Justification::centredLeft);
-
-        rowBounds.clear();
-        auto listArea = getLocalBounds().reduced(8);
-        listArea.removeFromTop(24);
-        listArea.removeFromTop(28);
-        listArea.removeFromTop(8);
-        g.setColour(juce::Colour(0xff10161d));
-        g.fillRect(listArea);
-
-        int y = listArea.getY() + 4;
-        for (int row = 0; row < (int)listModel.items.size(); ++row)
-        {
-            auto rowArea = juce::Rectangle<int>(listArea.getX() + 4, y, listArea.getWidth() - 8, 42);
-            rowBounds.push_back(rowArea);
-            paintSymbolRow(g, row, rowArea);
-            y += 44;
-        }
     }
 
     void resized() override
@@ -773,138 +766,224 @@ public:
         auto area = getLocalBounds().reduced(8);
         area.removeFromTop(24);
         filter.setBounds(area.removeFromTop(28));
-    }
-
-    void mouseMove(const juce::MouseEvent& event) override
-    {
-        const auto row = rowAt(event.getPosition());
-        if (row != hoverRow)
-        {
-            hoverRow = row;
-            repaint();
-        }
-    }
-
-    void mouseExit(const juce::MouseEvent&) override
-    {
-        hoverRow = -1;
-        repaint();
-    }
-
-    void mouseDown(const juce::MouseEvent& event) override
-    {
-        const auto row = rowAt(event.getPosition());
-        if (row < 0 || row >= (int)listModel.items.size())
-            return;
-
-        selectedRow = row;
-        const auto& symbol = listModel.items[(size_t)row];
-        if (onSymbolSelected != nullptr)
-            onSymbolSelected(symbol.id);
-
-        repaint();
-        if (auto* container = juce::DragAndDropContainer::findParentDragContainerFor(this))
-        {
-            showCursorForEvent(event, juce::MouseCursor::DraggingHandCursor);
-            container->startDragging("symbol:" + symbol.id, this);
-        }
-    }
-
-    void mouseDoubleClick(const juce::MouseEvent& event) override
-    {
-        const auto row = rowAt(event.getPosition());
-        if (row < 0 || row >= (int)listModel.items.size())
-            return;
-
-        selectedRow = row;
-        const auto& symbol = listModel.items[(size_t)row];
-        if (onSymbolSelected != nullptr)
-            onSymbolSelected(symbol.id);
-        repaint();
+        area.removeFromTop(8);
+        viewport.setBounds(area);
+        content.layoutToWidth(area.getWidth() - viewport.getScrollBarThickness());
     }
 
 private:
-    class ComponentList final : public juce::ListBoxModel
+    // Display groups, in order. Seed categories map onto these; "Discrete"
+    // splits into diodes and transistors.
+    static juce::String groupFor(const SymbolInfo& symbol)
+    {
+        const auto& id = symbol.id;
+        const auto& c = symbol.category;
+        if (c == "Passive") return "Passives";
+        if (c == "Magnetics") return "Magnetics";
+        if (id.contains("diode") || id == "led") return "Diodes";
+        if (c == "Discrete") return "Transistors";
+        if (c == "Source") return "Sources";
+        if (c == "Controlled Source") return "Controlled Sources";
+        if (c == "Bus" || c == "Reference" || c == "Power & Ground") return "Power & Ground";
+        if (c == "Analog IC") return "Analog ICs";
+        if (c == "Digital") return "Digital Logic";
+        if (c == "Switch") return "Switches & Relays";
+        if (c == "Protection") return "Protection";
+        if (c == "Connector") return "Connectors & Test Points";
+        if (c == "Instrument") return "Instruments";
+        return c.isNotEmpty() ? c : juce::String("Other");
+    }
+
+    static const juce::StringArray& groupOrder()
+    {
+        static const juce::StringArray order { "Passives", "Magnetics", "Diodes", "Transistors", "Sources",
+                                               "Controlled Sources", "Power & Ground", "Analog ICs", "Digital Logic",
+                                               "Switches & Relays", "Protection", "Connectors & Test Points", "Instruments" };
+        return order;
+    }
+
+    static juce::Colour swatchFor(const juce::String& group)
+    {
+        if (group == "Sources" || group == "Controlled Sources") return juce::Colour(0xfff4d35e);
+        if (group == "Power & Ground") return juce::Colour(0xff78dcca);
+        if (group == "Analog ICs" || group == "Digital Logic") return juce::Colour(0xffffc857);
+        if (group == "Instruments") return juce::Colour(0xffff6b6b);
+        return juce::Colour(0xff5aa7c8);
+    }
+
+    // The scrolling list: group headers (click to collapse/expand) and rows.
+    class ListContent final : public juce::Component
     {
     public:
-        std::vector<SymbolInfo> items;
-        std::function<void(juce::String)> onSelected;
+        explicit ListContent(ComponentLibraryPanel& ownerPanel) : owner(ownerPanel) {}
 
-        int getNumRows() override { return (int)items.size(); }
-
-        void paintListBoxItem(int row, juce::Graphics& g, int width, int height, bool selected) override
+        struct Entry
         {
-            if (selected) g.fillAll(juce::Colour(0xff23394a));
-            if (row < 0 || row >= (int)items.size()) return;
-            const auto& item = items[(size_t)row];
-            g.setColour(item.id == "opamp_741" ? juce::Colour(0xffffc857) : juce::Colour(0xffdce9ee));
-            g.setFont(juce::Font(14.0f, juce::Font::bold));
-            g.drawText(item.name, 8, 2, width - 16, height / 2, juce::Justification::centredLeft);
-            g.setColour(juce::Colour(0xff93a7b0));
-            g.setFont(juce::Font(12.0f));
-            g.drawText(item.category, 8, height / 2 - 1, width - 16, height / 2, juce::Justification::centredLeft);
+            bool header = false;
+            juce::String group;
+            int symbol = -1; // index into allSymbols
+            int count = 0;   // header: rows in the group
+            juce::Rectangle<int> bounds;
+        };
+
+        void rebuild()
+        {
+            const auto needle = owner.filter.getText().trim().toLowerCase();
+            std::map<juce::String, std::vector<int>> byGroup;
+            for (int i = 0; i < (int)owner.allSymbols.size(); ++i)
+            {
+                const auto& symbol = owner.allSymbols[(size_t)i];
+                const auto haystack = (symbol.name + " " + symbol.id + " " + symbol.category + " " + groupFor(symbol)).toLowerCase();
+                if (needle.isEmpty() || haystack.contains(needle))
+                    byGroup[groupFor(symbol)].push_back(i);
+            }
+
+            juce::StringArray groups = groupOrder();
+            for (const auto& [group, rows] : byGroup)
+                groups.addIfNotAlreadyThere(group);
+
+            entries.clear();
+            for (const auto& group : groups)
+            {
+                const auto found = byGroup.find(group);
+                if (found == byGroup.end())
+                    continue;
+                entries.push_back({ true, group, -1, (int)found->second.size(), {} });
+                // Searching shows every match; otherwise collapsed groups hide their rows.
+                if (needle.isEmpty() && collapsed.contains(group))
+                    continue;
+                for (int index : found->second)
+                    entries.push_back({ false, group, index, 0, {} });
+            }
+            layoutToWidth(getWidth() > 0 ? getWidth() : 200);
         }
 
-        int getRowHeight() const { return 42; }
-
-        void selectedRowsChanged(int lastRowSelected) override
+        void layoutToWidth(int width)
         {
-            if (lastRowSelected >= 0 && lastRowSelected < (int)items.size() && onSelected != nullptr)
-                onSelected(items[(size_t)lastRowSelected].id);
+            int y = 2;
+            for (auto& entry : entries)
+            {
+                const auto height = entry.header ? 26 : 36;
+                entry.bounds = { 2, y, std::max(40, width - 4), height };
+                y += height + (entry.header ? 2 : 1);
+            }
+            setSize(std::max(40, width), y + 4);
+            repaint();
         }
-    };
 
-    class SymbolListBox final : public juce::ListBox
-    {
-    public:
-        explicit SymbolListBox(ComponentList& model)
-            : juce::ListBox("components", &model), listModel(model)
+        void paint(juce::Graphics& g) override
         {
+            g.fillAll(juce::Colour(0xff10161d));
+            for (int i = 0; i < (int)entries.size(); ++i)
+            {
+                const auto& entry = entries[(size_t)i];
+                auto area = entry.bounds;
+                if (entry.header)
+                {
+                    g.setColour(juce::Colour(0xff1d2731));
+                    g.fillRoundedRectangle(area.toFloat(), 4.0f);
+                    const auto open = owner.filter.getText().trim().isNotEmpty() || !collapsed.contains(entry.group);
+                    juce::Path arrow;
+                    const auto c = juce::Point<float>((float)area.getX() + 12.0f, (float)area.getCentreY());
+                    if (open)
+                        arrow.addTriangle(c.x - 4.0f, c.y - 2.0f, c.x + 4.0f, c.y - 2.0f, c.x, c.y + 3.0f);
+                    else
+                        arrow.addTriangle(c.x - 2.0f, c.y - 4.0f, c.x - 2.0f, c.y + 4.0f, c.x + 3.0f, c.y);
+                    g.setColour(juce::Colour(0xff93a7b0));
+                    g.fillPath(arrow);
+                    g.setColour(juce::Colour(0xffdce9ee));
+                    g.setFont(juce::Font(13.0f, juce::Font::bold));
+                    g.drawText(entry.group, area.withTrimmedLeft(24), juce::Justification::centredLeft, true);
+                    g.setColour(juce::Colour(0xff71808c));
+                    g.setFont(juce::Font(12.0f));
+                    g.drawText(juce::String(entry.count), area.withTrimmedRight(8), juce::Justification::centredRight);
+                    continue;
+                }
+
+                const auto& symbol = owner.allSymbols[(size_t)entry.symbol];
+                if (symbol.id == owner.selectedId)
+                {
+                    g.setColour(juce::Colour(0xff23394a));
+                    g.fillRoundedRectangle(area.toFloat(), 4.0f);
+                }
+                else if (i == hover)
+                {
+                    g.setColour(juce::Colour(0xff202b35));
+                    g.fillRoundedRectangle(area.toFloat(), 4.0f);
+                }
+                const auto swatch = juce::Rectangle<int>(10, 10).withCentre({ area.getX() + 22, area.getCentreY() });
+                g.setColour(swatchFor(entry.group));
+                g.fillRoundedRectangle(swatch.toFloat(), 3.0f);
+                g.setColour(juce::Colour(0xffdce9ee));
+                g.setFont(juce::Font(13.5f, juce::Font::bold));
+                g.drawText(symbol.name, area.withTrimmedLeft(34).withTrimmedBottom(16), juce::Justification::centredLeft, true);
+                g.setColour(juce::Colour(0xff93a7b0));
+                g.setFont(juce::Font(11.5f));
+                g.drawText(symbol.id, area.withTrimmedLeft(34).withTrimmedTop(18), juce::Justification::centredLeft, true);
+            }
+        }
+
+        int entryAt(juce::Point<int> p) const
+        {
+            for (int i = 0; i < (int)entries.size(); ++i)
+                if (entries[(size_t)i].bounds.contains(p))
+                    return i;
+            return -1;
+        }
+
+        void mouseMove(const juce::MouseEvent& event) override
+        {
+            const auto i = entryAt(event.getPosition());
+            if (i != hover) { hover = i; repaint(); }
+        }
+
+        void mouseExit(const juce::MouseEvent&) override
+        {
+            hover = -1;
+            repaint();
         }
 
         void mouseDown(const juce::MouseEvent& event) override
         {
-            juce::ListBox::mouseDown(event);
-            dragStartRow = getRowContainingPosition(event.x, event.y);
-            if (dragStartRow < 0 || dragStartRow >= (int)listModel.items.size())
+            const auto i = entryAt(event.getPosition());
+            if (i < 0)
                 return;
+            const auto entry = entries[(size_t)i];
+            if (entry.header)
+            {
+                if (owner.filter.getText().trim().isNotEmpty())
+                    return;
+                if (collapsed.contains(entry.group)) collapsed.removeString(entry.group);
+                else collapsed.add(entry.group);
+                rebuild();
+                return;
+            }
 
-            selectRow(dragStartRow);
+            const auto& symbol = owner.allSymbols[(size_t)entry.symbol];
+            owner.selectedId = symbol.id;
+            if (owner.onSymbolSelected != nullptr)
+                owner.onSymbolSelected(symbol.id);
+            repaint();
             if (auto* container = juce::DragAndDropContainer::findParentDragContainerFor(this))
             {
-                const auto& symbol = listModel.items[(size_t)dragStartRow];
                 showCursorForEvent(event, juce::MouseCursor::DraggingHandCursor);
                 container->startDragging("symbol:" + symbol.id, this);
             }
         }
 
-        void mouseDrag(const juce::MouseEvent& event) override
-        {
-            juce::ListBox::mouseDrag(event);
-        }
-
-        void mouseUp(const juce::MouseEvent& event) override
-        {
-            juce::ListBox::mouseUp(event);
-            showCursorForEvent(event, juce::MouseCursor::NormalCursor);
-            dragStarted = false;
-            dragStartRow = -1;
-        }
-
     private:
-        ComponentList& listModel;
-        int dragStartRow = -1;
-        bool dragStarted = false;
+        ComponentLibraryPanel& owner;
+        std::vector<Entry> entries;
+        juce::StringArray collapsed;
+        int hover = -1;
     };
 
     juce::TextEditor filter;
-    ComponentList listModel;
-    SymbolListBox components { listModel };
+    juce::Viewport viewport;
+    ListContent content { *this };
     std::vector<SymbolInfo> allSymbols;
-    std::vector<juce::Rectangle<int>> rowBounds;
     std::function<void(juce::String)> onSymbolSelected;
-    int hoverRow = -1;
-    int selectedRow = 0;
+    juce::String selectedId { "resistor" };
 
     void add(SymbolInfo item) { allSymbols.push_back(std::move(item)); }
 
@@ -990,62 +1069,6 @@ private:
         add({ "logic_xor", "XOR Gate - behavioral", "Digital" });
         add({ "oscilloscope_2ch", "2-Channel Oscilloscope", "Instrument" });
         add({ "digital_multimeter", "Digital Multimeter", "Instrument" });
-    }
-
-    void refreshFilter()
-    {
-        const auto needle = filter.getText().trim().toLowerCase();
-        listModel.items.clear();
-        for (const auto& symbol : allSymbols)
-        {
-            const auto haystack = (symbol.name + " " + symbol.id + " " + symbol.category).toLowerCase();
-            if (needle.isEmpty() || haystack.contains(needle))
-                listModel.items.push_back(symbol);
-        }
-        listModel.onSelected = onSymbolSelected;
-        selectedRow = listModel.items.empty() ? -1 : std::clamp(selectedRow, 0, (int)listModel.items.size() - 1);
-        repaint();
-    }
-
-    int rowAt(juce::Point<int> position) const
-    {
-        for (int i = 0; i < (int)rowBounds.size(); ++i)
-            if (rowBounds[(size_t)i].contains(position))
-                return i;
-        return -1;
-    }
-
-    void paintSymbolRow(juce::Graphics& g, int row, juce::Rectangle<int> area)
-    {
-        if (row < 0 || row >= (int)listModel.items.size())
-            return;
-
-        const auto& item = listModel.items[(size_t)row];
-        if (row == selectedRow)
-        {
-            g.setColour(juce::Colour(0xff23394a));
-            g.fillRoundedRectangle(area.toFloat(), 4.0f);
-        }
-        else if (row == hoverRow)
-        {
-            g.setColour(juce::Colour(0xff202b35));
-            g.fillRoundedRectangle(area.toFloat(), 4.0f);
-        }
-
-        const auto swatch = area.withWidth(10).withHeight(10).withCentre({ area.getX() + 13, area.getCentreY() });
-        g.setColour(item.category == "Source" ? juce::Colour(0xfff4d35e)
-                    : item.category == "Bus" ? juce::Colour(0xff78dcca)
-                    : item.category == "Analog IC" ? juce::Colour(0xffffc857)
-                    : item.category == "Instrument" ? juce::Colour(0xffff6b6b)
-                    : juce::Colour(0xff5aa7c8));
-        g.fillRoundedRectangle(swatch.toFloat(), 3.0f);
-
-        g.setColour(juce::Colour(0xffdce9ee));
-        g.setFont(juce::Font(14.0f, juce::Font::bold));
-        g.drawText(item.name, area.withTrimmedLeft(26).withTrimmedBottom(18), juce::Justification::centredLeft, true);
-        g.setColour(juce::Colour(0xff93a7b0));
-        g.setFont(juce::Font(12.0f));
-        g.drawText(item.category + "  " + item.id, area.withTrimmedLeft(26).withTrimmedTop(20), juce::Justification::centredLeft, true);
     }
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(ComponentLibraryPanel)
@@ -3246,6 +3269,8 @@ private:
     juce::String defaultBusNameFor(const juce::String& symbolId) const
     {
         if (symbolId == "power_bus") return "+V";
+        if (symbolId == "power_port") return "+5V";
+        if (symbolId == "net_label") return "NET1";
         if (symbolId == "ground" || symbolId == "ground_bus") return "0";
         return "";
     }
