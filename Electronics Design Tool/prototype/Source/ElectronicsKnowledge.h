@@ -28,6 +28,9 @@ struct RetrievalResult
 
 juce::File getKnowledgeRoot();
 juce::File getCardsDirectory();
+// The open project's memory folder; an empty File falls back to the
+// per-user folder used when no project is open.
+void setProjectMemoryDirectory(const juce::File& directory);
 juce::File getProjectMemoryCardsFile();
 juce::File getCapabilityGapsFile();
 std::vector<Card> allCards();

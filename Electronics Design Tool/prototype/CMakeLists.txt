@@ -78,6 +78,9 @@ target_sources(DjehutiElectronicsLab PRIVATE
     Source/Main.cpp
     Source/ElectronicsWorkbench.h
     Source/ElectronicsWorkbench.cpp
+    Source/ElectronicsWorkbenchProjects.cpp
+    Source/ProjectStore.h
+    Source/ProjectStore.cpp
     Source/SchematicSymbols.h
     Source/SchematicSymbols.cpp
     Source/SchematicLayout.h

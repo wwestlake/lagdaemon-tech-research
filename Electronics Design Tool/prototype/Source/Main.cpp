@@ -45,7 +45,10 @@ private:
 
         void closeButtonPressed() override
         {
-            juce::JUCEApplication::getInstance()->systemRequestedQuit();
+            if (auto* workbench = dynamic_cast<ElectronicsWorkbench*>(getContentComponent()))
+                workbench->confirmCloseThen([] { juce::JUCEApplication::getInstance()->quit(); });
+            else
+                juce::JUCEApplication::getInstance()->systemRequestedQuit();
         }
 
     private:

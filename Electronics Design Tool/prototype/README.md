@@ -49,17 +49,25 @@ D:\000 Tech Research\Electronics Design Tool\prototype\bin\Debug\djehuti_electro
 
 ## Project State
 
-`File > Save Project` writes the editable circuit model to:
+Work is organised as named projects that contain named diagrams:
 
 ```text
-D:\000 Tech Research\Electronics Design Tool\prototype\projects\current\circuit.json
+<location>\<Project Name>\          default location: Documents\Djehuti Electronics Lab\Projects
+  project.json                     name, created, diagram list, last open diagram
+  diagrams\<Diagram>.diagram.json  one diagram: all sheets, sub-diagrams, groups, wiring
+  outputs\<Diagram>\               netlists, ERC reports, simulations, images for that diagram
+  memory\                          the agent's project memory and capability gaps
+  deleted\                         diagrams removed from the project (moved, never erased)
 ```
 
-`File > Open Project...` loads that same circuit JSON back into the schematic.
-Simulation commands still export run artifacts under `sim/xyce/runs/generated`.
-`Circuit > Run ERC` writes `erc_report.md` in that generated run folder.
-It also writes `erc_tool_result.json` for the BYOK agent tool surface.
-`Agent > Export Tool Manifest` writes `assistant_tools.json` in the same folder.
+`File > New Project...` asks for a name and a storage location, then for the
+first diagram's name and saves it blank. The File menu also has Open Project,
+Recent Projects, Rename Project, New Diagram, Diagrams (switcher), Rename /
+Duplicate / Delete Diagram, Save Diagram and Save Diagram As. The window title
+shows `Project > Diagram`; the last project and diagram reopen on start;
+switching diagrams saves the current one; closing asks about unsaved changes.
+The agent has matching `project_*` and `diagram_*` tools.
+
 The BYOK Agent panel now uses the FrustIDE `ai_provider` library for OpenAI
 profiles, API keys, model selection, and tool-calling. Keys are stored outside
 the repo in user app data.

@@ -262,24 +262,37 @@ juce::File getCardsDirectory()
     return getKnowledgeRoot().getChildFile("cards");
 }
 
+namespace
+{
+juce::File& projectMemoryDirectory()
+{
+    static juce::File directory;
+    return directory;
+}
+
+juce::File memoryDirectory()
+{
+    if (projectMemoryDirectory() != juce::File())
+        return projectMemoryDirectory();
+    return juce::File::getSpecialLocation(juce::File::userApplicationDataDirectory)
+        .getChildFile("DjehutiElectronicsLab")
+        .getChildFile("memory");
+}
+}
+
+void setProjectMemoryDirectory(const juce::File& directory)
+{
+    projectMemoryDirectory() = directory;
+}
+
 juce::File getProjectMemoryCardsFile()
 {
-    return juce::File(ELECTRONICS_RESEARCH_ROOT)
-        .getChildFile("prototype")
-        .getChildFile("projects")
-        .getChildFile("current")
-        .getChildFile(".djehuti")
-        .getChildFile("MEMORY_PROJECT_CARDS.jsonl");
+    return memoryDirectory().getChildFile("MEMORY_PROJECT_CARDS.jsonl");
 }
 
 juce::File getCapabilityGapsFile()
 {
-    return juce::File(ELECTRONICS_RESEARCH_ROOT)
-        .getChildFile("prototype")
-        .getChildFile("projects")
-        .getChildFile("current")
-        .getChildFile(".djehuti")
-        .getChildFile("CAPABILITY_GAPS.jsonl");
+    return memoryDirectory().getChildFile("CAPABILITY_GAPS.jsonl");
 }
 
 std::vector<Card> allCards()

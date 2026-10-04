@@ -134,4 +134,6 @@ Discuss real design choices with the user before building (see repo
   touch a neighbour.
 - A junction dot occasionally sits one grid step off its T (seen once on the
   op-amp inverting node in the preview).
-- `projects/current/` is gitignored; saved diagrams are not in the repo.
+- Projects live outside the repo (named project folders, see README
+  "Project State"); the old single `projects/current/circuit.json` is no
+  longer used.

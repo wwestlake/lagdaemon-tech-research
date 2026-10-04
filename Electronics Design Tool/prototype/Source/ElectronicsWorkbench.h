@@ -3,6 +3,8 @@
 #include <JuceHeader.h>
 #include <CreationDock/DockManager.h>
 
+#include "ProjectStore.h"
+
 class ElectronicsWorkbench final : public juce::Component,
                                    public juce::DragAndDropContainer,
                                    public juce::MenuBarModel
@@ -18,12 +20,22 @@ public:
     juce::PopupMenu getMenuForIndex(int menuIndex, const juce::String& menuName) override;
     void menuItemSelected(int menuItemID, int topLevelMenuIndex) override;
 
+    // Asks to save an edited diagram, then runs `proceed` unless cancelled.
+    void confirmCloseThen(std::function<void()> proceed);
+    bool hasUnsavedChanges() const;
+
 private:
     enum MenuIds
     {
         newProject = 100,
         openProject,
-        saveProject,
+        saveProject,           // Save Diagram
+        saveDiagramAsItem,
+        renameProjectItem,
+        newDiagramItem,
+        renameDiagramItem,
+        duplicateDiagramItem,
+        deleteDiagramItem,
         exportSchematicImageItem,
         resetLayout,
         importComponent,
@@ -38,13 +50,41 @@ private:
         openResearchSpec
     };
 
+    static constexpr int recentProjectBase = 1000;
+    static constexpr int diagramMenuBase = 2000;
+
     juce::File layoutFile() const;
-    juce::File savedProjectFile() const;
     juce::File generatedRunDirectory() const;
     void appendLog(const juce::String& text);
     void resetResearchState();
-    void saveProjectFile();
-    void openProjectFile();
+
+    // Projects and diagrams (ElectronicsWorkbenchProjects.cpp).
+    void updateProjectTitle();
+    void useProjectMemory();
+    void autoSaveCurrentDiagram();
+    bool openProjectFolder(const juce::File& folder, juce::String& error);
+    bool createNewProject(const juce::File& location, const juce::String& name, juce::String& error);
+    bool openDiagram(const juce::String& name, juce::String& error);
+    bool createNewDiagram(const juce::String& name, juce::String& error);
+    bool saveDiagram(juce::String& error);
+    bool saveDiagramAs(const juce::String& name, juce::String& error);
+    bool renameDiagram(const juce::String& name, const juce::String& newName, juce::String& error);
+    bool deleteDiagram(const juce::String& name, juce::String& error);
+    void openMostRecentProject();
+    void promptForName(const juce::String& title, const juce::String& message, const juce::String& initial,
+                       std::function<void(const juce::String&)> onName);
+    void showNewProjectDialog();
+    void showOpenProjectDialog();
+    void showNewDiagramDialog();
+    void handleProjectMenu(int menuItemID);
+    void addProjectMenuItems(juce::PopupMenu& menu);
+    juce::String projectInfoJson() const;
+    juce::String projectTool(const juce::String& name, const juce::var& args);
+
+    project_store::Project project;
+    juce::String currentDiagram;
+    juce::String lastSavedJson;
+    std::unique_ptr<juce::FileChooser> projectChooser;
     void runElectricalRuleCheck();
     void openInstrumentWindow(juce::String refdes, juce::String symbolId);
     void closeFloatingInstrumentWindows();

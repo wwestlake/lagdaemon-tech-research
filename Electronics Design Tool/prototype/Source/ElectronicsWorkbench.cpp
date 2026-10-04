@@ -119,19 +119,69 @@ const SchematicToolSpec schematicToolSpecs[] = {
         R"({"type":"object","properties":{"sheet":{"type":"string","description":"Optional: block refdes or name to render its sheet, or 'main'."}},"additionalProperties":false})"
     },
     {
-        "project_save",
-        "Save the whole project (all sheets, sub-diagrams, groups, wiring) to the project file, like File > Save Project.",
-        R"({"type":"object","properties":{},"additionalProperties":false})"
+        "project_create",
+        "Create a new named project (a folder holding named diagrams) and make it the open project. Then create its first diagram with diagram_create.",
+        R"({"type":"object","properties":{"name":{"type":"string","description":"Project name; also the folder name."},"location":{"type":"string","description":"Optional parent folder; defaults to Documents\\Djehuti Electronics Lab\\Projects."}},"required":["name"],"additionalProperties":false})"
     },
     {
         "project_open",
-        "Open the saved project file, replacing the current schematic, like File > Open Project. The main sheet is shown afterwards.",
+        "Open a project by name (recent or in the default projects folder) or by folder path. Its last diagram opens; the current diagram is saved first.",
+        R"({"type":"object","properties":{"project":{"type":"string","description":"Project name or folder path."}},"required":["project"],"additionalProperties":false})"
+    },
+    {
+        "project_list",
+        "List known projects (recent and in the default projects folder) and show the open project.",
         R"({"type":"object","properties":{},"additionalProperties":false})"
     },
     {
-        "project_new",
-        "Start a new empty project, like File > New Research Project. Unsaved work is discarded, so save first if the user wants to keep it.",
+        "project_info",
+        "Show the open project: name, folder, diagrams, current diagram, and whether it has unsaved changes.",
         R"({"type":"object","properties":{},"additionalProperties":false})"
+    },
+    {
+        "project_rename",
+        "Rename the open project (its folder is renamed too).",
+        R"({"type":"object","properties":{"name":{"type":"string","description":"New project name."}},"required":["name"],"additionalProperties":false})"
+    },
+    {
+        "diagram_create",
+        "Create a new blank named diagram in the open project, save it, and open it. The current diagram is saved first.",
+        R"({"type":"object","properties":{"name":{"type":"string","description":"Diagram name."}},"required":["name"],"additionalProperties":false})"
+    },
+    {
+        "diagram_open",
+        "Open another diagram of the open project by name. The current diagram is saved first.",
+        R"({"type":"object","properties":{"name":{"type":"string","description":"Diagram name."}},"required":["name"],"additionalProperties":false})"
+    },
+    {
+        "diagram_list",
+        "List the open project's diagrams and which one is open.",
+        R"({"type":"object","properties":{},"additionalProperties":false})"
+    },
+    {
+        "diagram_save",
+        "Save the open diagram (all sheets, sub-diagrams, groups, wiring) to its file in the project.",
+        R"({"type":"object","properties":{},"additionalProperties":false})"
+    },
+    {
+        "diagram_save_as",
+        "Save the open diagram under a new name in the same project and switch to the new copy.",
+        R"({"type":"object","properties":{"name":{"type":"string","description":"New diagram name."}},"required":["name"],"additionalProperties":false})"
+    },
+    {
+        "diagram_rename",
+        "Rename a diagram of the open project (defaults to the open diagram).",
+        R"({"type":"object","properties":{"name":{"type":"string","description":"Diagram to rename; omit for the open diagram."},"newName":{"type":"string","description":"New name."}},"required":["newName"],"additionalProperties":false})"
+    },
+    {
+        "diagram_duplicate",
+        "Copy a saved diagram to a new name in the same project (defaults to the open diagram, saved first). The copy is not opened.",
+        R"({"type":"object","properties":{"name":{"type":"string","description":"Diagram to copy; omit for the open diagram."},"newName":{"type":"string","description":"Name of the copy."}},"required":["newName"],"additionalProperties":false})"
+    },
+    {
+        "diagram_delete",
+        "Remove a diagram from the open project. Its file is moved to the project's deleted folder, not erased.",
+        R"({"type":"object","properties":{"name":{"type":"string","description":"Diagram name."}},"required":["name"],"additionalProperties":false})"
     },
     {
         "schematic_group_list",
@@ -4702,12 +4752,14 @@ public:
         return result;
     }
 
-    static juce::File schematicImageFile(const juce::String& sheetLabel)
+    // Where generated files for the open diagram go (set by the workbench).
+    std::function<juce::File()> outputDirectory;
+
+    juce::File schematicImageFile(const juce::String& sheetLabel) const
     {
-        return juce::File::getSpecialLocation(juce::File::currentExecutableFile)
-            .getParentDirectory().getParentDirectory().getParentDirectory()
-            .getChildFile("sim").getChildFile("xyce").getChildFile("runs").getChildFile("generated")
-            .getChildFile("schematic_" + juce::File::createLegalFileName(sheetLabel).replaceCharacter(' ', '_') + ".png");
+        const auto folder = outputDirectory != nullptr ? outputDirectory()
+                                                       : juce::File::getSpecialLocation(juce::File::tempDirectory);
+        return folder.getChildFile("schematic_" + juce::File::createLegalFileName(sheetLabel).replaceCharacter(' ', '_') + ".png");
     }
 
     juce::String runSchematicTool(const juce::String& name, const juce::var& args)
@@ -8192,7 +8244,8 @@ ElectronicsWorkbench::ElectronicsWorkbench()
     snapModeButton.setColour(juce::ToggleButton::textColourId, juce::Colour(0xffdce9ee));
     addAndMakeVisible(snapModeButton);
 
-    newButton.onClick = [this] { resetResearchState(); };
+    newButton.onClick = [this] { showNewDiagramDialog(); };
+    newButton.setTooltip("New diagram in the open project (creates a project first if none is open)");
     ercButton.onClick = [this] { runElectricalRuleCheck(); };
     transientButton.onClick = [this] { exportCircuitArtifacts(); };
     compileButton.onClick = [this] { appendLog("Compiled Frust preview stub: circuit IR -> Frust lowering pending."); };
@@ -8415,33 +8468,11 @@ ElectronicsWorkbench::ElectronicsWorkbench()
     };
     agentTools.toolManifest = [this] { return buildAssistantToolManifestJson(); };
     agentTools.schematicTool = [this, schematicPanel](const juce::String& name, const juce::var& args) {
-        if (name == "project_save")
-        {
-            const auto file = savedProjectFile();
-            if (!file.getParentDirectory().createDirectory() || !file.replaceWithText(schematicPanel->buildCircuitJson()))
-                return juce::String("{ \"ok\": false, \"tool\": \"project_save\", \"error\": ") + jsonQuote("Could not write " + file.getFullPathName()) + " }";
-            appendLog("Saved project circuit to " + file.getFullPathName());
-            return juce::String("{ \"ok\": true, \"tool\": \"project_save\", \"file\": ") + jsonQuote(file.getFullPathName()) + " }";
-        }
-        if (name == "project_open")
-        {
-            const auto file = savedProjectFile();
-            if (!file.existsAsFile())
-                return juce::String("{ \"ok\": false, \"tool\": \"project_open\", \"error\": ") + jsonQuote("No saved project at " + file.getFullPathName()) + " }";
-            closeFloatingInstrumentWindows();
-            juce::String error;
-            if (!schematicPanel->loadCircuitJson(file.loadFileAsString(), error))
-                return juce::String("{ \"ok\": false, \"tool\": \"project_open\", \"error\": ") + jsonQuote(error) + " }";
-            appendLog("Opened project circuit from " + file.getFullPathName());
-            return juce::String("{ \"ok\": true, \"tool\": \"project_open\", \"file\": ") + jsonQuote(file.getFullPathName()) + " }";
-        }
-        if (name == "project_new")
-        {
-            resetResearchState();
-            return juce::String("{ \"ok\": true, \"tool\": \"project_new\" }");
-        }
+        if (name.startsWith("project_") || name.startsWith("diagram_"))
+            return projectTool(name, args);
         return schematicPanel->runSchematicTool(name, args);
     };
+    schematicPanel->outputDirectory = [this] { return generatedRunDirectory(); };
     exportSchematicImage = [schematicPanel] {
         const auto result = juce::JSON::parse(schematicPanel->runSchematicTool("schematic_export_image", juce::var(new juce::DynamicObject())));
         return (bool)result.getProperty("ok", false)
@@ -8463,6 +8494,11 @@ ElectronicsWorkbench::ElectronicsWorkbench()
 
     dockManager->loadLayoutFromFile(layoutFile());
     appendLog("Electronics research shell initialized.");
+    auto safeThis = juce::Component::SafePointer<ElectronicsWorkbench>(this);
+    juce::MessageManager::callAsync([safeThis] {
+        if (safeThis != nullptr)
+            safeThis->openMostRecentProject();
+    });
 }
 
 ElectronicsWorkbench::~ElectronicsWorkbench()
@@ -8534,9 +8570,7 @@ juce::PopupMenu ElectronicsWorkbench::getMenuForIndex(int, const juce::String& m
     juce::PopupMenu menu;
     if (menuName == "File")
     {
-        menu.addItem(newProject, "New Research Project");
-        menu.addItem(openProject, "Open Project...");
-        menu.addItem(saveProject, "Save Project");
+        addProjectMenuItems(menu);
         menu.addSeparator();
         menu.addItem(exportSchematicImageItem, "Export Schematic Image");
     }
@@ -8574,15 +8608,29 @@ juce::PopupMenu ElectronicsWorkbench::getMenuForIndex(int, const juce::String& m
 
 void ElectronicsWorkbench::menuItemSelected(int menuItemID, int)
 {
+    if (menuItemID >= recentProjectBase)
+    {
+        handleProjectMenu(menuItemID);
+        return;
+    }
+
     switch (menuItemID)
     {
-        case newProject: resetResearchState(); break;
-        case saveProject: saveProjectFile(); break;
+        case newProject:
+        case openProject:
+        case saveProject:
+        case saveDiagramAsItem:
+        case renameProjectItem:
+        case newDiagramItem:
+        case renameDiagramItem:
+        case duplicateDiagramItem:
+        case deleteDiagramItem:
+            handleProjectMenu(menuItemID);
+            break;
         case exportSchematicImageItem:
             if (exportSchematicImage != nullptr)
                 appendLog(exportSchematicImage());
             break;
-        case openProject: openProjectFile(); break;
         case resetLayout:
             if (dockManager != nullptr) dockManager->resetLayout();
             appendLog("Dock layout reset.");
@@ -8611,27 +8659,14 @@ juce::File ElectronicsWorkbench::layoutFile() const
         .getChildFile("layout.json");
 }
 
-juce::File ElectronicsWorkbench::savedProjectFile() const
-{
-    return juce::File::getSpecialLocation(juce::File::currentExecutableFile)
-        .getParentDirectory()
-        .getParentDirectory()
-        .getParentDirectory()
-        .getChildFile("projects")
-        .getChildFile("current")
-        .getChildFile("circuit.json");
-}
 
 juce::File ElectronicsWorkbench::generatedRunDirectory() const
 {
-    return juce::File::getSpecialLocation(juce::File::currentExecutableFile)
-        .getParentDirectory()
-        .getParentDirectory()
-        .getParentDirectory()
-        .getChildFile("sim")
-        .getChildFile("xyce")
-        .getChildFile("runs")
-        .getChildFile("generated");
+    if (project.isOpen() && currentDiagram.isNotEmpty())
+        return project_store::outputsDirectory(project, currentDiagram);
+    return juce::File::getSpecialLocation(juce::File::userApplicationDataDirectory)
+        .getChildFile("DjehutiElectronicsLab")
+        .getChildFile("scratch_outputs");
 }
 
 void ElectronicsWorkbench::appendLog(const juce::String& text)
@@ -8656,56 +8691,6 @@ void ElectronicsWorkbench::resetResearchState()
         resetCircuit();
     else
         appendLog("New electronics research project initialized.");
-}
-
-void ElectronicsWorkbench::saveProjectFile()
-{
-    if (getCircuitJson == nullptr)
-    {
-        appendLog("No schematic exporter is available.");
-        return;
-    }
-
-    const auto file = savedProjectFile();
-    if (!file.getParentDirectory().createDirectory())
-    {
-        appendLog("Could not create project directory: " + file.getParentDirectory().getFullPathName());
-        return;
-    }
-
-    if (!file.replaceWithText(getCircuitJson()))
-    {
-        appendLog("Could not save project file: " + file.getFullPathName());
-        return;
-    }
-
-    appendLog("Saved project circuit to " + file.getFullPathName());
-}
-
-void ElectronicsWorkbench::openProjectFile()
-{
-    if (loadCircuitJson == nullptr)
-    {
-        appendLog("No project loader is available.");
-        return;
-    }
-
-    const auto file = savedProjectFile();
-    if (!file.existsAsFile())
-    {
-        appendLog("No saved project found yet: " + file.getFullPathName());
-        return;
-    }
-
-    closeFloatingInstrumentWindows();
-    juce::String error;
-    if (!loadCircuitJson(file.loadFileAsString(), error))
-    {
-        appendLog("Could not open project: " + error);
-        return;
-    }
-
-    appendLog("Opened project circuit from " + file.getFullPathName());
 }
 
 juce::String ElectronicsWorkbench::buildAssistantToolManifestJson() const
@@ -9685,7 +9670,7 @@ juce::String ElectronicsWorkbench::capabilityGapRecordTool(const juce::String& c
         return "{ \"ok\": false, \"tool\": \"capability_gap_record\", \"displayTool\": \"capability_gap.record\", \"error\": \"description and neededCapability are required.\" }";
     }
 
-    const auto memoryDir = savedProjectFile().getParentDirectory().getChildFile(".djehuti");
+    const auto memoryDir = electronics_knowledge::getCapabilityGapsFile().getParentDirectory();
     if (!memoryDir.createDirectory())
     {
         return "{ \"ok\": false, \"tool\": \"capability_gap_record\", \"displayTool\": \"capability_gap.record\", \"error\": "
