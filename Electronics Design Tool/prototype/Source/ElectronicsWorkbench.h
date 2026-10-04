@@ -140,10 +140,10 @@ private:
     juce::TextEditor* logConsole = nullptr;
     juce::String selectedSymbolId = "resistor";
     juce::OwnedArray<juce::DocumentWindow> floatingInstrumentWindows;
+    juce::Component::SafePointer<juce::Component> schematicView;
     std::function<void()> resetCircuit;
     std::function<juce::String()> getCircuitJson;
     std::function<juce::String()> getXyceNetlist;
-    std::function<juce::String()> getLabInstrumentsJson;
     std::function<juce::String()> getErcReport;
     std::function<bool(const juce::String&, juce::String&)> loadCircuitJson;
     std::function<juce::String(const juce::String&, float, float, const juce::String&,

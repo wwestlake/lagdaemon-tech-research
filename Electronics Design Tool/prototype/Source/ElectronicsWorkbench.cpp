@@ -201,6 +201,11 @@ const SchematicToolSpec schematicToolSpecs[] = {
         R"({"type":"object","properties":{"input":{"type":"string","description":"Input pin label, such as V1.+ or C1.1."},"output":{"type":"string","description":"Output pin label, such as RL1.1."},"start":{"type":"string","description":"Start frequency, default 10."},"stop":{"type":"string","description":"Stop frequency, default 100k."},"pointsPerDecade":{"type":"string","description":"Default 20."}},"required":["input","output"],"additionalProperties":false})"
     },
     {
+        "instrument_read",
+        "Read an instrument node exactly as its window shows it: oscilloscope channel Vpp/Vrms/mean/frequency at its time/div and trigger, multimeter reading in its function (DC V, AC V, DC A, Ohms), or frequency analyzer peak gain and -3 dB points. Change instrument settings with schematic_set_component_properties params.",
+        R"({"type":"object","properties":{"refdes":{"type":"string","description":"Instrument reference designator, such as SCOPE1, DMM1, or FRA1."}},"required":["refdes"],"additionalProperties":false})"
+    },
+    {
         "schematic_group_list",
         "List the group boxes on the schematic with their ids, names, categories, notes, and member reference designators.",
         R"({"type":"object","properties":{},"additionalProperties":false})"
@@ -1806,7 +1811,6 @@ public:
         drawWires(g);
         drawGroups(g);
         drawInstances(g);
-        drawProbes(g);
         drawPendingWire(g);
         drawSelectionBox(g);
         g.restoreState();
@@ -2046,7 +2050,6 @@ public:
         menu.addItem(12, "Up One Level", currentSheet.isNotEmpty());
         menu.addSeparator();
         menu.addItem(3, "Disconnect Here");
-        menu.addItem(4, "Release Probe Here");
 
         menu.showMenuAsync(juce::PopupMenu::Options(), [this, modelPosition, blockUnderMouse](int result) {
             const auto blockRefdes = blockUnderMouse >= 0 ? instances[(size_t)blockUnderMouse].refdes : juce::String();
@@ -5251,6 +5254,317 @@ private:
     }
 
 public:
+    // ---- Instruments: measurements behind the instrument windows ----
+
+    int instanceIndexForRefdesAnySheet(const juce::String& refdes) const
+    {
+        for (int i = 0; i < (int)instances.size(); ++i)
+            if (instances[(size_t)i].refdes.equalsIgnoreCase(refdes.trim()))
+                return i;
+        return -1;
+    }
+
+    // Changes whenever anything that affects a measurement changes.
+    juce::int64 modelRevision() const
+    {
+        return buildCircuitJson().hashCode64();
+    }
+
+    juce::String instrumentSetting(const juce::String& refdes, const juce::String& key) const
+    {
+        const auto index = instanceIndexForRefdesAnySheet(refdes);
+        return index >= 0 ? partValue(instances[(size_t)index], key) : juce::String();
+    }
+
+    void setInstrumentSetting(const juce::String& refdes, const juce::String& key, const juce::String& value)
+    {
+        const auto index = instanceIndexForRefdesAnySheet(refdes);
+        if (index < 0)
+            return;
+        setPartValue(instances[(size_t)index], key, value);
+        notifySelection();
+        repaint();
+    }
+
+    circuit_sim::Node simNodeOfPin(const SimNetlist& sim, int instanceIndex, const juce::String& pinName) const
+    {
+        const auto netNames = computeNetNames();
+        const auto symbol = symbolForInstance(instances[(size_t)instanceIndex]);
+        for (int p = 0; p < (int)symbol.pins.size(); ++p)
+            if (symbol.pins[(size_t)p].name == pinName)
+            {
+                const auto net = netFor({ instanceIndex, p }, netNames);
+                if (net == "0") return 0;
+                const auto found = sim.nodeOfNet.find(net);
+                return found != sim.nodeOfNet.end() ? found->second : -1;
+            }
+        return -1;
+    }
+
+    // Lowest frequency of any periodic source, 0 if none.
+    double lowestSourceFrequency(const SimNetlist& sim) const
+    {
+        double lowest = 0.0;
+        for (const auto& e : sim.circuit.elements())
+            if ((e.type == circuit_sim::Element::Type::VoltageSource || e.type == circuit_sim::Element::Type::CurrentSource)
+                && e.wave.kind != circuit_sim::Waveform::Kind::Dc && e.wave.frequency > 0.0)
+                lowest = lowest == 0.0 ? e.wave.frequency : std::min(lowest, e.wave.frequency);
+        return lowest;
+    }
+
+    struct ScopeCapture
+    {
+        bool ok = false;
+        juce::String error;
+        double timePerDiv = 1e-3;
+        bool triggered = false;
+        std::vector<double> time;            // 0 .. 10 divisions
+        std::array<std::vector<double>, 2> channel;
+        std::array<bool, 2> connected { false, false };
+        juce::StringArray warnings;
+    };
+
+    ScopeCapture captureScope(const juce::String& refdes) const
+    {
+        ScopeCapture cap;
+        const auto index = instanceIndexForRefdesAnySheet(refdes);
+        if (index < 0 || instances[(size_t)index].symbolId != "oscilloscope_2ch")
+        {
+            cap.error = "No oscilloscope " + refdes + ".";
+            return cap;
+        }
+        const auto& scope = instances[(size_t)index];
+        cap.timePerDiv = std::max(1e-7, parseQuantity(partValue(scope, "time_per_div"), 1e-3));
+        const auto window = 10.0 * cap.timePerDiv;
+        auto sim = buildSimNetlist();
+        cap.warnings = sim.warnings;
+        const auto ref = simNodeOfPin(sim, index, "REF");
+        const std::array<circuit_sim::Node, 2> nodes { simNodeOfPin(sim, index, "CH1"), simNodeOfPin(sim, index, "CH2") };
+
+        // Let the circuit settle for a few signal periods, then capture one
+        // screen after the trigger point.
+        const auto fmin = lowestSourceFrequency(sim);
+        const auto step = window / 500.0;
+        auto settle = std::max(2.0 * window, fmin > 0.0 ? 5.0 / fmin : 0.0);
+        settle = std::min(settle, step * 16000.0);
+        const auto tr = circuit_sim::solveTransient(sim.circuit, settle + 2.0 * window, step, {}, 1 << 20);
+        if (!tr.ok)
+        {
+            cap.error = tr.error;
+            return cap;
+        }
+        auto value = [&](size_t sample, int ch) {
+            if (nodes[(size_t)ch] < 0) return 0.0;
+            return tr.voltages[sample][(size_t)nodes[(size_t)ch]] - (ref >= 0 ? tr.voltages[sample][(size_t)ref] : 0.0);
+        };
+
+        const auto trigChannel = partValue(scope, "trigger_source") == "CH2" ? 1 : 0;
+        const auto level = parseQuantity(partValue(scope, "trigger_level"), 0.0);
+        const auto rising = partValue(scope, "trigger_slope") != "Falling";
+        size_t start = 0;
+        for (size_t s = 0; s < tr.time.size(); ++s)
+            if (tr.time[s] >= settle) { start = s; break; }
+        size_t trigger = start;
+        for (size_t s = start + 1; s < tr.time.size() && tr.time[s] < settle + window; ++s)
+        {
+            const auto a = value(s - 1, trigChannel), b = value(s, trigChannel);
+            if (rising ? (a < level && b >= level) : (a > level && b <= level))
+            {
+                trigger = s;
+                cap.triggered = true;
+                break;
+            }
+        }
+        for (size_t s = trigger; s < tr.time.size() && tr.time[s] <= tr.time[trigger] + window + step * 0.5; ++s)
+        {
+            cap.time.push_back(tr.time[s] - tr.time[trigger]);
+            for (int ch = 0; ch < 2; ++ch)
+                cap.channel[(size_t)ch].push_back(value(s, ch));
+        }
+        for (int ch = 0; ch < 2; ++ch)
+            cap.connected[(size_t)ch] = nodes[(size_t)ch] >= 0;
+        cap.ok = true;
+        return cap;
+    }
+
+    struct MeterReading
+    {
+        bool ok = false;
+        juce::String error;
+        juce::String function;
+        double value = 0.0;
+        juce::String unit;
+        juce::String display;
+    };
+
+    MeterReading readMeter(const juce::String& refdes) const
+    {
+        MeterReading reading;
+        const auto index = instanceIndexForRefdesAnySheet(refdes);
+        if (index < 0 || instances[(size_t)index].symbolId != "digital_multimeter")
+        {
+            reading.error = "No multimeter " + refdes + ".";
+            return reading;
+        }
+        reading.function = partValue(instances[(size_t)index], "value");
+        auto finish = [&](double value, const juce::String& unit) {
+            reading.ok = true;
+            reading.value = value;
+            reading.unit = unit;
+            reading.display = juce::String(circuit_sim::formatValue(value, unit.toStdString(), 4));
+            return reading;
+        };
+
+        if (reading.function == "Ohms")
+        {
+            auto sim = buildSimNetlist(index);
+            const auto op = circuit_sim::solveOperatingPoint(sim.circuit);
+            if (!op.ok) { reading.error = op.error; return reading; }
+            const auto hi = simNodeOfPin(sim, index, "HI"), lo = simNodeOfPin(sim, index, "LO");
+            if (hi < 0 || lo < 0) { reading.ok = true; reading.display = "OL"; reading.unit = "ohm"; reading.value = INFINITY; return reading; }
+            const auto r = (op.voltages[(size_t)hi] - op.voltages[(size_t)lo]) / 1e-3;
+            if (r > 100e6) { reading.ok = true; reading.display = "OL"; reading.unit = "ohm"; reading.value = INFINITY; return reading; }
+            return finish(r, "ohm");
+        }
+
+        auto sim = buildSimNetlist();
+        if (reading.function == "DC A")
+        {
+            const auto op = circuit_sim::solveOperatingPoint(sim.circuit);
+            if (!op.ok) { reading.error = op.error; return reading; }
+            const auto found = sim.elementOfPart.find(instances[(size_t)index].refdes);
+            return finish(found != sim.elementOfPart.end() ? op.sourceCurrents[(size_t)found->second] : 0.0, "A");
+        }
+
+        const auto hi = simNodeOfPin(sim, index, "HI"), lo = simNodeOfPin(sim, index, "LO");
+        if (reading.function == "AC V")
+        {
+            const auto fmin = lowestSourceFrequency(sim);
+            if (fmin <= 0.0)
+                return finish(0.0, "V");
+            const auto period = 1.0 / fmin;
+            const auto tr = circuit_sim::solveTransient(sim.circuit, 20.0 * period, period / 200.0, {}, 1 << 20);
+            if (!tr.ok) { reading.error = tr.error; return reading; }
+            std::vector<double> v;
+            for (size_t s = 0; s < tr.time.size(); ++s)
+                if (tr.time[s] >= 10.0 * period)
+                    v.push_back((hi >= 0 ? tr.voltages[s][(size_t)hi] : 0.0) - (lo >= 0 ? tr.voltages[s][(size_t)lo] : 0.0));
+            double mean = 0.0, sq = 0.0;
+            for (auto x : v) mean += x;
+            mean /= std::max<size_t>(1, v.size());
+            for (auto x : v) sq += (x - mean) * (x - mean);
+            return finish(std::sqrt(sq / std::max<size_t>(1, v.size())), "V");
+        }
+
+        const auto op = circuit_sim::solveOperatingPoint(sim.circuit);
+        if (!op.ok) { reading.error = op.error; return reading; }
+        return finish((hi >= 0 ? op.voltages[(size_t)hi] : 0.0) - (lo >= 0 ? op.voltages[(size_t)lo] : 0.0), "V");
+    }
+
+    struct BodeSweep
+    {
+        bool ok = false;
+        juce::String error;
+        std::vector<double> frequency, gainDb, phaseDeg;
+        double peakDb = 0.0;
+        std::vector<double> corners;
+    };
+
+    BodeSweep sweepBode(const juce::String& refdes) const
+    {
+        BodeSweep result;
+        const auto index = instanceIndexForRefdesAnySheet(refdes);
+        if (index < 0 || instances[(size_t)index].symbolId != "bode_analyzer")
+        {
+            result.error = "No frequency analyzer " + refdes + ".";
+            return result;
+        }
+        const auto& fra = instances[(size_t)index];
+        auto sim = buildSimNetlist();
+        const auto in = simNodeOfPin(sim, index, "IN"), out = simNodeOfPin(sim, index, "OUT"), ref = simNodeOfPin(sim, index, "REF");
+        if (in < 0 || out < 0)
+        {
+            result.error = "Connect IN and OUT to the circuit.";
+            return result;
+        }
+        const auto ac = circuit_sim::solveAc(sim.circuit, parseQuantity(partValue(fra, "start_frequency"), 10.0),
+                                             parseQuantity(partValue(fra, "stop_frequency"), 100e3),
+                                             std::max(1, partValue(fra, "points_per_decade").getIntValue()));
+        if (!ac.ok)
+        {
+            result.error = ac.error;
+            return result;
+        }
+        for (size_t k = 0; k < ac.frequency.size(); ++k)
+        {
+            const auto& v = ac.voltages[k];
+            const auto r = ref >= 0 ? v[(size_t)ref] : std::complex<double>(0.0);
+            const auto vin = v[(size_t)in] - r;
+            const auto h = std::abs(vin) > 1e-15 ? (v[(size_t)out] - r) / vin : std::complex<double>(0.0);
+            result.frequency.push_back(ac.frequency[k]);
+            result.gainDb.push_back(20.0 * std::log10(std::max(1e-15, std::abs(h))));
+            result.phaseDeg.push_back(std::arg(h) * 180.0 / juce::MathConstants<double>::pi);
+        }
+        result.peakDb = *std::max_element(result.gainDb.begin(), result.gainDb.end());
+        for (size_t k = 1; k < result.gainDb.size(); ++k)
+        {
+            const auto a = result.gainDb[k - 1] - (result.peakDb - 3.0103), b = result.gainDb[k] - (result.peakDb - 3.0103);
+            if ((a < 0) != (b < 0))
+                result.corners.push_back(std::exp(std::log(result.frequency[k - 1])
+                                                  + (std::log(result.frequency[k]) - std::log(result.frequency[k - 1])) * (a / (a - b))));
+        }
+        result.ok = true;
+        return result;
+    }
+
+    static WaveStats channelStatsFor(const ScopeCapture& cap, int ch)
+    {
+        return statsOf(cap.time, cap.channel[(size_t)ch], 0.0);
+    }
+
+    juce::String instrumentReadJson(const juce::String& refdes) const
+    {
+        const auto index = instanceIndexForRefdesAnySheet(refdes);
+        if (index < 0)
+            return toolFailure("instrument_read", "No instrument " + refdes + ".");
+        const auto& id = instances[(size_t)index].symbolId;
+        if (id == "oscilloscope_2ch")
+        {
+            const auto cap = captureScope(refdes);
+            if (!cap.ok) return toolFailure("instrument_read", cap.error);
+            juce::String channels = "[";
+            for (int ch = 0; ch < 2; ++ch)
+            {
+                const auto s = channelStatsFor(cap, ch);
+                channels << (ch == 0 ? "" : ", ") << "{ \"channel\": \"CH" << (ch + 1) << "\", \"connected\": " << (cap.connected[(size_t)ch] ? "true" : "false")
+                         << ", \"peakToPeak\": " << juce::String(s.maximum - s.minimum, 6) << ", \"rms\": " << juce::String(s.rms, 6)
+                         << ", \"mean\": " << juce::String(s.mean, 6) << ", \"frequencyHz\": " << juce::String(s.frequency, 6) << " }";
+            }
+            channels << "]";
+            return "{ \"ok\": true, \"tool\": \"instrument_read\", \"instrument\": \"oscilloscope\", \"refdes\": " + quote(refdes)
+                 + ", \"timePerDiv\": " + juce::String(cap.timePerDiv, 9) + ", \"triggered\": " + (cap.triggered ? "true" : "false")
+                 + ", \"channels\": " + channels + " }";
+        }
+        if (id == "digital_multimeter")
+        {
+            const auto r = readMeter(refdes);
+            if (!r.ok) return toolFailure("instrument_read", r.error);
+            return "{ \"ok\": true, \"tool\": \"instrument_read\", \"instrument\": \"multimeter\", \"refdes\": " + quote(refdes)
+                 + ", \"function\": " + quote(r.function) + ", \"display\": " + quote(r.display)
+                 + ", \"value\": " + (std::isfinite(r.value) ? juce::String(r.value, 9) : juce::String("null")) + ", \"unit\": " + quote(r.unit) + " }";
+        }
+        if (id == "bode_analyzer")
+        {
+            const auto b = sweepBode(refdes);
+            if (!b.ok) return toolFailure("instrument_read", b.error);
+            juce::StringArray corners;
+            for (auto f : b.corners) corners.add(juce::String(f, 4));
+            return "{ \"ok\": true, \"tool\": \"instrument_read\", \"instrument\": \"frequency_analyzer\", \"refdes\": " + quote(refdes)
+                 + ", \"peakGainDb\": " + juce::String(b.peakDb, 4) + ", \"minus3dBFrequenciesHz\": [" + corners.joinIntoString(", ") + "] }";
+        }
+        return toolFailure("instrument_read", refdes + " is not an instrument.");
+    }
+
     // Renders one sheet to a PNG exactly as the canvas draws it.
     juce::String exportSheetImage(const juce::String& sheet, juce::File& written)
     {
@@ -5332,6 +5646,8 @@ public:
     {
         if (name == "simulation_operating_point" || name == "simulation_transient" || name == "simulation_ac")
             return runSimulationTool(name, args);
+        if (name == "instrument_read")
+            return instrumentReadJson(args.getProperty("refdes", {}).toString());
         auto text = [&](const juce::String& key) { return args.getProperty(juce::Identifier(key), {}).toString().trim(); };
         auto ok = [&](const juce::String& body) {
             forceDeferredRepaint();
@@ -6401,689 +6717,6 @@ private:
     */
 };
 
-class InstrumentPanel final : public juce::Component,
-                              public juce::Timer
-{
-public:
-    InstrumentPanel()
-    {
-        title.setText("Lab Bench", juce::dontSendNotification);
-        title.setFont(juce::Font(16.0f, juce::Font::bold));
-        title.setColour(juce::Label::textColourId, juce::Colour(0xff78dcca));
-        addAndMakeVisible(title);
-
-        psuTitle.setText("Programmable Power Supply", juce::dontSendNotification);
-        psuTitle.setFont(juce::Font(14.0f, juce::Font::bold));
-        psuTitle.setColour(juce::Label::textColourId, juce::Colour(0xffdce9ee));
-        addAndMakeVisible(psuTitle);
-
-        mode.addItem("DC", 1);
-        mode.addItem("AC", 2);
-        mode.setSelectedId(1, juce::dontSendNotification);
-        mode.setColour(juce::ComboBox::backgroundColourId, juce::Colour(0xff253341));
-        mode.setColour(juce::ComboBox::textColourId, juce::Colour(0xffdce9ee));
-        addAndMakeVisible(mode);
-
-        for (auto* editor : { &positiveNet, &negativeNet, &voltage, &frequency, &currentLimit, &internalResistance })
-        {
-            styleTextEditor(*editor);
-            editor->setMultiLine(false);
-            addAndMakeVisible(*editor);
-        }
-
-        positiveNet.setText("+9V", juce::dontSendNotification);
-        negativeNet.setText("0", juce::dontSendNotification);
-        voltage.setText("9", juce::dontSendNotification);
-        frequency.setText("60", juce::dontSendNotification);
-        currentLimit.setText("100m", juce::dontSendNotification);
-        internalResistance.setText("0.2", juce::dontSendNotification);
-
-        positiveNet.setTextToShowWhenEmpty("+9V, +12V, +18V", juce::Colour(0xff71808c));
-        negativeNet.setTextToShowWhenEmpty("0", juce::Colour(0xff71808c));
-        voltage.setTextToShowWhenEmpty("9", juce::Colour(0xff71808c));
-        frequency.setTextToShowWhenEmpty("60", juce::Colour(0xff71808c));
-        currentLimit.setTextToShowWhenEmpty("100m", juce::Colour(0xff71808c));
-        internalResistance.setTextToShowWhenEmpty("0.2", juce::Colour(0xff71808c));
-
-        outputEnabled.setButtonText("Output enabled");
-        outputEnabled.setToggleState(true, juce::dontSendNotification);
-        outputEnabled.setColour(juce::ToggleButton::textColourId, juce::Colour(0xffdce9ee));
-        addAndMakeVisible(outputEnabled);
-
-        currentLimited.setButtonText("Current limit active");
-        currentLimited.setToggleState(true, juce::dontSendNotification);
-        currentLimited.setColour(juce::ToggleButton::textColourId, juce::Colour(0xffdce9ee));
-        addAndMakeVisible(currentLimited);
-
-        psuPreset.addItem("9V pedal supply", 1);
-        psuPreset.addItem("12V pedal supply", 2);
-        psuPreset.addItem("18V pedal supply", 3);
-        psuPreset.addItem("Dying 9V battery", 4);
-        psuPreset.setSelectedId(1, juce::dontSendNotification);
-        psuPreset.setColour(juce::ComboBox::backgroundColourId, juce::Colour(0xff253341));
-        psuPreset.setColour(juce::ComboBox::textColourId, juce::Colour(0xffdce9ee));
-        psuPreset.onChange = [this] { applySelectedPreset(); };
-        addAndMakeVisible(psuPreset);
-
-        dmmTitle.setText("Precision Digital Multimeter", juce::dontSendNotification);
-        dmmTitle.setFont(juce::Font(14.0f, juce::Font::bold));
-        dmmTitle.setColour(juce::Label::textColourId, juce::Colour(0xffdce9ee));
-        addAndMakeVisible(dmmTitle);
-
-        for (const auto& item : { "DC Voltage", "AC Voltage", "DC Current", "AC Current", "Resistance",
-                                  "4-Wire Resistance", "Continuity", "Diode", "Capacitance", "Frequency",
-                                  "Period", "Duty Cycle", "Temperature", "AC+DC Voltage", "AC+DC Current",
-                                  "Ratio", "dB", "dBm", "Digitizer Voltage", "Digitizer Current" })
-            dmmFunction.addItem(item, dmmFunction.getNumItems() + 1);
-        dmmFunction.setSelectedId(1, juce::dontSendNotification);
-        dmmFunction.setColour(juce::ComboBox::backgroundColourId, juce::Colour(0xff253341));
-        dmmFunction.setColour(juce::ComboBox::textColourId, juce::Colour(0xffdce9ee));
-        addAndMakeVisible(dmmFunction);
-
-        for (const auto& item : { "Auto", "100 mV", "1 V", "10 V", "100 V", "1000 V",
-                                  "1 uA", "100 uA", "1 mA", "10 mA", "100 mA", "1 A", "10 A",
-                                  "100 Ohm", "1 kOhm", "10 kOhm", "100 kOhm", "1 MOhm", "100 MOhm",
-                                  "1 nF", "10 nF", "100 nF", "1 uF", "100 uF", "Hz" })
-            dmmRange.addItem(item, dmmRange.getNumItems() + 1);
-        dmmRange.setSelectedId(1, juce::dontSendNotification);
-        dmmRange.setColour(juce::ComboBox::backgroundColourId, juce::Colour(0xff253341));
-        dmmRange.setColour(juce::ComboBox::textColourId, juce::Colour(0xffdce9ee));
-        addAndMakeVisible(dmmRange);
-
-        for (auto* editor : { &dmmHighNet, &dmmLowNet, &dmmNplc, &dmmSampleRate })
-        {
-            styleTextEditor(*editor);
-            editor->setMultiLine(false);
-            addAndMakeVisible(*editor);
-        }
-        dmmHighNet.setText("probe", juce::dontSendNotification);
-        dmmLowNet.setText("bench", juce::dontSendNotification);
-        dmmNplc.setText("10", juce::dontSendNotification);
-        dmmSampleRate.setText("1000", juce::dontSendNotification);
-        dmmHighNet.setReadOnly(true);
-        dmmLowNet.setReadOnly(true);
-
-        dmmDisplay.setText("+0.000000 V", juce::dontSendNotification);
-        dmmDisplay.setFont(juce::Font(20.0f, juce::Font::bold));
-        dmmDisplay.setJustificationType(juce::Justification::centredRight);
-        dmmDisplay.setColour(juce::Label::textColourId, juce::Colour(0xff78dcca));
-        dmmDisplay.setColour(juce::Label::backgroundColourId, juce::Colour(0xff0e141a));
-        addAndMakeVisible(dmmDisplay);
-
-        for (auto* toggle : { &dmmTrueRms, &dmmAutoRange, &dmmHold, &dmmRelative, &dmmMinMax,
-                              &dmmPeakMinMax, &dmmLowPass, &dmmLoZ, &dmmContinuityBeep })
-        {
-            toggle->setColour(juce::ToggleButton::textColourId, juce::Colour(0xffdce9ee));
-            addAndMakeVisible(*toggle);
-        }
-        dmmTrueRms.setToggleState(true, juce::dontSendNotification);
-        dmmAutoRange.setToggleState(true, juce::dontSendNotification);
-        dmmContinuityBeep.setToggleState(true, juce::dontSendNotification);
-
-        stripRecord.setButtonText("Record");
-        stripRecord.setToggleState(true, juce::dontSendNotification);
-        stripRecord.setColour(juce::ToggleButton::textColourId, juce::Colour(0xffdce9ee));
-        addAndMakeVisible(stripRecord);
-
-        stripScale.addItem("Per channel", 1);
-        stripScale.addItem("Shared", 2);
-        stripScale.setSelectedId(1, juce::dontSendNotification);
-        stripScale.setColour(juce::ComboBox::backgroundColourId, juce::Colour(0xff253341));
-        stripScale.setColour(juce::ComboBox::textColourId, juce::Colour(0xffdce9ee));
-        addAndMakeVisible(stripScale);
-
-        startTimerHz(5);
-    }
-
-    void setProbeTarget(const juce::String& id, const juce::String& target)
-    {
-        if (id == "DMM_HI")
-            dmmHighNet.setText(target.isEmpty() ? "bench" : target, juce::dontSendNotification);
-        else if (id == "DMM_LO")
-            dmmLowNet.setText(target.isEmpty() ? "bench" : target, juce::dontSendNotification);
-        else if (id == "SCOPE_CH1")
-            scopeCh1Target = target;
-        else if (id == "SCOPE_CH2")
-            scopeCh2Target = target;
-
-        repaint();
-    }
-
-    juce::String buildInstrumentJson() const
-    {
-        juce::String text;
-        text << "{\n";
-        text << "  \"schemaVersion\": 1,\n";
-        text << "  \"kind\": \"djehuti_lab_instruments\",\n";
-        text << "  \"instruments\": [\n";
-        text << "    {\n";
-        text << "      \"id\": \"PSU1\",\n";
-        text << "      \"type\": \"programmable_power_supply\",\n";
-        text << "      \"mode\": " << quote(mode.getText().toLowerCase()) << ",\n";
-        text << "      \"channels\": [\n";
-        text << "        {\n";
-        text << "          \"name\": \"CH1\",\n";
-        text << "          \"positiveNet\": " << quote(positiveNet.getText().trim()) << ",\n";
-        text << "          \"negativeNet\": " << quote(negativeNet.getText().trim()) << ",\n";
-        text << "          \"voltage\": " << quote(voltage.getText().trim() + "V") << ",\n";
-        text << "          \"frequency\": " << quote(frequency.getText().trim() + "Hz") << ",\n";
-        text << "          \"currentLimit\": " << quote(currentLimit.getText().trim() + "A") << ",\n";
-        text << "          \"currentLimitEnabled\": " << (currentLimited.getToggleState() ? "true" : "false") << ",\n";
-        text << "          \"internalResistance\": " << quote(internalResistance.getText().trim() + "ohm") << ",\n";
-        text << "          \"enabled\": " << (outputEnabled.getToggleState() ? "true" : "false") << "\n";
-        text << "        }\n";
-        text << "      ]\n";
-        text << "    },\n";
-        text << "    {\n";
-        text << "      \"id\": \"DMM1\",\n";
-        text << "      \"type\": \"precision_digital_multimeter\",\n";
-        text << "      \"function\": " << quote(dmmFunction.getText()) << ",\n";
-        text << "      \"range\": " << quote(dmmRange.getText()) << ",\n";
-        text << "      \"connections\": {\n";
-        text << "        \"high\": " << quote(dmmHighNet.getText().trim()) << ",\n";
-        text << "        \"low\": " << quote(dmmLowNet.getText().trim()) << "\n";
-        text << "      },\n";
-        text << "      \"features\": {\n";
-        text << "        \"trueRms\": " << (dmmTrueRms.getToggleState() ? "true" : "false") << ",\n";
-        text << "        \"autoRange\": " << (dmmAutoRange.getToggleState() ? "true" : "false") << ",\n";
-        text << "        \"hold\": " << (dmmHold.getToggleState() ? "true" : "false") << ",\n";
-        text << "        \"relative\": " << (dmmRelative.getToggleState() ? "true" : "false") << ",\n";
-        text << "        \"minMaxRecording\": " << (dmmMinMax.getToggleState() ? "true" : "false") << ",\n";
-        text << "        \"peakMinMax\": " << (dmmPeakMinMax.getToggleState() ? "true" : "false") << ",\n";
-        text << "        \"lowPassFilter\": " << (dmmLowPass.getToggleState() ? "true" : "false") << ",\n";
-        text << "        \"lowImpedanceMode\": " << (dmmLoZ.getToggleState() ? "true" : "false") << ",\n";
-        text << "        \"continuityBeep\": " << (dmmContinuityBeep.getToggleState() ? "true" : "false") << "\n";
-        text << "      },\n";
-        text << "      \"acquisition\": {\n";
-        text << "        \"nplc\": " << quote(dmmNplc.getText().trim()) << ",\n";
-        text << "        \"sampleRate\": " << quote(dmmSampleRate.getText().trim() + "Sa/s") << ",\n";
-        text << "        \"digitizer\": { \"enabled\": true, \"resolutionBits\": 16 },\n";
-        text << "        \"slowRecording\": { \"enabled\": " << (stripRecord.getToggleState() ? "true" : "false")
-             << ", \"sampleRateHz\": 5, \"stripChart\": { \"enabled\": true, \"scaleMode\": "
-             << quote(stripScale.getSelectedId() == 2 ? "shared" : "per_channel") << ", \"windowSeconds\": 60 } },\n";
-        text << "        \"statistics\": [\"min\", \"max\", \"average\", \"peakToPeak\", \"standardDeviation\"],\n";
-        text << "        \"logging\": true,\n";
-        text << "        \"graphing\": true,\n";
-        text << "        \"displayViews\": [\"numeric\", \"trend\", \"histogram\", \"bar\", \"waveform\", \"strip_chart\"]\n";
-        text << "      }\n";
-        text << "    },\n";
-        text << "    {\n";
-        text << "      \"id\": \"SCOPE1\",\n";
-        text << "      \"type\": \"digital_oscilloscope\",\n";
-        text << "      \"channels\": [\n";
-        text << "        { \"name\": \"CH1\", \"target\": " << quote(scopeCh1Target.isEmpty() ? "bench" : scopeCh1Target)
-             << ", \"colour\": \"#c86a6a\" },\n";
-        text << "        { \"name\": \"CH2\", \"target\": " << quote(scopeCh2Target.isEmpty() ? "bench" : scopeCh2Target)
-             << ", \"colour\": \"#6fac7d\" }\n";
-        text << "      ],\n";
-        text << "      \"display\": { \"view\": \"strip_chart\", \"grid\": true, \"recording\": "
-             << (stripRecord.getToggleState() ? "true" : "false") << ", \"scaleMode\": "
-             << quote(stripScale.getSelectedId() == 2 ? "shared" : "per_channel")
-             << ", \"windowSeconds\": 60, \"channelsExpandable\": true }\n";
-        text << "    }\n";
-        text << "  ]\n";
-        text << "}\n";
-        return text;
-    }
-
-    void paint(juce::Graphics& g) override
-    {
-        g.fillAll(juce::Colour(0xff10161d));
-        auto area = getLocalBounds().reduced(12);
-        drawZone(g, psuZone, "Power Source");
-        drawZone(g, dmmZone, "Meter Setup");
-        drawZone(g, meterOptionsZone, "Meter Options");
-        drawZone(g, scopeZone, "Scope Preview");
-
-        g.setColour(juce::Colour(0xff93a7b0));
-        g.setFont(juce::Font(11.5f, juce::Font::bold));
-        g.drawText("Mode", 12, 64, 78, 16, juce::Justification::centredLeft);
-        g.drawText("Preset", 380, 64, 150, 16, juce::Justification::centredLeft);
-        g.drawText("+ net", 12, 104, 110, 16, juce::Justification::centredLeft);
-        g.drawText("- net", 130, 104, 110, 16, juce::Justification::centredLeft);
-        g.drawText("Volts", 12, 160, 92, 16, juce::Justification::centredLeft);
-        g.drawText("Freq", 112, 160, 92, 16, juce::Justification::centredLeft);
-        g.drawText("Limit", 212, 160, 92, 16, juce::Justification::centredLeft);
-        g.drawText("Internal R", 312, 160, 92, 16, juce::Justification::centredLeft);
-        g.drawText("Function", 12, 240, 150, 16, juce::Justification::centredLeft);
-        g.drawText("Range", 170, 240, 86, 16, juce::Justification::centredLeft);
-        g.drawText("Leads", 12, 280, 228, 16, juce::Justification::centredLeft);
-        g.drawText("NPLC", 248, 280, 70, 16, juce::Justification::centredLeft);
-        g.drawText("Sa/s", 326, 280, 90, 16, juce::Justification::centredLeft);
-
-        drawProbeLead(g, dmmHiLead, "DMM+", dmmLeadColour(true), dmmHighNet.getText().trim());
-        drawProbeLead(g, dmmLoLead, "DMM-", dmmLeadColour(false), dmmLowNet.getText().trim());
-        drawProbeLead(g, scopeCh1Lead, "CH1", scopeChannelColour(0), scopeCh1Target);
-        drawProbeLead(g, scopeCh2Lead, "CH2", scopeChannelColour(1), scopeCh2Target);
-
-        area.removeFromTop(scopeZone.getY() - 12);
-        g.setColour(juce::Colour(0xffdce9ee));
-        g.setFont(juce::Font(15.0f, juce::Font::bold));
-        g.drawText("Slow Strip Recorder", area.removeFromTop(24), juce::Justification::centredLeft);
-        drawStripChart(g, area.reduced(0, 10).toFloat());
-    }
-
-    void timerCallback() override
-    {
-        if (!stripRecord.getToggleState())
-            return;
-
-        stripTimeSeconds += 0.2;
-
-        const auto t = stripTimeSeconds;
-        StripSample sample;
-        sample.timeSeconds = t;
-        sample.dmmHi = (float)(1.8 + std::sin(t * 0.42) * 0.38 + std::sin(t * 0.07) * 0.18);
-        sample.dmmLo = (float)(std::sin(t * 0.11) * 0.018);
-        sample.scopeCh1 = (float)(std::sin(t * 1.15) * 1.6 + std::sin(t * 0.18) * 0.42);
-        sample.scopeCh2 = (float)(std::cos(t * 0.77) * 0.95 + std::sin(t * 0.31) * 0.35);
-        stripSamples.push_back(sample);
-
-        while (!stripSamples.empty() && stripSamples.front().timeSeconds < stripTimeSeconds - stripWindowSeconds)
-            stripSamples.erase(stripSamples.begin());
-
-        dmmDisplay.setText(juce::String(sample.dmmHi - sample.dmmLo, 3) + " V", juce::dontSendNotification);
-        repaint(scopeZone);
-    }
-
-    void mouseDown(const juce::MouseEvent& event) override
-    {
-        const auto p = event.getPosition();
-        const auto probeId = probeAt(p);
-        if (probeId.isEmpty())
-            return;
-
-        if (probeIsInUse(probeId))
-            return;
-
-        if (auto* container = juce::DragAndDropContainer::findParentDragContainerFor(this))
-        {
-            showCursorForEvent(event, juce::MouseCursor::DraggingHandCursor);
-            container->startDragging("probe:" + probeId, this);
-        }
-    }
-
-    void mouseUp(const juce::MouseEvent& event) override
-    {
-        showCursorForEvent(event, juce::MouseCursor::NormalCursor);
-    }
-
-    void resized() override
-    {
-        auto area = getLocalBounds().reduced(12);
-        title.setBounds(area.removeFromTop(24));
-        area.removeFromTop(6);
-        psuTitle.setBounds(area.removeFromTop(22));
-        psuZone = juce::Rectangle<int>(8, 44, getWidth() - 16, 166);
-
-        auto topRow = area.removeFromTop(28);
-        addField(topRow, mode, 78);
-        topRow.removeFromLeft(8);
-        outputEnabled.setBounds(topRow.removeFromLeft(140));
-        currentLimited.setBounds(topRow.removeFromLeft(150));
-        topRow.removeFromLeft(8);
-        psuPreset.setBounds(topRow.removeFromLeft(170));
-
-        area.removeFromTop(8);
-        auto nets = area.removeFromTop(48);
-        layoutEditor(nets, "Positive net", positiveNet);
-        nets.removeFromLeft(8);
-        layoutEditor(nets, "Negative net", negativeNet);
-
-        area.removeFromTop(8);
-        auto electrical = area.removeFromTop(48);
-        layoutEditor(electrical, "Voltage", voltage);
-        electrical.removeFromLeft(8);
-        layoutEditor(electrical, "Frequency", frequency);
-        electrical.removeFromLeft(8);
-        layoutEditor(electrical, "Current limit", currentLimit);
-        electrical.removeFromLeft(8);
-        layoutEditor(electrical, "Internal R", internalResistance);
-
-        area.removeFromTop(8);
-        area.removeFromTop(18);
-        dmmZone = juce::Rectangle<int>(8, area.getY() - 8, getWidth() - 16, 112);
-        dmmTitle.setBounds(area.removeFromTop(22));
-        auto dmmTop = area.removeFromTop(32);
-        dmmFunction.setBounds(dmmTop.removeFromLeft(150));
-        dmmTop.removeFromLeft(8);
-        dmmRange.setBounds(dmmTop.removeFromLeft(86));
-        dmmTop.removeFromLeft(8);
-        dmmDisplay.setBounds(dmmTop.removeFromLeft(190));
-
-        area.removeFromTop(8);
-        auto dmmNets = area.removeFromTop(32);
-        dmmHiLead = dmmNets.removeFromLeft(52);
-        dmmNets.removeFromLeft(6);
-        dmmLoLead = dmmNets.removeFromLeft(52);
-        dmmNets.removeFromLeft(8);
-        dmmHighNet.setBounds(dmmNets.removeFromLeft(110));
-        dmmNets.removeFromLeft(8);
-        dmmLowNet.setBounds(dmmNets.removeFromLeft(110));
-        dmmNets.removeFromLeft(8);
-        dmmNplc.setBounds(dmmNets.removeFromLeft(70));
-        dmmNets.removeFromLeft(8);
-        dmmSampleRate.setBounds(dmmNets.removeFromLeft(90));
-
-        area.removeFromTop(12);
-        meterOptionsZone = juce::Rectangle<int>(8, area.getY() - 6, getWidth() - 16, 48);
-        auto toggles = area.removeFromTop(58);
-        dmmTrueRms.setBounds(toggles.removeFromLeft(96));
-        dmmAutoRange.setBounds(toggles.removeFromLeft(104));
-        dmmHold.setBounds(toggles.removeFromLeft(72));
-        dmmRelative.setBounds(toggles.removeFromLeft(82));
-        dmmMinMax.setBounds(toggles.removeFromLeft(88));
-        dmmPeakMinMax.setBounds(toggles.removeFromLeft(92));
-        dmmLowPass.setBounds(toggles.removeFromLeft(92));
-        dmmLoZ.setBounds(toggles.removeFromLeft(72));
-        dmmContinuityBeep.setBounds(toggles.removeFromLeft(80));
-        area.removeFromTop(10);
-        scopeZone = juce::Rectangle<int>(8, area.getY(), getWidth() - 16, getHeight() - area.getY() - 8);
-        auto scopeLeads = scopeZone.reduced(10).removeFromTop(34).removeFromRight(126);
-        scopeCh1Lead = scopeLeads.removeFromLeft(58);
-        scopeLeads.removeFromLeft(10);
-        scopeCh2Lead = scopeLeads.removeFromLeft(58);
-
-        auto scopeControls = scopeZone.reduced(10).removeFromTop(34);
-        scopeControls.removeFromLeft(150);
-        stripRecord.setBounds(scopeControls.removeFromLeft(84));
-        scopeControls.removeFromLeft(8);
-        stripScale.setBounds(scopeControls.removeFromLeft(128));
-    }
-
-private:
-    struct StripSample
-    {
-        double timeSeconds = 0.0;
-        float dmmHi = 0.0f;
-        float dmmLo = 0.0f;
-        float scopeCh1 = 0.0f;
-        float scopeCh2 = 0.0f;
-    };
-
-    static juce::String quote(const juce::String& text)
-    {
-        return "\"" + text.replace("\\", "\\\\").replace("\"", "\\\"") + "\"";
-    }
-
-    static void addField(juce::Rectangle<int>& area, juce::Component& component, int width)
-    {
-        component.setBounds(area.removeFromLeft(width));
-    }
-
-    static void layoutEditor(juce::Rectangle<int>& area, const juce::String& label, juce::TextEditor& editor)
-    {
-        auto column = area.removeFromLeft(std::max(92, area.getWidth() / 4));
-        juce::ignoreUnused(label);
-        editor.setBounds(column.removeFromBottom(28));
-    }
-
-    static void drawZone(juce::Graphics& g, juce::Rectangle<int> area, const juce::String& label)
-    {
-        if (area.isEmpty())
-            return;
-
-        auto r = area.toFloat();
-        g.setColour(juce::Colour(0xff121a22));
-        g.fillRoundedRectangle(r, 5.0f);
-        g.setColour(juce::Colour(0xff31404b));
-        g.drawRoundedRectangle(r, 5.0f, 1.0f);
-        g.setColour(juce::Colour(0xff78dcca));
-        g.setFont(juce::Font(11.5f, juce::Font::bold));
-        g.drawText(label, area.reduced(8, 2).removeFromTop(16), juce::Justification::centredLeft);
-    }
-
-    static juce::Colour disabledProbeColour(juce::Colour colour)
-    {
-        return colour.withAlpha(0.22f);
-    }
-
-    void drawProbeLead(juce::Graphics& g,
-                       juce::Rectangle<int> area,
-                       const juce::String& label,
-                       juce::Colour colour,
-                       const juce::String& target)
-    {
-        if (area.isEmpty())
-            return;
-
-        const auto inUse = target.isNotEmpty() && target != "bench" && target != "probe";
-        const auto activeColour = inUse ? disabledProbeColour(colour) : colour;
-        auto body = area.toFloat().reduced(2.0f);
-        g.setColour(juce::Colour(0xff0e141a));
-        g.fillRoundedRectangle(body, 7.0f);
-        g.setColour(activeColour);
-        g.drawRoundedRectangle(body, 7.0f, 1.5f);
-
-        const auto jack = juce::Rectangle<float>(body.getX() + 7.0f, body.getCentreY() - 5.0f, 10.0f, 10.0f);
-        g.setColour(activeColour);
-        g.drawEllipse(jack, 1.6f);
-        if (!inUse)
-            g.fillEllipse(jack.reduced(3.0f));
-
-        g.setFont(juce::Font(11.0f, juce::Font::bold));
-        g.setColour(activeColour.contrasting(0.82f));
-        g.drawText(inUse ? "out" : label, area.withTrimmedLeft(20), juce::Justification::centredLeft, true);
-    }
-
-    void drawStripChart(juce::Graphics& g, juce::Rectangle<float> graph)
-    {
-        if (graph.isEmpty())
-            return;
-
-        auto plot = graph.withTrimmedLeft(82.0f).reduced(0.0f, 4.0f);
-        g.setColour(juce::Colour(0xff0d1319));
-        g.fillRoundedRectangle(graph, 5.0f);
-        g.setColour(juce::Colour(0xff26323d));
-        g.drawRoundedRectangle(graph, 5.0f, 1.0f);
-
-        for (int i = 0; i <= 6; ++i)
-        {
-            const auto x = plot.getX() + plot.getWidth() * (float)i / 6.0f;
-            g.setColour(i == 6 ? juce::Colour(0xff465866) : juce::Colour(0xff22303a));
-            g.drawVerticalLine((int)x, plot.getY(), plot.getBottom());
-        }
-
-        for (int i = 1; i < 4; ++i)
-        {
-            const auto y = plot.getY() + plot.getHeight() * (float)i / 4.0f;
-            g.setColour(juce::Colour(0xff22303a));
-            g.drawHorizontalLine((int)y, plot.getX(), plot.getRight());
-        }
-
-        const Channel channels[] = {
-            { "DMM+", dmmLeadColour(true), getProbeDisplayTarget(dmmHighNet.getText().trim()), &StripSample::dmmHi, "V" },
-            { "DMM-", dmmLeadColour(false), getProbeDisplayTarget(dmmLowNet.getText().trim()), &StripSample::dmmLo, "V" },
-            { "CH1", scopeChannelColour(0), getProbeDisplayTarget(scopeCh1Target), &StripSample::scopeCh1, "V" },
-            { "CH2", scopeChannelColour(1), getProbeDisplayTarget(scopeCh2Target), &StripSample::scopeCh2, "V" }
-        };
-
-        g.setFont(juce::Font(11.0f, juce::Font::bold));
-        const auto laneHeight = plot.getHeight() / 4.0f;
-        float sharedAbs = 0.001f;
-        if (stripScale.getSelectedId() == 2)
-        {
-            for (const auto& sample : stripSamples)
-                for (const auto& channel : channels)
-                    sharedAbs = std::max(sharedAbs, std::abs(sample.*(channel.member)));
-        }
-
-        for (int i = 0; i < 4; ++i)
-        {
-            const auto lane = juce::Rectangle<float>(plot.getX(), plot.getY() + laneHeight * (float)i,
-                                                     plot.getWidth(), laneHeight);
-            drawStripChannel(g, lane, graph.getX(), channels[i], sharedAbs);
-        }
-
-        g.setColour(juce::Colour(0xff93a7b0));
-        g.setFont(juce::Font(10.5f));
-        g.drawText("60 s", (int)plot.getX(), (int)plot.getBottom() - 18, 60, 14, juce::Justification::centredLeft);
-        g.drawText("now", (int)plot.getRight() - 42, (int)plot.getBottom() - 18, 40, 14, juce::Justification::centredRight);
-    }
-
-    struct Channel
-    {
-        const char* label;
-        juce::Colour colour;
-        juce::String target;
-        float StripSample::* member;
-        const char* unit;
-    };
-
-    void drawStripChannel(juce::Graphics& g,
-                          juce::Rectangle<float> lane,
-                          float labelLeft,
-                          const Channel& channel,
-                          float sharedAbs)
-    {
-        const auto centreY = lane.getCentreY();
-        g.setColour(juce::Colour(0xff1b2730));
-        g.drawHorizontalLine((int)centreY, lane.getX(), lane.getRight());
-
-        g.setColour(channel.colour);
-        g.fillRoundedRectangle(labelLeft + 10.0f, centreY - 5.0f, 10.0f, 10.0f, 2.0f);
-        g.setFont(juce::Font(10.5f, juce::Font::bold));
-        g.drawText(channel.label, (int)labelLeft + 26, (int)lane.getY() + 4, 48, 14, juce::Justification::centredLeft);
-
-        g.setColour(juce::Colour(0xff93a7b0));
-        g.setFont(juce::Font(9.5f));
-        g.drawText(channel.target, (int)labelLeft + 26, (int)lane.getY() + 18, 52, 14, juce::Justification::centredLeft, true);
-
-        if (stripSamples.size() < 2)
-            return;
-
-        float peak = sharedAbs;
-        if (stripScale.getSelectedId() != 2)
-        {
-            peak = 0.001f;
-            for (const auto& sample : stripSamples)
-                peak = std::max(peak, std::abs(sample.*(channel.member)));
-        }
-
-        g.setColour(juce::Colour(0xff6f7f89));
-        g.drawText("+/-" + juce::String(peak, 2) + channel.unit,
-                   (int)labelLeft + 26, (int)lane.getBottom() - 16, 52, 12, juce::Justification::centredLeft, true);
-
-        juce::Path trace;
-        bool started = false;
-        const auto startTime = stripTimeSeconds - stripWindowSeconds;
-        for (const auto& sample : stripSamples)
-        {
-            const auto x = lane.getX() + (float)((sample.timeSeconds - startTime) / stripWindowSeconds) * lane.getWidth();
-            const auto normalized = juce::jlimit(-1.0f, 1.0f, (sample.*(channel.member)) / peak);
-            const auto y = centreY - normalized * lane.getHeight() * 0.38f;
-            if (!started)
-            {
-                trace.startNewSubPath(x, y);
-                started = true;
-            }
-            else
-            {
-                trace.lineTo(x, y);
-            }
-        }
-
-        g.setColour(channel.colour.withAlpha(0.88f));
-        g.strokePath(trace, juce::PathStrokeType(1.8f));
-    }
-
-    static juce::String getProbeDisplayTarget(const juce::String& target)
-    {
-        if (target.isEmpty() || target == "bench" || target == "probe")
-            return "floating";
-        return target;
-    }
-
-    juce::String probeAt(juce::Point<int> p) const
-    {
-        if (dmmHiLead.contains(p)) return "DMM_HI";
-        if (dmmLoLead.contains(p)) return "DMM_LO";
-        if (scopeCh1Lead.contains(p)) return "SCOPE_CH1";
-        if (scopeCh2Lead.contains(p)) return "SCOPE_CH2";
-        return {};
-    }
-
-    bool probeIsInUse(const juce::String& id) const
-    {
-        if (id == "DMM_HI") return !isProbeHome(dmmHighNet.getText().trim());
-        if (id == "DMM_LO") return !isProbeHome(dmmLowNet.getText().trim());
-        if (id == "SCOPE_CH1") return scopeCh1Target.isNotEmpty();
-        if (id == "SCOPE_CH2") return scopeCh2Target.isNotEmpty();
-        return true;
-    }
-
-    static bool isProbeHome(const juce::String& target)
-    {
-        return target.isEmpty() || target == "bench" || target == "probe";
-    }
-
-    void applySelectedPreset()
-    {
-        switch (psuPreset.getSelectedId())
-        {
-            case 2: applyPreset("12", "100m", "0.15"); break;
-            case 3: applyPreset("18", "100m", "0.15"); break;
-            case 4: applyPreset("6.8", "35m", "25"); break;
-            default: applyPreset("9", "100m", "0.2"); break;
-        }
-    }
-
-    void applyPreset(const juce::String& volts, const juce::String& amps, const juce::String& resistance)
-    {
-        mode.setSelectedId(1, juce::dontSendNotification);
-        positiveNet.setText("+" + volts + "V", juce::dontSendNotification);
-        negativeNet.setText("0", juce::dontSendNotification);
-        voltage.setText(volts, juce::dontSendNotification);
-        currentLimit.setText(amps, juce::dontSendNotification);
-        internalResistance.setText(resistance, juce::dontSendNotification);
-    }
-
-    juce::Label title;
-    juce::Label psuTitle;
-    juce::ComboBox mode;
-    juce::TextEditor positiveNet;
-    juce::TextEditor negativeNet;
-    juce::TextEditor voltage;
-    juce::TextEditor frequency;
-    juce::TextEditor currentLimit;
-    juce::TextEditor internalResistance;
-    juce::ToggleButton outputEnabled;
-    juce::ToggleButton currentLimited;
-    juce::ComboBox psuPreset;
-    juce::Label dmmTitle;
-    juce::ComboBox dmmFunction;
-    juce::ComboBox dmmRange;
-    juce::Label dmmDisplay;
-    juce::TextEditor dmmHighNet;
-    juce::TextEditor dmmLowNet;
-    juce::TextEditor dmmNplc;
-    juce::TextEditor dmmSampleRate;
-    juce::ToggleButton dmmTrueRms { "True RMS" };
-    juce::ToggleButton dmmAutoRange { "Auto" };
-    juce::ToggleButton dmmHold { "Hold" };
-    juce::ToggleButton dmmRelative { "Rel" };
-    juce::ToggleButton dmmMinMax { "Min/Max" };
-    juce::ToggleButton dmmPeakMinMax { "Peak" };
-    juce::ToggleButton dmmLowPass { "LPF" };
-    juce::ToggleButton dmmLoZ { "LoZ" };
-    juce::ToggleButton dmmContinuityBeep { "Beep" };
-    juce::ToggleButton stripRecord;
-    juce::ComboBox stripScale;
-    juce::String scopeCh1Target;
-    juce::String scopeCh2Target;
-    std::vector<StripSample> stripSamples;
-    double stripTimeSeconds = 0.0;
-    static constexpr double stripWindowSeconds = 60.0;
-    juce::Rectangle<int> dmmHiLead;
-    juce::Rectangle<int> dmmLoLead;
-    juce::Rectangle<int> scopeCh1Lead;
-    juce::Rectangle<int> scopeCh2Lead;
-    juce::Rectangle<int> psuZone;
-    juce::Rectangle<int> dmmZone;
-    juce::Rectangle<int> meterOptionsZone;
-    juce::Rectangle<int> scopeZone;
-};
-
 class FloatingInstrumentWindow final : public juce::DocumentWindow
 {
 public:
@@ -7092,7 +6725,7 @@ public:
     {
         setUsingNativeTitleBar(true);
         setResizable(true, true);
-        setResizeLimits(680, 480, 2200, 1400);
+        setResizeLimits(360, 240, 2400, 1600);
     }
 
     void closeButtonPressed() override
@@ -7104,188 +6737,474 @@ private:
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(FloatingInstrumentWindow)
 };
 
-class ScopeInstrumentPanel final : public juce::Component,
-                                   private juce::Timer
+// ---- Instrument windows: each one is a view of an instrument node ----------
+
+void styleCombo(juce::ComboBox& box)
+{
+    box.setColour(juce::ComboBox::backgroundColourId, juce::Colour(0xff1d2731));
+    box.setColour(juce::ComboBox::textColourId, juce::Colour(0xffdce9ee));
+    box.setColour(juce::ComboBox::outlineColourId, juce::Colour(0xff33424d));
+    box.setColour(juce::ComboBox::arrowColourId, juce::Colour(0xff93a7b0));
+}
+
+void styleSmallLabel(juce::Label& label, const juce::String& text)
+{
+    label.setText(text, juce::dontSendNotification);
+    label.setFont(juce::Font(12.0f));
+    label.setColour(juce::Label::textColourId, juce::Colour(0xff93a7b0));
+}
+
+void styleField(juce::TextEditor& editor)
+{
+    styleTextEditor(editor);
+    editor.setMultiLine(false);
+    editor.setFont(juce::Font("Consolas", 13.0f, juce::Font::plain));
+}
+
+// Re-measures when the circuit or this instrument's settings change.
+class InstrumentView : public juce::Component, private juce::Timer
 {
 public:
-    explicit ScopeInstrumentPanel(juce::String scopeRef)
-        : refdes(std::move(scopeRef))
+    InstrumentView(SchematicCanvasPanel* canvasPanel, juce::String instrumentRef)
+        : canvas(canvasPanel), refdes(std::move(instrumentRef))
     {
-        title.setText(refdes + " Oscilloscope", juce::dontSendNotification);
-        title.setFont(juce::Font(18.0f, juce::Font::bold));
-        title.setColour(juce::Label::textColourId, juce::Colour(0xff78dcca));
-        addAndMakeVisible(title);
+        startTimerHz(3);
+    }
 
-        run.setButtonText("Run");
-        run.setToggleState(true, juce::dontSendNotification);
-        run.setColour(juce::ToggleButton::textColourId, juce::Colour(0xffdce9ee));
-        addAndMakeVisible(run);
+protected:
+    juce::String setting(const juce::String& key) const { return canvas != nullptr ? canvas->instrumentSetting(refdes, key) : juce::String(); }
+    void setSetting(const juce::String& key, const juce::String& value)
+    {
+        if (canvas != nullptr)
+            canvas->setInstrumentSetting(refdes, key, value);
+        timerCallback();
+    }
 
-        for (const auto& item : { "1 ms/div", "5 ms/div", "10 ms/div", "100 ms/div" })
-            timebase.addItem(item, timebase.getNumItems() + 1);
-        timebase.setSelectedId(3, juce::dontSendNotification);
-        timebase.setColour(juce::ComboBox::backgroundColourId, juce::Colour(0xff253341));
-        timebase.setColour(juce::ComboBox::textColourId, juce::Colour(0xffdce9ee));
-        addAndMakeVisible(timebase);
+    // Fills a combo from the part catalog's choices and wires it to a setting.
+    void bindChoice(juce::ComboBox& box, const juce::String& symbolId, const juce::String& key)
+    {
+        styleCombo(box);
+        if (const auto* spec = parts::findParam(symbolId, key))
+            for (int i = 0; i < spec->options.size(); ++i)
+                box.addItem(spec->options[i], i + 1);
+        box.setText(setting(key), juce::dontSendNotification);
+        box.onChange = [this, &box, key] { setSetting(key, box.getText()); };
+        addAndMakeVisible(box);
+    }
 
-        startTimerHz(20);
+    void bindField(juce::TextEditor& editor, const juce::String& key)
+    {
+        styleField(editor);
+        editor.setText(setting(key), false);
+        auto commit = [this, &editor, key] { setSetting(key, editor.getText().trim()); };
+        editor.onReturnKey = commit;
+        editor.onFocusLost = commit;
+        addAndMakeVisible(editor);
+    }
+
+    virtual void measure() = 0;
+
+    juce::Component::SafePointer<SchematicCanvasPanel> canvas;
+    juce::String refdes;
+
+private:
+    void timerCallback() override
+    {
+        if (canvas == nullptr)
+            return;
+        const auto revision = canvas->modelRevision();
+        if (revision == lastRevision)
+            return;
+        lastRevision = revision;
+        measure();
+        repaint();
+    }
+
+    juce::int64 lastRevision = 0;
+};
+
+class ScopeView final : public InstrumentView
+{
+public:
+    ScopeView(SchematicCanvasPanel* canvasPanel, juce::String scopeRef)
+        : InstrumentView(canvasPanel, std::move(scopeRef))
+    {
+        styleSmallLabel(timeLabel, "Time/div");
+        styleSmallLabel(triggerLabel, "Trigger");
+        styleSmallLabel(levelLabel, "Level");
+        styleSmallLabel(ch1Label, "CH1 V/div");
+        styleSmallLabel(ch2Label, "CH2 V/div");
+        for (auto* label : { &timeLabel, &triggerLabel, &levelLabel, &ch1Label, &ch2Label })
+            addAndMakeVisible(*label);
+        bindChoice(timePerDiv, "oscilloscope_2ch", "time_per_div");
+        bindChoice(triggerSource, "oscilloscope_2ch", "trigger_source");
+        bindChoice(triggerSlope, "oscilloscope_2ch", "trigger_slope");
+        bindField(triggerLevel, "trigger_level");
+        bindChoice(ch1VoltsPerDiv, "oscilloscope_2ch", "ch1_volts_per_div");
+        bindChoice(ch2VoltsPerDiv, "oscilloscope_2ch", "ch2_volts_per_div");
+        for (auto* slider : { &ch1Position, &ch2Position })
+        {
+            slider->setSliderStyle(juce::Slider::LinearVertical);
+            slider->setTextBoxStyle(juce::Slider::NoTextBox, false, 0, 0);
+            slider->setRange(-4.0, 4.0, 0.25);
+            slider->setColour(juce::Slider::trackColourId, juce::Colour(0xff33424d));
+            addAndMakeVisible(*slider);
+        }
+        ch1Position.setColour(juce::Slider::thumbColourId, channelColour(0));
+        ch2Position.setColour(juce::Slider::thumbColourId, channelColour(1));
+        ch1Position.setValue(setting("ch1_position").getDoubleValue(), juce::dontSendNotification);
+        ch2Position.setValue(setting("ch2_position").getDoubleValue(), juce::dontSendNotification);
+        ch1Position.onValueChange = [this] { setSetting("ch1_position", juce::String(ch1Position.getValue())); };
+        ch2Position.onValueChange = [this] { setSetting("ch2_position", juce::String(ch2Position.getValue())); };
+        ch1Position.setTooltip("CH1 vertical position");
+        ch2Position.setTooltip("CH2 vertical position");
+        setSize(900, 560);
+    }
+
+    static juce::Colour channelColour(int ch) { return ch == 0 ? juce::Colour(0xfff4d35e) : juce::Colour(0xff78dcca); }
+
+    void paint(juce::Graphics& g) override
+    {
+        g.fillAll(juce::Colour(0xff10161d));
+        const auto plot = plotArea();
+        g.setColour(juce::Colour(0xff070b0f));
+        g.fillRoundedRectangle(plot, 6.0f);
+
+        // 10 x 8 graticule with minor ticks on the centre lines.
+        for (int i = 0; i <= 10; ++i)
+        {
+            const auto x = plot.getX() + plot.getWidth() * (float)i / 10.0f;
+            g.setColour(i == 5 ? juce::Colour(0xff3a4a56) : juce::Colour(0xff1f2a33));
+            g.drawVerticalLine((int)x, plot.getY(), plot.getBottom());
+        }
+        for (int i = 0; i <= 8; ++i)
+        {
+            const auto y = plot.getY() + plot.getHeight() * (float)i / 8.0f;
+            g.setColour(i == 4 ? juce::Colour(0xff3a4a56) : juce::Colour(0xff1f2a33));
+            g.drawHorizontalLine((int)y, plot.getX(), plot.getRight());
+        }
+        g.setColour(juce::Colour(0xff3a4a56));
+        for (int i = 0; i <= 50; ++i)
+        {
+            const auto x = plot.getX() + plot.getWidth() * (float)i / 50.0f;
+            g.drawLine(x, plot.getCentreY() - 3.0f, x, plot.getCentreY() + 3.0f, 1.0f);
+        }
+
+        if (!capture.ok)
+        {
+            g.setColour(juce::Colour(0xffff8a65));
+            g.setFont(juce::Font(14.0f));
+            g.drawFittedText(capture.error.isNotEmpty() ? capture.error : juce::String("Waiting for the simulation..."),
+                             plot.reduced(20.0f).toNearestInt(), juce::Justification::centred, 3);
+            return;
+        }
+
+        const auto window = 10.0 * capture.timePerDiv;
+        for (int ch = 0; ch < 2; ++ch)
+        {
+            if (!capture.connected[(size_t)ch] || capture.channel[(size_t)ch].empty())
+                continue;
+            const auto vdiv = std::max(1e-6, voltsPerDiv(ch));
+            const auto position = (ch == 0 ? ch1Position : ch2Position).getValue();
+            auto yOf = [&](double v) { return plot.getCentreY() - (float)((v / vdiv + position) * plot.getHeight() / 8.0); };
+
+            juce::Path trace;
+            for (size_t s = 0; s < capture.time.size(); ++s)
+            {
+                const auto x = plot.getX() + (float)(capture.time[s] / window) * plot.getWidth();
+                const auto y = juce::jlimit(plot.getY() - 2.0f, plot.getBottom() + 2.0f, yOf(capture.channel[(size_t)ch][s]));
+                if (s == 0) trace.startNewSubPath(x, y); else trace.lineTo(x, y);
+            }
+            g.saveState();
+            g.reduceClipRegion(plot.toNearestInt());
+            g.setColour(channelColour(ch));
+            g.strokePath(trace, juce::PathStrokeType(1.8f));
+            g.restoreState();
+
+            // Ground marker for the channel at the left edge.
+            const auto groundY = juce::jlimit(plot.getY(), plot.getBottom(), yOf(0.0));
+            juce::Path marker;
+            marker.addTriangle(plot.getX() - 10.0f, groundY - 5.0f, plot.getX() - 10.0f, groundY + 5.0f, plot.getX() - 2.0f, groundY);
+            g.fillPath(marker);
+        }
+
+        // Trigger level marker on the right edge.
+        {
+            const auto ch = setting("trigger_source") == "CH2" ? 1 : 0;
+            const auto vdiv = std::max(1e-6, voltsPerDiv(ch));
+            const auto position = (ch == 0 ? ch1Position : ch2Position).getValue();
+            double level = 0.0;
+            circuit_sim::parseValue(setting("trigger_level").toStdString(), level);
+            const auto y = juce::jlimit(plot.getY(), plot.getBottom(), plot.getCentreY() - (float)((level / vdiv + position) * plot.getHeight() / 8.0));
+            juce::Path marker;
+            marker.addTriangle(plot.getRight() + 10.0f, y - 5.0f, plot.getRight() + 10.0f, y + 5.0f, plot.getRight() + 2.0f, y);
+            g.setColour(capture.triggered ? juce::Colour(0xffff8a65) : juce::Colour(0xff71808c));
+            g.fillPath(marker);
+        }
+
+        // Status and measurements.
+        auto info = getLocalBounds().toFloat().withTop(plot.getBottom() + 8.0f).reduced(16.0f, 0.0f);
+        g.setFont(juce::Font("Consolas", 13.0f, juce::Font::plain));
+        g.setColour(capture.triggered ? juce::Colour(0xff6fac7d) : juce::Colour(0xffff8a65));
+        g.drawText(capture.triggered ? "TRIG'D" : "AUTO", info.removeFromLeft(70.0f).withHeight(18.0f).toNearestInt(), juce::Justification::centredLeft);
+        for (int ch = 0; ch < 2; ++ch)
+        {
+            auto row = info.removeFromTop(20.0f);
+            g.setColour(channelColour(ch));
+            if (!capture.connected[(size_t)ch])
+            {
+                g.drawText("CH" + juce::String(ch + 1) + "  not connected", row.toNearestInt(), juce::Justification::centredLeft);
+                continue;
+            }
+            const auto s = SchematicCanvasPanel::channelStatsFor(capture, ch);
+            g.drawText("CH" + juce::String(ch + 1)
+                           + "   Vpp " + juce::String(circuit_sim::formatValue(s.maximum - s.minimum, "V", 4))
+                           + "   Vrms " + juce::String(circuit_sim::formatValue(s.rms, "V", 4))
+                           + "   Mean " + juce::String(circuit_sim::formatValue(s.mean, "V", 4))
+                           + "   Freq " + (s.frequency > 0.0 ? juce::String(circuit_sim::formatValue(s.frequency, "Hz", 4)) : juce::String("--")),
+                       row.toNearestInt(), juce::Justification::centredLeft);
+        }
+        if (!capture.warnings.isEmpty())
+        {
+            g.setColour(juce::Colour(0xffff8a65));
+            g.drawText(capture.warnings[0], info.removeFromTop(18.0f).toNearestInt(), juce::Justification::centredLeft);
+        }
+    }
+
+    void resized() override
+    {
+        auto top = getLocalBounds().reduced(16).removeFromTop(28);
+        auto place = [&](juce::Label& label, juce::Component& control, int labelWidth, int width) {
+            label.setBounds(top.removeFromLeft(labelWidth));
+            control.setBounds(top.removeFromLeft(width).reduced(0, 2));
+            top.removeFromLeft(14);
+        };
+        place(timeLabel, timePerDiv, 56, 82);
+        place(ch1Label, ch1VoltsPerDiv, 64, 74);
+        place(ch2Label, ch2VoltsPerDiv, 64, 74);
+        place(triggerLabel, triggerSource, 50, 66);
+        triggerSlope.setBounds(top.removeFromLeft(86).reduced(0, 2));
+        top.removeFromLeft(10);
+        place(levelLabel, triggerLevel, 38, 70);
+
+        const auto plot = plotArea();
+        ch1Position.setBounds((int)plot.getRight() + 16, (int)plot.getY(), 18, (int)plot.getHeight());
+        ch2Position.setBounds((int)plot.getRight() + 38, (int)plot.getY(), 18, (int)plot.getHeight());
+    }
+
+private:
+    juce::Rectangle<float> plotArea() const
+    {
+        return getLocalBounds().toFloat().reduced(16.0f).withTrimmedTop(44.0f).withTrimmedLeft(14.0f).withTrimmedRight(66.0f).withTrimmedBottom(70.0f);
+    }
+
+    double voltsPerDiv(int ch) const
+    {
+        double v = 0.1;
+        circuit_sim::parseValue(setting(ch == 0 ? "ch1_volts_per_div" : "ch2_volts_per_div").toStdString(), v);
+        return v;
+    }
+
+    void measure() override
+    {
+        if (canvas != nullptr)
+            capture = canvas->captureScope(refdes);
+    }
+
+    juce::Label timeLabel, triggerLabel, levelLabel, ch1Label, ch2Label;
+    juce::ComboBox timePerDiv, triggerSource, triggerSlope, ch1VoltsPerDiv, ch2VoltsPerDiv;
+    juce::TextEditor triggerLevel;
+    juce::Slider ch1Position, ch2Position;
+    SchematicCanvasPanel::ScopeCapture capture;
+};
+
+class MeterView final : public InstrumentView
+{
+public:
+    MeterView(SchematicCanvasPanel* canvasPanel, juce::String meterRef)
+        : InstrumentView(canvasPanel, std::move(meterRef))
+    {
+        const auto* spec = parts::findParam("digital_multimeter", "value");
+        for (const auto& option : spec->options)
+        {
+            auto* button = functionButtons.add(new juce::TextButton(option));
+            button->setClickingTogglesState(true);
+            button->setRadioGroupId(1001);
+            button->setColour(juce::TextButton::buttonColourId, juce::Colour(0xff1d2731));
+            button->setColour(juce::TextButton::buttonOnColourId, juce::Colour(0xffffc857));
+            button->setColour(juce::TextButton::textColourOffId, juce::Colour(0xffdce9ee));
+            button->setColour(juce::TextButton::textColourOnId, juce::Colour(0xff0e141a));
+            button->setToggleState(setting("value") == option, juce::dontSendNotification);
+            button->onClick = [this, option] { setSetting("value", option); };
+            addAndMakeVisible(button);
+        }
+        setSize(440, 300);
     }
 
     void paint(juce::Graphics& g) override
     {
         g.fillAll(juce::Colour(0xff10161d));
-        auto plot = getLocalBounds().reduced(16).withTrimmedTop(56).toFloat();
-        g.setColour(juce::Colour(0xff0b1117));
-        g.fillRoundedRectangle(plot, 6.0f);
-        g.setColour(juce::Colour(0xff31404b));
-        g.drawRoundedRectangle(plot, 6.0f, 1.0f);
+        auto lcd = getLocalBounds().toFloat().reduced(20.0f).withTrimmedBottom(60.0f);
+        g.setColour(juce::Colour(0xff1a2620));
+        g.fillRoundedRectangle(lcd, 8.0f);
+        g.setColour(juce::Colour(0xff33424d));
+        g.drawRoundedRectangle(lcd, 8.0f, 1.5f);
 
-        for (int i = 1; i < 10; ++i)
-        {
-            const auto x = plot.getX() + plot.getWidth() * (float)i / 10.0f;
-            g.setColour(i == 5 ? juce::Colour(0xff3f5361) : juce::Colour(0xff22303a));
-            g.drawVerticalLine((int)x, plot.getY(), plot.getBottom());
-        }
-        for (int i = 1; i < 8; ++i)
-        {
-            const auto y = plot.getY() + plot.getHeight() * (float)i / 8.0f;
-            g.setColour(i == 4 ? juce::Colour(0xff3f5361) : juce::Colour(0xff22303a));
-            g.drawHorizontalLine((int)y, plot.getX(), plot.getRight());
-        }
-
-        drawTrace(g, plot, scopeChannelColour(0), 0.0f, 1.0f);
-        drawTrace(g, plot, scopeChannelColour(1), 0.8f, 0.62f);
-
-        g.setFont(juce::Font(12.0f, juce::Font::bold));
-        g.setColour(scopeChannelColour(0));
-        g.drawText("CH1", plot.getX() + 10.0f, plot.getY() + 8.0f, 48.0f, 18.0f, juce::Justification::centredLeft);
-        g.setColour(scopeChannelColour(1));
-        g.drawText("CH2", plot.getX() + 10.0f, plot.getY() + 28.0f, 48.0f, 18.0f, juce::Justification::centredLeft);
+        g.setColour(juce::Colour(0xff78dcca));
+        g.setFont(juce::Font(14.0f, juce::Font::bold));
+        g.drawText(reading.function.isNotEmpty() ? reading.function : setting("value"), lcd.reduced(14.0f).removeFromTop(20.0f).toNearestInt(), juce::Justification::centredLeft);
+        g.setFont(juce::Font("Consolas", 46.0f, juce::Font::bold));
+        g.setColour(reading.ok ? juce::Colour(0xffb8f2c8) : juce::Colour(0xffff8a65));
+        g.drawFittedText(reading.ok ? reading.display : (reading.error.isNotEmpty() ? reading.error : juce::String("----")),
+                         lcd.reduced(14.0f).toNearestInt(), juce::Justification::centredRight, 2);
     }
 
     void resized() override
     {
-        auto area = getLocalBounds().reduced(12);
-        title.setBounds(area.removeFromTop(30));
-        auto controls = area.removeFromTop(30);
-        run.setBounds(controls.removeFromLeft(90));
-        controls.removeFromLeft(8);
-        timebase.setBounds(controls.removeFromLeft(130));
+        auto row = getLocalBounds().reduced(20).removeFromBottom(40);
+        const auto w = row.getWidth() / std::max(1, functionButtons.size());
+        for (auto* button : functionButtons)
+            button->setBounds(row.removeFromLeft(w).reduced(4, 2));
     }
 
 private:
-    void timerCallback() override
+    void measure() override
     {
-        if (run.getToggleState())
-        {
-            phase += 0.08f;
-            repaint();
-        }
+        if (canvas == nullptr)
+            return;
+        reading = canvas->readMeter(refdes);
+        for (auto* button : functionButtons)
+            button->setToggleState(button->getButtonText() == setting("value"), juce::dontSendNotification);
     }
 
-    void drawTrace(juce::Graphics& g, juce::Rectangle<float> plot, juce::Colour colour, float phaseOffset, float amplitude)
+    juce::OwnedArray<juce::TextButton> functionButtons;
+    SchematicCanvasPanel::MeterReading reading;
+};
+
+class BodeView final : public InstrumentView
+{
+public:
+    BodeView(SchematicCanvasPanel* canvasPanel, juce::String fraRef)
+        : InstrumentView(canvasPanel, std::move(fraRef))
     {
-        juce::Path path;
-        for (int i = 0; i < 420; ++i)
+        styleSmallLabel(startLabel, "Start");
+        styleSmallLabel(stopLabel, "Stop");
+        styleSmallLabel(pointsLabel, "Points/decade");
+        for (auto* label : { &startLabel, &stopLabel, &pointsLabel })
+            addAndMakeVisible(*label);
+        bindField(start, "start_frequency");
+        bindField(stop, "stop_frequency");
+        bindField(points, "points_per_decade");
+        setSize(900, 600);
+    }
+
+    void paint(juce::Graphics& g) override
+    {
+        g.fillAll(juce::Colour(0xff10161d));
+        auto area = getLocalBounds().toFloat().reduced(16.0f).withTrimmedTop(44.0f).withTrimmedBottom(26.0f);
+        auto magnitude = area.removeFromTop(area.getHeight() * 0.6f).withTrimmedLeft(56.0f).withTrimmedBottom(10.0f);
+        auto phase = area.withTrimmedLeft(56.0f).withTrimmedTop(10.0f);
+
+        if (!sweep.ok)
         {
-            const auto xNorm = (float)i / 419.0f;
-            const auto value = std::sin(xNorm * juce::MathConstants<float>::twoPi * 3.0f + phase + phaseOffset) * amplitude;
-            const auto x = plot.getX() + xNorm * plot.getWidth();
-            const auto y = plot.getCentreY() - value * plot.getHeight() * 0.22f;
-            if (i == 0) path.startNewSubPath(x, y);
-            else path.lineTo(x, y);
+            g.setColour(juce::Colour(0xffff8a65));
+            g.setFont(juce::Font(14.0f));
+            g.drawFittedText(sweep.error.isNotEmpty() ? sweep.error : juce::String("Waiting for the simulation..."),
+                             magnitude.toNearestInt(), juce::Justification::centred, 3);
+            return;
+        }
+
+        const auto fMin = sweep.frequency.front(), fMax = sweep.frequency.back();
+        auto xOf = [&](juce::Rectangle<float> r, double f) {
+            return r.getX() + (float)((std::log10(f) - std::log10(fMin)) / std::max(1e-9, std::log10(fMax) - std::log10(fMin))) * r.getWidth();
+        };
+        const auto dbMax = std::ceil((sweep.peakDb + 3.0) / 10.0) * 10.0;
+        const auto dbMin = std::max(dbMax - 80.0, std::floor(*std::min_element(sweep.gainDb.begin(), sweep.gainDb.end()) / 10.0) * 10.0);
+        drawPlot(g, magnitude, fMin, fMax, dbMin, dbMax, 10.0, "dB", sweep.gainDb, juce::Colour(0xff9b8cff), xOf);
+        drawPlot(g, phase, fMin, fMax, -180.0, 180.0, 45.0, "deg", sweep.phaseDeg, juce::Colour(0xff78dcca), xOf);
+
+        // -3 dB markers.
+        g.setColour(juce::Colour(0xffff8a65));
+        for (auto f : sweep.corners)
+        {
+            const auto x = xOf(magnitude, f);
+            const float dashes[] = { 4.0f, 4.0f };
+            g.drawDashedLine(juce::Line<float>(x, magnitude.getY(), x, phase.getBottom()), dashes, 2, 1.0f);
+        }
+
+        juce::String summary = "Peak gain " + juce::String(sweep.peakDb, 2) + " dB";
+        for (auto f : sweep.corners)
+            summary << "     -3 dB at " << juce::String(circuit_sim::formatValue(f, "Hz", 4));
+        g.setColour(juce::Colour(0xffdce9ee));
+        g.setFont(juce::Font("Consolas", 13.0f, juce::Font::plain));
+        g.drawText(summary, getLocalBounds().reduced(16).removeFromBottom(20), juce::Justification::centredLeft);
+    }
+
+    void resized() override
+    {
+        auto top = getLocalBounds().reduced(16).removeFromTop(28);
+        auto place = [&](juce::Label& label, juce::TextEditor& field, int labelWidth) {
+            label.setBounds(top.removeFromLeft(labelWidth));
+            field.setBounds(top.removeFromLeft(90).reduced(0, 2));
+            top.removeFromLeft(16);
+        };
+        place(startLabel, start, 40);
+        place(stopLabel, stop, 40);
+        place(pointsLabel, points, 92);
+    }
+
+private:
+    template <typename XOf>
+    static void drawPlot(juce::Graphics& g, juce::Rectangle<float> r, double fMin, double fMax, double yMin, double yMax, double yStep,
+                         const juce::String& unit, const std::vector<double>& values, juce::Colour colour, XOf xOf)
+    {
+        g.setColour(juce::Colour(0xff070b0f));
+        g.fillRoundedRectangle(r, 4.0f);
+        g.setFont(juce::Font(11.0f));
+        for (double decade = std::pow(10.0, std::floor(std::log10(fMin))); decade <= fMax * 1.0001; decade *= 10.0)
+            for (int m = 1; m < 10; ++m)
+            {
+                const auto f = decade * m;
+                if (f < fMin * 0.9999 || f > fMax * 1.0001) continue;
+                const auto x = xOf(r, f);
+                g.setColour(m == 1 ? juce::Colour(0xff33424d) : juce::Colour(0xff1a232b));
+                g.drawVerticalLine((int)x, r.getY(), r.getBottom());
+                if (m == 1)
+                {
+                    g.setColour(juce::Colour(0xff93a7b0));
+                    g.drawText(juce::String(circuit_sim::formatValue(f, "Hz", 3)), juce::Rectangle<float>(x - 30.0f, r.getBottom() + 1.0f, 60.0f, 14.0f).toNearestInt(), juce::Justification::centred);
+                }
+            }
+        auto yOf = [&](double v) { return r.getBottom() - (float)((v - yMin) / (yMax - yMin)) * r.getHeight(); };
+        for (double v = yMin; v <= yMax + 1e-9; v += yStep)
+        {
+            g.setColour(juce::Colour(0xff1f2a33));
+            g.drawHorizontalLine((int)yOf(v), r.getX(), r.getRight());
+            g.setColour(juce::Colour(0xff93a7b0));
+            g.drawText(juce::String((int)std::round(v)) + " " + unit, juce::Rectangle<float>(r.getX() - 56.0f, yOf(v) - 7.0f, 52.0f, 14.0f).toNearestInt(), juce::Justification::centredRight);
+        }
+        juce::Path path;
+        // Frequencies are the shared sweep points, spaced like `values`.
+        for (size_t k = 0; k < values.size(); ++k)
+        {
+            const auto f = fMin * std::pow(fMax / fMin, values.size() > 1 ? (double)k / (double)(values.size() - 1) : 0.0);
+            const auto x = xOf(r, f);
+            const auto y = juce::jlimit(r.getY(), r.getBottom(), yOf(values[k]));
+            if (k == 0) path.startNewSubPath(x, y); else path.lineTo(x, y);
         }
         g.setColour(colour);
         g.strokePath(path, juce::PathStrokeType(2.0f));
     }
 
-    juce::String refdes;
-    juce::Label title;
-    juce::ToggleButton run;
-    juce::ComboBox timebase;
-    float phase = 0.0f;
-};
-
-class DmmInstrumentPanel final : public juce::Component,
-                                 private juce::Timer
-{
-public:
-    explicit DmmInstrumentPanel(juce::String meterRef)
-        : refdes(std::move(meterRef))
+    void measure() override
     {
-        title.setText(refdes + " Digital Multimeter", juce::dontSendNotification);
-        title.setFont(juce::Font(18.0f, juce::Font::bold));
-        title.setColour(juce::Label::textColourId, juce::Colour(0xff78dcca));
-        addAndMakeVisible(title);
-
-        for (const auto& item : { "DC Voltage", "AC Voltage", "Resistance", "Continuity", "Diode" })
-            function.addItem(item, function.getNumItems() + 1);
-        function.setSelectedId(1, juce::dontSendNotification);
-        function.setColour(juce::ComboBox::backgroundColourId, juce::Colour(0xff253341));
-        function.setColour(juce::ComboBox::textColourId, juce::Colour(0xffdce9ee));
-        addAndMakeVisible(function);
-
-        display.setText("+0.000 V", juce::dontSendNotification);
-        display.setFont(juce::Font("Consolas", 34.0f, juce::Font::bold));
-        display.setJustificationType(juce::Justification::centredRight);
-        display.setColour(juce::Label::textColourId, juce::Colour(0xff78dcca));
-        display.setColour(juce::Label::backgroundColourId, juce::Colour(0xff0b1117));
-        addAndMakeVisible(display);
-
-        hold.setButtonText("Hold");
-        hold.setColour(juce::ToggleButton::textColourId, juce::Colour(0xffdce9ee));
-        addAndMakeVisible(hold);
-
-        startTimerHz(5);
+        if (canvas != nullptr)
+            sweep = canvas->sweepBode(refdes);
     }
 
-    void paint(juce::Graphics& g) override
-    {
-        g.fillAll(juce::Colour(0xff10161d));
-        auto leads = getLocalBounds().reduced(16).removeFromBottom(68).toFloat();
-        drawLeadJack(g, leads.removeFromLeft(leads.getWidth() * 0.5f).reduced(8.0f), "HI", dmmLeadColour(true));
-        drawLeadJack(g, leads.reduced(8.0f), "LO", dmmLeadColour(false));
-    }
-
-    void resized() override
-    {
-        auto area = getLocalBounds().reduced(14);
-        title.setBounds(area.removeFromTop(30));
-        area.removeFromTop(10);
-        function.setBounds(area.removeFromTop(32).removeFromLeft(180));
-        area.removeFromTop(14);
-        display.setBounds(area.removeFromTop(86));
-        area.removeFromTop(8);
-        hold.setBounds(area.removeFromTop(30).removeFromLeft(100));
-    }
-
-private:
-    void timerCallback() override
-    {
-        if (!hold.getToggleState())
-        {
-            t += 0.2;
-            display.setText(juce::String(1.8 + std::sin(t * 0.7) * 0.015, 4) + " V", juce::dontSendNotification);
-        }
-    }
-
-    static void drawLeadJack(juce::Graphics& g, juce::Rectangle<float> area, const juce::String& label, juce::Colour colour)
-    {
-        g.setColour(juce::Colour(0xff0b1117));
-        g.fillRoundedRectangle(area, 8.0f);
-        g.setColour(colour);
-        g.drawRoundedRectangle(area, 8.0f, 2.0f);
-        g.drawEllipse(area.getCentreX() - 9.0f, area.getCentreY() - 9.0f, 18.0f, 18.0f, 2.0f);
-        g.setFont(juce::Font(15.0f, juce::Font::bold));
-        g.drawText(label, area.toNearestInt().reduced(12), juce::Justification::centredLeft);
-    }
-
-    juce::String refdes;
-    juce::Label title;
-    juce::Label display;
-    juce::ComboBox function;
-    juce::ToggleButton hold;
-    double t = 0.0;
+    juce::Label startLabel, stopLabel, pointsLabel;
+    juce::TextEditor start, stop, points;
+    SchematicCanvasPanel::BodeSweep sweep;
 };
 
 class ConsolePanel final : public juce::Component
@@ -8841,6 +8760,7 @@ ElectronicsWorkbench::ElectronicsWorkbench()
         [this] { return stampModeButton.getToggleState(); },
         [this](juce::String message) { appendLog(message); });
     auto* schematicPanel = schematic.get();
+    schematicView = schematicPanel;
     setSnapEnabled = [schematicPanel](bool enabled) {
         schematicPanel->setSnapEnabled(enabled);
     };
@@ -8872,8 +8792,6 @@ ElectronicsWorkbench::ElectronicsWorkbench()
     propertiesPanel->onRotate = [schematicPanel] {
         schematicPanel->rotateSelected();
     };
-    auto instruments = std::make_unique<InstrumentPanel>();
-    auto* instrumentPanel = instruments.get();
     auto analysis = std::make_unique<FrequencyResponsePanel>();
     auto* analysisPanel = analysis.get();
     analysisPanel->onRun = [this] { designRlcHighPassFilter(); };
@@ -8885,16 +8803,12 @@ ElectronicsWorkbench::ElectronicsWorkbench()
                                             double inductanceHenries) {
         analysisPanel->setResponse(csvFile, reportFile, cutoffHz, impedanceOhms, capacitanceFarads, inductanceHenries);
     };
-    schematicPanel->setProbeListener([instrumentPanel](juce::String id, juce::String, juce::String target) {
-        instrumentPanel->setProbeTarget(id, target);
-    });
     schematicPanel->setInstrumentOpenListener([this](juce::String refdes, juce::String symbolId) {
         openInstrumentWindow(refdes, symbolId);
     });
     resetCircuit = [panel = schematic.get()] { panel->clearCircuit(); };
     getCircuitJson = [panel = schematic.get()] { return panel->buildCircuitJson(); };
     getXyceNetlist = [panel = schematic.get()] { return panel->buildXyceNetlist(); };
-    getLabInstrumentsJson = [instrumentPanel] { return instrumentPanel->buildInstrumentJson(); };
     getErcReport = [panel = schematic.get()] { return panel->buildErcReport(); };
     loadCircuitJson = [panel = schematic.get()](const juce::String& json, juce::String& error) {
         return panel->loadCircuitJson(json, error);
@@ -9058,7 +8972,6 @@ ElectronicsWorkbench::ElectronicsWorkbench()
     dockManager->registerPanel("properties", "Properties", std::move(properties), CreationDock::DockTargetZone::Right);
     dockManager->registerPanel("ingestion", "Spec Ingestion", std::make_unique<SpecIngestionPanel>(), CreationDock::DockTargetZone::Right);
     dockManager->registerPanel("sourcing", "Parts Sourcing", std::make_unique<PartsSourcingPanel>(), CreationDock::DockTargetZone::Right);
-    dockManager->registerPanel("lab_bench", "Lab Bench", std::move(instruments), CreationDock::DockTargetZone::Right);
 
     dockManager->loadLayoutFromFile(layoutFile());
     appendLog("Electronics research shell initialized.");
@@ -10381,34 +10294,38 @@ void ElectronicsWorkbench::runElectricalRuleCheck()
 
 void ElectronicsWorkbench::openInstrumentWindow(juce::String refdes, juce::String symbolId)
 {
-    const auto instrumentName = symbolId == "oscilloscope_2ch" ? juce::String("Oscilloscope")
-                              : symbolId == "digital_multimeter" ? juce::String("Digital Multimeter")
-                              : juce::String("Instrument");
-    auto* window = new FloatingInstrumentWindow(refdes + " " + instrumentName);
-    if (symbolId == "oscilloscope_2ch")
-    {
-        window->setContentOwned(new ScopeInstrumentPanel(refdes), true);
-        window->centreWithSize(820, 520);
-    }
-    else if (symbolId == "digital_multimeter")
-    {
-        window->setContentOwned(new DmmInstrumentPanel(refdes), true);
-        window->centreWithSize(420, 320);
-    }
-    else
-    {
-        window->setContentOwned(new InstrumentPanel(), true);
-        window->centreWithSize(920, 680);
-    }
+    auto* canvas = dynamic_cast<SchematicCanvasPanel*>(schematicView.getComponent());
+    if (canvas == nullptr)
+        return;
+    const auto instrumentName = parts::displayName(symbolId);
+    const auto title = refdes + " " + instrumentName;
+    for (auto* existing : floatingInstrumentWindows)
+        if (existing->getName() == title)
+        {
+            existing->setVisible(true);
+            existing->toFront(true);
+            return;
+        }
+
+    juce::Component* view = nullptr;
+    if (symbolId == "oscilloscope_2ch") view = new ScopeView(canvas, refdes);
+    else if (symbolId == "digital_multimeter") view = new MeterView(canvas, refdes);
+    else if (symbolId == "bode_analyzer") view = new BodeView(canvas, refdes);
+    if (view == nullptr)
+        return;
+
+    auto* window = new FloatingInstrumentWindow(title);
+    window->setContentOwned(view, true);
+    window->centreWithSize(view->getWidth(), view->getHeight());
     window->setVisible(true);
     window->toFront(true);
     floatingInstrumentWindows.add(window);
-    appendLog("Opened floating " + instrumentName + " panel for " + refdes + ".");
+    appendLog("Opened " + title + ".");
 }
 
 juce::String ElectronicsWorkbench::exportCircuitArtifactsTool()
 {
-    if (getCircuitJson == nullptr || getXyceNetlist == nullptr || getLabInstrumentsJson == nullptr)
+    if (getCircuitJson == nullptr || getXyceNetlist == nullptr)
     {
         return "{ \"ok\": false, \"tool\": \"simulation_export_artifacts\", \"displayTool\": \"simulation.export_artifacts\", \"error\": \"No schematic exporter is available.\" }";
     }
@@ -10422,10 +10339,8 @@ juce::String ElectronicsWorkbench::exportCircuitArtifactsTool()
 
     const auto circuitFile = runDir.getChildFile("circuit.json");
     const auto netlistFile = runDir.getChildFile("generated.cir");
-    const auto instrumentsFile = runDir.getChildFile("lab_instruments.json");
     const auto circuitJson = getCircuitJson();
     const auto netlist = getXyceNetlist();
-    const auto instrumentsJson = getLabInstrumentsJson();
 
     if (!circuitFile.replaceWithText(circuitJson))
     {
@@ -10436,11 +10351,6 @@ juce::String ElectronicsWorkbench::exportCircuitArtifactsTool()
     {
         return "{ \"ok\": false, \"tool\": \"simulation_export_artifacts\", \"displayTool\": \"simulation.export_artifacts\", \"error\": "
             + jsonQuote("Could not write Xyce netlist: " + netlistFile.getFullPathName()) + " }";
-    }
-    if (!instrumentsFile.replaceWithText(instrumentsJson))
-    {
-        return "{ \"ok\": false, \"tool\": \"simulation_export_artifacts\", \"displayTool\": \"simulation.export_artifacts\", \"error\": "
-            + jsonQuote("Could not write lab instruments JSON: " + instrumentsFile.getFullPathName()) + " }";
     }
     const auto manifestFile = runDir.getChildFile("assistant_tools.json");
     manifestFile.replaceWithText(buildAssistantToolManifestJson());
@@ -10456,7 +10366,6 @@ juce::String ElectronicsWorkbench::exportCircuitArtifactsTool()
     result << "  \"artifactDirectory\": " << jsonQuote(runDir.getFullPathName()) << ",\n";
     result << "  \"circuitJson\": " << jsonQuote(circuitFile.getFullPathName()) << ",\n";
     result << "  \"xyceNetlist\": " << jsonQuote(netlistFile.getFullPathName()) << ",\n";
-    result << "  \"instrumentJson\": " << jsonQuote(instrumentsFile.getFullPathName()) << ",\n";
     result << "  \"toolManifest\": " << jsonQuote(manifestFile.getFullPathName()) << "\n";
     result << "}\n";
     return result;

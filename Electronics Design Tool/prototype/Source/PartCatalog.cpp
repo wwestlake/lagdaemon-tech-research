@@ -108,8 +108,10 @@ std::map<juce::String, std::vector<ParamSpec>> buildCatalog()
     c["power_bus"] = { text("busName", "Rail name", "+V", Storage::BusName) };
     c["ground_bus"] = { text("busName", "Rail name", "0", Storage::BusName) };
     c["oscilloscope_2ch"] = { choice("time_per_div", "Time / div", { "10u", "20u", "50u", "100u", "200u", "500u", "1m", "2m", "5m", "10m", "20m", "50m" }, "200u"),
-                              choice("ch1_volts_per_div", "CH1 volts / div", { "10m", "20m", "50m", "100m", "200m", "500m", "1", "2", "5", "10" }, "100m"),
-                              choice("ch2_volts_per_div", "CH2 volts / div", { "10m", "20m", "50m", "100m", "200m", "500m", "1", "2", "5", "10" }, "100m"),
+                              choice("ch1_volts_per_div", "CH1 volts / div", { "10m", "20m", "50m", "100m", "200m", "500m", "1", "2", "5", "10" }, "500m"),
+                              choice("ch2_volts_per_div", "CH2 volts / div", { "10m", "20m", "50m", "100m", "200m", "500m", "1", "2", "5", "10" }, "500m"),
+                              quantity("ch1_position", "CH1 position", "div", "0"),
+                              quantity("ch2_position", "CH2 position", "div", "0"),
                               choice("trigger_source", "Trigger source", { "CH1", "CH2" }, "CH1"),
                               quantity("trigger_level", "Trigger level", "V", "0"),
                               choice("trigger_slope", "Trigger slope", { "Rising", "Falling" }, "Rising") };
