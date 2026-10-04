@@ -41,7 +41,7 @@ void showCursorForEvent(const juce::MouseEvent& event, juce::MouseCursor cursor)
 
 juce::Colour dmmLeadColour(bool positive)
 {
-    return positive ? juce::Colour(0xffd85f5f) : juce::Colour(0xff1a1f25);
+    return positive ? juce::Colour(0xffd85f5f) : juce::Colour(0xff2c333b);
 }
 
 juce::Colour scopeChannelColour(int channelIndex)
@@ -2199,15 +2199,20 @@ public:
                 scope.add(i);
         }
 
+        std::set<int> scopeSet;
+        for (int index : scope)
+            if (index >= 0 && index < (int)instances.size())
+                scopeSet.insert(index);
+
         auto roleColumn = [this](const Instance& instance) {
             const auto id = instance.symbolId;
-            if (id == "power_bus") return 1;
+            if (id == "power_port" || id == "power_bus") return 1;
             if (id == "voltage_source" || id == "ac_voltage_source" || id == "signal_source"
                 || id == "current_source" || id == "ac_current_source" || id == "battery"
                 || id.startsWith("connector"))
                 return 0;
-            if (id == "ground" || id == "ground_bus") return 2;
-            if (isInstrumentNode(id)) return 5;
+            if (id == "ground" || id == "ground_bus") return 4;
+            if (isInstrumentNode(id)) return 6;
             if (id == "resistor" || id == "capacitor" || id == "inductor" || id == "diode"
                 || id == "zener_diode" || id == "led" || id == "schottky_diode"
                 || id == "potentiometer" || id == "fuse" || id.startsWith("switch"))
@@ -2221,20 +2226,101 @@ public:
             return 4;
         };
 
-        std::array<int, 6> rowCounts {};
-        for (int index : scope)
+        std::vector<std::set<int>> adjacency(instances.size());
+        for (const auto& wire : wires)
         {
-            if (index < 0 || index >= (int)instances.size())
+            if (!wire.a.isPin() || !wire.b.isPin())
                 continue;
-            auto& instance = instances[(size_t)index];
-            const auto column = std::clamp(roleColumn(instance), 0, 5);
-            const auto row = rowCounts[(size_t)column]++;
-            float x = 144.0f + (float)column * 168.0f;
-            float y = 144.0f + (float)row * 120.0f;
-            if (instance.symbolId == "power_bus") y = 72.0f;
-            if (instance.symbolId == "ground" || instance.symbolId == "ground_bus") y += 96.0f;
-            if (isInstrumentNode(instance.symbolId)) y = 144.0f + (float)row * 144.0f;
+            const auto a = wire.a.pin.instanceIndex;
+            const auto b = wire.b.pin.instanceIndex;
+            if (a < 0 || b < 0 || a >= (int)instances.size() || b >= (int)instances.size() || a == b)
+                continue;
+            adjacency[(size_t)a].insert(b);
+            adjacency[(size_t)b].insert(a);
+        }
+
+        std::vector<int> rank(instances.size(), 3);
+        std::vector<int> queue;
+        for (int index : scopeSet)
+        {
+            const auto base = roleColumn(instances[(size_t)index]);
+            rank[(size_t)index] = base;
+            if (base == 0)
+                queue.push_back(index);
+        }
+
+        for (size_t qi = 0; qi < queue.size(); ++qi)
+        {
+            const auto current = queue[qi];
+            for (int next : adjacency[(size_t)current])
+            {
+                if (!scopeSet.count(next) || isInstrumentNode(instances[(size_t)next].symbolId))
+                    continue;
+                const auto proposed = std::min(5, rank[(size_t)current] + 1);
+                if (proposed < rank[(size_t)next] || queue.size() == 1)
+                {
+                    rank[(size_t)next] = std::max(rank[(size_t)next], proposed);
+                    if (std::find(queue.begin(), queue.end(), next) == queue.end())
+                        queue.push_back(next);
+                }
+            }
+        }
+
+        for (int index : scopeSet)
+        {
+            const auto role = roleColumn(instances[(size_t)index]);
+            if (role == 0 || role == 1 || role == 6)
+                rank[(size_t)index] = role;
+            if (instances[(size_t)index].symbolId == "ground" || instances[(size_t)index].symbolId == "ground_bus")
+            {
+                int connectedRank = 2;
+                for (int next : adjacency[(size_t)index])
+                    connectedRank = std::max(connectedRank, rank[(size_t)next]);
+                rank[(size_t)index] = std::min(5, connectedRank);
+            }
+        }
+
+        std::array<std::vector<int>, 7> columns;
+        for (int index : scopeSet)
+            columns[(size_t)std::clamp(rank[(size_t)index], 0, 6)].push_back(index);
+
+        for (auto& column : columns)
+        {
+            std::sort(column.begin(), column.end(), [&](int a, int b) {
+                const auto& ia = instances[(size_t)a];
+                const auto& ib = instances[(size_t)b];
+                const auto ra = roleColumn(ia);
+                const auto rb = roleColumn(ib);
+                if (ra != rb) return ra < rb;
+                if (ia.position.y != ib.position.y) return ia.position.y < ib.position.y;
+                return ia.refdes < ib.refdes;
+            });
+        }
+
+        constexpr float x0 = 144.0f;
+        constexpr float y0 = 120.0f;
+        constexpr float dx = 180.0f;
+        constexpr float dy = 132.0f;
+        for (size_t columnIndex = 0; columnIndex < columns.size(); ++columnIndex)
+        {
+            auto& column = columns[columnIndex];
+            const auto columnHeight = (float)std::max(0, (int)column.size() - 1) * dy;
+            const auto top = y0 + std::max(0.0f, 264.0f - columnHeight * 0.5f);
+            for (size_t row = 0; row < column.size(); ++row)
+            {
+                auto& instance = instances[(size_t)column[row]];
+                float x = x0 + (float)columnIndex * dx;
+                float y = top + (float)row * dy;
+
+                if (instance.symbolId == "power_port" || instance.symbolId == "power_bus")
+                    y = 48.0f + (float)row * 72.0f;
+                else if (instance.symbolId == "ground" || instance.symbolId == "ground_bus")
+                    y += 96.0f;
+                else if (isInstrumentNode(instance.symbolId))
+                    y = 132.0f + (float)row * 156.0f;
+
             instance.position = snapPoint({ x, y });
+            }
         }
 
         selectedInstance = selectedInstances.isEmpty() ? (instances.empty() ? -1 : 0) : selectedInstances.getLast();
@@ -2250,7 +2336,7 @@ public:
         result << "  \"displayTool\": \"schematic.auto_layout\",\n";
         result << "  \"scope\": " << quote(scope.size() == (int)instances.size() ? "diagram" : "selection") << ",\n";
         result << "  \"componentCount\": " << scope.size() << ",\n";
-        result << "  \"style\": \"left_to_right_standard_grid\"\n";
+        result << "  \"style\": \"connection_aware_left_to_right_grid\"\n";
         result << "}";
         if (onStatus) onStatus("Auto-laid out " + juce::String(scope.size()) + " schematic component(s).");
         return result;
@@ -3968,6 +4054,62 @@ private:
         g.strokePath(path, juce::PathStrokeType(width));
     }
 
+    bool instrumentLeadColourForNode(const WireNode& node, juce::Colour& colour) const
+    {
+        if (!node.isPin() || node.pin.instanceIndex < 0 || node.pin.instanceIndex >= (int)instances.size())
+            return false;
+
+        const auto& instance = instances[(size_t)node.pin.instanceIndex];
+        const auto symbol = symbolFor(instance.symbolId);
+        if (node.pin.pinIndex < 0 || node.pin.pinIndex >= (int)symbol.pins.size())
+            return false;
+
+        const auto pinName = symbol.pins[(size_t)node.pin.pinIndex].name;
+        if (instance.symbolId == "digital_multimeter")
+        {
+            if (pinName == "HI")
+            {
+                colour = dmmLeadColour(true);
+                return true;
+            }
+            if (pinName == "LO")
+            {
+                colour = dmmLeadColour(false);
+                return true;
+            }
+        }
+        else if (instance.symbolId == "oscilloscope_2ch")
+        {
+            if (pinName == "CH1")
+            {
+                colour = scopeChannelColour(0);
+                return true;
+            }
+            if (pinName == "CH2")
+            {
+                colour = scopeChannelColour(1);
+                return true;
+            }
+            if (pinName == "REF")
+            {
+                colour = juce::Colour(0xffb5bdc5);
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    juce::Colour schematicWireColour(const Wire& wire) const
+    {
+        juce::Colour colour;
+        if (instrumentLeadColourForNode(wire.a, colour))
+            return colour;
+        if (instrumentLeadColourForNode(wire.b, colour))
+            return colour;
+        return juce::Colour(0xfff4d35e);
+    }
+
     void drawWires(juce::Graphics& g)
     {
         for (const auto& wire : wires)
@@ -3975,7 +4117,7 @@ private:
             if (isInternalRailTapWire(wire))
                 continue;
 
-            drawRoutedWire(g, routedWirePoints(wire.a, wire.b), juce::Colour(0xfff4d35e), 2.0f);
+            drawRoutedWire(g, routedWirePoints(wire.a, wire.b), schematicWireColour(wire), 2.2f);
         }
 
         g.setColour(juce::Colour(0xffffc857));
@@ -4776,6 +4918,190 @@ public:
 
 private:
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(FloatingInstrumentWindow)
+};
+
+class ScopeInstrumentPanel final : public juce::Component,
+                                   private juce::Timer
+{
+public:
+    explicit ScopeInstrumentPanel(juce::String scopeRef)
+        : refdes(std::move(scopeRef))
+    {
+        title.setText(refdes + " Oscilloscope", juce::dontSendNotification);
+        title.setFont(juce::Font(18.0f, juce::Font::bold));
+        title.setColour(juce::Label::textColourId, juce::Colour(0xff78dcca));
+        addAndMakeVisible(title);
+
+        run.setButtonText("Run");
+        run.setToggleState(true, juce::dontSendNotification);
+        run.setColour(juce::ToggleButton::textColourId, juce::Colour(0xffdce9ee));
+        addAndMakeVisible(run);
+
+        for (const auto& item : { "1 ms/div", "5 ms/div", "10 ms/div", "100 ms/div" })
+            timebase.addItem(item, timebase.getNumItems() + 1);
+        timebase.setSelectedId(3, juce::dontSendNotification);
+        timebase.setColour(juce::ComboBox::backgroundColourId, juce::Colour(0xff253341));
+        timebase.setColour(juce::ComboBox::textColourId, juce::Colour(0xffdce9ee));
+        addAndMakeVisible(timebase);
+
+        startTimerHz(20);
+    }
+
+    void paint(juce::Graphics& g) override
+    {
+        g.fillAll(juce::Colour(0xff10161d));
+        auto plot = getLocalBounds().reduced(16).withTrimmedTop(56).toFloat();
+        g.setColour(juce::Colour(0xff0b1117));
+        g.fillRoundedRectangle(plot, 6.0f);
+        g.setColour(juce::Colour(0xff31404b));
+        g.drawRoundedRectangle(plot, 6.0f, 1.0f);
+
+        for (int i = 1; i < 10; ++i)
+        {
+            const auto x = plot.getX() + plot.getWidth() * (float)i / 10.0f;
+            g.setColour(i == 5 ? juce::Colour(0xff3f5361) : juce::Colour(0xff22303a));
+            g.drawVerticalLine((int)x, plot.getY(), plot.getBottom());
+        }
+        for (int i = 1; i < 8; ++i)
+        {
+            const auto y = plot.getY() + plot.getHeight() * (float)i / 8.0f;
+            g.setColour(i == 4 ? juce::Colour(0xff3f5361) : juce::Colour(0xff22303a));
+            g.drawHorizontalLine((int)y, plot.getX(), plot.getRight());
+        }
+
+        drawTrace(g, plot, scopeChannelColour(0), 0.0f, 1.0f);
+        drawTrace(g, plot, scopeChannelColour(1), 0.8f, 0.62f);
+
+        g.setFont(juce::Font(12.0f, juce::Font::bold));
+        g.setColour(scopeChannelColour(0));
+        g.drawText("CH1", plot.getX() + 10.0f, plot.getY() + 8.0f, 48.0f, 18.0f, juce::Justification::centredLeft);
+        g.setColour(scopeChannelColour(1));
+        g.drawText("CH2", plot.getX() + 10.0f, plot.getY() + 28.0f, 48.0f, 18.0f, juce::Justification::centredLeft);
+    }
+
+    void resized() override
+    {
+        auto area = getLocalBounds().reduced(12);
+        title.setBounds(area.removeFromTop(30));
+        auto controls = area.removeFromTop(30);
+        run.setBounds(controls.removeFromLeft(90));
+        controls.removeFromLeft(8);
+        timebase.setBounds(controls.removeFromLeft(130));
+    }
+
+private:
+    void timerCallback() override
+    {
+        if (run.getToggleState())
+        {
+            phase += 0.08f;
+            repaint();
+        }
+    }
+
+    void drawTrace(juce::Graphics& g, juce::Rectangle<float> plot, juce::Colour colour, float phaseOffset, float amplitude)
+    {
+        juce::Path path;
+        for (int i = 0; i < 420; ++i)
+        {
+            const auto xNorm = (float)i / 419.0f;
+            const auto value = std::sin(xNorm * juce::MathConstants<float>::twoPi * 3.0f + phase + phaseOffset) * amplitude;
+            const auto x = plot.getX() + xNorm * plot.getWidth();
+            const auto y = plot.getCentreY() - value * plot.getHeight() * 0.22f;
+            if (i == 0) path.startNewSubPath(x, y);
+            else path.lineTo(x, y);
+        }
+        g.setColour(colour);
+        g.strokePath(path, juce::PathStrokeType(2.0f));
+    }
+
+    juce::String refdes;
+    juce::Label title;
+    juce::ToggleButton run;
+    juce::ComboBox timebase;
+    float phase = 0.0f;
+};
+
+class DmmInstrumentPanel final : public juce::Component,
+                                 private juce::Timer
+{
+public:
+    explicit DmmInstrumentPanel(juce::String meterRef)
+        : refdes(std::move(meterRef))
+    {
+        title.setText(refdes + " Digital Multimeter", juce::dontSendNotification);
+        title.setFont(juce::Font(18.0f, juce::Font::bold));
+        title.setColour(juce::Label::textColourId, juce::Colour(0xff78dcca));
+        addAndMakeVisible(title);
+
+        for (const auto& item : { "DC Voltage", "AC Voltage", "Resistance", "Continuity", "Diode" })
+            function.addItem(item, function.getNumItems() + 1);
+        function.setSelectedId(1, juce::dontSendNotification);
+        function.setColour(juce::ComboBox::backgroundColourId, juce::Colour(0xff253341));
+        function.setColour(juce::ComboBox::textColourId, juce::Colour(0xffdce9ee));
+        addAndMakeVisible(function);
+
+        display.setText("+0.000 V", juce::dontSendNotification);
+        display.setFont(juce::Font("Consolas", 34.0f, juce::Font::bold));
+        display.setJustificationType(juce::Justification::centredRight);
+        display.setColour(juce::Label::textColourId, juce::Colour(0xff78dcca));
+        display.setColour(juce::Label::backgroundColourId, juce::Colour(0xff0b1117));
+        addAndMakeVisible(display);
+
+        hold.setButtonText("Hold");
+        hold.setColour(juce::ToggleButton::textColourId, juce::Colour(0xffdce9ee));
+        addAndMakeVisible(hold);
+
+        startTimerHz(5);
+    }
+
+    void paint(juce::Graphics& g) override
+    {
+        g.fillAll(juce::Colour(0xff10161d));
+        auto leads = getLocalBounds().reduced(16).removeFromBottom(68).toFloat();
+        drawLeadJack(g, leads.removeFromLeft(leads.getWidth() * 0.5f).reduced(8.0f), "HI", dmmLeadColour(true));
+        drawLeadJack(g, leads.reduced(8.0f), "LO", dmmLeadColour(false));
+    }
+
+    void resized() override
+    {
+        auto area = getLocalBounds().reduced(14);
+        title.setBounds(area.removeFromTop(30));
+        area.removeFromTop(10);
+        function.setBounds(area.removeFromTop(32).removeFromLeft(180));
+        area.removeFromTop(14);
+        display.setBounds(area.removeFromTop(86));
+        area.removeFromTop(8);
+        hold.setBounds(area.removeFromTop(30).removeFromLeft(100));
+    }
+
+private:
+    void timerCallback() override
+    {
+        if (!hold.getToggleState())
+        {
+            t += 0.2;
+            display.setText(juce::String(1.8 + std::sin(t * 0.7) * 0.015, 4) + " V", juce::dontSendNotification);
+        }
+    }
+
+    static void drawLeadJack(juce::Graphics& g, juce::Rectangle<float> area, const juce::String& label, juce::Colour colour)
+    {
+        g.setColour(juce::Colour(0xff0b1117));
+        g.fillRoundedRectangle(area, 8.0f);
+        g.setColour(colour);
+        g.drawRoundedRectangle(area, 8.0f, 2.0f);
+        g.drawEllipse(area.getCentreX() - 9.0f, area.getCentreY() - 9.0f, 18.0f, 18.0f, 2.0f);
+        g.setFont(juce::Font(15.0f, juce::Font::bold));
+        g.drawText(label, area.toNearestInt().reduced(12), juce::Justification::centredLeft);
+    }
+
+    juce::String refdes;
+    juce::Label title;
+    juce::Label display;
+    juce::ComboBox function;
+    juce::ToggleButton hold;
+    double t = 0.0;
 };
 
 class ConsolePanel final : public juce::Component
@@ -7775,8 +8101,21 @@ void ElectronicsWorkbench::openInstrumentWindow(juce::String refdes, juce::Strin
                               : symbolId == "digital_multimeter" ? juce::String("Digital Multimeter")
                               : juce::String("Instrument");
     auto* window = new FloatingInstrumentWindow(refdes + " " + instrumentName);
-    window->setContentOwned(new InstrumentPanel(), true);
-    window->centreWithSize(920, 680);
+    if (symbolId == "oscilloscope_2ch")
+    {
+        window->setContentOwned(new ScopeInstrumentPanel(refdes), true);
+        window->centreWithSize(820, 520);
+    }
+    else if (symbolId == "digital_multimeter")
+    {
+        window->setContentOwned(new DmmInstrumentPanel(refdes), true);
+        window->centreWithSize(420, 320);
+    }
+    else
+    {
+        window->setContentOwned(new InstrumentPanel(), true);
+        window->centreWithSize(920, 680);
+    }
     window->setVisible(true);
     window->toFront(true);
     floatingInstrumentWindows.add(window);
