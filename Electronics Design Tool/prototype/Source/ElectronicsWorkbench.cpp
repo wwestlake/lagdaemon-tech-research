@@ -3287,6 +3287,44 @@ private:
         return points;
     }
 
+    static void appendUniquePoint(std::vector<juce::Point<float>>& points, juce::Point<float> point)
+    {
+        if (points.empty() || point.getDistanceFrom(points.back()) > 0.1f)
+            points.push_back(point);
+    }
+
+    static void appendOrthogonalSegment(std::vector<juce::Point<float>>& points,
+                                        juce::Point<float> target,
+                                        juce::Point<float> preferredDirection = {})
+    {
+        if (points.empty())
+        {
+            points.push_back(target);
+            return;
+        }
+
+        const auto start = points.back();
+        if (std::abs(start.x - target.x) <= 0.1f || std::abs(start.y - target.y) <= 0.1f)
+        {
+            appendUniquePoint(points, target);
+            return;
+        }
+
+        const bool horizontalFirst = std::abs(preferredDirection.x) >= std::abs(preferredDirection.y);
+        appendUniquePoint(points, horizontalFirst ? juce::Point<float> { target.x, start.y }
+                                                  : juce::Point<float> { start.x, target.y });
+        appendUniquePoint(points, target);
+    }
+
+    static bool isOrthogonalPath(const std::vector<juce::Point<float>>& points)
+    {
+        for (size_t i = 1; i < points.size(); ++i)
+            if (std::abs(points[i - 1].x - points[i].x) > 0.1f
+                && std::abs(points[i - 1].y - points[i].y) > 0.1f)
+                return false;
+        return true;
+    }
+
     static Avoid::Polygon avoidRectangle(juce::Rectangle<float> bounds)
     {
         Avoid::Polygon polygon(4);
@@ -3353,23 +3391,22 @@ private:
         std::vector<juce::Point<float>> points;
         points.push_back(start);
         if (startRun.getDistanceFrom(start) > 0.1f)
-            points.push_back(startRun);
+            appendOrthogonalSegment(points, startRun, aLead);
 
         for (const auto& point : route.ps)
         {
             juce::Point<float> p { (float)point.x, (float)point.y };
-            if (points.empty() || p.getDistanceFrom(points.back()) > 0.1f)
-                points.push_back(p);
+            appendOrthogonalSegment(points, p);
         }
 
         if (end.getDistanceFrom(points.back()) > 0.1f)
         {
             if (endRun.getDistanceFrom(points.back()) > 0.1f)
-                points.push_back(endRun);
-            points.push_back(end);
+                appendOrthogonalSegment(points, endRun, bLead);
+            appendOrthogonalSegment(points, end, bLead);
         }
 
-        return points;
+        return isOrthogonalPath(points) ? points : std::vector<juce::Point<float>> {};
     }
 
     PinRef hitTestPin(juce::Point<float> p) const
