@@ -202,8 +202,28 @@ const SchematicToolSpec schematicToolSpecs[] = {
     },
     {
         "instrument_read",
-        "Read an instrument node exactly as its window shows it: oscilloscope channel Vpp/Vrms/mean/frequency at its time/div and trigger, multimeter reading in its function (DC V, AC V, DC A, Ohms), or frequency analyzer peak gain and -3 dB points. Change instrument settings with schematic_set_component_properties params.",
+        "Read an instrument node exactly as its window shows it: oscilloscope channel Vpp/Vrms/mean/frequency at its time/div and trigger, multimeter reading in its function (DC V, AC V, DC A, Ohms), or frequency analyzer peak gain and -3 dB points. Change instrument settings with schematic_set_parameters.",
         R"({"type":"object","properties":{"refdes":{"type":"string","description":"Instrument reference designator, such as SCOPE1, DMM1, or FRA1."}},"required":["refdes"],"additionalProperties":false})"
+    },
+    {
+        "schematic_get_parameters",
+        "List a part's editable properties (key, label, current value, unit, choices), its rotation and its sheet - the same fields the Properties pane shows.",
+        R"({"type":"object","properties":{"refdes":{"type":"string","description":"Reference designator such as R1, V1, Q2, SCOPE1."}},"required":["refdes"],"additionalProperties":false})"
+    },
+    {
+        "schematic_set_parameters",
+        "Set one or more of a part's properties by key, validated like the Properties pane: values take units and prefixes (4.7k, 10u, 1meg), choices must match an option. Use schematic_get_parameters to see the keys. Covers component values, source waveform/amplitude/frequency/offset, transistor and diode models, switch state, net and label names, and instrument settings (time_per_div, ch1_volts_per_div, trigger_level, meter function in value, start_frequency).",
+        R"({"type":"object","properties":{"refdes":{"type":"string"},"params":{"type":"object","description":"Property key to new value, such as {\"value\": \"4.7k\"} or {\"waveform\": \"Square\", \"frequency\": \"500\"}.","additionalProperties":{"type":"string"}}},"required":["refdes","params"],"additionalProperties":false})"
+    },
+    {
+        "schematic_rename_component",
+        "Change a part's reference designator (letters, digits, underscore; must be unique).",
+        R"({"type":"object","properties":{"refdes":{"type":"string"},"newRefdes":{"type":"string"}},"required":["refdes","newRefdes"],"additionalProperties":false})"
+    },
+    {
+        "schematic_rotate_component",
+        "Set a part's rotation to 0, 90, 180 or 270 degrees.",
+        R"({"type":"object","properties":{"refdes":{"type":"string"},"rotation":{"type":"string","description":"0, 90, 180 or 270."}},"required":["refdes","rotation"],"additionalProperties":false})"
     },
     {
         "schematic_group_list",
@@ -1149,26 +1169,6 @@ public:
     float getCanvasZoom() const
     {
         return canvasZoom;
-    }
-
-    void updateSelectedProperties(const juce::String& value,
-                                  const juce::String& frequency,
-                                  const juce::String& busName,
-                                  const juce::String& family,
-                                  const juce::String& manufacturerPart)
-    {
-        if (selectedInstance < 0 || selectedInstance >= (int)instances.size())
-            return;
-
-        auto& instance = instances[(size_t)selectedInstance];
-        instance.value = value.trim();
-        instance.frequency = frequency.trim();
-        instance.busName = busName.trim();
-        instance.family = family.trim();
-        instance.manufacturerPart = manufacturerPart.trim();
-        if (onStatus) onStatus("Updated " + instance.refdes + " properties.");
-        notifySelection();
-        forceDeferredRepaint();
     }
 
     void rotateSelected()
@@ -2206,52 +2206,6 @@ public:
         result << "  \"symbolId\": " << quote(instance.symbolId) << ",\n";
         result << "  \"x\": " << instance.position.x << ",\n";
         result << "  \"y\": " << instance.position.y << "\n";
-        result << "}";
-        return result;
-    }
-
-    juce::String setComponentPropertiesFromTool(const juce::String& refdes,
-                                                const juce::String& value,
-                                                const juce::String& frequency,
-                                                const juce::String& busName,
-                                                const juce::String& family,
-                                                const juce::String& manufacturerPart)
-    {
-        const auto index = instanceIndexForRefdes(refdes.trim());
-        if (index < 0)
-            return toolFailure("schematic_set_component_properties", "No placed instance has reference designator " + refdes.trim() + ".");
-
-        auto& instance = instances[(size_t)index];
-        auto applyIfNotVoid = [](const juce::String& incoming, juce::String& target) {
-            if (incoming.isNotEmpty())
-                target = incoming.trim();
-        };
-
-        applyIfNotVoid(value, instance.value);
-        applyIfNotVoid(frequency, instance.frequency);
-        applyIfNotVoid(busName, instance.busName);
-        applyIfNotVoid(family, instance.family);
-        applyIfNotVoid(manufacturerPart, instance.manufacturerPart);
-
-        selectedInstance = index;
-        selectedInstances.clear();
-        selectedInstances.add(index);
-        selectedGroup = -1;
-        notifySelection();
-        forceDeferredRepaint();
-
-        juce::String result;
-        result << "{\n";
-        result << "  \"ok\": true,\n";
-        result << "  \"tool\": \"schematic_set_component_properties\",\n";
-        result << "  \"displayTool\": \"schematic.set_component_properties\",\n";
-        result << "  \"refdes\": " << quote(instance.refdes) << ",\n";
-        result << "  \"symbolId\": " << quote(instance.symbolId) << ",\n";
-        result << "  \"value\": " << quote(instance.value) << ",\n";
-        result << "  \"frequency\": " << quote(instance.frequency) << ",\n";
-        result << "  \"busName\": " << quote(instance.busName) << ",\n";
-        result << "  \"family\": " << quote(instance.family) << ",\n";
-        result << "  \"manufacturerPart\": " << quote(instance.manufacturerPart) << "\n";
         result << "}";
         return result;
     }
@@ -5254,6 +5208,202 @@ private:
     }
 
 public:
+    // ---- Part editing: shared by the properties pane and the agent ----
+
+    struct PartView
+    {
+        bool ok = false;
+        juce::String refdes, symbolId, sheet;
+        juce::StringArray groups;
+        int rotation = 0;
+        std::vector<std::pair<juce::String, juce::String>> pinVoltages; // pin, DC voltage text
+    };
+
+    PartView partView(const juce::String& refdes) const
+    {
+        PartView view;
+        const auto index = instanceIndexForRefdesAnySheet(refdes);
+        if (index < 0)
+            return view;
+        const auto& instance = instances[(size_t)index];
+        view.ok = true;
+        view.refdes = instance.refdes;
+        view.symbolId = instance.symbolId;
+        view.sheet = sheetName(instance.sheet);
+        view.rotation = schematic::normalizedRotation(instance.rotation);
+        for (const auto& group : groups)
+            if (std::find(group.memberInstances.begin(), group.memberInstances.end(), index) != group.memberInstances.end())
+                view.groups.add(group.name);
+
+        if (!isNetMarker(instance.symbolId) && instance.symbolId != "sub_block" && instance.symbolId != "block_port")
+        {
+            auto sim = buildSimNetlist();
+            const auto op = circuit_sim::solveOperatingPoint(sim.circuit);
+            const auto symbol = symbolForInstance(instance);
+            for (const auto& pin : symbol.pins)
+            {
+                const auto n = simNodeOfPin(sim, index, pin.name);
+                view.pinVoltages.push_back({ pin.name, op.ok && n >= 0 ? juce::String(circuit_sim::formatValue(op.voltages[(size_t)n], "V", 4))
+                                                                       : juce::String("--") });
+            }
+        }
+        return view;
+    }
+
+    juce::String selectedRefdes() const
+    {
+        return selectedInstance >= 0 && selectedInstance < (int)instances.size() && selectedInstances.size() <= 1
+            ? instances[(size_t)selectedInstance].refdes : juce::String();
+    }
+
+    bool setPartParameter(const juce::String& refdes, const juce::String& key, const juce::String& value, juce::String& error)
+    {
+        const auto index = instanceIndexForRefdesAnySheet(refdes);
+        if (index < 0)
+        {
+            error = "No part " + refdes + ".";
+            return false;
+        }
+        auto& instance = instances[(size_t)index];
+        const auto* spec = parts::findParam(instance.symbolId, key);
+        if (spec == nullptr)
+        {
+            juce::StringArray keys;
+            for (const auto& s : parts::paramsFor(instance.symbolId)) keys.add(s.key);
+            error = parts::displayName(instance.symbolId) + " has no property \"" + key + "\"."
+                  + (keys.isEmpty() ? juce::String(" It has no editable properties.") : " Properties: " + keys.joinIntoString(", ") + ".");
+            return false;
+        }
+        if (!parts::validate(*spec, value, error))
+            return false;
+        setPartValue(instance, key, value.trim());
+        notifySelection();
+        forceDeferredRepaint();
+        return true;
+    }
+
+    bool renamePart(const juce::String& refdes, const juce::String& newRefdes, juce::String& error)
+    {
+        const auto index = instanceIndexForRefdesAnySheet(refdes);
+        const auto name = newRefdes.trim();
+        if (index < 0) { error = "No part " + refdes + "."; return false; }
+        if (name.isEmpty() || !name.containsOnly("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_"))
+        {
+            error = "A reference designator uses letters, digits and _ only.";
+            return false;
+        }
+        if (name.startsWithIgnoreCase("N") && name.substring(1).containsOnly("0123456789"))
+        {
+            error = name + " is reserved for junction labels.";
+            return false;
+        }
+        const auto clash = instanceIndexForRefdesAnySheet(name);
+        if (clash >= 0 && clash != index)
+        {
+            error = name + " is already used.";
+            return false;
+        }
+        instances[(size_t)index].refdes = name;
+        notifySelection();
+        forceDeferredRepaint();
+        return true;
+    }
+
+    bool setPartRotation(const juce::String& refdes, int degrees, juce::String& error)
+    {
+        const auto index = instanceIndexForRefdesAnySheet(refdes);
+        if (index < 0) { error = "No part " + refdes + "."; return false; }
+        if (degrees % 90 != 0) { error = "Rotation is 0, 90, 180 or 270 degrees."; return false; }
+        instances[(size_t)index].rotation = schematic::normalizedRotation(degrees);
+        notifySelection();
+        forceDeferredRepaint();
+        return true;
+    }
+
+    bool renameBlockPin(const juce::String& blockKey, const juce::String& oldName, const juce::String& newName, juce::String& error)
+    {
+        const auto block = blockIndexFor(blockKey);
+        if (block < 0) { error = "No sub-diagram block " + blockKey + "."; return false; }
+        auto& ports = instances[(size_t)block].ports;
+        const auto found = std::find_if(ports.begin(), ports.end(), [&](const schematic::BlockPort& port) { return port.name == oldName; });
+        if (found == ports.end()) { error = "Block " + instances[(size_t)block].refdes + " has no pin " + oldName + "."; return false; }
+        if (newName.trim().isEmpty() || (newName.trim() != oldName && std::any_of(ports.begin(), ports.end(), [&](const schematic::BlockPort& p) { return p.name == newName.trim(); })))
+        {
+            error = "Pin names must be non-empty and unique on the block.";
+            return false;
+        }
+        found->name = newName.trim();
+        for (auto& instance : instances)
+            if (instance.symbolId == "block_port" && instance.sheet == instances[(size_t)block].childSheet && instance.busName == oldName)
+            {
+                instance.busName = newName.trim();
+                instance.value = newName.trim();
+            }
+        forceDeferredRepaint();
+        return true;
+    }
+
+    void openInstrumentFor(const juce::String& refdes)
+    {
+        const auto index = instanceIndexForRefdesAnySheet(refdes);
+        if (index >= 0 && isInstrumentNode(instances[(size_t)index].symbolId) && onInstrumentOpen)
+            onInstrumentOpen(instances[(size_t)index].refdes, instances[(size_t)index].symbolId);
+    }
+
+    juce::String parametersJson(const juce::String& refdes) const
+    {
+        const auto index = instanceIndexForRefdesAnySheet(refdes);
+        if (index < 0)
+            return toolFailure("schematic_get_parameters", "No part " + refdes + ".");
+        const auto& instance = instances[(size_t)index];
+        juce::String list = "[";
+        bool first = true;
+        for (const auto& spec : parts::paramsFor(instance.symbolId))
+        {
+            list << (first ? "" : ", ") << "{ \"key\": " << quote(spec.key) << ", \"label\": " << quote(spec.label)
+                 << ", \"value\": " << quote(partValue(instance, spec.key));
+            if (spec.unit.isNotEmpty()) list << ", \"unit\": " << quote(spec.unit);
+            if (!spec.options.isEmpty())
+            {
+                juce::StringArray options;
+                for (const auto& o : spec.options) options.add(quote(o));
+                list << ", \"options\": [" << options.joinIntoString(", ") << "]";
+            }
+            list << " }";
+            first = false;
+        }
+        list << "]";
+        return "{ \"ok\": true, \"tool\": \"schematic_get_parameters\", \"refdes\": " + quote(instance.refdes)
+             + ", \"type\": " + quote(parts::displayName(instance.symbolId)) + ", \"rotation\": " + juce::String(schematic::normalizedRotation(instance.rotation))
+             + ", \"sheet\": " + quote(sheetName(instance.sheet)) + ", \"parameters\": " + list + " }";
+    }
+
+    juce::String blockName(const juce::String& refdes) const
+    {
+        const auto block = blockIndexFor(refdes);
+        return block >= 0 ? instances[(size_t)block].value : juce::String();
+    }
+
+    bool setBlockName(const juce::String& refdes, const juce::String& name, juce::String& error)
+    {
+        const auto block = blockIndexFor(refdes);
+        if (block < 0) { error = "No sub-diagram block " + refdes + "."; return false; }
+        if (name.trim().isEmpty()) { error = "A block needs a name."; return false; }
+        instances[(size_t)block].value = name.trim();
+        forceDeferredRepaint();
+        return true;
+    }
+
+    std::vector<std::pair<juce::String, juce::String>> blockPins(const juce::String& refdes) const
+    {
+        std::vector<std::pair<juce::String, juce::String>> pins;
+        const auto block = blockIndexFor(refdes);
+        if (block >= 0)
+            for (const auto& port : instances[(size_t)block].ports)
+                pins.push_back({ port.name, port.rightSide ? "Output pin" : "Input pin" });
+        return pins;
+    }
+
     // ---- Instruments: measurements behind the instrument windows ----
 
     int instanceIndexForRefdesAnySheet(const juce::String& refdes) const
@@ -5648,6 +5798,37 @@ public:
             return runSimulationTool(name, args);
         if (name == "instrument_read")
             return instrumentReadJson(args.getProperty("refdes", {}).toString());
+        auto arg = [&](const char* key) { return args.getProperty(key, {}).toString().trim(); };
+        if (name == "schematic_get_parameters")
+            return parametersJson(arg("refdes"));
+        if (name == "schematic_set_parameters")
+        {
+            const auto refdes = arg("refdes");
+            const auto* params = args.getProperty("params", {}).getDynamicObject();
+            if (params == nullptr || params->getProperties().isEmpty())
+                return toolFailure(name, "params must be an object such as {\"value\": \"4.7k\"}.");
+            for (const auto& property : params->getProperties())
+            {
+                juce::String error;
+                if (!setPartParameter(refdes, property.name.toString(), property.value.toString(), error))
+                    return toolFailure(name, error);
+            }
+            return parametersJson(refdes).replace("\"schematic_get_parameters\"", "\"schematic_set_parameters\"");
+        }
+        if (name == "schematic_rename_component")
+        {
+            juce::String error;
+            if (!renamePart(arg("refdes"), arg("newRefdes"), error))
+                return toolFailure(name, error);
+            return "{ \"ok\": true, \"tool\": " + quote(name) + ", \"refdes\": " + quote(arg("newRefdes")) + " }";
+        }
+        if (name == "schematic_rotate_component")
+        {
+            juce::String error;
+            if (!setPartRotation(arg("refdes"), arg("rotation").getIntValue(), error))
+                return toolFailure(name, error);
+            return "{ \"ok\": true, \"tool\": " + quote(name) + ", \"refdes\": " + quote(arg("refdes")) + ", \"rotation\": " + juce::String(schematic::normalizedRotation(arg("rotation").getIntValue())) + " }";
+        }
         auto text = [&](const juce::String& key) { return args.getProperty(juce::Identifier(key), {}).toString().trim(); };
         auto ok = [&](const juce::String& body) {
             forceDeferredRepaint();
@@ -5818,25 +5999,10 @@ public:
 
         if (name == "schematic_subdiagram_rename_port")
         {
-            const auto block = blockIndexFor(text("block"));
-            if (block < 0)
-                return toolFailure(name, "No sub-diagram block " + text("block") + ".");
-            const auto oldName = text("port");
-            const auto newName = text("name");
-            auto& ports = instances[(size_t)block].ports;
-            const auto found = std::find_if(ports.begin(), ports.end(), [&](const schematic::BlockPort& port) { return port.name == oldName; });
-            if (found == ports.end())
-                return toolFailure(name, "Block " + instances[(size_t)block].refdes + " has no port " + oldName + ".");
-            if (newName.isEmpty() || std::any_of(ports.begin(), ports.end(), [&](const schematic::BlockPort& port) { return port.name == newName; }))
-                return toolFailure(name, "The new port name must be non-empty and unique on the block.");
-            found->name = newName;
-            for (auto& instance : instances)
-                if (instance.symbolId == "block_port" && instance.sheet == instances[(size_t)block].childSheet && instance.busName == oldName)
-                {
-                    instance.busName = newName;
-                    instance.value = newName;
-                }
-            return ok("\"block\": " + blockJson(block));
+            juce::String error;
+            if (!renameBlockPin(text("block"), text("port"), text("name"), error))
+                return toolFailure(name, error);
+            return ok("\"block\": " + blockJson(blockIndexFor(text("block"))));
         }
 
         if (name == "schematic_subdiagram_list")
@@ -7228,137 +7394,489 @@ private:
     juce::TextEditor console;
 };
 
-class PropertiesPanel final : public juce::Component
+// Properties for the selected part, with controls chosen from the part
+// catalog: values with units get validated fields, choices get dropdowns,
+// on/off settings get toggles, the potentiometer wiper gets a slider.
+class PropertiesPanel final : public juce::Component, private juce::Timer
 {
 public:
-    PropertiesPanel()
+    explicit PropertiesPanel(SchematicCanvasPanel* canvasPanel) : canvas(canvasPanel)
     {
-        title.setText("Properties", juce::dontSendNotification);
-        title.setFont(juce::Font(16.0f, juce::Font::bold));
-        title.setColour(juce::Label::textColourId, juce::Colour(0xff78dcca));
-        addAndMakeVisible(title);
-
-        for (auto* label : { &selectedLabel, &valueLabel, &frequencyLabel, &busLabel, &familyLabel, &manufacturerLabel })
-        {
-            label->setFont(juce::Font(12.5f, juce::Font::bold));
-            label->setColour(juce::Label::textColourId, juce::Colour(0xff93a7b0));
-            addAndMakeVisible(*label);
-        }
-
-        selectedLabel.setText("Selected", juce::dontSendNotification);
-        valueLabel.setText("Value / amplitude", juce::dontSendNotification);
-        frequencyLabel.setText("Frequency", juce::dontSendNotification);
-        busLabel.setText("Bus / net name", juce::dontSendNotification);
-        familyLabel.setText("Part family", juce::dontSendNotification);
-        manufacturerLabel.setText("Manufacturer part", juce::dontSendNotification);
-
-        for (auto* editor : { &selected, &value, &frequency, &busName, &family, &manufacturerPart })
-        {
-            styleTextEditor(*editor);
-            editor->setMultiLine(false);
-            addAndMakeVisible(*editor);
-        }
-
-        selected.setReadOnly(true);
-        selected.setTextToShowWhenEmpty("Select a placed component", juce::Colour(0xff71808c));
-        value.setTextToShowWhenEmpty("10k, 1u, 9, 1...", juce::Colour(0xff71808c));
-        frequency.setTextToShowWhenEmpty("1k", juce::Colour(0xff71808c));
-        busName.setTextToShowWhenEmpty("+5V, +12V, VREF, 0", juce::Colour(0xff71808c));
-        family.setTextToShowWhenEmpty("2N2222, LM741, NE555...", juce::Colour(0xff71808c));
-        manufacturerPart.setTextToShowWhenEmpty("vendor-specific MPN", juce::Colour(0xff71808c));
-
-        apply.setButtonText("Apply");
-        apply.setColour(juce::TextButton::buttonColourId, juce::Colour(0xff253341));
-        apply.setColour(juce::TextButton::textColourOffId, juce::Colour(0xffdce9ee));
-        apply.onClick = [this] {
-            if (onApply != nullptr && selectedIndex >= 0)
-                onApply(value.getText(), frequency.getText(), busName.getText(), family.getText(), manufacturerPart.getText());
-        };
-        addAndMakeVisible(apply);
-
-        rotate.setButtonText("Rotate 90");
-        rotate.setColour(juce::TextButton::buttonColourId, juce::Colour(0xff253341));
-        rotate.setColour(juce::TextButton::textColourOffId, juce::Colour(0xffdce9ee));
-        rotate.onClick = [this] {
-            if (onRotate != nullptr && selectedIndex >= 0)
-                onRotate();
-        };
-        addAndMakeVisible(rotate);
-
-        setSelection(-1, {}, {}, {}, {}, {}, {}, {});
+        viewport.setViewedComponent(&content, false);
+        viewport.setScrollBarsShown(true, false);
+        viewport.setScrollBarThickness(10);
+        addAndMakeVisible(viewport);
+        startTimerHz(2);
+        rebuild();
     }
 
-    void setSelection(int index,
-                      const juce::String& refdes,
-                      const juce::String& symbol,
-                      const juce::String& newValue,
-                      const juce::String& newFrequency,
-                      const juce::String& newBusName,
-                      const juce::String& newFamily,
-                      const juce::String& newManufacturerPart)
+    void showPart(const juce::String& refdes)
     {
-        selectedIndex = index;
-        const auto hasSelection = selectedIndex >= 0;
-        selected.setText(hasSelection ? refdes + "  (" + symbol + ")" : juce::String(), juce::dontSendNotification);
-        value.setText(newValue, juce::dontSendNotification);
-        frequency.setText(newFrequency, juce::dontSendNotification);
-        busName.setText(newBusName, juce::dontSendNotification);
-        family.setText(newFamily, juce::dontSendNotification);
-        manufacturerPart.setText(newManufacturerPart, juce::dontSendNotification);
-
-        for (auto* editor : { &value, &frequency, &busName, &family, &manufacturerPart })
-            editor->setEnabled(hasSelection);
-        apply.setEnabled(hasSelection);
-        rotate.setEnabled(hasSelection);
+        if (refdes == current && !rows.empty())
+        {
+            refreshValues();
+            return;
+        }
+        current = refdes;
+        rebuild();
     }
-
-    std::function<void(juce::String, juce::String, juce::String, juce::String, juce::String)> onApply;
-    std::function<void()> onRotate;
 
     void paint(juce::Graphics& g) override { g.fillAll(juce::Colour(0xff151a20)); }
 
     void resized() override
     {
-        auto area = getLocalBounds().reduced(8);
-        title.setBounds(area.removeFromTop(24));
-        area.removeFromTop(8);
-        layoutRow(area, selectedLabel, selected);
-        layoutRow(area, valueLabel, value);
-        layoutRow(area, frequencyLabel, frequency);
-        layoutRow(area, busLabel, busName);
-        layoutRow(area, familyLabel, family);
-        layoutRow(area, manufacturerLabel, manufacturerPart);
-        area.removeFromTop(8);
-        auto buttons = area.removeFromTop(30);
-        apply.setBounds(buttons.removeFromLeft(90));
-        buttons.removeFromLeft(8);
-        rotate.setBounds(buttons.removeFromLeft(110));
+        viewport.setBounds(getLocalBounds());
+        layout();
     }
 
 private:
-    static void layoutRow(juce::Rectangle<int>& area, juce::Label& label, juce::TextEditor& editor)
+    static juce::String unitSymbol(const juce::String& unit)
     {
-        label.setBounds(area.removeFromTop(18));
-        editor.setBounds(area.removeFromTop(28));
-        area.removeFromTop(8);
+        if (unit == "ohm") return juce::String::fromUTF8("\xce\xa9");
+        return unit;
     }
 
-    int selectedIndex = -1;
-    juce::Label title;
-    juce::Label selectedLabel;
-    juce::Label valueLabel;
-    juce::Label frequencyLabel;
-    juce::Label busLabel;
-    juce::Label familyLabel;
-    juce::Label manufacturerLabel;
-    juce::TextEditor selected;
-    juce::TextEditor value;
-    juce::TextEditor frequency;
-    juce::TextEditor busName;
-    juce::TextEditor family;
-    juce::TextEditor manufacturerPart;
-    juce::TextButton apply;
-    juce::TextButton rotate;
+    struct Row
+    {
+        juce::String key;              // catalog key, or "#refdes", "#pin:<name>"
+        parts::ParamSpec spec;
+        std::unique_ptr<juce::Label> label;
+        std::unique_ptr<juce::Component> control;
+        std::unique_ptr<juce::Label> hint;
+        int height = 50;
+    };
+
+    juce::Label* makeLabel(const juce::String& text, float size, juce::Colour colour, bool bold = false)
+    {
+        auto* label = new juce::Label({}, text);
+        label->setFont(juce::Font(size, bold ? juce::Font::bold : juce::Font::plain));
+        label->setColour(juce::Label::textColourId, colour);
+        label->setMinimumHorizontalScale(1.0f);
+        return label;
+    }
+
+    void addHeading(const juce::String& text)
+    {
+        Row row;
+        row.key = "#heading";
+        row.label.reset(makeLabel(text, 12.0f, juce::Colour(0xff78dcca), true));
+        row.height = 26;
+        content.addAndMakeVisible(*row.label);
+        rows.push_back(std::move(row));
+    }
+
+    juce::TextEditor* makeField(const juce::String& text)
+    {
+        auto* editor = new juce::TextEditor();
+        styleTextEditor(*editor);
+        editor->setMultiLine(false);
+        editor->setFont(juce::Font("Consolas", 13.5f, juce::Font::plain));
+        editor->setText(text, false);
+        return editor;
+    }
+
+    void setHint(Row& row, const juce::String& text, bool error)
+    {
+        if (row.hint == nullptr) return;
+        row.hint->setText(text, juce::dontSendNotification);
+        row.hint->setColour(juce::Label::textColourId, error ? juce::Colour(0xffff8a65) : juce::Colour(0xff71808c));
+        if (auto* editor = dynamic_cast<juce::TextEditor*>(row.control.get()))
+            editor->setColour(juce::TextEditor::outlineColourId, error ? juce::Colour(0xffff8a65) : juce::Colour(0xff33424d));
+    }
+
+    juce::String describe(const parts::ParamSpec& spec, const juce::String& value) const
+    {
+        if (spec.kind != parts::Kind::Quantity)
+            return spec.help;
+        juce::String error;
+        if (!parts::validate(spec, value, error))
+            return error;
+        double v = 0.0;
+        auto text = value.trim();
+        if (spec.unit == "V" && text.containsChar('V') && text.upToFirstOccurrenceOf("V", false, false).containsOnly("0123456789")
+            && text.fromFirstOccurrenceOf("V", false, false).containsOnly("0123456789") && text.fromFirstOccurrenceOf("V", false, false).isNotEmpty())
+            text = text.replace("V", ".");
+        circuit_sim::parseValue(text.toStdString(), v);
+        auto shown = spec.unit.isEmpty() ? juce::String(v, 4).trimCharactersAtEnd("0").trimCharactersAtEnd(".")
+                                         : juce::String(circuit_sim::formatValue(v, unitSymbol(spec.unit).toStdString(), 4));
+        return "= " + shown + (spec.help.isNotEmpty() ? "   " + spec.help : juce::String());
+    }
+
+    void addParamRow(const parts::ParamSpec& spec)
+    {
+        Row row;
+        row.key = spec.key;
+        row.spec = spec;
+        row.label.reset(makeLabel(spec.label + (spec.unit.isNotEmpty() && spec.kind == parts::Kind::Quantity ? " (" + unitSymbol(spec.unit) + ")" : juce::String()),
+                                  12.5f, juce::Colour(0xff93a7b0)));
+        row.hint.reset(makeLabel({}, 11.0f, juce::Colour(0xff71808c)));
+        const auto value = canvas->instrumentSetting(current, spec.key);
+        const auto key = spec.key;
+
+        switch (spec.kind)
+        {
+            case parts::Kind::Quantity:
+            case parts::Kind::Text:
+            {
+                auto* editor = makeField(value);
+                row.control.reset(editor);
+                const auto rowIndex = rows.size();
+                editor->onTextChange = [this, rowIndex] {
+                    auto& r = rows[rowIndex];
+                    const auto text = dynamic_cast<juce::TextEditor*>(r.control.get())->getText();
+                    juce::String error;
+                    const auto ok = parts::validate(r.spec, text, error);
+                    setHint(r, ok ? describe(r.spec, text) : error, !ok);
+                };
+                auto commit = [this, rowIndex] { commitField(rowIndex); };
+                editor->onReturnKey = commit;
+                editor->onFocusLost = commit;
+                row.height = 64;
+                break;
+            }
+            case parts::Kind::Choice:
+            {
+                auto* box = new juce::ComboBox();
+                styleCombo(*box);
+                for (int i = 0; i < spec.options.size(); ++i)
+                    box->addItem(spec.options[i], i + 1);
+                box->setText(value, juce::dontSendNotification);
+                box->onChange = [this, box, key] { commit(key, box->getText()); };
+                row.control.reset(box);
+                row.height = 58;
+                break;
+            }
+            case parts::Kind::Toggle:
+            {
+                auto* button = new juce::TextButton();
+                button->setClickingTogglesState(true);
+                button->setColour(juce::TextButton::buttonColourId, juce::Colour(0xff1d2731));
+                button->setColour(juce::TextButton::buttonOnColourId, juce::Colour(0xff6fac7d));
+                button->setColour(juce::TextButton::textColourOffId, juce::Colour(0xffdce9ee));
+                button->setColour(juce::TextButton::textColourOnId, juce::Colour(0xff0e141a));
+                const auto on = value == spec.options[1];
+                button->setToggleState(on, juce::dontSendNotification);
+                button->setButtonText(on ? spec.options[1] : spec.options[0]);
+                const auto options = spec.options;
+                button->onClick = [this, button, key, options] {
+                    const auto state = button->getToggleState() ? options[1] : options[0];
+                    button->setButtonText(state);
+                    commit(key, state);
+                };
+                row.control.reset(button);
+                row.height = 58;
+                break;
+            }
+            case parts::Kind::Fraction:
+            {
+                auto* slider = new juce::Slider(juce::Slider::LinearHorizontal, juce::Slider::TextBoxRight);
+                slider->setRange(0.0, 1.0, 0.01);
+                slider->setValue(value.getDoubleValue(), juce::dontSendNotification);
+                slider->setColour(juce::Slider::thumbColourId, juce::Colour(0xffffc857));
+                slider->setColour(juce::Slider::trackColourId, juce::Colour(0xff33424d));
+                slider->setColour(juce::Slider::textBoxTextColourId, juce::Colour(0xffdce9ee));
+                slider->setColour(juce::Slider::textBoxOutlineColourId, juce::Colour(0xff33424d));
+                slider->onValueChange = [this, slider, key] { commit(key, juce::String(slider->getValue(), 2)); };
+                row.control.reset(slider);
+                row.height = 58;
+                break;
+            }
+        }
+        setHint(row, describe(spec, value), false);
+        content.addAndMakeVisible(*row.label);
+        content.addAndMakeVisible(*row.control);
+        content.addAndMakeVisible(*row.hint);
+        rows.push_back(std::move(row));
+    }
+
+    void commitField(size_t rowIndex)
+    {
+        if (rowIndex >= rows.size() || canvas == nullptr)
+            return;
+        auto& row = rows[rowIndex];
+        auto* editor = dynamic_cast<juce::TextEditor*>(row.control.get());
+        if (editor == nullptr)
+            return;
+        const auto text = editor->getText().trim();
+        juce::String error;
+        bool ok = false;
+        if (row.key == "#refdes")
+        {
+            ok = text == current || canvas->renamePart(current, text, error);
+            if (ok) current = text;
+        }
+        else if (row.key.startsWith("#pin:"))
+        {
+            const auto oldName = row.key.fromFirstOccurrenceOf("#pin:", false, false);
+            ok = text == oldName || canvas->renameBlockPin(current, oldName, text, error);
+            if (ok) row.key = "#pin:" + text;
+        }
+        else if (row.key == "#blockname")
+        {
+            ok = canvas->setBlockName(current, text, error);
+        }
+        else
+        {
+            if (text == canvas->instrumentSetting(current, row.key))
+                return;
+            ok = canvas->setPartParameter(current, row.key, text, error);
+        }
+        setHint(row, ok ? (row.key.startsWith("#") ? juce::String() : describe(row.spec, text)) : error, !ok);
+    }
+
+    void commit(const juce::String& key, const juce::String& value)
+    {
+        if (canvas == nullptr || value == canvas->instrumentSetting(current, key))
+            return;
+        juce::String error;
+        if (!canvas->setPartParameter(current, key, value, error))
+            for (auto& row : rows)
+                if (row.key == key)
+                    setHint(row, error, true);
+    }
+
+    void rebuild()
+    {
+        rows.clear();
+        actionButtons.clear();
+        content.removeAllChildren();
+        pinLabel.reset();
+        title.reset(makeLabel("Properties", 16.0f, juce::Colour(0xff78dcca), true));
+        content.addAndMakeVisible(*title);
+
+        view = canvas != nullptr && current.isNotEmpty() ? canvas->partView(current) : SchematicCanvasPanel::PartView {};
+        if (!view.ok)
+        {
+            subtitle.reset(makeLabel("Select one part on the schematic to edit it.", 13.0f, juce::Colour(0xff71808c)));
+            content.addAndMakeVisible(*subtitle);
+            layout();
+            return;
+        }
+
+        subtitle.reset(makeLabel(parts::displayName(view.symbolId)
+                                     + (view.sheet != "Main" ? "   on " + view.sheet : juce::String())
+                                     + (view.groups.isEmpty() ? juce::String() : "   in " + view.groups.joinIntoString(", ")),
+                                 13.0f, juce::Colour(0xffdce9ee)));
+        content.addAndMakeVisible(*subtitle);
+
+        // Reference designator.
+        {
+            Row row;
+            row.key = "#refdes";
+            row.label.reset(makeLabel("Reference designator", 12.5f, juce::Colour(0xff93a7b0)));
+            row.hint.reset(makeLabel({}, 11.0f, juce::Colour(0xff71808c)));
+            auto* editor = makeField(view.refdes);
+            const auto rowIndex = rows.size();
+            editor->onReturnKey = [this, rowIndex] { commitField(rowIndex); };
+            editor->onFocusLost = [this, rowIndex] { commitField(rowIndex); };
+            row.control.reset(editor);
+            row.height = 64;
+            content.addAndMakeVisible(*row.label);
+            content.addAndMakeVisible(*row.control);
+            content.addAndMakeVisible(*row.hint);
+            rows.push_back(std::move(row));
+        }
+
+        // Orientation.
+        if (!schematic::isRailBus(view.symbolId))
+        {
+            for (const auto& [text, delta] : { std::pair<const char*, int> { "Rotate left", 270 }, { "Rotate right", 90 } })
+            {
+                auto* button = actionButtons.add(new juce::TextButton(text));
+                styleActionButton(*button);
+                const auto step = delta;
+                button->onClick = [this, step] {
+                    juce::String error;
+                    canvas->setPartRotation(current, view.rotation + step, error);
+                    view = canvas->partView(current);
+                };
+                content.addAndMakeVisible(button);
+            }
+        }
+
+        const auto& specs = parts::paramsFor(view.symbolId);
+        if (view.symbolId == "sub_block")
+        {
+            addHeading("Sub-diagram");
+            Row row;
+            row.key = "#blockname";
+            row.label.reset(makeLabel("Name", 12.5f, juce::Colour(0xff93a7b0)));
+            row.hint.reset(makeLabel({}, 11.0f, juce::Colour(0xff71808c)));
+            auto* editor = makeField(canvas->blockName(current));
+            const auto rowIndex = rows.size();
+            editor->onReturnKey = [this, rowIndex] { commitField(rowIndex); };
+            editor->onFocusLost = [this, rowIndex] { commitField(rowIndex); };
+            row.control.reset(editor);
+            row.height = 64;
+            content.addAndMakeVisible(*row.label);
+            content.addAndMakeVisible(*row.control);
+            content.addAndMakeVisible(*row.hint);
+            rows.push_back(std::move(row));
+            addHeading("Pins");
+            for (const auto& [pin, voltage] : canvas->blockPins(current))
+            {
+                Row pinRow;
+                pinRow.key = "#pin:" + pin;
+                pinRow.label.reset(makeLabel(voltage, 12.5f, juce::Colour(0xff93a7b0)));
+                pinRow.hint.reset(makeLabel({}, 11.0f, juce::Colour(0xff71808c)));
+                auto* field = makeField(pin);
+                const auto pinIndex = rows.size();
+                field->onReturnKey = [this, pinIndex] { commitField(pinIndex); };
+                field->onFocusLost = [this, pinIndex] { commitField(pinIndex); };
+                pinRow.control.reset(field);
+                pinRow.height = 64;
+                content.addAndMakeVisible(*pinRow.label);
+                content.addAndMakeVisible(*pinRow.control);
+                content.addAndMakeVisible(*pinRow.hint);
+                rows.push_back(std::move(pinRow));
+            }
+        }
+        else if (!specs.empty())
+        {
+            addHeading(schematic::isInstrumentSymbol(view.symbolId) ? "Settings" : "Parameters");
+            for (const auto& spec : specs)
+                addParamRow(spec);
+        }
+
+        if (schematic::isInstrumentSymbol(view.symbolId))
+        {
+            auto* button = actionButtons.add(new juce::TextButton("Open " + parts::displayName(view.symbolId)));
+            styleActionButton(*button);
+            button->onClick = [this] { canvas->openInstrumentFor(current); };
+            content.addAndMakeVisible(button);
+        }
+
+        if (!view.pinVoltages.empty())
+        {
+            addHeading("DC operating point");
+            pinLabel.reset(makeLabel({}, 12.5f, juce::Colour(0xffdce9ee)));
+            pinLabel->setFont(juce::Font("Consolas", 12.5f, juce::Font::plain));
+            content.addAndMakeVisible(*pinLabel);
+            updatePinText();
+        }
+        layout();
+    }
+
+    void updatePinText()
+    {
+        if (pinLabel == nullptr) return;
+        juce::StringArray lines;
+        for (const auto& [pin, voltage] : view.pinVoltages)
+            lines.add(pin.paddedRight(' ', 6) + voltage);
+        pinLabel->setText(lines.joinIntoString("\n"), juce::dontSendNotification);
+    }
+
+    static void styleActionButton(juce::TextButton& button)
+    {
+        button.setColour(juce::TextButton::buttonColourId, juce::Colour(0xff253341));
+        button.setColour(juce::TextButton::textColourOffId, juce::Colour(0xffdce9ee));
+    }
+
+    void refreshValues()
+    {
+        if (canvas == nullptr || current.isEmpty())
+            return;
+        const auto fresh = canvas->partView(current);
+        if (!fresh.ok || fresh.symbolId != view.symbolId)
+        {
+            rebuild();
+            return;
+        }
+        view = fresh;
+        for (auto& row : rows)
+        {
+            if (row.key.startsWith("#") || row.control == nullptr || row.control->hasKeyboardFocus(true))
+                continue;
+            const auto value = canvas->instrumentSetting(current, row.key);
+            if (auto* editor = dynamic_cast<juce::TextEditor*>(row.control.get()))
+            {
+                if (editor->getText() != value) { editor->setText(value, false); setHint(row, describe(row.spec, value), false); }
+            }
+            else if (auto* box = dynamic_cast<juce::ComboBox*>(row.control.get()))
+                box->setText(value, juce::dontSendNotification);
+            else if (auto* slider = dynamic_cast<juce::Slider*>(row.control.get()))
+                slider->setValue(value.getDoubleValue(), juce::dontSendNotification);
+            else if (auto* button = dynamic_cast<juce::TextButton*>(row.control.get()))
+            {
+                const auto on = row.spec.options.size() == 2 && value == row.spec.options[1];
+                button->setToggleState(on, juce::dontSendNotification);
+                button->setButtonText(on ? row.spec.options[1] : row.spec.options[0]);
+            }
+        }
+        updatePinText();
+    }
+
+    void timerCallback() override
+    {
+        if (canvas == nullptr)
+            return;
+        const auto selected = canvas->selectedRefdes();
+        if (selected != current)
+        {
+            current = selected;
+            rebuild();
+            return;
+        }
+        const auto revision = canvas->modelRevision();
+        if (revision != lastRevision)
+        {
+            lastRevision = revision;
+            refreshValues();
+        }
+    }
+
+    void layout()
+    {
+        const auto width = std::max(160, viewport.getWidth() - viewport.getScrollBarThickness() - 4);
+        int y = 8;
+        const int x = 10, w = width - 20;
+        if (title != nullptr) { title->setBounds(x, y, w, 24); y += 26; }
+        if (subtitle != nullptr) { subtitle->setBounds(x, y, w, 20); y += 28; }
+        size_t buttonIndex = 0;
+        for (size_t i = 0; i < rows.size(); ++i)
+        {
+            auto& row = rows[i];
+            if (row.key == "#heading")
+            {
+                row.label->setBounds(x, y + 4, w, 20);
+                y += row.height;
+                continue;
+            }
+            row.label->setBounds(x, y, w, 18);
+            if (row.control != nullptr) row.control->setBounds(x, y + 19, w, 28);
+            if (row.hint != nullptr) row.hint->setBounds(x, y + 48, w, 15);
+            y += row.height;
+            // Rotate buttons sit right after the reference designator.
+            if (row.key == "#refdes" && !schematic::isRailBus(view.symbolId))
+            {
+                for (int b = 0; b < 2 && buttonIndex < (size_t)actionButtons.size(); ++b, ++buttonIndex)
+                    actionButtons[(int)buttonIndex]->setBounds(x + b * (w / 2 + 2), y, w / 2 - 2, 26);
+                y += 34;
+            }
+        }
+        for (; buttonIndex < (size_t)actionButtons.size(); ++buttonIndex)
+        {
+            actionButtons[(int)buttonIndex]->setBounds(x, y + 4, w, 28);
+            y += 38;
+        }
+        if (pinLabel != nullptr)
+        {
+            const auto lines = std::max(1, (int)view.pinVoltages.size());
+            pinLabel->setBounds(x, y, w, lines * 17 + 6);
+            y += lines * 17 + 12;
+        }
+        content.setSize(width, y + 12);
+    }
+
+    juce::Component::SafePointer<SchematicCanvasPanel> canvas;
+    juce::Viewport viewport;
+    juce::Component content;
+    juce::String current;
+    SchematicCanvasPanel::PartView view;
+    std::vector<Row> rows;
+    juce::OwnedArray<juce::TextButton> actionButtons;
+    std::unique_ptr<juce::Label> title, subtitle, pinLabel;
+    juce::int64 lastRevision = 0;
 };
 
 class AgentPanel final : public juce::Component
@@ -7375,8 +7893,6 @@ public:
         std::function<juce::String(const juce::String&, int)> webSearch;
         std::function<juce::String(const juce::String&, float, float, const juce::String&,
                                    const juce::String&, const juce::String&)> placeSymbol;
-        std::function<juce::String(const juce::String&, const juce::String&, const juce::String&,
-                                   const juce::String&, const juce::String&, const juce::String&)> setComponentProperties;
         std::function<juce::String(const juce::String&, const juce::String&)> connectNodes;
         std::function<juce::String(const juce::String&)> openInstrument;
         std::function<juce::String(double, double)> designHighPass;
@@ -8003,11 +8519,6 @@ private:
                 R"({"type":"object","properties":{"symbolId":{"type":"string","description":"Supported symbol id: resistor, potentiometer, capacitor, capacitor_polarized, variable_capacitor, inductor, coupled_inductor, transformer, diode, zener_diode, led, schottky_diode, power_bus, ground_bus, power_port, net_label, battery, voltage_source, ac_voltage_source, current_source, ac_current_source, vcvs, vccs, ccvs, cccs, signal_source, ground, opamp_741, npn, pnp, nmos, pmos, njfet, pjfet, switch_spst, switch_spdt, relay_spst, fuse, connector_2, connector_3, test_point, logic_not, logic_and, logic_or, logic_nand, logic_nor, logic_xor, oscilloscope_2ch, or digital_multimeter. Use ground and power_port symbols at each pin that needs ground or a supply instead of long wires: power_port takes busName like +12V (drawn pointing up) or -12V (place with a leading minus; drawn pointing down); ports with the same busName are the same net. net_label takes busName as its label; labels with the same name are one net. After placing and connecting, call schematic_auto_layout once for a standards-conforming drawing. Unsupported symbols are rejected, not substituted."},"x":{"type":"number","description":"Grid x coordinate. Leave at least 144 px horizontal space from other symbols."},"y":{"type":"number","description":"Grid y coordinate. Leave at least 96 px vertical space from other symbols."},"value":{"type":"string"},"frequency":{"type":"string"},"busName":{"type":"string"}},"required":["symbolId","x","y"],"additionalProperties":false})"
             },
             {
-                "schematic_set_component_properties",
-                "Set value, source frequency, bus/net name, family, or manufacturer part for an existing schematic component by reference designator. Omitted or empty properties leave the existing value unchanged.",
-                R"({"type":"object","properties":{"refdes":{"type":"string","description":"Reference designator such as R1, C2, V1, PWR3, or SCOPE1."},"value":{"type":"string","description":"Component value, source amplitude, model name, or instrument function."},"frequency":{"type":"string","description":"Source frequency such as 1k or 10."},"busName":{"type":"string","description":"Net label or rail name such as +12V, -12V, Input, or Output."},"family":{"type":"string","description":"Component family/model family."},"manufacturerPart":{"type":"string","description":"Specific manufacturer part number."}},"required":["refdes"],"additionalProperties":false})"
-            },
-            {
                 "schematic_connect",
                 "Connect two schematic pins or junctions by label, such as R1.1 to GND2.0.",
                 R"({"type":"object","properties":{"a":{"type":"string","description":"First node label such as R1.1, V2.+, GND3.0, SCOPE4.CH1, or N1."},"b":{"type":"string","description":"Second node label."}},"required":["a","b"],"additionalProperties":false})"
@@ -8209,25 +8720,6 @@ private:
             return tools.placeSymbol != nullptr
                 ? tools.placeSymbol(symbolId, x, y, value, frequency, busName)
                 : "{ \"ok\": false, \"error\": \"Schematic placement tool unavailable.\" }";
-        }
-
-        if (name == "schematic_set_component_properties")
-        {
-            if (!parsed.isObject())
-                return "{ \"ok\": false, \"error\": \"schematic_set_component_properties arguments must be a JSON object.\" }";
-
-            const auto refdes = parsed.getProperty("refdes", {}).toString().trim();
-            if (refdes.isEmpty())
-                return "{ \"ok\": false, \"error\": \"refdes is required.\" }";
-
-            return tools.setComponentProperties != nullptr
-                ? tools.setComponentProperties(refdes,
-                                               parsed.getProperty("value", {}).toString(),
-                                               parsed.getProperty("frequency", {}).toString(),
-                                               parsed.getProperty("busName", {}).toString(),
-                                               parsed.getProperty("family", {}).toString(),
-                                               parsed.getProperty("manufacturerPart", {}).toString())
-                : "{ \"ok\": false, \"error\": \"Schematic property editing is unavailable.\" }";
         }
 
         if (name == "schematic_connect")
@@ -8770,28 +9262,12 @@ ElectronicsWorkbench::ElectronicsWorkbench()
     getSchematicZoom = [schematicPanel] {
         return schematicPanel->getCanvasZoom();
     };
-    auto properties = std::make_unique<PropertiesPanel>();
+    auto properties = std::make_unique<PropertiesPanel>(schematicPanel);
     auto* propertiesPanel = properties.get();
-    schematicPanel->setSelectionListener([propertiesPanel](int index,
-                                                           juce::String refdes,
-                                                           juce::String symbol,
-                                                           juce::String value,
-                                                           juce::String frequency,
-                                                           juce::String busName,
-                                                           juce::String family,
-                                                           juce::String manufacturerPart) {
-        propertiesPanel->setSelection(index, refdes, symbol, value, frequency, busName, family, manufacturerPart);
+    schematicPanel->setSelectionListener([propertiesPanel](int, juce::String refdes, juce::String, juce::String,
+                                                           juce::String, juce::String, juce::String, juce::String) {
+        propertiesPanel->showPart(refdes);
     });
-    propertiesPanel->onApply = [schematicPanel](juce::String value,
-                                                juce::String frequency,
-                                                juce::String busName,
-                                                juce::String family,
-                                                juce::String manufacturerPart) {
-        schematicPanel->updateSelectedProperties(value, frequency, busName, family, manufacturerPart);
-    };
-    propertiesPanel->onRotate = [schematicPanel] {
-        schematicPanel->rotateSelected();
-    };
     auto analysis = std::make_unique<FrequencyResponsePanel>();
     auto* analysisPanel = analysis.get();
     analysisPanel->onRun = [this] { designRlcHighPassFilter(); };
@@ -8820,14 +9296,6 @@ ElectronicsWorkbench::ElectronicsWorkbench()
                                                 const juce::String& frequency,
                                                 const juce::String& busName) {
         return panel->placeSymbolFromTool(symbolId, x, y, value, frequency, busName);
-    };
-    setComponentPropertiesTool = [panel = schematic.get()](const juce::String& refdes,
-                                                           const juce::String& value,
-                                                           const juce::String& frequency,
-                                                           const juce::String& busName,
-                                                           const juce::String& family,
-                                                           const juce::String& manufacturerPart) {
-        return panel->setComponentPropertiesFromTool(refdes, value, frequency, busName, family, manufacturerPart);
     };
     connectNodesTool = [panel = schematic.get()](const juce::String& firstLabel,
                                                  const juce::String& secondLabel) {
@@ -8879,16 +9347,6 @@ ElectronicsWorkbench::ElectronicsWorkbench()
         return placeSymbolTool != nullptr
             ? placeSymbolTool(symbolId, x, y, value, frequency, busName)
             : juce::String("{ \"ok\": false, \"error\": \"Schematic placement is unavailable.\" }");
-    };
-    agentTools.setComponentProperties = [this](const juce::String& refdes,
-                                               const juce::String& value,
-                                               const juce::String& frequency,
-                                               const juce::String& busName,
-                                               const juce::String& family,
-                                               const juce::String& manufacturerPart) {
-        return setComponentPropertiesTool != nullptr
-            ? setComponentPropertiesTool(refdes, value, frequency, busName, family, manufacturerPart)
-            : juce::String("{ \"ok\": false, \"error\": \"Schematic property editing is unavailable.\" }");
     };
     agentTools.connectNodes = [this](const juce::String& firstLabel, const juce::String& secondLabel) {
         return connectNodesTool != nullptr
@@ -9379,21 +9837,6 @@ juce::String ElectronicsWorkbench::buildAssistantToolManifestJson() const
     text << "        \"value\": \"optional component value or instrument mode\",\n";
     text << "        \"frequency\": \"optional source frequency\",\n";
     text << "        \"busName\": \"optional rail/net label\"\n";
-    text << "      }\n";
-    text << "    },\n";
-    text << "    {\n";
-    text << "      \"name\": \"schematic_set_component_properties\",\n";
-    text << "      \"displayName\": \"schematic.set_component_properties\",\n";
-    text << "      \"description\": \"Set component value, source frequency, bus/net name, family, or manufacturer part by reference designator.\",\n";
-    text << "      \"mode\": \"modify_schematic_model\",\n";
-    text << "      \"status\": \"active\",\n";
-    text << "      \"inputs\": {\n";
-    text << "        \"refdes\": \"existing component reference designator\",\n";
-    text << "        \"value\": \"optional component value or instrument mode\",\n";
-    text << "        \"frequency\": \"optional source frequency\",\n";
-    text << "        \"busName\": \"optional rail/net label\",\n";
-    text << "        \"family\": \"optional component family\",\n";
-    text << "        \"manufacturerPart\": \"optional manufacturer part number\"\n";
     text << "      }\n";
     text << "    },\n";
     text << "    {\n";

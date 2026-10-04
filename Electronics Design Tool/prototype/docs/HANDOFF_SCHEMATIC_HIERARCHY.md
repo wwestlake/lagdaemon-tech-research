@@ -116,7 +116,14 @@ no separate "agent tools" pass.
      with pins. Expanding a block can return it to a group box.
    - Agent tools: create, open, close/up, rename, expand, list, and work
      inside a block.
-3. **Save and load** the block hierarchy in `circuit.json` (groups already save).
+3. **Built-in simulator and real instruments - done.** `CircuitSolver`
+   (MNA: DC, transient, AC; checked by `tools/solver_tests`), `PartCatalog`
+   (per-type properties), `buildSimNetlist` bridge, instrument windows
+   (scope, multimeter, frequency analyzer) backed by the solver, Lab Bench
+   removed, Properties pane built from the catalog. Agent tools:
+   simulation_operating_point/transient/ac, instrument_read,
+   schematic_get/set_parameters, schematic_rename/rotate_component.
+4. **Save and load** the block hierarchy in `circuit.json` (groups already save).
 4. Agent tools for remaining existing features (delete, move, rotate, rename,
    select, save/open/new) as those areas are touched.
 

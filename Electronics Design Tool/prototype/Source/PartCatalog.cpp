@@ -181,13 +181,38 @@ bool validate(const ParamSpec& spec, const juce::String& value, juce::String& er
             if (spec.unit == "V" && textValue.containsChar('V') && textValue.upToFirstOccurrenceOf("V", false, false).containsOnly("0123456789")
                 && textValue.fromFirstOccurrenceOf("V", false, false).containsOnly("0123456789") && textValue.fromFirstOccurrenceOf("V", false, false).isNotEmpty())
                 textValue = textValue.replace("V", ".");
-            if (!circuit_sim::parseValue(textValue.toStdString(), parsed))
-            {
+            auto reject = [&] {
                 error = "\"" + value + "\" is not a number" + (spec.unit.isNotEmpty() ? " in " + spec.unit : juce::String())
                       + ". Use forms like 4.7k, 10u, 2.2n, 1meg.";
                 return false;
+            };
+            if (!circuit_sim::parseValue(textValue.toStdString(), parsed))
+                return reject();
+
+            // Anything after the number and its prefix must be this value's unit.
+            int pos = 0;
+            while (pos < textValue.length() && juce::String("0123456789.+-eE").containsChar(textValue[pos]))
+            {
+                // An 'e' only belongs to the number when digits follow (1e3), not in "meg".
+                if ((textValue[pos] == 'e' || textValue[pos] == 'E')
+                    && !(pos + 1 < textValue.length() && juce::String("0123456789+-").containsChar(textValue[pos + 1])))
+                    break;
+                ++pos;
             }
-            return true;
+            auto suffix = textValue.substring(pos).trim();
+            if (suffix.startsWithIgnoreCase("meg")) suffix = suffix.substring(3);
+            else if (suffix.isNotEmpty() && juce::String("TGMkKmunpf").containsChar(suffix[0])) suffix = suffix.substring(1);
+            else if (suffix.startsWith(juce::String::fromUTF8("Âµ"))) suffix = suffix.substring(1);
+            while (suffix.isNotEmpty() && juce::CharacterFunctions::isDigit(suffix[0])) suffix = suffix.substring(1); // 4k7
+            if (suffix.isEmpty())
+                return true;
+            juce::StringArray accepted { spec.unit };
+            if (spec.unit == "ohm") accepted.addArray({ "ohms", "r", juce::String::fromUTF8("Î©") });
+            if (spec.unit == "deg") accepted.add(juce::String::fromUTF8("Â°"));
+            for (const auto& unit : accepted)
+                if (unit.isNotEmpty() && suffix.equalsIgnoreCase(unit))
+                    return true;
+            return reject();
         }
         case Kind::Choice:
         case Kind::Toggle:
