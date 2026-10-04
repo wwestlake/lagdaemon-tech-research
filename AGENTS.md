@@ -60,6 +60,17 @@ signal to stop and just build the Windows version.
 - **Critical handoff info (passwords, IPs, key facts) gets its own short, clearly labeled block** — never buried in a paragraph.
 - **Never trigger UAC/sudo/admin elevation beyond already-agreed scope without discussing first**, every time, no exceptions.
 
+## Djehuti Electronics Lab (`Electronics Design Tool/prototype`)
+
+- **Agent parity:** anything a user can do in the app, the in-app BYOK agent
+  can do through a tool (create, change, edit, delete). A UI feature is not
+  done until its agent tool, description, and tool card exist.
+- Schematic layout/routing changes are checked with the headless
+  `schematic_preview` tool (all quality metrics stay zero) before the app.
+- Drive the in-app agent through its local API
+  (`%APPDATA%\DjehutiElectronicsLabgent-api.json`), not by clicking the UI.
+- Current state and plan: `prototype/docs/HANDOFF_SCHEMATIC_HIERARCHY.md`.
+
 ## Credentials
 
 - Any new credential established in a session (SSH key, API key, host access) goes into `CREDENTIALS-MASTER.txt` (gitignored, repo root) immediately — not just used in-session and forgotten.

@@ -13,6 +13,14 @@ D:\000 Tech Research\Electronics Design Tool\prototype
 
 The shell reuses the research dock manager from FrustLang, but this project owns its own app target and electronics-specific panels.
 
+## Agent Parity Rule
+
+Anything a user can do in the app, the BYOK agent can do through a tool:
+create, change, edit, delete. A UI feature is not finished until its agent
+tool, tool description, and tool card
+(`knowledge/cards/electronics_tool_cards.jsonl`) exist. See
+`docs/HANDOFF_SCHEMATIC_HIERARCHY.md` for the current gaps and plan.
+
 ## Panels
 
 - Component Library
