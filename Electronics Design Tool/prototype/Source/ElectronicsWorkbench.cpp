@@ -117,6 +117,21 @@ const SchematicToolSpec schematicToolSpecs[] = {
         R"({"type":"object","properties":{},"additionalProperties":false})"
     },
     {
+        "library_save_block",
+        "Save an existing sub-diagram block into the user's reusable circuit-block library. Saved blocks are copy templates: placing one later creates a new editable sub-diagram copy, not a linked/shared definition.",
+        R"({"type":"object","properties":{"block":{"type":"string","description":"Sub-diagram block refdes (A1) or name to save."},"name":{"type":"string","description":"Optional library name; defaults to the block name."},"description":{"type":"string","description":"Optional notes for the user and assistant."},"category":{"type":"string","description":"Optional category such as Filters, Amplifiers, Power, or Utilities."}},"required":["block"],"additionalProperties":false})"
+    },
+    {
+        "library_list_blocks",
+        "List reusable circuit blocks saved in the user's library.",
+        R"({"type":"object","properties":{"query":{"type":"string","description":"Optional text to filter by name, category, description, or port name."}},"additionalProperties":false})"
+    },
+    {
+        "library_place_block",
+        "Place a reusable circuit block from the user's library as a fresh editable sub-diagram copy on the current sheet.",
+        R"({"type":"object","properties":{"name":{"type":"string","description":"Saved library block name."},"x":{"type":"number","description":"Schematic x coordinate."},"y":{"type":"number","description":"Schematic y coordinate."},"instanceName":{"type":"string","description":"Optional display name for this copy."}},"required":["name"],"additionalProperties":false})"
+    },
+    {
         "schematic_delete_components",
         "Delete components from the diagram, with the wires attached to them, exactly as pressing Delete on a selected part does. Sub-diagram blocks are refused: expand them first with schematic_subdiagram_expand.",
         R"({"type":"object","properties":{"refdes":{"type":"array","items":{"type":"string"},"description":"Reference designators to delete, such as [\"R5\", \"GND7\"]."}},"required":["refdes"],"additionalProperties":false})"
@@ -2100,7 +2115,16 @@ public:
         menu.addItem(9, "Open Sub-Diagram", blockUnderMouse >= 0);
         menu.addItem(10, "Rename Sub-Diagram...", blockUnderMouse >= 0);
         menu.addItem(11, "Expand Sub-Diagram", blockUnderMouse >= 0);
+        menu.addItem(15, "Save Sub-Diagram to User Library...", blockUnderMouse >= 0);
         menu.addItem(12, "Up One Level", currentSheet.isNotEmpty());
+        const auto libraryNames = userBlockNames();
+        if (!libraryNames.isEmpty())
+        {
+            juce::PopupMenu libraryMenu;
+            for (int i = 0; i < libraryNames.size(); ++i)
+                libraryMenu.addItem(1000 + i, libraryNames[i]);
+            menu.addSubMenu("Place User Library Block", libraryMenu);
+        }
         const auto supplyUnderMouse = [&] {
             for (int i = (int)instances.size() - 1; i >= 0; --i)
             {
@@ -2125,8 +2149,15 @@ public:
         menu.addItem(3, "Disconnect Here");
 
         const auto supplyRefdes = supplyUnderMouse >= 0 ? instances[(size_t)supplyUnderMouse].refdes : juce::String();
-        menu.showMenuAsync(juce::PopupMenu::Options(), [this, modelPosition, blockUnderMouse, supplyRefdes](int result) {
+        menu.showMenuAsync(juce::PopupMenu::Options(), [this, modelPosition, blockUnderMouse, supplyRefdes, libraryNames](int result) {
             const auto blockRefdes = blockUnderMouse >= 0 ? instances[(size_t)blockUnderMouse].refdes : juce::String();
+            if (result >= 1000 && result < 1000 + libraryNames.size())
+            {
+                juce::String error;
+                const auto placed = placeUserBlock(libraryNames[result - 1000], modelPosition, {}, error);
+                if (placed.isEmpty() && onStatus) onStatus("Could not place library block: " + error);
+                return;
+            }
             if (result == 13 || result == 14)
             {
                 juce::String error;
@@ -2145,6 +2176,8 @@ public:
                 juce::String error;
                 expandSubDiagram(blockIndexFor(blockRefdes), error);
             }
+            else if (result == 15 && blockIndexFor(blockRefdes) >= 0)
+                promptSaveBlockToLibrary(blockIndexFor(blockRefdes));
             else if (result == 12)
             {
                 const auto block = blockForSheet(currentSheet);
@@ -3135,6 +3168,29 @@ private:
     static juce::String nullableQuote(const juce::String& text)
     {
         return text.isEmpty() ? juce::String("null") : quote(text);
+    }
+
+    static juce::String safeFileStem(juce::String text)
+    {
+        text = text.trim();
+        juce::String safe;
+        for (int i = 0; i < text.length(); ++i)
+        {
+            const auto c = text[i];
+            safe << (juce::CharacterFunctions::isLetterOrDigit(c) ? juce::String::charToString(c) : "_");
+        }
+        while (safe.contains("__"))
+            safe = safe.replace("__", "_");
+        safe = safe.trimCharactersAtStart("_").trimCharactersAtEnd("_");
+        return safe.isNotEmpty() ? safe : juce::String("block");
+    }
+
+    static juce::File userBlockLibraryFolder()
+    {
+        return juce::File::getSpecialLocation(juce::File::userApplicationDataDirectory)
+            .getChildFile("DjehutiElectronicsLab")
+            .getChildFile("user_library")
+            .getChildFile("blocks");
     }
 
     static juce::String stringProperty(const juce::DynamicObject& object,
@@ -4754,6 +4810,345 @@ private:
         return text;
     }
 
+    juce::File fileForUserBlockName(const juce::String& name) const
+    {
+        return userBlockLibraryFolder().getChildFile(safeFileStem(name) + ".block.json");
+    }
+
+    juce::File findUserBlockFile(const juce::String& name) const
+    {
+        const auto direct = fileForUserBlockName(name);
+        if (direct.existsAsFile())
+            return direct;
+
+        const auto files = userBlockLibraryFolder().findChildFiles(juce::File::findFiles, false, "*.block.json");
+        for (const auto& file : files)
+        {
+            const auto parsed = juce::JSON::parse(file);
+            if (const auto* object = parsed.getDynamicObject())
+                if (stringProperty(*object, "name", {}).equalsIgnoreCase(name))
+                    return file;
+        }
+        return {};
+    }
+
+    juce::String saveUserBlock(int blockIndex, juce::String name, const juce::String& description, const juce::String& category, juce::String& error) const
+    {
+        if (blockIndex < 0 || blockIndex >= (int)instances.size() || instances[(size_t)blockIndex].symbolId != "sub_block")
+        {
+            error = "Choose a sub-diagram block to save.";
+            return {};
+        }
+
+        const auto& block = instances[(size_t)blockIndex];
+        name = name.trim().isNotEmpty() ? name.trim() : block.value;
+        const auto parsedCircuit = juce::JSON::parse(buildCircuitJson());
+        if (parsedCircuit.getDynamicObject() == nullptr)
+        {
+            error = "The current circuit could not be serialized.";
+            return {};
+        }
+
+        auto* root = new juce::DynamicObject();
+        root->setProperty("schema", "djehuti_electronics_user_block");
+        root->setProperty("version", 1);
+        root->setProperty("name", name);
+        root->setProperty("description", description);
+        root->setProperty("category", category);
+        root->setProperty("sourceBlock", block.refdes);
+        root->setProperty("sourceSheet", block.childSheet);
+        root->setProperty("circuit", parsedCircuit);
+
+        auto folder = userBlockLibraryFolder();
+        if (!folder.createDirectory())
+        {
+            error = "Could not create user block library folder: " + folder.getFullPathName();
+            return {};
+        }
+
+        const auto file = fileForUserBlockName(name);
+        if (!file.replaceWithText(juce::JSON::toString(juce::var(root), true)))
+        {
+            error = "Could not write " + file.getFullPathName();
+            return {};
+        }
+
+        return "{ \"name\": " + quote(name) + ", \"file\": " + quote(file.getFullPathName())
+            + ", \"block\": " + blockJson(blockIndex) + " }";
+    }
+
+    juce::String listUserBlocks(const juce::String& query) const
+    {
+        const auto q = query.trim().toLowerCase();
+        auto files = userBlockLibraryFolder().findChildFiles(juce::File::findFiles, false, "*.block.json");
+        juce::String list = "\"blocks\": [";
+        bool first = true;
+        for (const auto& file : files)
+        {
+            const auto parsed = juce::JSON::parse(file);
+            const auto* object = parsed.getDynamicObject();
+            if (object == nullptr)
+                continue;
+            const auto name = stringProperty(*object, "name", file.getFileNameWithoutExtension());
+            const auto description = stringProperty(*object, "description", {});
+            const auto category = stringProperty(*object, "category", {});
+            const auto haystack = (name + " " + description + " " + category + " " + stringProperty(*object, "sourceSheet", {})).toLowerCase();
+            if (q.isNotEmpty() && !haystack.contains(q))
+                continue;
+            list << (first ? "" : ", ") << "{ \"name\": " << quote(name)
+                 << ", \"category\": " << quote(category)
+                 << ", \"description\": " << quote(description)
+                 << ", \"file\": " << quote(file.getFullPathName()) << " }";
+            first = false;
+        }
+        list << "]";
+        return list;
+    }
+
+    juce::String placeUserBlock(const juce::String& libraryName, juce::Point<float> position, const juce::String& instanceName, juce::String& error)
+    {
+        const auto file = findUserBlockFile(libraryName);
+        if (!file.existsAsFile())
+        {
+            error = "No saved user block named " + libraryName + ".";
+            return {};
+        }
+
+        const auto root = juce::JSON::parse(file);
+        const auto* object = root.getDynamicObject();
+        const auto* circuit = object != nullptr ? object->getProperty("circuit").getDynamicObject() : nullptr;
+        const auto* componentArray = circuit != nullptr ? circuit->getProperty("components").getArray() : nullptr;
+        if (object == nullptr || circuit == nullptr || componentArray == nullptr)
+        {
+            error = "User block file is not valid: " + file.getFullPathName();
+            return {};
+        }
+
+        const auto sourceSheet = stringProperty(*object, "sourceSheet", {});
+        const auto sourceBlockRef = stringProperty(*object, "sourceBlock", {});
+        const auto savedName = stringProperty(*object, "name", libraryName);
+
+        const juce::DynamicObject* sourceBlockObject = nullptr;
+        std::set<juce::String> sourceSheets { sourceSheet };
+        for (const auto& entry : *componentArray)
+            if (const auto* c = entry.getDynamicObject())
+                if (stringProperty(*c, "id", {}) == sourceBlockRef)
+                    sourceBlockObject = c;
+
+        bool changed = true;
+        while (changed)
+        {
+            changed = false;
+            for (const auto& entry : *componentArray)
+                if (const auto* c = entry.getDynamicObject())
+                    if (sourceSheets.count(stringProperty(*c, "sheet", {})) != 0)
+                    {
+                        const auto child = stringProperty(*c, "childSheet", {});
+                        if (child.isNotEmpty() && sourceSheets.insert(child).second)
+                            changed = true;
+                    }
+        }
+
+        if (sourceBlockObject == nullptr || sourceSheet.isEmpty())
+        {
+            error = "The saved block has no source sub-diagram.";
+            return {};
+        }
+
+        int highestSheet = 0;
+        for (const auto& instance : instances)
+            if (instance.childSheet.startsWith("S") && instance.childSheet.substring(1).containsOnly("0123456789"))
+                highestSheet = std::max(highestSheet, instance.childSheet.substring(1).getIntValue());
+        std::map<juce::String, juce::String> sheetMap;
+        for (const auto& sheet : sourceSheets)
+            sheetMap[sheet] = "S" + juce::String(++highestSheet);
+
+        std::map<juce::String, int> refMap;
+        std::map<juce::String, int> junctionMap;
+
+        Instance block;
+        block.symbolId = "sub_block";
+        block.refdes = nextRefdesFor("sub_block");
+        block.value = instanceName.trim().isNotEmpty() ? instanceName.trim() : savedName;
+        block.family = familyFor("sub_block");
+        block.position = snapToGrid(position);
+        block.sheet = currentSheet;
+        block.childSheet = sheetMap[sourceSheet];
+        if (const auto* ports = sourceBlockObject->getProperty("ports").getArray())
+            for (const auto& port : *ports)
+                block.ports.push_back({ port.getProperty("name", {}).toString(),
+                                        port.getProperty("side", {}).toString() == "right" });
+        const auto blockIndex = (int)instances.size();
+        instances.push_back(block);
+
+        for (const auto& entry : *componentArray)
+        {
+            const auto* c = entry.getDynamicObject();
+            if (c == nullptr || sourceSheets.count(stringProperty(*c, "sheet", {})) == 0)
+                continue;
+
+            Instance instance;
+            instance.symbolId = stringProperty(*c, "symbol", {});
+            if (!schematic::isSupportedSymbol(instance.symbolId))
+                continue;
+            const auto oldRef = stringProperty(*c, "id", {});
+            instance.refdes = nextRefdesFor(instance.symbolId);
+            instance.value = stringProperty(*c, "value", defaultValueFor(instance.symbolId));
+            instance.frequency = stringProperty(*c, "frequency", defaultFrequencyFor(instance.symbolId));
+            instance.busName = stringProperty(*c, "busName", defaultBusNameFor(instance.symbolId));
+            instance.position = { floatProperty(*c, "x", 120.0f), floatProperty(*c, "y", 120.0f) };
+            instance.rotation = schematic::normalizedRotation((int)floatProperty(*c, "rotation", 0.0f));
+            instance.busLength = floatProperty(*c, "length", isRailBus(instance.symbolId) ? 420.0f : 0.0f);
+            instance.sheet = sheetMap[stringProperty(*c, "sheet", {})];
+            const auto childSheet = stringProperty(*c, "childSheet", {});
+            if (sheetMap.count(childSheet) != 0)
+                instance.childSheet = sheetMap[childSheet];
+            if (const auto* ports = c->getProperty("ports").getArray())
+                for (const auto& port : *ports)
+                    instance.ports.push_back({ port.getProperty("name", {}).toString(),
+                                               port.getProperty("side", {}).toString() == "right" });
+            if (const auto* params = c->getProperty("params").getDynamicObject())
+                for (const auto& property : params->getProperties())
+                    instance.params[property.name.toString()] = property.value.toString();
+            if (const auto* component = c->getProperty("component").getDynamicObject())
+            {
+                instance.family = stringProperty(*component, "family", familyFor(instance.symbolId));
+                instance.manufacturerPart = stringProperty(*component, "manufacturerPart", {});
+            }
+            else
+            {
+                instance.family = familyFor(instance.symbolId);
+            }
+
+            refMap[oldRef] = (int)instances.size();
+            instances.push_back(std::move(instance));
+        }
+
+        if (const auto* junctionArray = circuit->getProperty("junctions").getArray())
+        {
+            for (int j = 0; j < (int)junctionArray->size(); ++j)
+            {
+                const auto* entry = (*junctionArray)[j].getDynamicObject();
+                if (entry == nullptr || sourceSheets.count(stringProperty(*entry, "sheet", {})) == 0)
+                    continue;
+                const auto newIndex = (int)junctions.size();
+                junctions.push_back({ floatProperty(*entry, "x", 0.0f), floatProperty(*entry, "y", 0.0f) });
+                junctionSheets.push_back(sheetMap[stringProperty(*entry, "sheet", {})]);
+                junctionMap["N" + juce::String(j + 1)] = newIndex;
+            }
+        }
+
+        auto nodeFromLabel = [&](const juce::String& label, WireNode& node) -> bool {
+            if (junctionMap.count(label) != 0)
+            {
+                node = WireNode::forJunction(junctionMap[label]);
+                return true;
+            }
+            const auto dot = label.lastIndexOfChar('.');
+            if (dot <= 0 || dot >= label.length() - 1)
+                return false;
+            const auto oldRef = label.substring(0, dot);
+            if (refMap.count(oldRef) == 0)
+                return false;
+            const auto pinName = label.substring(dot + 1);
+            const auto newIndex = refMap[oldRef];
+            const auto symbol = symbolForInstance(instances[(size_t)newIndex]);
+            for (int p = 0; p < (int)symbol.pins.size(); ++p)
+                if (symbol.pins[(size_t)p].name == pinName)
+                {
+                    node = WireNode::forPin({ newIndex, p });
+                    return true;
+                }
+            return false;
+        };
+
+        if (const auto* wireArray = circuit->getProperty("wires").getArray())
+        {
+            for (const auto& entry : *wireArray)
+            {
+                const auto* w = entry.getDynamicObject();
+                if (w == nullptr)
+                    continue;
+                Wire wire;
+                if (nodeFromLabel(stringProperty(*w, "a", {}), wire.a) && nodeFromLabel(stringProperty(*w, "b", {}), wire.b))
+                    wires.push_back(wire);
+            }
+        }
+
+        if (const auto* groupArray = circuit->getProperty("groups").getArray())
+        {
+            for (const auto& entry : *groupArray)
+            {
+                const auto* g = entry.getDynamicObject();
+                const auto* members = g != nullptr ? g->getProperty("members").getArray() : nullptr;
+                if (g == nullptr || members == nullptr)
+                    continue;
+                Group group;
+                group.id = nextGroupId();
+                group.name = stringProperty(*g, "name", "Group");
+                group.category = stringProperty(*g, "category", "user_group");
+                group.notes = stringProperty(*g, "notes", {});
+                for (const auto& member : *members)
+                    if (refMap.count(member.toString()) != 0)
+                        group.memberInstances.push_back(refMap[member.toString()]);
+                if (!group.memberInstances.empty())
+                    groups.push_back(group);
+            }
+        }
+
+        selectedInstance = blockIndex;
+        selectedInstances.clear();
+        selectedInstances.add(blockIndex);
+        selectedGroup = -1;
+        routeSignature.clear();
+        notifySelection();
+        if (onStatus) onStatus("Placed user library block " + block.value + " as " + block.refdes + ".");
+        forceDeferredRepaint();
+        return blockJson(blockIndex);
+    }
+
+    juce::StringArray userBlockNames() const
+    {
+        juce::StringArray names;
+        const auto files = userBlockLibraryFolder().findChildFiles(juce::File::findFiles, false, "*.block.json");
+        for (const auto& file : files)
+        {
+            const auto parsed = juce::JSON::parse(file);
+            if (const auto* object = parsed.getDynamicObject())
+                names.add(stringProperty(*object, "name", file.getFileNameWithoutExtension()));
+        }
+        names.sortNatural();
+        return names;
+    }
+
+    void promptSaveBlockToLibrary(int blockIndex)
+    {
+        if (blockIndex < 0 || blockIndex >= (int)instances.size() || instances[(size_t)blockIndex].symbolId != "sub_block")
+            return;
+
+        auto* dialog = new juce::AlertWindow("Save User Library Block",
+                                             "This saves the sub-diagram as a reusable copy template.",
+                                             juce::AlertWindow::NoIcon);
+        dialog->addTextEditor("name", instances[(size_t)blockIndex].value, "Name");
+        dialog->addTextEditor("category", "User Blocks", "Category");
+        dialog->addTextEditor("description", {}, "Description");
+        dialog->addButton("Save", 1, juce::KeyPress(juce::KeyPress::returnKey));
+        dialog->addButton("Cancel", 0, juce::KeyPress(juce::KeyPress::escapeKey));
+        juce::Component::SafePointer<juce::AlertWindow> safe(dialog);
+        dialog->enterModalState(true, juce::ModalCallbackFunction::create([this, safe, blockIndex](int result) {
+            if (result != 1 || safe == nullptr)
+                return;
+            juce::String error;
+            const auto saved = saveUserBlock(blockIndex,
+                                             safe->getTextEditor("name")->getText(),
+                                             safe->getTextEditor("description")->getText(),
+                                             safe->getTextEditor("category")->getText(),
+                                             error);
+            if (onStatus)
+                onStatus(saved.isNotEmpty() ? "Saved user library block." : "Could not save library block: " + error);
+        }), true);
+    }
+
     void promptSubDiagramFromSelection()
     {
         std::vector<int> members;
@@ -6177,6 +6572,10 @@ public:
             return "{ \"ok\": true, \"tool\": " + quote(name) + ", \"refdes\": " + quote(arg("refdes")) + ", \"rotation\": " + juce::String(schematic::normalizedRotation(arg("rotation").getIntValue())) + " }";
         }
         auto text = [&](const juce::String& key) { return args.getProperty(juce::Identifier(key), {}).toString().trim(); };
+        auto number = [&](const juce::String& key, float fallback) {
+            const auto* object = args.getDynamicObject();
+            return object != nullptr ? floatProperty(*object, key.toRawUTF8(), fallback) : fallback;
+        };
         auto ok = [&](const juce::String& body) {
             forceDeferredRepaint();
             return "{ \"ok\": true, \"tool\": " + quote(name) + ", " + body + " }";
@@ -6364,6 +6763,30 @@ public:
                 }
             list << "]";
             return "{ \"ok\": true, \"tool\": " + quote(name) + ", " + list + " }";
+        }
+
+        if (name == "library_save_block")
+        {
+            juce::String error;
+            const auto saved = saveUserBlock(blockIndexFor(text("block")), text("name"), text("description"), text("category"), error);
+            if (saved.isEmpty())
+                return toolFailure(name, error);
+            return "{ \"ok\": true, \"tool\": " + quote(name) + ", \"saved\": " + saved + " }";
+        }
+
+        if (name == "library_list_blocks")
+            return "{ \"ok\": true, \"tool\": " + quote(name) + ", " + listUserBlocks(text("query")) + " }";
+
+        if (name == "library_place_block")
+        {
+            juce::String error;
+            const auto placed = placeUserBlock(text("name"),
+                                               { number("x", 160.0f), number("y", 160.0f) },
+                                               text("instanceName"),
+                                               error);
+            if (placed.isEmpty())
+                return toolFailure(name, error);
+            return ok("\"block\": " + placed);
         }
 
         return toolFailure(name, "Unknown schematic tool.");
