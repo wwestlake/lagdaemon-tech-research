@@ -116,6 +116,16 @@ target_link_libraries(DjehutiElectronicsLab PRIVATE
 
 juce_generate_juce_header(DjehutiElectronicsLab)
 
+# Circuit solver checks against hand-calculated results (plain C++, no JUCE).
+add_executable(CircuitSolverTests
+    tools/solver_tests/SolverTests.cpp
+    Source/CircuitSolver.cpp
+)
+set_target_properties(CircuitSolverTests PROPERTIES
+    OUTPUT_NAME "circuit_solver_tests"
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/bin")
+add_test(NAME CircuitSolverTests COMMAND CircuitSolverTests)
+
 # Headless layout/routing preview: renders reference circuits to PNG and
 # prints readability metrics, without opening the app.
 juce_add_console_app(SchematicPreview PRODUCT_NAME "Schematic Preview")
