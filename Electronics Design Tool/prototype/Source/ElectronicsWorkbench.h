@@ -46,6 +46,7 @@ private:
         runCompiledPreview,
         designRlcHighPass,
         autoLayoutDiagramItem,
+        toggleStampModeItem,
         openAgentSettings,
         exportAgentTools,
         openResearchSpec
@@ -135,7 +136,7 @@ private:
     juce::TextButton ercButton { "ERC" };
     juce::TextButton transientButton { "Transient" };
     juce::TextButton compileButton { "Compile Preview" };
-    juce::ToggleButton stampModeButton { "Stamp" };
+    juce::ToggleButton stampModeButton { "Stamp Mode" };
     juce::ToggleButton snapModeButton { "Snap" };
     juce::TextButton zoomOutButton { "-" };
     juce::TextButton zoomResetButton { "100%" };

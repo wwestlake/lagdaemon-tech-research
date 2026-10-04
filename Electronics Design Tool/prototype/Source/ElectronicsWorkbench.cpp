@@ -9790,6 +9790,11 @@ ElectronicsWorkbench::ElectronicsWorkbench()
     }
     stampModeButton.setToggleState(false, juce::dontSendNotification);
     stampModeButton.setColour(juce::ToggleButton::textColourId, juce::Colour(0xffdce9ee));
+    stampModeButton.onClick = [this] {
+        appendLog(stampModeButton.getToggleState()
+            ? "Stamp mode enabled: click the schematic to place the selected component repeatedly."
+            : "Stamp mode disabled.");
+    };
     addAndMakeVisible(stampModeButton);
     snapModeButton.setToggleState(true, juce::dontSendNotification);
     snapModeButton.setColour(juce::ToggleButton::textColourId, juce::Colour(0xffdce9ee));
@@ -10069,7 +10074,7 @@ void ElectronicsWorkbench::resized()
     toolbar.removeFromLeft(6);
     compileButton.setBounds(toolbar.removeFromLeft(140));
     toolbar.removeFromLeft(10);
-    stampModeButton.setBounds(toolbar.removeFromLeft(90));
+    stampModeButton.setBounds(toolbar.removeFromLeft(120));
     snapModeButton.setBounds(toolbar.removeFromLeft(82));
     toolbar.removeFromLeft(8);
     zoomOutButton.setBounds(toolbar.removeFromLeft(34));
@@ -10138,6 +10143,8 @@ juce::PopupMenu ElectronicsWorkbench::getMenuForIndex(int, const juce::String& m
     }
     else if (menuName == "View")
     {
+        menu.addItem(toggleStampModeItem, "Stamp Mode", true, stampModeButton.getToggleState());
+        menu.addSeparator();
         menu.addItem(resetLayout, "Reset Dock Layout");
     }
     else if (menuName == "Help")
@@ -10176,6 +10183,9 @@ void ElectronicsWorkbench::menuItemSelected(int menuItemID, int)
         case resetLayout:
             if (dockManager != nullptr) dockManager->resetLayout();
             appendLog("Dock layout reset.");
+            break;
+        case toggleStampModeItem:
+            stampModeButton.setToggleState(!stampModeButton.getToggleState(), juce::sendNotificationSync);
             break;
         case importComponent: appendLog("Component ingestion stub: BYOK agent/provider workflow pending."); break;
         case autoLayoutDiagramItem: autoLayoutDiagram(); break;
