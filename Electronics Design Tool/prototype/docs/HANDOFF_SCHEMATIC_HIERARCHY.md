@@ -88,9 +88,10 @@ exist. This rule is also in the prototype README and the repo `AGENTS.md`.
      crossed the boundary becomes a pin on the block; parent wires connect to
      those pins.
    - Double-click opens the block's own diagram. Inside, every external
-     connection is drawn as a **port symbol** (KiCad calls these hierarchical
-     pins): a distinct shape carrying the name of the block pin it maps to
-     (IN, OUT, +12V...), wired to whatever it reaches inside. Port symbols and
+     connection is drawn as a **port bubble**: a rounded bubble with the
+     name of the block pin it maps to (IN, OUT, +12V...) written inside it,
+     wired to whatever it reaches inside. (User's call: a bubble with the
+     pin name.) Port symbols and
      block pins are one-to-one; renaming one renames the other. Ports sit at
      the diagram edge (inputs left, outputs right, supplies top/bottom) and
      must look different from net labels so it is obvious they leave the
