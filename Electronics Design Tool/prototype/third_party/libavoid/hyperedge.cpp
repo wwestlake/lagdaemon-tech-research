@@ -74,7 +74,10 @@ size_t HyperedgeRerouter::count(void) const
 HyperedgeNewAndDeletedObjectLists HyperedgeRerouter::newAndDeletedObjectLists(
         size_t index) const
 {
-    COLA_ASSERT(index <= count());
+    // Djehuti patch: performRerouting() clears m_terminals_vector, so
+    // count() is 0 afterwards and the upstream check `index <= count()`
+    // rejected every hyperedge but the first. Check the result vectors.
+    COLA_ASSERT(index < m_new_junctions_vector.size());
 
     HyperedgeNewAndDeletedObjectLists result;
 

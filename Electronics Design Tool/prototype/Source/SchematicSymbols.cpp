@@ -1,5 +1,6 @@
 #include "SchematicSymbols.h"
 
+#include <algorithm>
 #include <cmath>
 
 namespace schematic
@@ -290,7 +291,7 @@ const juce::StringArray& supportedSymbolIds()
     static const juce::StringArray ids {
         "resistor", "potentiometer", "capacitor", "capacitor_polarized", "variable_capacitor",
         "inductor", "coupled_inductor", "transformer", "diode", "zener_diode", "led",
-        "schottky_diode", "power_bus", "ground_bus", "power_port", "battery", "voltage_source",
+        "schottky_diode", "power_bus", "ground_bus", "power_port", "net_label", "battery", "voltage_source",
         "ac_voltage_source", "current_source", "ac_current_source", "vcvs", "vccs",
         "ccvs", "cccs", "signal_source", "ground", "opamp_741", "npn", "pnp",
         "nmos", "pmos", "njfet", "pjfet", "switch_spst", "switch_spdt", "relay_spst",
@@ -322,6 +323,7 @@ SymbolDef symbolFor(const juce::String& id)
     if (id == "power_bus")           return make(id, "PWR", { -210, -8, 420, 16 }, { { "VBUS", { 0, 0 } } });
     if (id == "ground_bus")          return make(id, "GND BUS", { -210, -8, 420, 16 }, { { "0", { 0, 0 } } });
     if (id == "power_port")          return make(id, "PWR", { -18, -24, 36, 24 }, { { "1", { 0, 0 } } });
+    if (id == "net_label")           return make(id, "LABEL", { -12, -24, 24, 24 }, { { "1", { 0, 0 } } });
     if (id == "ground")              return make(id, "GND", { -18, 0, 36, 30 }, { { "0", { 0, 0 } } });
     if (id == "battery")             return make(id, "BAT", { -24, -18, 48, 36 }, { { "+", { 0, -48 } }, { "-", { 0, 48 } } });
     if (id == "voltage_source")      return make(id, "V", { -24, -24, 48, 48 }, { { "+", { 0, -48 } }, { "-", { 0, 48 } } });
@@ -381,6 +383,7 @@ juce::String refdesPrefixFor(const juce::String& id)
     if (id == "test_point") return "TP";
     if (id == "ground") return "GND";
     if (id == "power_port") return "PWR";
+    if (id == "net_label") return "LBL";
     if (id == "ground_bus") return "GBUS";
     if (id == "power_bus") return "PBUS";
     if (id == "oscilloscope_2ch") return "SCOPE";
@@ -390,7 +393,7 @@ juce::String refdesPrefixFor(const juce::String& id)
 
 bool isPowerSymbol(const juce::String& id)
 {
-    return id == "ground" || id == "power_port";
+    return id == "ground" || id == "power_port" || id == "net_label";
 }
 
 bool isInstrumentSymbol(const juce::String& id)
@@ -425,6 +428,96 @@ juce::Rectangle<float> rotateBounds(juce::Rectangle<float> bounds, int rotation)
     const auto a = rotateOffset(bounds.getTopLeft(), rotation);
     const auto b = rotateOffset(bounds.getBottomRight(), rotation);
     return juce::Rectangle<float>(a, b);
+}
+
+juce::Rectangle<float> extentBounds(const SymbolDef& symbol)
+{
+    // Not Rectangle::getUnion: it ignores zero-size rectangles (points).
+    auto left = symbol.bounds.getX(), top = symbol.bounds.getY();
+    auto right = symbol.bounds.getRight(), bottom = symbol.bounds.getBottom();
+    for (const auto& pin : symbol.pins)
+    {
+        left = std::min(left, pin.offset.x);
+        right = std::max(right, pin.offset.x);
+        top = std::min(top, pin.offset.y);
+        bottom = std::max(bottom, pin.offset.y);
+    }
+    return { left, top, right - left, bottom - top };
+}
+
+juce::Point<float> pinLeadDirection(const SymbolDef& symbol, int pinIndex)
+{
+    if (pinIndex < 0 || pinIndex >= (int)symbol.pins.size())
+        return {};
+
+    // Net markers (ground, supply ports, labels) take a wire from any side.
+    if (isPowerSymbol(symbol.id))
+        return {};
+
+    const auto p = symbol.pins[(size_t)pinIndex].offset;
+    const auto body = symbol.bounds;
+
+    // Pick the side the pin sticks out of furthest beyond the body.
+    const float beyond[] = { body.getX() - p.x, p.x - body.getRight(), body.getY() - p.y, p.y - body.getBottom() };
+    const juce::Point<float> dirs[] = { { -1.0f, 0.0f }, { 1.0f, 0.0f }, { 0.0f, -1.0f }, { 0.0f, 1.0f } };
+    int best = 0;
+    for (int i = 1; i < 4; ++i)
+        if (beyond[i] > beyond[best])
+            best = i;
+    if (beyond[best] > 0.0f)
+        return dirs[best];
+
+    // Pin on or inside the body edge: use the nearest extent edge.
+    const auto extent = extentBounds(symbol);
+    const float distance[] = { p.x - extent.getX(), extent.getRight() - p.x, p.y - extent.getY(), extent.getBottom() - p.y };
+    best = 0;
+    for (int i = 1; i < 4; ++i)
+        if (distance[i] < distance[best])
+            best = i;
+    return dirs[best];
+}
+
+LabelRects labelRectsFor(const SymbolDef& symbol, int rotation)
+{
+    constexpr float w = 96.0f, h = 15.0f, gap = 4.0f;
+    const auto body = rotateBounds(symbol.bounds, rotation);
+    bool up = false, down = false, left = false, right = false;
+    for (int p = 0; p < (int)symbol.pins.size(); ++p)
+    {
+        const auto d = rotateOffset(pinLeadDirection(symbol, p), rotation);
+        up |= d.y < -0.5f;
+        down |= d.y > 0.5f;
+        left |= d.x < -0.5f;
+        right |= d.x > 0.5f;
+    }
+
+    LabelRects r;
+    if (!up && !down)
+    {
+        r.refdes = { body.getCentreX() - w * 0.5f, body.getY() - gap - h, w, h };
+        r.value = { body.getCentreX() - w * 0.5f, body.getBottom() + gap, w, h };
+        r.justification = juce::Justification::centred;
+    }
+    else if (!right)
+    {
+        r.refdes = { body.getRight() + gap * 2.0f, body.getCentreY() - h - 1.0f, w, h };
+        r.value = { body.getRight() + gap * 2.0f, body.getCentreY() + 1.0f, w, h };
+        r.justification = juce::Justification::centredLeft;
+    }
+    else if (!left)
+    {
+        r.refdes = { body.getX() - gap * 2.0f - w, body.getCentreY() - h - 1.0f, w, h };
+        r.value = { body.getX() - gap * 2.0f - w, body.getCentreY() + 1.0f, w, h };
+        r.justification = juce::Justification::centredRight;
+    }
+    else
+    {
+        // Pins on every side (op amp): the corner right of the top pin.
+        r.refdes = { body.getCentreX() + gap * 2.0f, body.getY() - h, w, h };
+        r.value = { body.getCentreX() + gap * 2.0f, body.getY() + 1.0f, w, h };
+        r.justification = juce::Justification::centredLeft;
+    }
+    return r;
 }
 
 void drawSymbolArt(juce::Graphics& g, const SymbolDef& symbol, const juce::String& readout)
@@ -512,6 +605,21 @@ void drawSymbolArt(juce::Graphics& g, const SymbolDef& symbol, const juce::Strin
         juce::Path arrow;
         arrow.addTriangle(-7.0f, -16.0f, 7.0f, -16.0f, 0.0f, -24.0f);
         g.fillPath(arrow);
+    }
+    else if (id == "net_label")
+    {
+        // Flag on a short stem; the net name is drawn beside it by the caller.
+        line(g, { 0, 0 }, { 0, -12 });
+        juce::Path flag;
+        flag.startNewSubPath(0.0f, -12.0f);
+        flag.lineTo(0.0f, -24.0f);
+        flag.lineTo(10.0f, -24.0f);
+        flag.lineTo(14.0f, -18.0f);
+        flag.lineTo(10.0f, -12.0f);
+        flag.closeSubPath();
+        g.setColour(juce::Colour(0xff78dcca));
+        strokePath(g, flag, 1.6f);
+        g.setColour(lineColour);
     }
     else if (id == "ground")
     {

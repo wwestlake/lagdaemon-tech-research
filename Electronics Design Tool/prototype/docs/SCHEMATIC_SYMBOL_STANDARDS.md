@@ -85,6 +85,14 @@ cite it (`SCH-G1`, `SCH-W3`, ...).
 - **SCH-P3** Higher potential is at the top of the page, lower potential
   and ground at the bottom; conventional current flows downward.
 
+### Net Labels
+
+- **SCH-L1** Net labels with the same name are the same net, like supply
+  ports. Instrument inputs (scope channels, meter leads) connect through a
+  pair of labels named `<instrument>.<input>` (for example `SCOPE1.CH1`): one
+  at the instrument, one on the probed net. Probe leads are never drawn as
+  wires across the circuit.
+
 ### Placement and Flow
 
 - **SCH-F1** Signal flows left to right: sources and inputs on the left,
@@ -116,3 +124,14 @@ cite it (`SCH-G1`, `SCH-W3`, ...).
   amp, T transformer, K relay, F fuse, SW switch, J connector, BT battery.
   Independent sources use the SPICE letters V and I so the schematic and
   netlist agree.
+
+## Implementation
+
+`Source/SchematicLayout.cpp` (placement) and `Source/SchematicRouter.cpp`
+(libavoid routing) implement these rules; `tools/schematic_preview` renders
+reference circuits to PNG and reports crossings, overlaps, wires through
+symbols, and off-grid points so layout changes can be checked headlessly:
+
+```text
+bin\Debug\schematic_preview.exe <output-folder>
+```

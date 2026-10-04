@@ -40,7 +40,8 @@ SymbolDef symbolFor(const juce::String& symbolId);
 // IEEE 315 / common EDA reference designator letters (SCH-T3).
 juce::String refdesPrefixFor(const juce::String& symbolId);
 
-// Ground and named supply ports: net markers, not parts.
+// Ground, named supply ports and net labels: net markers, not parts.
+// Markers with the same name (supply port name, or label name) are one net.
 bool isPowerSymbol(const juce::String& symbolId);
 bool isInstrumentSymbol(const juce::String& symbolId);
 bool isRailBus(const juce::String& symbolId);
@@ -48,6 +49,25 @@ bool isRailBus(const juce::String& symbolId);
 int normalizedRotation(int rotation);
 juce::Point<float> rotateOffset(juce::Point<float> offset, int rotation);
 juce::Rectangle<float> rotateBounds(juce::Rectangle<float> bounds, int rotation);
+
+// Body plus pin ends, unrotated: the full footprint a router must avoid.
+// Every pin end lies on this rectangle's boundary.
+juce::Rectangle<float> extentBounds(const SymbolDef& symbol);
+
+// Unit direction a wire leaves the pin in, unrotated (away from the body).
+// Zero for net markers, which accept a wire from any side.
+juce::Point<float> pinLeadDirection(const SymbolDef& symbol, int pinIndex);
+
+// Where the reference designator and value text go for a rotated symbol,
+// relative to its origin (SCH-T1, SCH-T2): on a side with no pins, always
+// reading left to right. Power symbols have no part labels.
+struct LabelRects
+{
+    juce::Rectangle<float> refdes;
+    juce::Rectangle<float> value;
+    juce::Justification justification { juce::Justification::centred };
+};
+LabelRects labelRectsFor(const SymbolDef& symbol, int rotation);
 
 // Draws the symbol in symbol space; the caller applies rotation and
 // translation. `readout` is the live text for symbols that display one

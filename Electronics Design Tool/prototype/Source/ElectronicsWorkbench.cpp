@@ -2,9 +2,10 @@
 #include "ElectronicsKnowledge.h"
 #include "LocalAgentApi.h"
 #include "SchematicSymbols.h"
+#include "SchematicLayout.h"
+#include "SchematicRouter.h"
 
 #include <ai_provider/AiConfig.h>
-#include <libavoid/libavoid.h>
 
 #include <algorithm>
 #include <array>
@@ -1340,7 +1341,7 @@ public:
                 netlist << "* " << instance.refdes << " " << instance.busName << " power bus on net " << pinNet("VBUS") << "\n";
                 continue;
             }
-            if (instance.symbolId == "power_port")
+            if (instance.symbolId == "power_port" || instance.symbolId == "net_label")
                 continue;
             if (instance.symbolId == "resistor")
             {
@@ -1490,8 +1491,12 @@ public:
                 && instance.symbolId != "ground"
                 && instance.symbolId != "ground_bus"
                 && instance.symbolId != "power_bus"
-                && instance.symbolId != "power_port")
+                && instance.symbolId != "power_port"
+                && instance.symbolId != "net_label")
                 addFinding("WARN", instance.refdes + " has no value or model text.");
+
+            if (instance.symbolId == "net_label" && instance.busName.trim().isEmpty())
+                addFinding("ERROR", instance.refdes + " is a net label with no name.");
 
             if (instance.symbolId == "power_port" && instance.busName.trim().isEmpty())
                 addFinding("ERROR", instance.refdes + " is a supply port with no net name.");
@@ -2189,250 +2194,304 @@ public:
         return autoLayoutInstances(selected);
     }
 
+    static bool isNetMarker(const juce::String& symbolId)
+    {
+        return schematic::isPowerSymbol(symbolId) || schematic::isRailBus(symbolId);
+    }
+
+    static juce::String supplyVoltsText(const juce::String& value)
+    {
+        auto text = value.trim();
+        if (text.endsWithIgnoreCase("V"))
+            text = text.dropLastCharacters(1).trim();
+        if (text.startsWith("+") || text.startsWith("-"))
+            text = text.substring(1);
+        return text.isEmpty() ? juce::String("V") : text;
+    }
+
+    struct LayoutNets
+    {
+        std::map<juce::String, int> indexOf; // model net name -> layout net index
+        std::vector<schematic::layout::Net> nets;
+    };
+
+    // Ground is net "0". Supply nets are named by their ports or rails, or,
+    // failing that, derived from a DC source terminal whose other terminal is
+    // grounded ("+12V", "-12V"). Everything else is a signal net. Signal nets
+    // that touch only one pin are left out (that pin is unconnected).
+    LayoutNets classifyLayoutNets(const std::map<int, juce::String>& netNames) const
+    {
+        std::map<juce::String, juce::String> supplyName;
+        for (int i = 0; i < (int)instances.size(); ++i)
+        {
+            const auto& instance = instances[(size_t)i];
+            if ((instance.symbolId == "power_port" || instance.symbolId == "power_bus") && instance.busName.trim().isNotEmpty())
+                supplyName[netFor({ i, 0 }, netNames)] = instance.busName.trim();
+        }
+        for (int i = 0; i < (int)instances.size(); ++i)
+        {
+            const auto& instance = instances[(size_t)i];
+            if (instance.symbolId != "voltage_source" && instance.symbolId != "battery")
+                continue;
+            const auto symbol = symbolFor(instance.symbolId);
+            juce::String plusNet, minusNet;
+            for (int p = 0; p < (int)symbol.pins.size(); ++p)
+            {
+                if (symbol.pins[(size_t)p].name == "+") plusNet = netFor({ i, p }, netNames);
+                if (symbol.pins[(size_t)p].name == "-") minusNet = netFor({ i, p }, netNames);
+            }
+            const auto volts = supplyVoltsText(instance.value);
+            if (minusNet == "0" && plusNet != "0" && supplyName.count(plusNet) == 0)
+                supplyName[plusNet] = "+" + volts + "V";
+            if (plusNet == "0" && minusNet != "0" && supplyName.count(minusNet) == 0)
+                supplyName[minusNet] = "-" + volts + "V";
+        }
+
+        std::map<juce::String, int> pinsOnNet;
+        for (int i = 0; i < (int)instances.size(); ++i)
+        {
+            if (isNetMarker(instances[(size_t)i].symbolId))
+                continue;
+            const auto symbol = symbolFor(instances[(size_t)i].symbolId);
+            for (int p = 0; p < (int)symbol.pins.size(); ++p)
+                ++pinsOnNet[netFor({ i, p }, netNames)];
+        }
+
+        LayoutNets result;
+        for (const auto& [net, count] : pinsOnNet)
+        {
+            if (net == "floating")
+                continue;
+            schematic::layout::Net layoutNet;
+            if (net == "0")
+            {
+                layoutNet.name = "0";
+                layoutNet.kind = schematic::layout::NetKind::Ground;
+            }
+            else if (const auto named = supplyName.find(net); named != supplyName.end())
+            {
+                layoutNet.name = named->second;
+                layoutNet.kind = schematic::layout::NetKind::Supply;
+            }
+            else
+            {
+                if (count < 2)
+                    continue;
+                layoutNet.name = net;
+                layoutNet.kind = schematic::layout::NetKind::Signal;
+            }
+            result.indexOf[net] = (int)result.nets.size();
+            result.nets.push_back(layoutNet);
+        }
+        return result;
+    }
+
+    // Auto layout: connectivity-driven placement (SchematicLayout), fresh
+    // ground symbols and supply ports at every pin that needs them, and
+    // signal-net wiring topology chosen by libavoid's hyperedge router
+    // (SchematicRouter). Ground symbols, supply ports, rails, junctions and
+    // wires are net markers and get rebuilt; parts and their nets are kept.
     juce::String autoLayoutInstances(juce::Array<int> scope)
     {
         if (instances.empty())
             return "{ \"ok\": false, \"error\": \"No schematic components to lay out.\" }";
 
-        if (scope.isEmpty())
-        {
-            for (int i = 0; i < (int)instances.size(); ++i)
-                scope.add(i);
-        }
-
         std::set<int> scopeSet;
         for (int index : scope)
             if (index >= 0 && index < (int)instances.size())
                 scopeSet.insert(index);
-
-        auto roleColumn = [this](const Instance& instance) {
-            const auto id = instance.symbolId;
-            if (id == "power_port" || id == "power_bus") return 1;
-            if (id == "voltage_source" || id == "ac_voltage_source" || id == "signal_source"
-                || id == "current_source" || id == "ac_current_source" || id == "battery"
-                || id.startsWith("connector"))
-                return 0;
-            if (id == "ground" || id == "ground_bus") return 4;
-            if (isInstrumentNode(id)) return 6;
-            if (id == "resistor" || id == "capacitor" || id == "inductor" || id == "diode"
-                || id == "zener_diode" || id == "led" || id == "schottky_diode"
-                || id == "potentiometer" || id == "fuse" || id.startsWith("switch"))
-                return 2;
-            if (id == "npn" || id == "pnp" || id == "nmos" || id == "pmos" || id == "njfet"
-                || id == "pjfet" || id == "opamp_741" || id.startsWith("logic")
-                || id == "vcvs" || id == "vccs" || id == "ccvs" || id == "cccs")
-                return 3;
-            if (id == "transformer" || id == "coupled_inductor" || id.startsWith("relay"))
-                return 3;
-            return 4;
-        };
-
-        auto layoutLane = [](const Instance& instance, int role) {
-            const auto bus = instance.busName.trim();
-            if (role == 1 && bus.startsWith("+")) return 0;
-            if (role == 1 && bus.startsWith("-")) return 7;
-            if (role == 1) return 0;
-            if (instance.symbolId == "ground" || instance.symbolId == "ground_bus") return 8;
-            if (role == 0) return 3;
-            if (role == 3) return 3;
-            if (role == 6) return 3;
-            if (instance.symbolId == "resistor" || instance.symbolId == "diode"
-                || instance.symbolId == "zener_diode" || instance.symbolId == "led"
-                || instance.symbolId == "schottky_diode")
-                return instance.position.y < 360.0f ? 2 : 5;
-            if (instance.symbolId == "capacitor" || instance.symbolId == "inductor"
-                || instance.symbolId == "potentiometer")
-                return 4;
-            return 4;
-        };
-
-        std::vector<std::set<int>> adjacency(instances.size());
-        for (const auto& wire : wires)
-        {
-            if (!wire.a.isPin() || !wire.b.isPin())
-                continue;
-            const auto a = wire.a.pin.instanceIndex;
-            const auto b = wire.b.pin.instanceIndex;
-            if (a < 0 || b < 0 || a >= (int)instances.size() || b >= (int)instances.size() || a == b)
-                continue;
-            adjacency[(size_t)a].insert(b);
-            adjacency[(size_t)b].insert(a);
-        }
+        const bool wholeDiagram = scopeSet.empty() || (int)scopeSet.size() == (int)instances.size();
 
         const auto netNames = computeNetNames();
-        std::map<juce::String, std::vector<int>> netInstances;
+        const auto layoutNets = classifyLayoutNets(netNames);
+
+        std::vector<int> partInstance;
+        std::vector<schematic::layout::Part> parts;
         for (int i = 0; i < (int)instances.size(); ++i)
         {
-            const auto symbol = symbolFor(instances[(size_t)i].symbolId);
-            for (int p = 0; p < (int)symbol.pins.size(); ++p)
+            const auto& instance = instances[(size_t)i];
+            if (isNetMarker(instance.symbolId) || (!wholeDiagram && scopeSet.count(i) == 0))
+                continue;
+            schematic::layout::Part part;
+            part.refdes = instance.refdes;
+            part.symbol = symbolFor(instance.symbolId);
+            part.originalPosition = instance.position;
+            for (int p = 0; p < (int)part.symbol.pins.size(); ++p)
             {
-                const auto net = netFor({ i, p }, netNames);
-                if (net.isEmpty() || net == "floating" || net == "0"
-                    || net.startsWithIgnoreCase("P") || net.startsWithIgnoreCase("N"))
-                    continue;
-                netInstances[net].push_back(i);
+                const auto found = layoutNets.indexOf.find(netFor({ i, p }, netNames));
+                part.pinNets.push_back(found != layoutNets.indexOf.end() ? found->second : -1);
             }
+            partInstance.push_back(i);
+            parts.push_back(std::move(part));
         }
-        for (auto& [net, members] : netInstances)
-        {
-            std::sort(members.begin(), members.end());
-            members.erase(std::unique(members.begin(), members.end()), members.end());
-            for (size_t a = 0; a < members.size(); ++a)
-                for (size_t b = a + 1; b < members.size(); ++b)
-                {
-                    adjacency[(size_t)members[a]].insert(members[b]);
-                    adjacency[(size_t)members[b]].insert(members[a]);
-                }
-        }
+        if (parts.empty())
+            return "{ \"ok\": false, \"error\": \"No schematic parts to lay out.\" }";
 
-        float minX = std::numeric_limits<float>::max();
-        float maxX = std::numeric_limits<float>::lowest();
-        for (int index : scopeSet)
-        {
-            minX = std::min(minX, instances[(size_t)index].position.x);
-            maxX = std::max(maxX, instances[(size_t)index].position.x);
-        }
-        const auto originalSpan = std::max(1.0f, maxX - minX);
+        const auto placement = schematic::layout::layoutSchematic(parts, layoutNets.nets, schematic::gridSize);
 
-        auto originalColumn = [&](int index) {
-            const auto normalized = (instances[(size_t)index].position.x - minX) / originalSpan;
-            return std::clamp((int)std::round(normalized * 5.0f), 0, 5);
-        };
-
-        std::vector<int> rank(instances.size(), 3);
-        std::vector<int> queue;
-        for (int index : scopeSet)
+        if (!wholeDiagram)
         {
-            const auto base = roleColumn(instances[(size_t)index]);
-            rank[(size_t)index] = base == 2 || base == 3 || base == 4
-                ? std::clamp(originalColumn(index), 1, 5)
-                : base;
-            if (base == 0)
-                queue.push_back(index);
-        }
-
-        for (size_t qi = 0; qi < queue.size(); ++qi)
-        {
-            const auto current = queue[qi];
-            for (int next : adjacency[(size_t)current])
+            // Selection: move the chosen parts as a block into the area they
+            // came from; wiring stays as it is and is rerouted.
+            juce::Point<float> before { std::numeric_limits<float>::max(), std::numeric_limits<float>::max() };
+            juce::Point<float> after = before;
+            for (size_t k = 0; k < parts.size(); ++k)
             {
-                if (!scopeSet.count(next) || isInstrumentNode(instances[(size_t)next].symbolId))
-                    continue;
-                const auto proposed = std::min(5, rank[(size_t)current] + 1);
-                if (proposed > rank[(size_t)next])
-                {
-                    rank[(size_t)next] = proposed;
-                    if (std::find(queue.begin(), queue.end(), next) == queue.end())
-                        queue.push_back(next);
-                }
+                const auto oldPoint = instances[(size_t)partInstance[k]].position;
+                const auto newPoint = placement.positions[k];
+                before = { std::min(before.x, oldPoint.x), std::min(before.y, oldPoint.y) };
+                after = { std::min(after.x, newPoint.x), std::min(after.y, newPoint.y) };
             }
-        }
-
-        for (int pass = 0; pass < 4; ++pass)
-        {
-            for (int index : scopeSet)
+            const auto delta = snapToGrid(before - after);
+            for (size_t k = 0; k < parts.size(); ++k)
             {
-                const auto role = roleColumn(instances[(size_t)index]);
-                if (role != 2)
-                    continue;
-
-                int connectedSignalRank = -1;
-                for (int next : adjacency[(size_t)index])
-                {
-                    const auto nextRole = roleColumn(instances[(size_t)next]);
-                    if (nextRole == 0 || nextRole == 3 || nextRole == 6)
-                        connectedSignalRank = std::max(connectedSignalRank, rank[(size_t)next]);
-                }
-                if (connectedSignalRank >= 0)
-                    rank[(size_t)index] = std::clamp(connectedSignalRank, 1, 5);
+                auto& instance = instances[(size_t)partInstance[k]];
+                instance.position = placement.positions[k] + delta;
+                instance.rotation = placement.rotations[k];
             }
+            notifySelection();
+            forceDeferredRepaint();
+            if (onStatus) onStatus("Auto-laid out " + juce::String((int)parts.size()) + " selected component(s).");
+            return "{ \"ok\": true, \"tool\": \"schematic_auto_layout\", \"displayTool\": \"schematic.auto_layout\", \"scope\": \"selection\", \"componentCount\": "
+                + juce::String((int)parts.size()) + ", \"style\": \"layered_signal_flow\" }";
         }
 
-        for (int index : scopeSet)
+        // Probes that sit on junctions move to a part pin on the same net,
+        // since junctions are rebuilt.
+        for (auto& probe : probes)
         {
-            const auto role = roleColumn(instances[(size_t)index]);
-            if (role == 0 || role == 1 || role == 6)
-                rank[(size_t)index] = role;
-            if (instances[(size_t)index].symbolId == "ground" || instances[(size_t)index].symbolId == "ground_bus")
+            if (!probe.node.isJunction())
+                continue;
+            const auto net = netForNode(probe.node, netNames);
+            for (size_t k = 0; k < partInstance.size() && probe.node.isJunction(); ++k)
+                for (int p = 0; p < (int)parts[k].symbol.pins.size(); ++p)
+                    if (netFor({ partInstance[k], p }, netNames) == net)
+                    {
+                        probe.node = WireNode::forPin({ partInstance[k], p });
+                        break;
+                    }
+        }
+
+        std::vector<Instance> rebuilt;
+        std::vector<int> oldToNew(instances.size(), -1);
+        for (size_t k = 0; k < parts.size(); ++k)
+        {
+            auto instance = instances[(size_t)partInstance[k]];
+            instance.position = placement.positions[k];
+            instance.rotation = placement.rotations[k];
+            oldToNew[(size_t)partInstance[k]] = (int)rebuilt.size();
+            rebuilt.push_back(instance);
+        }
+
+        std::map<juce::String, int> nextNumber;
+        std::vector<std::pair<int, PinRef>> markerWires;
+        std::map<int, std::vector<int>> labelsOnNet; // layout net -> label instance index
+        for (const auto& marker : placement.markers)
+        {
+            Instance instance;
+            instance.symbolId = marker.symbolId;
+            const auto prefix = schematic::refdesPrefixFor(marker.symbolId);
+            instance.refdes = prefix + juce::String(++nextNumber[prefix]);
+            instance.value = marker.symbolId == "ground" ? juce::String("0") : juce::String();
+            instance.busName = marker.symbolId == "ground" ? defaultBusNameFor("ground") : marker.netName;
+            if (marker.symbolId == "net_label")
+                instance.value = marker.netName;
+            instance.family = familyFor(marker.symbolId);
+            instance.position = marker.position;
+            instance.rotation = marker.rotation;
+            instance.busLength = 0.0f;
+            if (marker.onNet)
+                labelsOnNet[marker.net].push_back((int)rebuilt.size());
+            else
+                markerWires.push_back({ (int)rebuilt.size(), PinRef { oldToNew[(size_t)partInstance[(size_t)marker.part]], marker.pin } });
+            rebuilt.push_back(instance);
+        }
+
+        juce::StringArray droppedProbes;
+        for (auto& probe : probes)
+        {
+            if (probe.node.isPin())
+                probe.node.pin.instanceIndex = oldToNew[(size_t)probe.node.pin.instanceIndex];
+            if (!probe.node.isPin())
+                droppedProbes.add(probe.id);
+        }
+        probes.erase(std::remove_if(probes.begin(), probes.end(), [](const Probe& probe) { return !probe.node.isPin(); }), probes.end());
+
+        for (auto& group : groups)
+        {
+            std::vector<int> members;
+            for (int member : group.memberInstances)
+                if (member >= 0 && member < (int)oldToNew.size() && oldToNew[(size_t)member] >= 0)
+                    members.push_back(oldToNew[(size_t)member]);
+            group.memberInstances = members;
+        }
+        groups.erase(std::remove_if(groups.begin(), groups.end(), [](const Group& group) {
+            return group.memberInstances.size() < 2;
+        }), groups.end());
+
+        instances = std::move(rebuilt);
+        junctions.clear();
+        wires.clear();
+        for (const auto& [markerIndex, pin] : markerWires)
+            wires.push_back({ WireNode::forPin({ markerIndex, 0 }), WireNode::forPin(pin) });
+
+        // Signal nets: libavoid picks each net's tree and its junctions.
+        std::vector<int> obstacleInstance;
+        const auto obstacles = buildRoutingObstacles(obstacleInstance);
+        std::vector<int> instanceObstacle(instances.size(), -1);
+        for (int o = 0; o < (int)obstacleInstance.size(); ++o)
+            instanceObstacle[(size_t)obstacleInstance[(size_t)o]] = o;
+
+        std::vector<schematic::routing::NetTerminals> signalNets;
+        for (int net = 0; net < (int)layoutNets.nets.size(); ++net)
+        {
+            if (layoutNets.nets[(size_t)net].kind != schematic::layout::NetKind::Signal)
+                continue;
+            schematic::routing::NetTerminals terminals;
+            for (size_t k = 0; k < parts.size(); ++k)
             {
-                int connectedRank = 2;
-                for (int next : adjacency[(size_t)index])
-                    connectedRank = std::max(connectedRank, rank[(size_t)next]);
-                rank[(size_t)index] = std::min(5, connectedRank);
+                if (schematic::isInstrumentSymbol(parts[k].symbol.id))
+                    continue; // instruments connect through their probe labels
+                for (int p = 0; p < (int)parts[k].pinNets.size(); ++p)
+                    if (parts[k].pinNets[(size_t)p] == net && instanceObstacle[k] >= 0)
+                        terminals.terminals.push_back(schematic::routing::Endpoint::forPin(instanceObstacle[k], p));
             }
+            for (int label : labelsOnNet[net])
+                if (instanceObstacle[(size_t)label] >= 0)
+                    terminals.terminals.push_back(schematic::routing::Endpoint::forPin(instanceObstacle[(size_t)label], 0));
+            if (terminals.terminals.size() >= 2)
+                signalNets.push_back(terminals);
         }
 
-        std::array<std::vector<int>, 7> columns;
-        for (int index : scopeSet)
-            columns[(size_t)std::clamp(rank[(size_t)index], 0, 6)].push_back(index);
-
-        for (auto& column : columns)
+        const auto trees = schematic::routing::routeNetTrees(obstacles, signalNets, schematic::gridSize);
+        for (const auto& tree : trees)
         {
-            std::sort(column.begin(), column.end(), [&](int a, int b) {
-                const auto& ia = instances[(size_t)a];
-                const auto& ib = instances[(size_t)b];
-                const auto ra = roleColumn(ia);
-                const auto rb = roleColumn(ib);
-                const auto la = layoutLane(ia, ra);
-                const auto lb = layoutLane(ib, rb);
-                if (la != lb) return la < lb;
-                if (ra != rb) return ra < rb;
-                if (ia.position.y != ib.position.y) return ia.position.y < ib.position.y;
-                return ia.refdes < ib.refdes;
-            });
+            const auto base = (int)junctions.size();
+            for (const auto& j : tree.junctions)
+                junctions.push_back(j);
+            auto toNode = [&](const schematic::routing::Endpoint& e) {
+                return e.isJunction() ? WireNode::forJunction(base + e.junction)
+                                      : WireNode::forPin({ obstacleInstance[(size_t)e.obstacle], e.pin });
+            };
+            for (const auto& edge : tree.edges)
+                wires.push_back({ toNode(edge.a), toNode(edge.b) });
         }
 
-        constexpr float x0 = 168.0f;
-        constexpr float dx = 216.0f;
-        constexpr std::array<float, 9> laneY { 48.0f, 144.0f, 240.0f, 360.0f, 480.0f,
-                                               600.0f, 696.0f, 792.0f, 912.0f };
-        for (size_t columnIndex = 0; columnIndex < columns.size(); ++columnIndex)
+        // One full routing pass slides each junction onto the T its wires
+        // actually form; keep those positions in the model.
         {
-            auto& column = columns[columnIndex];
-            std::array<int, laneY.size()> laneCounts {};
-            for (size_t row = 0; row < column.size(); ++row)
-            {
-                auto& instance = instances[(size_t)column[row]];
-                float x = x0 + (float)columnIndex * dx;
-                const auto lane = (size_t)std::clamp(layoutLane(instance, roleColumn(instance)), 0, (int)laneY.size() - 1);
-                const auto y = laneY[lane] + (float)laneCounts[lane] * 72.0f;
-                ++laneCounts[lane];
-
-                instance.position = snapPoint({ x, y });
-            }
+            routeSignature.clear();
+            ensureRoutes();
+            if (!routedJunctions.empty() && routedJunctions.size() == junctions.size())
+                junctions = routedJunctions;
         }
 
-        for (int pass = 0; pass < 3; ++pass)
-        {
-            for (int junctionIndex = 0; junctionIndex < (int)junctions.size(); ++junctionIndex)
-            {
-                juce::Array<juce::Point<float>> connectedPins;
-                for (const auto& wire : wires)
-                {
-                    if (wire.a.isJunction() && wire.a.junctionIndex == junctionIndex && wire.b.isPin())
-                        connectedPins.add(nodePosition(wire.b));
-                    if (wire.b.isJunction() && wire.b.junctionIndex == junctionIndex && wire.a.isPin())
-                        connectedPins.add(nodePosition(wire.a));
-                }
-                if (connectedPins.isEmpty())
-                    continue;
-
-                float x = 0.0f;
-                float y = 0.0f;
-                for (const auto& point : connectedPins)
-                {
-                    x += point.x;
-                    y += point.y;
-                }
-                junctions[(size_t)junctionIndex] = snapPoint({ x / (float)connectedPins.size(),
-                                                               y / (float)connectedPins.size() });
-            }
-        }
-
-        selectedInstance = selectedInstances.isEmpty() ? (instances.empty() ? -1 : 0) : selectedInstances.getLast();
-        if (selectedInstances.isEmpty() && selectedInstance >= 0)
-            selectedInstances.add(selectedInstance);
+        selectedInstance = -1;
+        selectedInstances.clear();
+        selectedGroup = -1;
         notifySelection();
+        for (const auto& probeId : droppedProbes)
+            if (onProbeChanged) onProbeChanged(probeId, {}, {});
         forceDeferredRepaint();
 
         juce::String result;
@@ -2440,12 +2499,46 @@ public:
         result << "  \"ok\": true,\n";
         result << "  \"tool\": \"schematic_auto_layout\",\n";
         result << "  \"displayTool\": \"schematic.auto_layout\",\n";
-        result << "  \"scope\": " << quote(scope.size() == (int)instances.size() ? "diagram" : "selection") << ",\n";
-        result << "  \"componentCount\": " << scope.size() << ",\n";
-        result << "  \"style\": \"connection_aware_left_to_right_grid\"\n";
+        result << "  \"scope\": \"diagram\",\n";
+        result << "  \"componentCount\": " << (int)parts.size() << ",\n";
+        result << "  \"powerSymbols\": " << (int)placement.markers.size() << ",\n";
+        result << "  \"wireCount\": " << (int)wires.size() << ",\n";
+        result << "  \"junctionCount\": " << (int)junctions.size() << ",\n";
+        result << "  \"style\": \"layered_signal_flow_libavoid_routed\"\n";
         result << "}";
-        if (onStatus) onStatus("Auto-laid out " + juce::String(scope.size()) + " schematic component(s).");
+        if (onStatus) onStatus("Auto-laid out " + juce::String((int)parts.size()) + " component(s) with "
+                               + juce::String((int)placement.markers.size()) + " power symbol(s).");
         return result;
+    }
+
+    static juce::Point<float> snapToGrid(juce::Point<float> p)
+    {
+        return { std::round(p.x / schematic::gridSize) * schematic::gridSize,
+                 std::round(p.y / schematic::gridSize) * schematic::gridSize };
+    }
+
+    // Every non-rail instance as a routing obstacle: its full footprint
+    // (body plus pin ends) with a connection pin at each pin end.
+    std::vector<schematic::routing::Obstacle> buildRoutingObstacles(std::vector<int>& obstacleInstance) const
+    {
+        std::vector<schematic::routing::Obstacle> obstacles;
+        obstacleInstance.clear();
+        for (int i = 0; i < (int)instances.size(); ++i)
+        {
+            const auto& instance = instances[(size_t)i];
+            if (isRailBus(instance.symbolId))
+                continue;
+            const auto symbol = symbolFor(instance.symbolId);
+            schematic::routing::Obstacle obstacle;
+            obstacle.bounds = schematic::rotateBounds(schematic::extentBounds(symbol), instance.rotation)
+                                  .translated(instance.position.x, instance.position.y);
+            for (int p = 0; p < (int)symbol.pins.size(); ++p)
+                obstacle.pins.push_back({ pinPosition({ i, p }),
+                                          rotateOffset(schematic::pinLeadDirection(symbol, p), instance.rotation) });
+            obstacles.push_back(std::move(obstacle));
+            obstacleInstance.push_back(i);
+        }
+        return obstacles;
     }
 
     juce::String connectNodesFromTool(const juce::String& firstLabel, const juce::String& secondLabel)
@@ -3020,6 +3113,21 @@ private:
         for (const auto& [name, ordinal] : namedSupplyPins)
             supplyNetNames[sets.find(ordinal)] = spiceNetName(name);
 
+        // Net labels with the same name are one net (probe connections).
+        std::map<juce::String, int> labelPins;
+        for (size_t i = 0; i < instances.size(); ++i)
+        {
+            const auto& instance = instances[i];
+            if (instance.symbolId != "net_label" || instance.busName.trim().isEmpty())
+                continue;
+            const auto ordinal = pinOrdinal({ (int)i, 0 });
+            const auto found = labelPins.find(instance.busName.trim());
+            if (found == labelPins.end())
+                labelPins[instance.busName.trim()] = ordinal;
+            else
+                sets.unite(found->second, ordinal);
+        }
+
         std::set<int> groundRoots;
         for (size_t i = 0; i < instances.size(); ++i)
         {
@@ -3238,20 +3346,100 @@ private:
         if (node.pin.pinIndex < 0 || node.pin.pinIndex >= (int)symbol.pins.size())
             return {};
 
-        const auto offset = rotateOffset(symbol.pins[(size_t)node.pin.pinIndex].offset, instance.rotation);
-        const auto length = std::sqrt(offset.x * offset.x + offset.y * offset.y);
-        if (length <= 0.001f)
-            return {};
-
-        return { offset.x / length, offset.y / length };
+        return rotateOffset(schematic::pinLeadDirection(symbol, node.pin.pinIndex), instance.rotation);
     }
 
     std::vector<juce::Point<float>> routedWirePoints(const WireNode& a, const WireNode& b) const
     {
-        auto routed = avoidRoutedWirePoints(a, b);
-        if (!routed.empty())
-            return routed;
+        ensureRoutes();
+        for (size_t i = 0; i < wires.size() && i < routeCache.size(); ++i)
+        {
+            const auto& wire = wires[i];
+            const bool match = (sameNode(wire.a, a) && sameNode(wire.b, b)) || (sameNode(wire.a, b) && sameNode(wire.b, a));
+            if (!match || routeCache[i].size() < 2)
+                continue;
+            if (sameNode(wire.a, a))
+                return routeCache[i];
+            return { routeCache[i].rbegin(), routeCache[i].rend() };
+        }
         return routedWirePoints(a, nodePosition(b), nodeLeadDirection(b));
+    }
+
+    // Whole-diagram routing, recomputed only when geometry or wiring changes.
+    mutable juce::String routeSignature;
+    mutable std::vector<std::vector<juce::Point<float>>> routeCache;
+    mutable std::vector<juce::Point<float>> routedJunctions;
+
+    juce::String currentRouteSignature() const
+    {
+        juce::String sig;
+        sig.preallocateBytes(instances.size() * 32 + wires.size() * 16 + junctions.size() * 12);
+        for (const auto& instance : instances)
+            sig << instance.symbolId << ':' << instance.busName << ':' << (int)instance.position.x << ',' << (int)instance.position.y
+                << ',' << instance.rotation << ',' << (int)instance.busLength << ';';
+        sig << '|';
+        auto node = [&sig](const WireNode& n) {
+            sig << n.pin.instanceIndex << '.' << n.pin.pinIndex << '.' << n.junctionIndex << ' ';
+        };
+        for (const auto& wire : wires) { node(wire.a); node(wire.b); sig << ';'; }
+        sig << '|';
+        for (const auto& j : junctions)
+            sig << (int)j.x << ',' << (int)j.y << ';';
+        return sig;
+    }
+
+    void ensureRoutes() const
+    {
+        auto signature = currentRouteSignature();
+        if (signature == routeSignature && routeCache.size() == wires.size())
+            return;
+        routeSignature = std::move(signature);
+
+        std::vector<int> obstacleInstance;
+        schematic::routing::Problem problem;
+        problem.obstacles = buildRoutingObstacles(obstacleInstance);
+        problem.junctions = junctions;
+        std::vector<int> instanceObstacle(instances.size(), -1);
+        for (int o = 0; o < (int)obstacleInstance.size(); ++o)
+            instanceObstacle[(size_t)obstacleInstance[(size_t)o]] = o;
+
+        const auto netNames = computeNetNames();
+        std::map<juce::String, int> netIds;
+        auto endpointFor = [&](const WireNode& node, schematic::routing::Endpoint& out) {
+            if (node.isJunction())
+            {
+                if (node.junctionIndex >= (int)junctions.size()) return false;
+                out = schematic::routing::Endpoint::forJunction(node.junctionIndex);
+                return true;
+            }
+            if (!node.isPin() || node.pin.instanceIndex >= (int)instances.size()) return false;
+            const auto obstacle = instanceObstacle[(size_t)node.pin.instanceIndex];
+            out = obstacle >= 0 ? schematic::routing::Endpoint::forPin(obstacle, node.pin.pinIndex)
+                                : schematic::routing::Endpoint::forPoint(nodePosition(node));
+            return true;
+        };
+
+        std::vector<int> connectionOfWire(wires.size(), -1);
+        for (size_t i = 0; i < wires.size(); ++i)
+        {
+            const auto& wire = wires[i];
+            if (isInternalRailTapWire(wire))
+                continue;
+            schematic::routing::Connection connection;
+            if (!endpointFor(wire.a, connection.a) || !endpointFor(wire.b, connection.b))
+                continue;
+            const auto net = netForNode(wire.a, netNames);
+            const auto found = netIds.find(net);
+            connection.net = found != netIds.end() ? found->second : (netIds[net] = (int)netIds.size());
+            connectionOfWire[i] = (int)problem.connections.size();
+            problem.connections.push_back(connection);
+        }
+
+        const auto routes = schematic::routing::routeConnections(problem, schematic::gridSize, &routedJunctions);
+        routeCache.assign(wires.size(), {});
+        for (size_t i = 0; i < wires.size(); ++i)
+            if (connectionOfWire[i] >= 0)
+                routeCache[i] = routes[(size_t)connectionOfWire[i]];
     }
 
     std::vector<juce::Point<float>> routedWirePoints(const WireNode& a,
@@ -3285,128 +3473,6 @@ private:
             points.push_back(b);
 
         return points;
-    }
-
-    static void appendUniquePoint(std::vector<juce::Point<float>>& points, juce::Point<float> point)
-    {
-        if (points.empty() || point.getDistanceFrom(points.back()) > 0.1f)
-            points.push_back(point);
-    }
-
-    static void appendOrthogonalSegment(std::vector<juce::Point<float>>& points,
-                                        juce::Point<float> target,
-                                        juce::Point<float> preferredDirection = {})
-    {
-        if (points.empty())
-        {
-            points.push_back(target);
-            return;
-        }
-
-        const auto start = points.back();
-        if (std::abs(start.x - target.x) <= 0.1f || std::abs(start.y - target.y) <= 0.1f)
-        {
-            appendUniquePoint(points, target);
-            return;
-        }
-
-        const bool horizontalFirst = std::abs(preferredDirection.x) >= std::abs(preferredDirection.y);
-        appendUniquePoint(points, horizontalFirst ? juce::Point<float> { target.x, start.y }
-                                                  : juce::Point<float> { start.x, target.y });
-        appendUniquePoint(points, target);
-    }
-
-    static bool isOrthogonalPath(const std::vector<juce::Point<float>>& points)
-    {
-        for (size_t i = 1; i < points.size(); ++i)
-            if (std::abs(points[i - 1].x - points[i].x) > 0.1f
-                && std::abs(points[i - 1].y - points[i].y) > 0.1f)
-                return false;
-        return true;
-    }
-
-    static Avoid::Polygon avoidRectangle(juce::Rectangle<float> bounds)
-    {
-        Avoid::Polygon polygon(4);
-        polygon.setPoint(0, Avoid::Point(bounds.getX(), bounds.getY()));
-        polygon.setPoint(1, Avoid::Point(bounds.getRight(), bounds.getY()));
-        polygon.setPoint(2, Avoid::Point(bounds.getRight(), bounds.getBottom()));
-        polygon.setPoint(3, Avoid::Point(bounds.getX(), bounds.getBottom()));
-        return polygon;
-    }
-
-    static unsigned int avoidDirectionForLead(juce::Point<float> lead)
-    {
-        if (std::abs(lead.x) > std::abs(lead.y))
-            return lead.x < 0.0f ? Avoid::ConnDirLeft : Avoid::ConnDirRight;
-        if (std::abs(lead.y) > 0.001f)
-            return lead.y < 0.0f ? Avoid::ConnDirUp : Avoid::ConnDirDown;
-        return Avoid::ConnDirAll;
-    }
-
-    std::vector<juce::Point<float>> avoidRoutedWirePoints(const WireNode& a, const WireNode& b) const
-    {
-        if (!a.isValid() || !b.isValid())
-            return {};
-
-        Avoid::Router router(Avoid::OrthogonalRouting);
-        router.setRoutingParameter(Avoid::segmentPenalty, 50.0);
-        router.setRoutingParameter(Avoid::shapeBufferDistance, 14.0);
-        router.setRoutingParameter(Avoid::idealNudgingDistance, 8.0);
-        router.setRoutingOption(Avoid::nudgeOrthogonalSegmentsConnectedToShapes, true);
-        router.setTransactionUse(true);
-
-        constexpr auto leadLength = 24.0f;
-        const auto start = nodePosition(a);
-        const auto end = nodePosition(b);
-        const auto aLead = nodeLeadDirection(a);
-        const auto bLead = nodeLeadDirection(b);
-        const auto startRun = aLead == juce::Point<float>() ? start : start + aLead * leadLength;
-        const auto endRun = bLead == juce::Point<float>() ? end : end + bLead * leadLength;
-
-        for (int i = 0; i < (int)instances.size(); ++i)
-        {
-            const auto symbol = symbolFor(instances[(size_t)i].symbolId);
-            auto bounds = orientedBounds(instances[(size_t)i], symbol).expanded(10.0f);
-            if (a.isPin() && a.pin.instanceIndex == i)
-                bounds = bounds.withSizeKeepingCentre(std::max(8.0f, bounds.getWidth() - 36.0f),
-                                                       std::max(8.0f, bounds.getHeight() - 36.0f));
-            if (b.isPin() && b.pin.instanceIndex == i)
-                bounds = bounds.withSizeKeepingCentre(std::max(8.0f, bounds.getWidth() - 36.0f),
-                                                       std::max(8.0f, bounds.getHeight() - 36.0f));
-            auto polygon = avoidRectangle(bounds);
-            new Avoid::ShapeRef(&router, polygon);
-        }
-
-        Avoid::ConnEnd source(Avoid::Point(startRun.x, startRun.y), avoidDirectionForLead(aLead));
-        Avoid::ConnEnd dest(Avoid::Point(endRun.x, endRun.y), avoidDirectionForLead(bLead));
-        auto* connector = new Avoid::ConnRef(&router, source, dest);
-        connector->setRoutingType(Avoid::ConnType_Orthogonal);
-        router.processTransaction();
-
-        auto& route = connector->displayRoute();
-        if (route.ps.size() < 2)
-            return {};
-
-        std::vector<juce::Point<float>> points;
-        points.push_back(start);
-        if (startRun.getDistanceFrom(start) > 0.1f)
-            appendOrthogonalSegment(points, startRun, aLead);
-
-        for (const auto& point : route.ps)
-        {
-            juce::Point<float> p { (float)point.x, (float)point.y };
-            appendOrthogonalSegment(points, p);
-        }
-
-        if (end.getDistanceFrom(points.back()) > 0.1f)
-        {
-            if (endRun.getDistanceFrom(points.back()) > 0.1f)
-                appendOrthogonalSegment(points, endRun, bLead);
-            appendOrthogonalSegment(points, end, bLead);
-        }
-
-        return isOrthogonalPath(points) ? points : std::vector<juce::Point<float>> {};
     }
 
     PinRef hitTestPin(juce::Point<float> p) const
@@ -4178,6 +4244,15 @@ private:
         if (instance.symbolId == "ground")
             return;
 
+        if (instance.symbolId == "net_label")
+        {
+            g.setColour(juce::Colour(0xff78dcca));
+            g.setFont(juce::Font(11.0f, juce::Font::bold));
+            g.drawText(instance.busName, juce::Rectangle<float>(instance.position.x + 16.0f, instance.position.y - 26.0f, 120.0f, 14.0f).toNearestInt(),
+                       juce::Justification::centredLeft);
+            return;
+        }
+
         if (instance.symbolId == "power_port")
         {
             const auto pointsDown = schematic::normalizedRotation(instance.rotation) == 180;
@@ -4191,29 +4266,15 @@ private:
         }
 
         const auto valueText = displayValueFor(instance);
-        const auto tall = bounds.getHeight() > bounds.getWidth() * 1.2f;
-        if (tall)
-        {
-            const auto x = (int)bounds.getRight() + 6;
-            const auto midY = (int)bounds.getCentreY();
-            g.setColour(juce::Colour(0xff93a7b0));
-            g.drawText(instance.refdes, x, midY - (valueText.isNotEmpty() ? 16 : 8), 96, 15, juce::Justification::centredLeft);
-            if (valueText.isNotEmpty())
-            {
-                g.setColour(juce::Colour(0xffdce9ee));
-                g.drawText(valueText, x, midY + 1, 96, 15, juce::Justification::centredLeft);
-            }
-            return;
-        }
-
+        const auto labels = schematic::labelRectsFor(symbol, instance.rotation);
         g.setColour(juce::Colour(0xff93a7b0));
-        g.drawText(instance.refdes, (int)bounds.getCentreX() - 60, (int)bounds.getY() - 17, 120, 15,
-                   juce::Justification::centred);
+        g.drawText(instance.refdes, labels.refdes.translated(instance.position.x, instance.position.y).toNearestInt(),
+                   labels.justification);
         if (valueText.isNotEmpty())
         {
             g.setColour(juce::Colour(0xffdce9ee));
-            g.drawText(valueText, (int)bounds.getCentreX() - 60, (int)bounds.getBottom() + 2, 120, 15,
-                       juce::Justification::centred);
+            g.drawText(valueText, labels.value.translated(instance.position.x, instance.position.y).toNearestInt(),
+                       labels.justification);
         }
     }
 
@@ -6067,7 +6128,7 @@ private:
             {
                 "schematic_place_symbol",
                 "Place a schematic symbol or instrument node at a grid coordinate. Use deliberate layout spacing: keep symbols at least 144 px apart horizontally or 96 px vertically, arrange signal flow left-to-right, put sources on the left, outputs/load on the right, grounds below, instruments to the far right, and never reuse the same x/y for multiple parts.",
-                R"({"type":"object","properties":{"symbolId":{"type":"string","description":"Supported symbol id: resistor, potentiometer, capacitor, capacitor_polarized, variable_capacitor, inductor, coupled_inductor, transformer, diode, zener_diode, led, schottky_diode, power_bus, ground_bus, power_port, battery, voltage_source, ac_voltage_source, current_source, ac_current_source, vcvs, vccs, ccvs, cccs, signal_source, ground, opamp_741, npn, pnp, nmos, pmos, njfet, pjfet, switch_spst, switch_spdt, relay_spst, fuse, connector_2, connector_3, test_point, logic_not, logic_and, logic_or, logic_nand, logic_nor, logic_xor, oscilloscope_2ch, or digital_multimeter. Use ground and power_port symbols at each pin that needs ground or a supply instead of long wires: power_port takes busName like +12V (drawn pointing up) or -12V (place with a leading minus; drawn pointing down); ports with the same busName are the same net. Unsupported symbols are rejected, not substituted."},"x":{"type":"number","description":"Grid x coordinate. Leave at least 144 px horizontal space from other symbols."},"y":{"type":"number","description":"Grid y coordinate. Leave at least 96 px vertical space from other symbols."},"value":{"type":"string"},"frequency":{"type":"string"},"busName":{"type":"string"}},"required":["symbolId","x","y"],"additionalProperties":false})"
+                R"({"type":"object","properties":{"symbolId":{"type":"string","description":"Supported symbol id: resistor, potentiometer, capacitor, capacitor_polarized, variable_capacitor, inductor, coupled_inductor, transformer, diode, zener_diode, led, schottky_diode, power_bus, ground_bus, power_port, net_label, battery, voltage_source, ac_voltage_source, current_source, ac_current_source, vcvs, vccs, ccvs, cccs, signal_source, ground, opamp_741, npn, pnp, nmos, pmos, njfet, pjfet, switch_spst, switch_spdt, relay_spst, fuse, connector_2, connector_3, test_point, logic_not, logic_and, logic_or, logic_nand, logic_nor, logic_xor, oscilloscope_2ch, or digital_multimeter. Use ground and power_port symbols at each pin that needs ground or a supply instead of long wires: power_port takes busName like +12V (drawn pointing up) or -12V (place with a leading minus; drawn pointing down); ports with the same busName are the same net. net_label takes busName as its label; labels with the same name are one net. After placing and connecting, call schematic_auto_layout once for a standards-conforming drawing. Unsupported symbols are rejected, not substituted."},"x":{"type":"number","description":"Grid x coordinate. Leave at least 144 px horizontal space from other symbols."},"y":{"type":"number","description":"Grid y coordinate. Leave at least 96 px vertical space from other symbols."},"value":{"type":"string"},"frequency":{"type":"string"},"busName":{"type":"string"}},"required":["symbolId","x","y"],"additionalProperties":false})"
             },
             {
                 "schematic_set_component_properties",

@@ -8,15 +8,16 @@ schematic wires and instrument leads route around components and group boxes
 instead of being drawn as simple direct segments. Routes must satisfy the wire
 rules (`SCH-W*`) in `SCHEMATIC_SYMBOL_STANDARDS.md`.
 
-Status (2026-10-03): vendored and compiled into the app target, but not yet
-called by the schematic canvas. Wires are still drawn as independent L-shaped
-paths. Wiring libavoid into the router is the next schematic task.
+Usage: `Source/SchematicRouter.cpp` owns all libavoid use. One `Avoid::Router`
+holds the whole diagram: every symbol is a `ShapeRef` sized to its full
+footprint (body plus pin ends) with a `ShapeConnectionPin` at each pin end,
+every wire is a `ConnRef` in that same router so orthogonal nudging can space
+different nets apart, and auto layout routes nets of three or more pins
+through `HyperedgeRerouter` so libavoid chooses the junctions. Routes are
+snapped to the 24 px grid afterwards.
 
-Licensing:
-
-- Upstream project: https://github.com/mjwybrow/adaptagrams
-- Library documentation: https://www.adaptagrams.org/documentation/libavoid.html
-- Vendored license: `third_party/libavoid/LICENSE.LGPL`
-
-The temporary upstream checkout path `third_party/adaptagrams-src/` is ignored
-and should not be committed.
+Local patch: `hyperedge.cpp` `HyperedgeRerouter::newAndDeletedObjectLists`
+asserted `index <= count()`, but `performRerouting()` clears the terminal list
+that `count()` reads, so every hyperedge after the first failed the assert.
+The check now tests the result vectors instead. Keep this patch if libavoid
+is re-vendored.

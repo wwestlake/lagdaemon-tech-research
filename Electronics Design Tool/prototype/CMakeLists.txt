@@ -80,6 +80,10 @@ target_sources(DjehutiElectronicsLab PRIVATE
     Source/ElectronicsWorkbench.cpp
     Source/SchematicSymbols.h
     Source/SchematicSymbols.cpp
+    Source/SchematicLayout.h
+    Source/SchematicLayout.cpp
+    Source/SchematicRouter.h
+    Source/SchematicRouter.cpp
     Source/ElectronicsKnowledge.h
     Source/ElectronicsKnowledge.cpp
     Source/LocalAgentApi.h
@@ -108,6 +112,28 @@ target_link_libraries(DjehutiElectronicsLab PRIVATE
 )
 
 juce_generate_juce_header(DjehutiElectronicsLab)
+
+# Headless layout/routing preview: renders reference circuits to PNG and
+# prints readability metrics, without opening the app.
+juce_add_console_app(SchematicPreview PRODUCT_NAME "Schematic Preview")
+set_target_properties(SchematicPreview PROPERTIES OUTPUT_NAME "schematic_preview")
+target_sources(SchematicPreview PRIVATE
+    tools/schematic_preview/SchematicPreview.cpp
+    Source/SchematicSymbols.cpp
+    Source/SchematicLayout.cpp
+    Source/SchematicRouter.cpp
+)
+target_compile_definitions(SchematicPreview PRIVATE
+    JUCE_WEB_BROWSER=0
+    JUCE_USE_CURL=0
+)
+target_link_libraries(SchematicPreview PRIVATE
+    libavoid
+    juce::juce_core
+    juce::juce_events
+    juce::juce_graphics
+)
+juce_generate_juce_header(SchematicPreview)
 
 find_program(POWERSHELL_EXECUTABLE
     NAMES pwsh powershell
