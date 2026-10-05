@@ -3452,6 +3452,22 @@ private:
     juce::String parametersJsonFor(const Instance& instance) const
     {
         const auto& symbolId = instance.symbolId;
+        if (symbolId == "sub_block")
+        {
+            juce::String text = "{";
+            bool first = true;
+            for (const auto& [key, target] : instance.params)
+            {
+                if (!key.startsWith("paramTarget."))
+                    continue;
+                const auto paramKey = key.fromFirstOccurrenceOf("paramTarget.", false, false);
+                const auto value = instance.params.count(paramKey) != 0 ? instance.params.at(paramKey) : juce::String();
+                text << (first ? " " : ", ") << quote(paramKey) << ": { \"value\": " << quote(value) << " }";
+                first = false;
+            }
+            text << (first ? "" : " ") << "}";
+            return text;
+        }
         if (symbolId == "resistor")
             return "{ \"resistance\": { \"value\": " + quote(instance.value) + ", \"unit\": \"ohm\" } }";
         if (symbolId == "capacitor")
@@ -4978,6 +4994,9 @@ private:
             for (const auto& port : *ports)
                 block.ports.push_back({ port.getProperty("name", {}).toString(),
                                         port.getProperty("side", {}).toString() == "right" });
+        if (const auto* params = sourceBlockObject->getProperty("params").getDynamicObject())
+            for (const auto& property : params->getProperties())
+                block.params[property.name.toString()] = property.value.toString();
         const auto blockIndex = (int)instances.size();
         instances.push_back(block);
 
@@ -5022,6 +5041,18 @@ private:
 
             refMap[oldRef] = (int)instances.size();
             instances.push_back(std::move(instance));
+        }
+
+        for (auto& [key, value] : instances[(size_t)blockIndex].params)
+        {
+            if (!key.startsWith("paramTarget."))
+                continue;
+            const auto dot = value.indexOfChar('.');
+            if (dot <= 0)
+                continue;
+            const auto oldRef = value.substring(0, dot);
+            if (refMap.count(oldRef) != 0)
+                value = instances[(size_t)refMap[oldRef]].refdes + value.substring(dot);
         }
 
         if (const auto* junctionArray = circuit->getProperty("junctions").getArray())
@@ -5938,6 +5969,35 @@ public:
             return false;
         }
         auto& instance = instances[(size_t)index];
+        if (instance.symbolId == "sub_block" && instance.params.count("paramTarget." + key) != 0)
+        {
+            parts::ParamSpec spec;
+            spec.key = key;
+            spec.label = key;
+            spec.kind = parts::Kind::Quantity;
+            spec.unit = key.containsIgnoreCase("resistance") ? juce::String("ohm") : juce::String("V");
+            if (!parts::validate(spec, value, error))
+                return false;
+
+            const auto target = instance.params["paramTarget." + key];
+            const auto dot = target.indexOfChar('.');
+            if (dot <= 0 || dot >= target.length() - 1)
+            {
+                error = "Block parameter " + key + " has an invalid target.";
+                return false;
+            }
+
+            const auto targetRef = target.substring(0, dot);
+            const auto targetKey = target.substring(dot + 1);
+            if (!setPartParameter(targetRef, targetKey, value, error))
+                return false;
+
+            instance.params[key] = value.trim();
+            notifySelection();
+            forceDeferredRepaint();
+            return true;
+        }
+
         const auto* spec = parts::findParam(instance.symbolId, key);
         if (spec == nullptr)
         {
@@ -6031,6 +6091,23 @@ public:
         const auto& instance = instances[(size_t)index];
         juce::String list = "[";
         bool first = true;
+        if (instance.symbolId == "sub_block")
+        {
+            for (const auto& [key, target] : instance.params)
+            {
+                if (!key.startsWith("paramTarget."))
+                    continue;
+                const auto paramKey = key.fromFirstOccurrenceOf("paramTarget.", false, false);
+                const auto value = instance.params.count(paramKey) != 0 ? instance.params.at(paramKey) : juce::String();
+                list << (first ? "" : ", ") << "{ \"key\": " << quote(paramKey)
+                     << ", \"label\": " << quote(paramKey.replace("_", " "))
+                     << ", \"value\": " << quote(value);
+                if (paramKey.containsIgnoreCase("resistance")) list << ", \"unit\": \"ohm\"";
+                else if (paramKey.containsIgnoreCase("voltage")) list << ", \"unit\": \"V\"";
+                list << " }";
+                first = false;
+            }
+        }
         for (const auto& spec : parts::paramsFor(instance.symbolId))
         {
             list << (first ? "" : ", ") << "{ \"key\": " << quote(spec.key) << ", \"label\": " << quote(spec.label)
