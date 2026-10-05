@@ -2,6 +2,7 @@
 
 #include <JuceHeader.h>
 
+#include <functional>
 #include <vector>
 
 // What each part type's editable properties are: label, kind of control,
@@ -31,7 +32,11 @@ struct ParamSpec
     juce::String defaultValue;
     Storage storage = Storage::Param;
     juce::String help;
+    juce::String showWhen;   // "waveform=Pulse|Exp": shown only when that property has one of those values
 };
+
+// True when `spec` applies given the part's other values (see showWhen).
+bool isShown(const ParamSpec& spec, const std::function<juce::String(const juce::String&)>& valueOf);
 
 const std::vector<ParamSpec>& paramsFor(const juce::String& symbolId);
 const ParamSpec* findParam(const juce::String& symbolId, const juce::String& key);

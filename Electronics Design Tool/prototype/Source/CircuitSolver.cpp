@@ -4,6 +4,8 @@
 #include <cctype>
 #include <cmath>
 #include <cstdio>
+#include <functional>
+#include <limits>
 #include <map>
 
 namespace circuit_sim
@@ -341,6 +343,8 @@ struct OpAmpTransfer
 
 OpAmpTransfer opampTransfer(const Element& e, double vin, double railPlus, double railMinus)
 {
+    if (!e.opamp.limited)
+        return { e.opamp.gain * vin, e.opamp.gain };
     auto high = railPlus - e.opamp.railDrop;
     auto low = railMinus + e.opamp.railDrop;
     if (high - low < 0.2)
@@ -348,10 +352,15 @@ OpAmpTransfer opampTransfer(const Element& e, double vin, double railPlus, doubl
         high = 15.0 - e.opamp.railDrop;
         low = -15.0 + e.opamp.railDrop;
     }
-    const auto mid = 0.5 * (high + low);
-    const auto half = 0.5 * (high - low);
-    const auto t = std::tanh(e.opamp.gain * vin / half);
-    return { mid + half * t, e.opamp.gain * (1.0 - t * t) };
+    // Linear (A * vin) between the limits, rounded off over ~0.1 V at each:
+    // out = v - softplus(v - high) + softplus(low - v). No offset at mid-rail.
+    constexpr double sharpness = 40.0; // 1/V
+    auto softplus = [](double x) { return x > 30.0 ? x : x < -30.0 ? std::exp(x) : std::log1p(std::exp(x)); };
+    auto logistic = [](double x) { return x >= 0.0 ? 1.0 / (1.0 + std::exp(-x)) : std::exp(x) / (1.0 + std::exp(x)); };
+    const auto v = e.opamp.gain * vin;
+    const auto value = v - softplus(sharpness * (v - high)) / sharpness + softplus(sharpness * (low - v)) / sharpness;
+    const auto slope = e.opamp.gain * (1.0 - logistic(sharpness * (v - high)) - logistic(sharpness * (low - v)));
+    return { value, std::max(slope, e.opamp.gain * 1e-9) };
 }
 
 // ---- MNA system --------------------------------------------------------------
@@ -428,9 +437,81 @@ std::vector<double> terminalVoltages(const Element& e, const std::vector<double>
     return v;
 }
 
-void stampNonlinear(System<double>& s, const Element& e, const std::vector<double>& x)
+// Junction voltages remembered between Newton iterations, for limiting.
+struct JunctionMemory
 {
-    const auto v = terminalVoltages(e, x);
+    std::vector<std::vector<double>> voltages; // per element
+    bool limited = false;                      // a junction was limited this iteration
+};
+
+// SPICE pnjlim: keeps an exponential junction from jumping far up its curve in one step.
+double pnjlim(double vnew, double vold, double vt, double vcrit, bool& limited)
+{
+    if (vnew > vcrit && std::abs(vnew - vold) > 2.0 * vt)
+    {
+        limited = true;
+        if (vold > 0.0)
+        {
+            const auto arg = 1.0 + (vnew - vold) / vt;
+            return arg > 0.0 ? vold + vt * std::log(arg) : vcrit;
+        }
+        return vt * std::log(vnew / vt);
+    }
+    return vnew;
+}
+
+// Replaces the terminal voltages a device is linearised at with limited ones.
+void limitJunctions(const Element& e, std::vector<double>& v, std::vector<double>& memory, bool& limited)
+{
+    switch (e.type)
+    {
+        case Element::Type::Diode:
+        {
+            const auto nvt = e.diode.emission * e.diode.vt;
+            const auto vcrit = nvt * std::log(nvt / (std::sqrt(2.0) * e.diode.saturationCurrent));
+            auto vd = v[0] - v[1];
+            if (!memory.empty())
+            {
+                if (e.diode.breakdownVoltage > 0.0 && vd < -e.diode.breakdownVoltage + 10.0 * nvt && memory[0] < 0.0)
+                {
+                    // Reverse breakdown is an exponential too, mirrored about -BV.
+                    const auto vr = pnjlim(-(vd + e.diode.breakdownVoltage), -(memory[0] + e.diode.breakdownVoltage), nvt, vcrit, limited);
+                    vd = -(vr + e.diode.breakdownVoltage);
+                }
+                else
+                    vd = pnjlim(vd, memory[0], nvt, vcrit, limited);
+            }
+            memory = { vd };
+            v[0] = v[1] + vd;
+            break;
+        }
+        case Element::Type::Npn:
+        case Element::Type::Pnp:
+        {
+            const auto sign = e.type == Element::Type::Npn ? 1.0 : -1.0;
+            const auto vt = e.bjt.vt;
+            const auto vcrit = vt * std::log(vt / (std::sqrt(2.0) * e.bjt.saturationCurrent));
+            auto vbe = sign * (v[1] - v[2]), vbc = sign * (v[1] - v[0]);
+            if (memory.size() == 2)
+            {
+                vbe = pnjlim(vbe, memory[0], vt, vcrit, limited);
+                vbc = pnjlim(vbc, memory[1], vt, vcrit, limited);
+            }
+            memory = { vbe, vbc };
+            v[2] = v[1] - sign * vbe;
+            v[0] = v[1] - sign * vbc;
+            break;
+        }
+        default:
+            break;
+    }
+}
+
+void stampNonlinear(System<double>& s, const Element& e, const std::vector<double>& x, JunctionMemory* memory = nullptr, size_t index = 0)
+{
+    auto v = terminalVoltages(e, x);
+    if (memory != nullptr)
+        limitJunctions(e, v, memory->voltages[index], memory->limited);
     const auto i0 = deviceCurrents(e, v);
     const auto j = deviceJacobian(e, v);
     for (size_t t = 0; t < e.nodes.size(); ++t)
@@ -446,7 +527,7 @@ void stampNonlinear(System<double>& s, const Element& e, const std::vector<doubl
 }
 
 System<double> assemble(const Circuit& c, const Layout& l, const Options& o, Mode mode, const std::vector<double>& x,
-                        double t, double h, double sourceScale, const ReactiveState& state)
+                        double t, double h, double sourceScale, const ReactiveState& state, JunctionMemory* memory = nullptr)
 {
     System<double> s(l.size);
     for (int n = 1; n < c.nodeCount(); ++n)
@@ -547,7 +628,7 @@ System<double> assemble(const Circuit& c, const Layout& l, const Options& o, Mod
                 break;
             }
             default:
-                stampNonlinear(s, e, x);
+                stampNonlinear(s, e, x, memory, ei);
                 break;
         }
     }
@@ -557,9 +638,12 @@ System<double> assemble(const Circuit& c, const Layout& l, const Options& o, Mod
 bool newton(const Circuit& c, const Layout& l, const Options& o, Mode mode, std::vector<double>& x, double t, double h,
             double sourceScale, const ReactiveState& state, int& iterations, std::string& error)
 {
+    JunctionMemory memory;
+    memory.voltages.assign(c.elements().size(), {});
     for (int it = 0; it < o.maxIterations; ++it)
     {
-        auto system = assemble(c, l, o, mode, x, t, h, sourceScale, state);
+        memory.limited = false;
+        auto system = assemble(c, l, o, mode, x, t, h, sourceScale, state, &memory);
         std::vector<double> next;
         if (!solveDense(system.a, system.b, next))
         {
@@ -578,7 +662,7 @@ bool newton(const Circuit& c, const Layout& l, const Options& o, Mode mode, std:
         }
         x = next;
         iterations = it + 1;
-        if (converged && (it > 0 || !l.nonlinear))
+        if (converged && !memory.limited && (it > 0 || !l.nonlinear))
             return true;
         if (!l.nonlinear)
             return true;
@@ -629,7 +713,28 @@ bool solveDcState(const Circuit& c, const Layout& l, const Options& o, std::vect
     if (newton(c, l, o, Mode::Dc, x, 0.0, 1.0, 1.0, none, iterations, error))
         return true;
     if (error.rfind("Singular", 0) == 0)
-        return false; // no amount of source stepping fixes a singular circuit
+        return false; // no amount of stepping fixes a singular circuit
+
+    // Gmin stepping: a large conductance from every node to ground, reduced a decade at a time.
+    {
+        x.assign((size_t)l.size, 0.0);
+        bool ok = true;
+        for (double g = 1e-2; g > o.gmin * 1.0001 && ok; g /= 10.0)
+        {
+            auto stepped = o;
+            stepped.gmin = g;
+            int its = 0;
+            ok = newton(c, l, stepped, Mode::Dc, x, 0.0, 1.0, 1.0, none, its, error);
+            iterations += its;
+        }
+        int its = 0;
+        if (ok && newton(c, l, o, Mode::Dc, x, 0.0, 1.0, 1.0, none, its, error))
+        {
+            iterations += its;
+            error.clear();
+            return true;
+        }
+    }
 
     // Source stepping: ramp all independent sources up from zero.
     x.assign((size_t)l.size, 0.0);
@@ -1273,7 +1378,7 @@ DeviceInfo deviceInfo(const Circuit& circuit, const OperatingPoint& op, int elem
             add("Vout", volts[2], "V");
             add("Iout", op.sourceCurrents[(size_t)element], "A");
             add("incremental gain", tf.slope, "V/V");
-            info.region = tf.slope > 0.01 * e.opamp.gain ? "linear" : "saturated";
+            info.region = !e.opamp.limited ? "gain stage" : tf.slope > 0.01 * e.opamp.gain ? "linear" : "saturated";
             break;
         }
         default:
@@ -1365,18 +1470,7 @@ TransientResult solveTransient(const Circuit& circuit, const TransientSettings& 
     if (settings.start <= 0.0)
         record(0.0);
 
-    double previous = 0.0;
-    size_t counted = 0;
-    for (size_t n = 0; n < grid.size(); ++n)
-    {
-        const auto t = grid[n];
-        const auto h = t - previous;
-        int its = 0;
-        if (!newton(circuit, layout, options, Mode::Transient, x, t, h, 1.0, state, its, result.error))
-        {
-            result.error = "Transient failed at t = " + formatValue(t, "s") + ": " + result.error;
-            return result;
-        }
+    auto updateState = [&](double h) {
         for (size_t i = 0; i < parts.size(); ++i)
         {
             const auto& e = parts[i];
@@ -1392,6 +1486,39 @@ TransientResult solveTransient(const Circuit& circuit, const TransientSettings& 
                 state.i[i] = x[(size_t)layout.branch[i]];
                 state.v[i] = nodeVoltage(x, e.nodes[0]) - nodeVoltage(x, e.nodes[1]);
             }
+        }
+    };
+    // One step from -> to; where Newton fails the interval is halved (up to 2^12 pieces).
+    std::function<bool(double, double, int)> advance = [&](double from, double to, int depth) {
+        const auto savedX = x;
+        const auto savedState = state;
+        int its = 0;
+        std::string error;
+        if (newton(circuit, layout, options, Mode::Transient, x, to, to - from, 1.0, state, its, error))
+        {
+            updateState(to - from);
+            return true;
+        }
+        x = savedX;
+        state = savedState;
+        if (depth >= 12)
+        {
+            result.error = error;
+            return false;
+        }
+        const auto mid = 0.5 * (from + to);
+        return advance(from, mid, depth + 1) && advance(mid, to, depth + 1);
+    };
+
+    double previous = 0.0;
+    size_t counted = 0;
+    for (size_t n = 0; n < grid.size(); ++n)
+    {
+        const auto t = grid[n];
+        if (!advance(previous, t, 0))
+        {
+            result.error = "Transient failed at t = " + formatValue(t, "s") + ": " + result.error;
+            return result;
         }
         previous = t;
         if (t >= settings.start)
@@ -1854,6 +1981,55 @@ PoleZeroResult solvePoleZero(const Circuit& circuit, Node outPlus, Node outMinus
     if (outMinus != 0) az[n][(size_t)idx(outMinus)] -= 1.0;
     if (!pencilRoots(az, bz, result.zeros, result.error))
         return result;
+
+    // A pole and a zero at the same place are a mode this input does not excite or this
+    // output does not see (another part of the circuit): they cancel out of H(s).
+    for (auto z = result.zeros.begin(); z != result.zeros.end();)
+    {
+        auto match = std::find_if(result.poles.begin(), result.poles.end(), [&](const Complex& p) {
+            return std::abs(p - *z) <= 1e-6 * std::max(std::abs(p), 1e-3);
+        });
+        if (match != result.poles.end())
+        {
+            result.poles.erase(match);
+            z = result.zeros.erase(z);
+            ++result.cancelled;
+        }
+        else
+            ++z;
+    }
+
+    // Keep only zeros where H(s) really vanishes. A multiple zero at infinity can
+    // surface as a ring of large spurious roots; H is not small there.
+    {
+        std::vector<Complex> b((size_t)ss.layout.size, 0.0);
+        if (source.type == Element::Type::VoltageSource)
+            b[(size_t)ss.layout.branch[(size_t)inputSource]] = 1.0;
+        else
+        {
+            if (source.nodes[0] != 0) b[(size_t)idx(source.nodes[0])] -= 1.0;
+            if (source.nodes[1] != 0) b[(size_t)idx(source.nodes[1])] += 1.0;
+        }
+        auto h = [&](Complex s) {
+            Matrix<Complex> y(n, std::vector<Complex>(n));
+            for (size_t i = 0; i < n; ++i)
+                for (size_t j = 0; j < n; ++j)
+                    y[i][j] = ss.g[i][j] + s * ss.c[i][j];
+            std::vector<Complex> x;
+            if (!solveDense(y, b, x))
+                return std::numeric_limits<double>::infinity();
+            return std::abs(outputOf(x, outPlus, outMinus));
+        };
+        double slowest = 0.0;
+        for (const auto& p : result.poles)
+            if (std::abs(p) > 0.0) slowest = slowest == 0.0 ? std::abs(p) : std::min(slowest, std::abs(p));
+        result.zeros.erase(std::remove_if(result.zeros.begin(), result.zeros.end(), [&](const Complex& z) {
+            const auto d = 0.05 * std::max({ std::abs(z), slowest, 1e-3 });
+            const auto at = h(z);
+            const auto around = std::min(h(z + d), h(z - d));
+            return !(at <= 0.05 * around);
+        }), result.zeros.end());
+    }
 
     const auto tf = solveTransferFunction(circuit, outPlus, outMinus, inputSource, options);
     result.dcGain = tf.ok ? tf.gain : 0.0;

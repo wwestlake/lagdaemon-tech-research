@@ -85,6 +85,7 @@ struct OpAmpModel
 {
     double gain = 1e5;
     double railDrop = 1.5;         // output stays this far inside the rails
+    bool limited = true;           // false: a linear gain stage (the rails are applied by a later stage)
 };
 
 struct Element
@@ -291,6 +292,7 @@ struct PoleZeroResult
     std::vector<std::complex<double>> poles; // rad/s
     std::vector<std::complex<double>> zeros; // rad/s
     double dcGain = 0.0;
+    int cancelled = 0; // coincident pole-zero pairs removed (modes outside this transfer function)
 };
 
 struct FourierResult

@@ -68,7 +68,16 @@ signal to stop and just build the Windows version.
 - Schematic layout/routing changes are checked with the headless
   `schematic_preview` tool (all quality metrics stay zero) before the app.
 - Drive the in-app agent through its local API
-  (`%APPDATA%\DjehutiElectronicsLabgent-api.json`), not by clicking the UI.
+  (`%APPDATA%\DjehutiElectronicsLab\agent-api.json`), not by clicking the UI.
+- **No demos.** Every control and tool works on the user's actual diagram with
+  parameters the user (or agent) chooses. No hardcoded fixed-value "design"
+  buttons, canned results, or stubs that print "next pass will..." in place of
+  the feature. Nothing changes a part value as a side effect of running,
+  viewing or analysing. (A "Run 10 Hz / 8 Ohm HPF" button wired to the
+  Simulation tab silently overwrote the user's L1 on every press, 2026-10-04.)
+- Simulator/analytics changes (`CircuitSolver`, `SignalMeasure`, `Analytics`)
+  get a check in `tools/solver_tests` with the expected value worked out from
+  the analytic formula first, and the whole suite passes before the app build.
 - Current state and plan: `prototype/docs/HANDOFF_SCHEMATIC_HIERARCHY.md`.
 
 ## Credentials

@@ -529,6 +529,85 @@ int main()
         check("measure frequency (Hz)", signal_measure::measure(rq, t, sq).value, 1000.0, 1e-3);
     }
 
+    // 20. Convergence (junction limiting, gmin stepping, transient step halving).
+    //  CE stage, 12 V, 47k/10k divider, 4.7k collector, 1k emitter, beta 100, VAF 100:
+    //  Ic = 1.326 mA (the bench value), reached directly by Newton in a few dozen iterations.
+    //  Diode clipper driven by 5 V peak through 1k: clips near +/-0.7 V, transient completes.
+    {
+        Circuit c;
+        auto vcc = c.addNode(), b = c.addNode(), col = c.addNode(), em = c.addNode();
+        c.addVoltageSource("VCC", vcc, 0, dc(12.0));
+        c.addResistor("RB1", vcc, b, 47e3);
+        c.addResistor("RB2", b, 0, 10e3);
+        c.addResistor("RC", vcc, col, 4.7e3);
+        c.addResistor("RE", em, 0, 1e3);
+        BjtModel m; m.earlyVoltage = 100.0;
+        const auto q = c.addBjt("Q1", true, col, b, em, m);
+        const auto op = solveOperatingPoint(c);
+        checkTrue("CE bias converges", op.ok, op.error);
+        check("CE bias Ic (A)", op.ok ? terminalCurrents(c, op, q)[0] : 0.0, 1.326e-3, 2e-6);
+        checkTrue("CE bias Newton iterations < 60", op.iterations < 60, "(" + std::to_string(op.iterations) + ")");
+
+        Circuit k;
+        auto in = k.addNode(), out = k.addNode();
+        k.addVoltageSource("V1", in, 0, sine(5.0, 1000.0));
+        k.addResistor("R", in, out, 1000.0);
+        DiodeModel d; d.saturationCurrent = 2.52e-9; d.emission = 1.752;
+        k.addDiode("D1", out, 0, d);
+        k.addDiode("D2", 0, out, d);
+        const auto tr = solveTransient(k, 5e-3, 5e-6, {}, 1 << 20);
+        checkTrue("clipper transient completes", tr.ok, tr.error);
+        double peak = 0.0;
+        for (const auto& s : tr.voltages) peak = std::max(peak, s[(size_t)out]);
+        checkTrue("clipper clips between 0.6 and 0.9 V", peak > 0.6 && peak < 0.9, "(" + std::to_string(peak) + ")");
+    }
+
+    // 21. Pole-zero cancellation: an RC low-pass driven by V1 and an unrelated RC elsewhere.
+    //     H = V(out)/V1 has the one pole -1000 rad/s; the other RC's mode cancels.
+    {
+        Circuit c;
+        auto in = c.addNode(), out = c.addNode(), other = c.addNode(), node = c.addNode();
+        const auto v1 = c.addVoltageSource("V1", in, 0, dc(0.0));
+        c.addResistor("R", in, out, 1000.0);
+        c.addCapacitor("C", out, 0, 1e-6);
+        c.addVoltageSource("V2", other, 0, dc(1.0));
+        c.addResistor("R2", other, node, 2000.0);
+        c.addCapacitor("C2", node, 0, 1e-6);
+        const auto pz = solvePoleZero(c, out, 0, v1);
+        checkTrue("PZ with an unrelated mode: 1 pole, 0 zeros", pz.ok && pz.poles.size() == 1 && pz.zeros.empty(),
+                  "(" + std::to_string(pz.poles.size()) + " poles, " + std::to_string(pz.zeros.size()) + " zeros, " + std::to_string(pz.cancelled) + " cancelled)");
+        check("PZ cancelled pairs", (double)pz.cancelled, 1.0, 0.0);
+        if (!pz.poles.empty()) check("PZ remaining pole (rad/s)", pz.poles[0].real(), -1000.0, 1e-3);
+    }
+
+    // 22. Op amp macro-model (gain stage -> dominant pole -> rail-limited output), A0 = 200k,
+    //     GBW = 1 MHz, +/-15 V, as an inverting x-1 amplifier (10k/10k) at 1 kHz, 1 V peak in:
+    //     A(j 1 kHz) = A0/(1 + j f/fp) ~ -j1000 (fp = 5 Hz), noise gain 2:
+    //     |Vout| = 1/|1 + 2/(-j1000)| = 0.999998 V peak, undistorted.
+    {
+        Circuit c;
+        auto in = c.addNode(), inv = c.addNode(), out = c.addNode(), vp = c.addNode(), vn = c.addNode();
+        auto stage = c.addNode(), pole = c.addNode();
+        c.addVoltageSource("V1", in, 0, sine(1.0, 1000.0));
+        c.addVoltageSource("VP", vp, 0, dc(15.0));
+        c.addVoltageSource("VN", 0, vn, dc(15.0));
+        c.addResistor("RI", in, inv, 10e3);
+        c.addResistor("RF", inv, out, 10e3);
+        OpAmpModel g; g.gain = 2e5; g.limited = false;
+        c.addOpAmp("U1", 0, inv, stage, vp, vn, g);
+        c.addResistor("U1.rp", stage, pole, 1e3);
+        c.addCapacitor("U1.cp", pole, 0, 1.0 / (2.0 * 3.14159265358979 * (1e6 / 2e5) * 1e3));
+        OpAmpModel o; o.gain = 1.0;
+        c.addOpAmp("U1.out", pole, 0, out, vp, vn, o);
+        const auto tr = solveTransient(c, 6e-3, 2e-6, {}, 1 << 20);
+        checkTrue("op amp macro transient completes", tr.ok, tr.error);
+        std::vector<double> vo;
+        for (const auto& s : tr.voltages) vo.push_back(s[(size_t)out]);
+        const auto fr = fourier(tr.time, vo, 1000.0, 5, 1);
+        check("op amp macro |Vout| at 1 kHz (V)", fr.ok ? fr.magnitude[0] : 0.0, 0.999998, 1e-4);
+        checkTrue("op amp macro THD < 0.05 %", fr.ok && fr.thdPercent < 0.05, "(" + std::to_string(fr.thdPercent) + ")");
+    }
+
     std::printf("\n%s: %d failure(s)\n", failures == 0 ? "ALL PASSED" : "FAILED", failures);
     return failures == 0 ? 0 : 1;
 }

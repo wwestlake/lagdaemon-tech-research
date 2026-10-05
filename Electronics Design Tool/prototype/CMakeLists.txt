@@ -87,6 +87,12 @@ target_sources(DjehutiElectronicsLab PRIVATE
     Source/Preferences.cpp
     Source/CircuitSolver.h
     Source/CircuitSolver.cpp
+    Source/SignalMeasure.h
+    Source/SignalMeasure.cpp
+    Source/Analytics.h
+    Source/Analytics.cpp
+    Source/AnalyticsPanel.h
+    Source/AnalyticsPanel.cpp
     Source/SchematicSymbols.h
     Source/SchematicSymbols.cpp
     Source/SchematicLayout.h
@@ -126,6 +132,7 @@ juce_generate_juce_header(DjehutiElectronicsLab)
 add_executable(CircuitSolverTests
     tools/solver_tests/SolverTests.cpp
     Source/CircuitSolver.cpp
+    Source/SignalMeasure.cpp
 )
 set_target_properties(CircuitSolverTests PROPERTIES
     OUTPUT_NAME "circuit_solver_tests"

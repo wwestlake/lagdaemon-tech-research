@@ -6,6 +6,8 @@
 #include "SchematicRouter.h"
 #include "PartCatalog.h"
 #include "CircuitSolver.h"
+#include "Analytics.h"
+#include "AnalyticsPanel.h"
 #include "Preferences.h"
 
 #include <ai_provider/AiConfig.h>
@@ -212,21 +214,6 @@ const SchematicToolSpec schematicToolSpecs[] = {
         R"({"type":"object","properties":{"name":{"type":"string","description":"Diagram name."}},"required":["name"],"additionalProperties":false})"
     },
     {
-        "simulation_operating_point",
-        "Solve the DC operating point of the whole circuit with the built-in simulator: every net's voltage (with the pins on it) and each voltage source's output current.",
-        R"({"type":"object","properties":{},"additionalProperties":false})"
-    },
-    {
-        "simulation_transient",
-        "Run a time-domain simulation with the built-in simulator and report min/max/peak-to-peak/mean/RMS/frequency of each probe over the second half of the run (past start-up). Writes transient.csv to the diagram's outputs.",
-        R"({"type":"object","properties":{"stop":{"type":"string","description":"Simulated time, such as 10m for 10 ms."},"step":{"type":"string","description":"Optional time step; defaults to stop/2000."},"probes":{"type":"array","items":{"type":"string"},"description":"Pin labels to measure, such as RL1.1 or Q1.E."}},"required":["stop","probes"],"additionalProperties":false})"
-    },
-    {
-        "simulation_ac",
-        "Run a small-signal AC sweep with the built-in simulator and report the gain (dB) and phase of output/input versus frequency, the peak gain, and the -3 dB frequencies. Writes ac_sweep.csv to the diagram's outputs.",
-        R"({"type":"object","properties":{"input":{"type":"string","description":"Input pin label, such as V1.+ or C1.1."},"output":{"type":"string","description":"Output pin label, such as RL1.1."},"start":{"type":"string","description":"Start frequency, default 10."},"stop":{"type":"string","description":"Stop frequency, default 100k."},"pointsPerDecade":{"type":"string","description":"Default 20."}},"required":["input","output"],"additionalProperties":false})"
-    },
-    {
         "instrument_read",
         "Read an instrument node exactly as its window shows it: oscilloscope channel Vpp/Vrms/mean/frequency at its time/div and trigger, multimeter reading in its function (DC V, AC V, DC A, Ohms), or frequency analyzer peak gain and -3 dB points. Change instrument settings with schematic_set_parameters.",
         R"({"type":"object","properties":{"refdes":{"type":"string","description":"Instrument reference designator, such as SCOPE1, DMM1, or FRA1."}},"required":["refdes"],"additionalProperties":false})"
@@ -273,9 +260,108 @@ const SchematicToolSpec schematicToolSpecs[] = {
     },
 };
 
+// Analytics tools: one per analysis, with every setting from the same field
+// table the Analytics window builds its form from.
+struct ToolSpecText
+{
+    juce::String name, description, schema;
+};
+
+const std::vector<ToolSpecText>& analyticsToolSpecs()
+{
+    static const auto specs = [] {
+        std::vector<ToolSpecText> list;
+        auto stringProperty = [](const juce::String& description) {
+            auto* p = new juce::DynamicObject();
+            p->setProperty("type", "string");
+            p->setProperty("description", description);
+            return juce::var(p);
+        };
+        auto schemaOf = [](juce::DynamicObject* properties, const juce::StringArray& required = {}) {
+            auto* schema = new juce::DynamicObject();
+            schema->setProperty("type", "object");
+            schema->setProperty("properties", juce::var(properties));
+            if (!required.isEmpty())
+            {
+                juce::Array<juce::var> names;
+                for (const auto& r : required) names.add(r);
+                schema->setProperty("required", names);
+            }
+            schema->setProperty("additionalProperties", false);
+            return juce::JSON::toString(juce::var(schema), true);
+        };
+        for (const auto& a : analytics::analyses())
+        {
+            auto* props = new juce::DynamicObject();
+            for (const auto& f : analytics::fieldsFor(a.id))
+            {
+                juce::String d = f.label + (f.unit.isNotEmpty() ? " (" + f.unit + ")" : juce::String()) + ".";
+                if (f.help.isNotEmpty()) d << " " << f.help;
+                switch (f.kind)
+                {
+                    case analytics::FieldKind::Net: d << " A net name from analytics_list, or GND."; break;
+                    case analytics::FieldKind::Nets: d << " Net names and I(part) currents, comma separated."; break;
+                    case analytics::FieldKind::Source: d << " Reference designator of an independent source, such as V1."; break;
+                    case analytics::FieldKind::Target: d << " part.parameter (R1.value, V1.dc, Q1.beta, C2.value) or TEMP; None for no step."; break;
+                    default: break;
+                }
+                if (!f.options.isEmpty()) d << " One of: " << f.options.joinIntoString(", ") << ".";
+                if (f.defaultValue.isNotEmpty()) d << " Default " << f.defaultValue << ".";
+                props->setProperty(juce::Identifier(f.key), stringProperty(d));
+            }
+            list.push_back({ "analytics_" + a.key,
+                             a.title + ": " + a.description + " Runs on the open diagram exactly as it is (never changes a part), "
+                             "shows the result in the Analytics window, and returns the summary, tables, trace summaries and CSV files. Every setting is optional.",
+                             schemaOf(props) });
+        }
+        list.push_back({ "analytics_list",
+                         "List what can be analysed on the open diagram: every analysis with its settings (key, label, default, choices), the nets, the independent sources, and the part parameters that can be swept or stepped.",
+                         schemaOf(new juce::DynamicObject()) });
+        {
+            auto* props = new juce::DynamicObject();
+            juce::StringArray kinds;
+            for (auto k : signal_measure::allKinds()) kinds.add(signal_measure::kindName(k));
+            props->setProperty("trace", stringProperty("Trace name from the latest result, such as V(out) or I(R1). For phase or gain margin use the magnitude trace."));
+            props->setProperty("measurement", stringProperty("One of: " + kinds.joinIntoString(", ") + "."));
+            props->setProperty("from", stringProperty("Optional window start on the x axis (time, frequency or swept value)."));
+            props->setProperty("to", stringProperty("Optional window end."));
+            props->setProperty("at", stringProperty("For Value at: the x position."));
+            props->setProperty("level", stringProperty("For When crosses: the level."));
+            props->setProperty("nth", stringProperty("For When crosses: which crossing, default 1."));
+            props->setProperty("edge", stringProperty("For When crosses: Rising, Falling or Either."));
+            props->setProperty("low_percent", stringProperty("Rise/fall lower threshold, default 10."));
+            props->setProperty("high_percent", stringProperty("Rise/fall upper threshold, default 90."));
+            props->setProperty("band_percent", stringProperty("Settling band, default 2."));
+            list.push_back({ "analytics_measure",
+                             "Measure a trace of the latest Analytics result, like SPICE .MEAS: min, max, peak-to-peak, average, RMS, integral, value at, crossing time, rise/fall time, overshoot, settling time, frequency, period, -3 dB bandwidth and corners, unity-gain frequency, phase margin, gain margin. The measurement is also listed in the Analytics window.",
+                             schemaOf(props, { "trace", "measurement" }) });
+        }
+        {
+            auto* props = new juce::DynamicObject();
+            props->setProperty("index", stringProperty("0 = latest (default), 1 = the one before, and so on."));
+            list.push_back({ "analytics_result", "Return an Analytics result from this session's history again, with its settings, summary, tables and traces.", schemaOf(props) });
+        }
+        {
+            auto* props = new juce::DynamicObject();
+            props->setProperty("analysis", stringProperty("Analysis key: operating_point, dc_sweep, ac, transient, fourier, noise, transfer_function, sensitivity, pole_zero, temperature, monte_carlo."));
+            auto* settings = new juce::DynamicObject();
+            settings->setProperty("type", "object");
+            settings->setProperty("description", "Optional settings to fill in, same keys as the analytics_<analysis> tool.");
+            settings->setProperty("additionalProperties", juce::var(new juce::DynamicObject()));
+            props->setProperty("settings", juce::var(settings));
+            list.push_back({ "analytics_open", "Show the Analytics window with an analysis selected and, optionally, its settings filled in, without running it.", schemaOf(props, { "analysis" }) });
+        }
+        return list;
+    }();
+    return specs;
+}
+
 bool isSchematicTool(const juce::String& name)
 {
     for (const auto& spec : schematicToolSpecs)
+        if (name == spec.name)
+            return true;
+    for (const auto& spec : analyticsToolSpecs())
         if (name == spec.name)
             return true;
     return false;
@@ -2775,6 +2861,45 @@ public:
                     if (instance.symbolId == "ground_bus") keptGroundRail = true;
                 }
 
+        // Net labels the user named survive: each comes back beside a pin of
+        // its net (instrument probe labels are the layout's own and are rebuilt).
+        struct KeptLabel { juce::String name, net; int partSlot = -1, pin = -1; };
+        std::vector<KeptLabel> keptLabels;
+        {
+            std::set<juce::String> instrumentRefdes;
+            for (const auto& instance : instances)
+                if (schematic::isInstrumentSymbol(instance.symbolId))
+                    instrumentRefdes.insert(instance.refdes);
+            std::set<juce::String> seen;
+            for (int i = 0; i < (int)instances.size(); ++i)
+            {
+                const auto& instance = instances[(size_t)i];
+                const auto name = instance.busName.trim();
+                if (instance.sheet != currentSheet || instance.symbolId != "net_label" || name.isEmpty() || seen.count(name) != 0)
+                    continue;
+                if (name.containsChar('.') && instrumentRefdes.count(name.upToFirstOccurrenceOf(".", false, false)) != 0)
+                    continue;
+                KeptLabel kept { name, netFor({ i, 0 }, netNames) };
+                for (size_t k = 0; k < parts.size() && kept.partSlot < 0; ++k)
+                {
+                    if (schematic::isInstrumentSymbol(parts[k].symbol.id))
+                        continue;
+                    for (int p = 0; p < (int)parts[k].symbol.pins.size(); ++p)
+                        if (netFor({ partInstance[k], p }, netNames) == kept.net)
+                        {
+                            kept.partSlot = (int)k;
+                            kept.pin = p;
+                            break;
+                        }
+                }
+                if (kept.partSlot >= 0)
+                {
+                    seen.insert(name);
+                    keptLabels.push_back(kept);
+                }
+            }
+        }
+
         // This sheet's net markers, wires and junctions are rebuilt; every
         // other sheet is left exactly as it is.
         std::set<int> deadInstances, deadJunctions;
@@ -2825,6 +2950,31 @@ public:
 
         for (const auto& [markerIndex, pin] : markerWires)
             wires.push_back({ WireNode::forPin({ markerIndex, 0 }), WireNode::forPin(pin) });
+
+        for (const auto& kept : keptLabels)
+        {
+            const PinRef pin { partIndex[(size_t)kept.partSlot], kept.pin };
+            auto direction = nodeLeadDirection(WireNode::forPin(pin));
+            if (direction.getDistanceFromOrigin() < 0.5f)
+                direction = { 1.0f, 0.0f };
+            Instance label;
+            label.symbolId = "net_label";
+            const auto prefix = schematic::refdesPrefixFor("net_label");
+            label.refdes = prefix + juce::String(++nextNumber[prefix]);
+            label.busName = kept.name;
+            label.value = kept.name;
+            label.family = familyFor("net_label");
+            label.position = snapToGrid(pinPosition(pin) + direction * 96.0f + juce::Point<float>(direction.y, -direction.x) * 48.0f);
+            label.rotation = direction.x < -0.5f ? 180 : 0;
+            label.busLength = 0.0f;
+            label.sheet = currentSheet;
+            const auto netIndex = layoutNets.indexOf.find(kept.net);
+            if (netIndex != layoutNets.indexOf.end() && layoutNets.nets[(size_t)netIndex->second].kind == schematic::layout::NetKind::Signal)
+                labelsOnNet[netIndex->second].push_back((int)instances.size());
+            else
+                wires.push_back({ WireNode::forPin({ (int)instances.size(), 0 }), WireNode::forPin(pin) });
+            instances.push_back(label);
+        }
 
         // Signal nets: libavoid picks each net's tree and its junctions.
         std::vector<int> obstacleInstance;
@@ -5529,12 +5679,36 @@ private:
         };
         auto waveform = [&](const Instance& inst) {
             circuit_sim::Waveform w;
-            w.kind = partValue(inst, "waveform") == "Square" ? circuit_sim::Waveform::Kind::Square : circuit_sim::Waveform::Kind::Sine;
+            const auto kind = partValue(inst, "waveform");
+            using K = circuit_sim::Waveform::Kind;
+            w.kind = kind == "Square" ? K::Square : kind == "Pulse" ? K::Pulse : kind == "PWL" ? K::Pwl : kind == "Exp" ? K::Exp : K::Sine;
             w.amplitude = number(inst, "amplitude", 1.0);
             w.frequency = number(inst, "frequency", 1000.0);
             w.offset = number(inst, "offset", 0.0);
             w.phaseDegrees = number(inst, "phase", 0.0);
             w.duty = number(inst, "duty", 0.5);
+            w.pulsed = number(inst, "pulsed_value", 1.0);
+            w.delay = number(inst, "delay", 0.0);
+            w.rise = number(inst, "rise", 1e-9);
+            w.fall = number(inst, "fall", 1e-9);
+            w.width = number(inst, "width", 0.5e-3);
+            w.period = number(inst, "period", 1e-3);
+            w.tau1 = number(inst, "tau1", 1e-4);
+            w.delay2 = number(inst, "delay2", 1e-3);
+            w.tau2 = number(inst, "tau2", 1e-4);
+            if (w.kind == K::Pwl)
+            {
+                for (const auto& pair : juce::StringArray::fromTokens(partValue(inst, "pwl"), ",;", ""))
+                {
+                    const auto parts = juce::StringArray::fromTokens(pair.trim(), " \t", "");
+                    double t = 0.0, v = 0.0;
+                    if (parts.size() >= 2 && circuit_sim::parseValue(parts[0].toStdString(), t) && circuit_sim::parseValue(parts[1].toStdString(), v))
+                        if (w.points.empty() || t > w.points.back().first)
+                            w.points.push_back({ t, v });
+                }
+                if (w.points.empty())
+                    sim.warnings.add(inst.refdes + ": the PWL points are empty; use pairs like 0 0, 1m 5, 2m 5.");
+            }
             w.acMagnitude = w.amplitude != 0.0 ? w.amplitude : 1.0;
             return w;
         };
@@ -5550,7 +5724,10 @@ private:
             int element = -1;
 
             if (id == "resistor")
+            {
                 element = c.addResistor(name, node(i, "1"), node(i, "2"), number(inst, "value", 10e3));
+                c.elements()[(size_t)element].tc1 = number(inst, "tempco", 0.0) * 1e-6;
+            }
             else if (id == "potentiometer")
             {
                 const auto total = number(inst, "value", 10e3);
@@ -5587,9 +5764,12 @@ private:
                 circuit_sim::DiodeModel m;
                 m.saturationCurrent = number(inst, "saturation_current", 1e-14);
                 m.emission = number(inst, "emission", 1.0);
+                m.transitTime = number(inst, "transit_time", 0.0);
                 if (id == "zener_diode")
                     m.breakdownVoltage = number(inst, "value", 5.1);
                 element = c.addDiode(name, node(i, "A"), node(i, "K"), m);
+                if (const auto cj = number(inst, "cj0", 0.0); cj > 0.0)
+                    c.addCapacitor(name + ".cj", node(i, "A"), node(i, "K"), cj);
             }
             else if (id == "led")
             {
@@ -5634,14 +5814,38 @@ private:
                 circuit_sim::OpAmpModel m;
                 m.gain = number(inst, "gain", 2e5);
                 m.railDrop = number(inst, "headroom", 1.5);
-                element = c.addOpAmp(name, node(i, "IN+"), node(i, "IN-"), node(i, "OUT"), node(i, "V+"), node(i, "V-"), m);
+                const auto gbw = number(inst, "gbw", 1e6);
+                if (gbw > 0.0 && m.gain > 0.0)
+                {
+                    // Like a real op amp: a linear gain stage, the dominant pole at GBW / A0 on
+                    // the internal node, then an output stage that limits at the rails.
+                    const auto stage = c.addNode(), pole = c.addNode();
+                    auto gainStage = m;
+                    gainStage.limited = false;
+                    element = c.addOpAmp(name, node(i, "IN+"), node(i, "IN-"), stage, node(i, "V+"), node(i, "V-"), gainStage);
+                    c.addResistor(name + ".rp", stage, pole, 1e3);
+                    c.addCapacitor(name + ".cp", pole, 0, 1.0 / (2.0 * juce::MathConstants<double>::pi * (gbw / m.gain) * 1e3));
+                    circuit_sim::OpAmpModel output;
+                    output.gain = 1.0;
+                    output.railDrop = m.railDrop;
+                    c.addOpAmp(name + ".out", pole, 0, node(i, "OUT"), node(i, "V+"), node(i, "V-"), output);
+                    c.elements()[(size_t)c.find(name + ".rp")].noiseless = true;
+                }
+                else
+                    element = c.addOpAmp(name, node(i, "IN+"), node(i, "IN-"), node(i, "OUT"), node(i, "V+"), node(i, "V-"), m);
             }
             else if (id == "npn" || id == "pnp")
             {
                 circuit_sim::BjtModel m;
                 m.betaForward = number(inst, "beta", 100.0);
                 m.saturationCurrent = number(inst, "saturation_current", 1e-14);
+                m.earlyVoltage = number(inst, "early_voltage", 0.0);
+                m.transitTime = number(inst, "transit_time", 0.0);
                 element = c.addBjt(name, id == "npn", node(i, "C"), node(i, "B"), node(i, "E"), m);
+                if (const auto cje = number(inst, "cje", 0.0); cje > 0.0)
+                    c.addCapacitor(name + ".cje", node(i, "B"), node(i, "E"), cje);
+                if (const auto cjc = number(inst, "cjc", 0.0); cjc > 0.0)
+                    c.addCapacitor(name + ".cjc", node(i, "B"), node(i, "C"), cjc);
             }
             else if (id == "nmos" || id == "pmos")
             {
@@ -5650,6 +5854,10 @@ private:
                 m.transconductance = number(inst, "k", 20e-3);
                 m.lambda = number(inst, "lambda", 0.01);
                 element = c.addMosfet(name, id == "nmos", node(i, "D"), node(i, "G"), node(i, "S"), m);
+                if (const auto cgs = number(inst, "cgs", 0.0); cgs > 0.0)
+                    c.addCapacitor(name + ".cgs", node(i, "G"), node(i, "S"), cgs);
+                if (const auto cgd = number(inst, "cgd", 0.0); cgd > 0.0)
+                    c.addCapacitor(name + ".cgd", node(i, "G"), node(i, "D"), cgd);
             }
             else if (id == "njfet" || id == "pjfet")
             {
@@ -5678,13 +5886,15 @@ private:
                 element = c.addResistor(name, node(i, "1"), node(i, "2"), 0.01);
             else if (id == "oscilloscope_2ch")
             {
-                c.addResistor(name + "_ch1", node(i, "CH1"), node(i, "REF"), 10e6);
-                element = c.addResistor(name + "_ch2", node(i, "CH2"), node(i, "REF"), 10e6);
+                c.elements()[(size_t)c.addResistor(name + ".ch1", node(i, "CH1"), node(i, "REF"), 10e6)].noiseless = true;
+                element = c.addResistor(name + ".ch2", node(i, "CH2"), node(i, "REF"), 10e6);
+                c.elements()[(size_t)element].noiseless = true;
             }
             else if (id == "bode_analyzer")
             {
-                c.addResistor(name + "_in", node(i, "IN"), node(i, "REF"), 10e6);
-                element = c.addResistor(name + "_out", node(i, "OUT"), node(i, "REF"), 10e6);
+                c.elements()[(size_t)c.addResistor(name + ".in", node(i, "IN"), node(i, "REF"), 10e6)].noiseless = true;
+                element = c.addResistor(name + ".out", node(i, "OUT"), node(i, "REF"), 10e6);
+                c.elements()[(size_t)element].noiseless = true;
             }
             else if (id == "digital_multimeter")
             {
@@ -5693,7 +5903,10 @@ private:
                 else if (partValue(inst, "value") == "DC A")
                     element = c.addVoltageSource(name, node(i, "HI"), node(i, "LO"), dcWave(0.0));
                 else
-                    element = c.addResistor(name, node(i, "HI"), node(i, "LO"), 10e6);
+                {
+                    element = c.addResistor(name + ".in", node(i, "HI"), node(i, "LO"), 10e6);
+                    c.elements()[(size_t)element].noiseless = true;
+                }
             }
             else if (id.startsWith("logic_"))
                 sim.warnings.add(inst.refdes + " (" + parts::displayName(id) + ") is not simulated yet.");
@@ -5704,6 +5917,44 @@ private:
         return sim;
     }
 
+public:
+    // The circuit for SPICE analytics, with readable net names and the parts
+    // the user placed (instruments are loads, not analysis targets).
+    analytics::Netlist analyticsNetlist() const
+    {
+        auto sim = buildSimNetlist();
+        analytics::Netlist n;
+        n.circuit = sim.circuit;
+        n.warnings = sim.warnings;
+        const auto netNames = computeNetNames();
+        std::set<juce::String> used;
+        for (const auto& [net, node] : sim.nodeOfNet)
+        {
+            auto name = netDisplayName(net, netNames).trim();
+            if (name.isEmpty() || used.count(name.toLowerCase()) != 0)
+                name = net;
+            used.insert(name.toLowerCase());
+            n.nets.push_back({ name, node, pinsOnNet(net, netNames).joinIntoString(" ") });
+        }
+        std::sort(n.nets.begin(), n.nets.end(), [](const analytics::NetInfo& a, const analytics::NetInfo& b) {
+            const bool aRaw = a.name.startsWith("n") && a.name.substring(1).containsOnly("0123456789");
+            const bool bRaw = b.name.startsWith("n") && b.name.substring(1).containsOnly("0123456789");
+            if (aRaw != bRaw) return !aRaw;
+            if (aRaw) return a.name.substring(1).getIntValue() < b.name.substring(1).getIntValue();
+            return a.name.compareIgnoreCase(b.name) < 0;
+        });
+        for (const auto& inst : instances)
+        {
+            if (schematic::isInstrumentSymbol(inst.symbolId))
+                continue;
+            const auto found = sim.elementOfPart.find(inst.refdes);
+            if (found != sim.elementOfPart.end())
+                n.parts.push_back({ inst.refdes, inst.symbolId, found->second });
+        }
+        return n;
+    }
+
+private:
     // Pin label (R1.2, SCOPE1.CH1) -> solver node, or -1.
     int simNodeForLabel(const SimNetlist& sim, const juce::String& label, juce::String& error) const
     {
@@ -5786,152 +6037,6 @@ private:
         const auto folder = outputDirectory != nullptr ? outputDirectory() : juce::File::getSpecialLocation(juce::File::tempDirectory);
         folder.createDirectory();
         return folder.getChildFile(name);
-    }
-
-    juce::String runSimulationTool(const juce::String& name, const juce::var& args)
-    {
-        auto text = [&](const char* key) { return args.getProperty(key, {}).toString().trim(); };
-        auto warningsJson = [](const SimNetlist& sim) {
-            juce::StringArray quoted;
-            for (const auto& w : sim.warnings) quoted.add(quote(w));
-            return "[" + quoted.joinIntoString(", ") + "]";
-        };
-        const auto netNames = computeNetNames();
-
-        if (name == "simulation_operating_point")
-        {
-            auto sim = buildSimNetlist();
-            const auto op = circuit_sim::solveOperatingPoint(sim.circuit);
-            if (!op.ok)
-                return toolFailure(name, "DC operating point failed: " + juce::String(op.error));
-            juce::String nets = "[";
-            bool first = true;
-            for (const auto& [net, n] : sim.nodeOfNet)
-            {
-                nets << (first ? "" : ", ") << "{ \"net\": " << quote(netDisplayName(net, netNames))
-                     << ", \"voltage\": " << juce::String(op.voltages[(size_t)n], 6)
-                     << ", \"pins\": " << quote(pinsOnNet(net, netNames).joinIntoString(" ")) << " }";
-                first = false;
-            }
-            nets << "]";
-            juce::String currents = "[";
-            first = true;
-            for (const auto& [refdes, element] : sim.elementOfPart)
-            {
-                const auto type = sim.circuit.elements()[(size_t)element].type;
-                if (type != circuit_sim::Element::Type::VoltageSource)
-                    continue;
-                // Report current delivered out of the + terminal.
-                currents << (first ? "" : ", ") << "{ \"part\": " << quote(refdes) << ", \"currentOutOfPlus\": "
-                         << juce::String(-op.sourceCurrents[(size_t)element], 9) << " }";
-                first = false;
-            }
-            currents << "]";
-            return "{ \"ok\": true, \"tool\": " + quote(name) + ", \"nets\": " + nets + ", \"sourceCurrents\": " + currents
-                 + ", \"warnings\": " + warningsJson(sim) + " }";
-        }
-
-        if (name == "simulation_transient")
-        {
-            auto sim = buildSimNetlist();
-            const auto stop = parseQuantity(text("stop"), 0.0);
-            if (stop <= 0.0)
-                return toolFailure(name, "stop must be a positive time such as 10m.");
-            const auto step = text("step").isNotEmpty() ? parseQuantity(text("step"), stop / 2000.0) : stop / 2000.0;
-            juce::StringArray probes;
-            if (const auto* list = args.getProperty("probes", {}).getArray())
-                for (const auto& p : *list) probes.add(p.toString().trim());
-            std::vector<int> probeNodes;
-            for (const auto& probe : probes)
-            {
-                juce::String error;
-                const auto n = simNodeForLabel(sim, probe, error);
-                if (n < 0)
-                    return toolFailure(name, error);
-                probeNodes.push_back(n);
-            }
-            const auto tr = circuit_sim::solveTransient(sim.circuit, stop, step);
-            if (!tr.ok)
-                return toolFailure(name, "Transient failed: " + juce::String(tr.error));
-
-            const auto csv = simulationOutputFile("transient.csv");
-            juce::String table = "time";
-            for (const auto& p : probes) table << "," << p;
-            table << "\n";
-            for (size_t s = 0; s < tr.time.size(); ++s)
-            {
-                table << juce::String(tr.time[s], 9);
-                for (auto n : probeNodes) table << "," << juce::String(tr.voltages[s][(size_t)n], 6);
-                table << "\n";
-            }
-            csv.replaceWithText(table);
-
-            juce::String stats = "[";
-            for (size_t k = 0; k < probes.size(); ++k)
-            {
-                std::vector<double> v;
-                for (const auto& sample : tr.voltages) v.push_back(sample[(size_t)probeNodes[k]]);
-                const auto s = statsOf(tr.time, v, stop * 0.5); // second half: past the start-up
-                stats << (k == 0 ? "" : ", ") << "{ \"probe\": " << quote(probes[(int)k])
-                      << ", \"min\": " << juce::String(s.minimum, 6) << ", \"max\": " << juce::String(s.maximum, 6)
-                      << ", \"peakToPeak\": " << juce::String(s.maximum - s.minimum, 6) << ", \"mean\": " << juce::String(s.mean, 6)
-                      << ", \"rms\": " << juce::String(s.rms, 6) << ", \"frequencyHz\": " << juce::String(s.frequency, 6) << " }";
-            }
-            stats << "]";
-            return "{ \"ok\": true, \"tool\": " + quote(name) + ", \"stop\": " + juce::String(stop, 9) + ", \"step\": " + juce::String(step, 9)
-                 + ", \"statsOverSecondHalf\": " + stats + ", \"csv\": " + quote(csv.getFullPathName()) + ", \"warnings\": " + warningsJson(sim) + " }";
-        }
-
-        if (name == "simulation_ac")
-        {
-            auto sim = buildSimNetlist();
-            juce::String error;
-            const auto in = simNodeForLabel(sim, text("input"), error);
-            if (in < 0) return toolFailure(name, "input: " + error);
-            const auto out = simNodeForLabel(sim, text("output"), error);
-            if (out < 0) return toolFailure(name, "output: " + error);
-            const auto start = parseQuantity(text("start"), 10.0);
-            const auto stop = parseQuantity(text("stop"), 100e3);
-            const auto ppd = text("pointsPerDecade").isNotEmpty() ? text("pointsPerDecade").getIntValue() : 20;
-            const auto ac = circuit_sim::solveAc(sim.circuit, start, stop, ppd);
-            if (!ac.ok)
-                return toolFailure(name, "AC sweep failed: " + juce::String(ac.error));
-
-            std::vector<double> gainDb, phase;
-            for (const auto& v : ac.voltages)
-            {
-                const auto h = std::abs(v[(size_t)in]) > 1e-15 ? v[(size_t)out] / v[(size_t)in] : std::complex<double>(0.0);
-                gainDb.push_back(20.0 * std::log10(std::max(1e-15, std::abs(h))));
-                phase.push_back(std::arg(h) * 180.0 / juce::MathConstants<double>::pi);
-            }
-            const auto peak = *std::max_element(gainDb.begin(), gainDb.end());
-            juce::StringArray corners;
-            for (size_t k = 1; k < gainDb.size(); ++k)
-            {
-                const auto a = gainDb[k - 1] - (peak - 3.0103), b = gainDb[k] - (peak - 3.0103);
-                if ((a < 0) != (b < 0))
-                {
-                    const auto f = std::exp(std::log(ac.frequency[k - 1]) + (std::log(ac.frequency[k]) - std::log(ac.frequency[k - 1])) * (a / (a - b)));
-                    corners.add(juce::String(f, 4));
-                }
-            }
-            const auto csv = simulationOutputFile("ac_sweep.csv");
-            juce::String table = "frequency,gain_db,phase_deg\n";
-            for (size_t k = 0; k < gainDb.size(); ++k)
-                table << juce::String(ac.frequency[k], 6) << "," << juce::String(gainDb[k], 4) << "," << juce::String(phase[k], 3) << "\n";
-            csv.replaceWithText(table);
-            juce::String rows = "[";
-            const auto stride = std::max<size_t>(1, gainDb.size() / 12);
-            for (size_t k = 0; k < gainDb.size(); k += stride)
-                rows << (k == 0 ? "" : ", ") << "{ \"hz\": " << juce::String(ac.frequency[k], 4) << ", \"db\": " << juce::String(gainDb[k], 3)
-                     << ", \"deg\": " << juce::String(phase[k], 2) << " }";
-            rows << "]";
-            return "{ \"ok\": true, \"tool\": " + quote(name) + ", \"peakGainDb\": " + juce::String(peak, 4)
-                 + ", \"minus3dBFrequenciesHz\": [" + corners.joinIntoString(", ") + "], \"samples\": " + rows
-                 + ", \"csv\": " + quote(csv.getFullPathName()) + ", \"warnings\": " + warningsJson(sim) + " }";
-        }
-
-        return toolFailure(name, "Unknown simulation tool.");
     }
 
 public:
@@ -6328,7 +6433,9 @@ public:
                 first = false;
             }
         }
+        const auto valueOf = [&](const juce::String& key) { return partValue(instance, key); };
         for (const auto& spec : parts::paramsFor(instance.symbolId))
+            if (parts::isShown(spec, valueOf))
         {
             list << (first ? "" : ", ") << "{ \"key\": " << quote(spec.key) << ", \"label\": " << quote(spec.label)
                  << ", \"value\": " << quote(partValue(instance, spec.key));
@@ -6764,8 +6871,6 @@ public:
 
     juce::String runSchematicTool(const juce::String& name, const juce::var& args)
     {
-        if (name == "simulation_operating_point" || name == "simulation_transient" || name == "simulation_ac")
-            return runSimulationTool(name, args);
         if (name == "instrument_read")
             return instrumentReadJson(args.getProperty("refdes", {}).toString());
         auto arg = [&](const char* key) { return args.getProperty(key, {}).toString().trim(); };
@@ -8705,6 +8810,10 @@ public:
         viewport.setScrollBarsShown(true, false);
         viewport.setScrollBarThickness(10);
         addAndMakeVisible(viewport);
+        saveButton.setTooltip("Apply the edited fields to the part (Enter in a field does the same)");
+        saveButton.onClick = [this] { commitPending(); };
+        addAndMakeVisible(saveButton);
+        updateSaveButton();
         startTimerHz(2);
         rebuild();
     }
@@ -8716,15 +8825,28 @@ public:
             refreshValues();
             return;
         }
+        commitPending();
         current = refdes;
         rebuild();
+    }
+
+    // Applies every edited text field that has not been applied yet.
+    void commitPending()
+    {
+        for (size_t i = 0; i < rows.size(); ++i)
+            if (rows[i].dirty)
+                commitField(i);
+        updateSaveButton();
     }
 
     void paint(juce::Graphics& g) override { g.fillAll(juce::Colour(0xff151a20)); }
 
     void resized() override
     {
-        viewport.setBounds(getLocalBounds());
+        auto area = getLocalBounds();
+        auto top = area.removeFromTop(38).reduced(10, 6);
+        saveButton.setBounds(top.removeFromRight(110));
+        viewport.setBounds(area);
         layout();
     }
 
@@ -8743,7 +8865,56 @@ private:
         std::unique_ptr<juce::Component> control;
         std::unique_ptr<juce::Label> hint;
         int height = 50;
+        bool dirty = false;    // text edited but not applied yet
     };
+
+    juce::TextButton saveButton { "Save" };
+
+    bool anyDirty() const
+    {
+        for (const auto& row : rows)
+            if (row.dirty) return true;
+        return false;
+    }
+
+    void updateSaveButton()
+    {
+        const auto dirty = anyDirty();
+        saveButton.setEnabled(dirty);
+        saveButton.setButtonText(dirty ? "Save changes" : "Saved");
+        saveButton.setColour(juce::TextButton::buttonColourId, dirty ? juce::Colour(0xff2f7f73) : juce::Colour(0xff1d2731));
+        saveButton.setColour(juce::TextButton::textColourOffId, dirty ? juce::Colours::white : juce::Colour(0xff71808c));
+    }
+
+    // The value a text row stands for in the model.
+    juce::String storedValue(const Row& row) const
+    {
+        if (canvas == nullptr) return {};
+        if (row.key == "#refdes") return current;
+        if (row.key.startsWith("#pin:")) return row.key.fromFirstOccurrenceOf("#pin:", false, false);
+        if (row.key == "#blockname") return canvas->blockName(current);
+        return canvas->instrumentSetting(current, row.key);
+    }
+
+    // Wires a text row: Enter applies it, edits light up Save.
+    void wireTextRow(juce::TextEditor* editor, size_t rowIndex, bool validate)
+    {
+        editor->onReturnKey = [this, rowIndex] { commitField(rowIndex); updateSaveButton(); };
+        editor->onTextChange = [this, rowIndex, validate] {
+            auto& r = rows[rowIndex];
+            const auto text = dynamic_cast<juce::TextEditor*>(r.control.get())->getText();
+            r.dirty = text.trim() != storedValue(r);
+            if (validate)
+            {
+                juce::String error;
+                const auto ok = parts::validate(r.spec, text, error);
+                setHint(r, ok ? describe(r.spec, text) + (r.dirty ? "   (not saved)" : juce::String()) : error, !ok);
+            }
+            else
+                setHint(r, r.dirty ? juce::String("(not saved)") : juce::String(), false);
+            updateSaveButton();
+        };
+    }
 
     juce::Label* makeLabel(const juce::String& text, float size, juce::Colour colour, bool bold = false)
     {
@@ -8819,17 +8990,7 @@ private:
             {
                 auto* editor = makeField(value);
                 row.control.reset(editor);
-                const auto rowIndex = rows.size();
-                editor->onTextChange = [this, rowIndex] {
-                    auto& r = rows[rowIndex];
-                    const auto text = dynamic_cast<juce::TextEditor*>(r.control.get())->getText();
-                    juce::String error;
-                    const auto ok = parts::validate(r.spec, text, error);
-                    setHint(r, ok ? describe(r.spec, text) : error, !ok);
-                };
-                auto commit = [this, rowIndex] { commitField(rowIndex); };
-                editor->onReturnKey = commit;
-                editor->onFocusLost = commit;
+                wireTextRow(editor, rows.size(), true);
                 row.height = 64;
                 break;
             }
@@ -8840,7 +9001,15 @@ private:
                 for (int i = 0; i < spec.options.size(); ++i)
                     box->addItem(spec.options[i], i + 1);
                 box->setText(value, juce::dontSendNotification);
-                box->onChange = [this, box, key] { commit(key, box->getText()); };
+                box->onChange = [this, box, key] {
+                    commit(key, box->getText());
+                    if (key == "waveform")
+                    {
+                        // The waveform decides which source properties apply.
+                        juce::Component::SafePointer<PropertiesPanel> safe(this);
+                        juce::MessageManager::callAsync([safe] { if (safe != nullptr) safe->rebuild(); });
+                    }
+                };
                 row.control.reset(box);
                 row.height = 58;
                 break;
@@ -8917,9 +9086,14 @@ private:
         else
         {
             if (text == canvas->instrumentSetting(current, row.key))
+            {
+                row.dirty = false;
+                setHint(row, describe(row.spec, text), false);
                 return;
+            }
             ok = canvas->setPartParameter(current, row.key, text, error);
         }
+        if (ok) row.dirty = false;
         setHint(row, ok ? (row.key.startsWith("#") ? juce::String() : describe(row.spec, text)) : error, !ok);
     }
 
@@ -8938,6 +9112,7 @@ private:
     {
         rows.clear();
         actionButtons.clear();
+        updateSaveButton();
         content.removeAllChildren();
         pinLabel.reset();
         title.reset(makeLabel("Properties", 16.0f, juce::Colour(0xff78dcca), true));
@@ -8965,9 +9140,7 @@ private:
             row.label.reset(makeLabel("Reference designator", 12.5f, juce::Colour(0xff93a7b0)));
             row.hint.reset(makeLabel({}, 11.0f, juce::Colour(0xff71808c)));
             auto* editor = makeField(view.refdes);
-            const auto rowIndex = rows.size();
-            editor->onReturnKey = [this, rowIndex] { commitField(rowIndex); };
-            editor->onFocusLost = [this, rowIndex] { commitField(rowIndex); };
+            wireTextRow(editor, rows.size(), false);
             row.control.reset(editor);
             row.height = 64;
             content.addAndMakeVisible(*row.label);
@@ -9002,9 +9175,7 @@ private:
             row.label.reset(makeLabel("Name", 12.5f, juce::Colour(0xff93a7b0)));
             row.hint.reset(makeLabel({}, 11.0f, juce::Colour(0xff71808c)));
             auto* editor = makeField(canvas->blockName(current));
-            const auto rowIndex = rows.size();
-            editor->onReturnKey = [this, rowIndex] { commitField(rowIndex); };
-            editor->onFocusLost = [this, rowIndex] { commitField(rowIndex); };
+            wireTextRow(editor, rows.size(), false);
             row.control.reset(editor);
             row.height = 64;
             content.addAndMakeVisible(*row.label);
@@ -9019,9 +9190,7 @@ private:
                 pinRow.label.reset(makeLabel(voltage, 12.5f, juce::Colour(0xff93a7b0)));
                 pinRow.hint.reset(makeLabel({}, 11.0f, juce::Colour(0xff71808c)));
                 auto* field = makeField(pin);
-                const auto pinIndex = rows.size();
-                field->onReturnKey = [this, pinIndex] { commitField(pinIndex); };
-                field->onFocusLost = [this, pinIndex] { commitField(pinIndex); };
+                wireTextRow(field, rows.size(), false);
                 pinRow.control.reset(field);
                 pinRow.height = 64;
                 content.addAndMakeVisible(*pinRow.label);
@@ -9038,8 +9207,10 @@ private:
         else if (!specs.empty())
         {
             addHeading(schematic::isInstrumentSymbol(view.symbolId) ? "Settings" : "Parameters");
+            const auto valueOf = [this](const juce::String& key) { return canvas->instrumentSetting(current, key); };
             for (const auto& spec : specs)
-                addParamRow(spec);
+                if (parts::isShown(spec, valueOf))
+                    addParamRow(spec);
         }
 
         if (schematic::isInstrumentSymbol(view.symbolId))
@@ -9089,7 +9260,7 @@ private:
         view = fresh;
         for (auto& row : rows)
         {
-            if (row.key.startsWith("#") || row.control == nullptr || row.control->hasKeyboardFocus(true))
+            if (row.key.startsWith("#") || row.control == nullptr || row.control->hasKeyboardFocus(true) || row.dirty)
                 continue;
             const auto value = canvas->instrumentSetting(current, row.key);
             if (auto* editor = dynamic_cast<juce::TextEditor*>(row.control.get()))
@@ -9117,6 +9288,7 @@ private:
         const auto selected = canvas->selectedRefdes();
         if (selected != current)
         {
+            commitPending();
             current = selected;
             rebuild();
             return;
@@ -9134,7 +9306,7 @@ private:
         const auto width = std::max(160, viewport.getWidth() - viewport.getScrollBarThickness() - 4);
         int y = 8;
         const int x = 10, w = width - 20;
-        if (title != nullptr) { title->setBounds(x, y, w, 24); y += 26; }
+        if (title != nullptr) { title->setBounds(x, y, w - 120, 24); y += 26; }
         if (subtitle != nullptr) { subtitle->setBounds(x, y, w, 20); y += 28; }
         size_t buttonIndex = 0;
         for (size_t i = 0; i < rows.size(); ++i)
@@ -9841,6 +10013,8 @@ private:
         };
         for (const auto& spec : schematicToolSpecs)
             definitions.push_back({ spec.name, spec.description, spec.schema });
+        for (const auto& spec : analyticsToolSpecs())
+            definitions.push_back({ spec.name.toStdString(), spec.description.toStdString(), spec.schema.toStdString() });
         return definitions;
     }
 
@@ -10263,283 +10437,8 @@ private:
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(AgentPanel)
 };
 
-class SimulationPanel final : public NotesPanel
-{
-public:
-    SimulationPanel()
-        : NotesPanel("Simulation Setup",
-                     "Analysis modes:\n"
-                     "- DC operating point\n"
-                     "- DC sweep\n"
-                     "- transient\n"
-                     "- AC small signal\n"
-                     "- compiled Frust realtime preview\n\n"
-                     "Simulation output should become datasets consumed by instruments and the Frust console.")
-    {
-    }
-};
+// (The Analytics window lives in AnalyticsPanel.cpp.)
 
-class AnalysisLabPanel final : public juce::Component
-{
-public:
-    AnalysisLabPanel()
-    {
-        title.setText("Analysis Lab", juce::dontSendNotification);
-        title.setFont(juce::Font(16.0f, juce::Font::bold));
-        title.setColour(juce::Label::textColourId, juce::Colour(0xff78dcca));
-        addAndMakeVisible(title);
-
-        runButton.setButtonText("Run 10 Hz / 8 Ohm HPF");
-        runButton.setColour(juce::TextButton::buttonColourId, juce::Colour(0xff253341));
-        runButton.setColour(juce::TextButton::textColourOffId, juce::Colour(0xffdce9ee));
-        runButton.onClick = [this] {
-            if (onRun != nullptr)
-                onRun();
-        };
-        addAndMakeVisible(runButton);
-
-        status.setText("No sweep loaded.", juce::dontSendNotification);
-        status.setColour(juce::Label::textColourId, juce::Colour(0xff93a7b0));
-        status.setJustificationType(juce::Justification::centredLeft);
-        addAndMakeVisible(status);
-    }
-
-    void addRunCard(const juce::String& heading, const juce::String& body)
-    {
-        runCards.insert(runCards.begin(), { heading, body });
-        if (runCards.size() > 8)
-            runCards.pop_back();
-        status.setText(heading, juce::dontSendNotification);
-        repaint();
-    }
-
-    void setResponse(const juce::File& csvFile,
-                     const juce::File& reportFile,
-                     double cutoffHz,
-                     double impedanceOhms,
-                     double capacitanceFarads,
-                     double inductanceHenries)
-    {
-        samples.clear();
-        const auto lines = juce::StringArray::fromLines(csvFile.loadFileAsString());
-        for (int index = 1; index < lines.size(); ++index)
-        {
-            const auto columns = juce::StringArray::fromTokens(lines[index], ",", "");
-            if (columns.size() < 2)
-                continue;
-            samples.push_back({ columns[0].getDoubleValue(), columns[1].getDoubleValue() });
-        }
-
-        currentCutoffHz = cutoffHz;
-        currentImpedanceOhms = impedanceOhms;
-        currentCapacitanceFarads = capacitanceFarads;
-        currentInductanceHenries = inductanceHenries;
-        currentCsv = csvFile;
-        currentReport = reportFile;
-        status.setText(samples.empty()
-            ? "Sweep CSV had no samples: " + csvFile.getFullPathName()
-            : "Showing " + juce::String((int)samples.size()) + " AC sweep points from " + csvFile.getFileName(),
-            juce::dontSendNotification);
-        repaint();
-    }
-
-    std::function<void()> onRun;
-
-    void paint(juce::Graphics& g) override
-    {
-        g.fillAll(juce::Colour(0xff10161d));
-        auto area = getLocalBounds().reduced(12);
-        area.removeFromTop(68);
-
-        g.setColour(juce::Colour(0xffdce9ee));
-        g.setFont(juce::Font(14.0f, juce::Font::bold));
-        g.drawText("SPICE / Solver Analytics", area.removeFromTop(24), juce::Justification::centredLeft);
-
-        g.setColour(juce::Colour(0xff93a7b0));
-        g.setFont(juce::Font(12.5f));
-        const auto summary = "Center workspace for operating point, transient, AC/Bode, sweeps, power, FFT/THD, run history, and raw artifacts.";
-        g.drawText(summary, area.removeFromTop(22), juce::Justification::centredLeft);
-        area.removeFromTop(8);
-
-        auto cardsArea = area.removeFromTop(std::min(150, std::max(70, 46 + (int)runCards.size() * 52)));
-        drawRunCards(g, cardsArea.toFloat());
-        area.removeFromTop(10);
-
-        g.setColour(juce::Colour(0xffdce9ee));
-        g.setFont(juce::Font(14.0f, juce::Font::bold));
-        g.drawText("AC / Bode Response", area.removeFromTop(22), juce::Justification::centredLeft);
-        g.setColour(juce::Colour(0xff93a7b0));
-        g.setFont(juce::Font(12.0f));
-        const auto bodeSummary = samples.empty()
-            ? juce::String("No AC sweep loaded yet.")
-            : "fc " + numberText(currentCutoffHz, 3) + " Hz, Z0 " + numberText(currentImpedanceOhms, 3)
-                + " ohm, C1 " + humanCapacitance(currentCapacitanceFarads)
-                + ", L1 " + humanInductance(currentInductanceHenries);
-        g.drawText(bodeSummary, area.removeFromTop(20), juce::Justification::centredLeft);
-        area.removeFromTop(8);
-
-        auto graph = area.removeFromTop(std::max(260, area.getHeight() - 76)).toFloat();
-        drawGraph(g, graph);
-
-        area.removeFromTop(8);
-        g.setColour(juce::Colour(0xff93a7b0));
-        g.setFont(juce::Font(11.5f));
-        if (currentReport.existsAsFile())
-            g.drawText("Report: " + currentReport.getFullPathName(), area.removeFromTop(18), juce::Justification::centredLeft, true);
-        if (currentCsv.existsAsFile())
-            g.drawText("CSV: " + currentCsv.getFullPathName(), area.removeFromTop(18), juce::Justification::centredLeft, true);
-    }
-
-    void resized() override
-    {
-        auto area = getLocalBounds().reduced(8);
-        auto header = area.removeFromTop(28);
-        title.setBounds(header.removeFromLeft(245));
-        header.removeFromLeft(8);
-        runButton.setBounds(header.removeFromLeft(180));
-        header.removeFromLeft(8);
-        status.setBounds(header);
-    }
-
-private:
-    struct Point
-    {
-        double frequencyHz = 0.0;
-        double gainDb = 0.0;
-    };
-
-    struct RunCard
-    {
-        juce::String heading;
-        juce::String body;
-    };
-
-    void drawRunCards(juce::Graphics& g, juce::Rectangle<float> area)
-    {
-        g.setColour(juce::Colour(0xff111922));
-        g.fillRoundedRectangle(area, 4.0f);
-        g.setColour(juce::Colour(0xff33424d));
-        g.drawRoundedRectangle(area, 4.0f, 1.0f);
-
-        auto row = area.reduced(10.0f);
-        g.setFont(juce::Font(13.0f, juce::Font::bold));
-        g.setColour(juce::Colour(0xff78dcca));
-        g.drawText("Run History", row.removeFromTop(18.0f).toNearestInt(), juce::Justification::centredLeft);
-        row.removeFromTop(6.0f);
-
-        if (runCards.empty())
-        {
-            g.setFont(juce::Font(12.5f));
-            g.setColour(juce::Colour(0xff93a7b0));
-            g.drawText("Run an analysis from the Simulation menu or an instrument panel.", row.toNearestInt(), juce::Justification::centredLeft, true);
-            return;
-        }
-
-        for (const auto& card : runCards)
-        {
-            if (row.getHeight() < 38.0f)
-                break;
-            auto cardBounds = row.removeFromTop(46.0f);
-            row.removeFromTop(6.0f);
-            g.setColour(juce::Colour(0xff17222b));
-            g.fillRoundedRectangle(cardBounds, 3.0f);
-            g.setColour(juce::Colour(0xff26323d));
-            g.drawRoundedRectangle(cardBounds, 3.0f, 1.0f);
-            auto textArea = cardBounds.reduced(8.0f);
-            g.setFont(juce::Font(12.0f, juce::Font::bold));
-            g.setColour(juce::Colour(0xffdce9ee));
-            g.drawText(card.heading, textArea.removeFromTop(16.0f).toNearestInt(), juce::Justification::centredLeft, true);
-            g.setFont(juce::Font(11.5f));
-            g.setColour(juce::Colour(0xff93a7b0));
-            g.drawText(card.body, textArea.toNearestInt(), juce::Justification::centredLeft, true);
-        }
-    }
-
-    void drawGraph(juce::Graphics& g, juce::Rectangle<float> graph)
-    {
-        g.setColour(juce::Colour(0xff111922));
-        g.fillRect(graph);
-        g.setColour(juce::Colour(0xff33424d));
-        g.drawRect(graph, 1.0f);
-
-        constexpr double minDb = -60.0;
-        constexpr double maxDb = 3.0;
-        const auto startHz = samples.empty() ? 0.1 : std::max(0.001, samples.front().frequencyHz);
-        const auto stopHz = samples.empty() ? 1000.0 : std::max(startHz * 10.0, samples.back().frequencyHz);
-        const auto logStart = std::log10(startHz);
-        const auto logStop = std::log10(stopHz);
-
-        auto xFor = [&](double frequency) {
-            return graph.getX() + (float)((std::log10(std::clamp(frequency, startHz, stopHz)) - logStart) / (logStop - logStart)) * graph.getWidth();
-        };
-        auto yFor = [&](double db) {
-            const auto clamped = std::clamp(db, minDb, maxDb);
-            return graph.getY() + (float)((maxDb - clamped) / (maxDb - minDb)) * graph.getHeight();
-        };
-
-        g.setFont(juce::Font(11.0f));
-        for (double db : { 0.0, -3.0, -10.0, -20.0, -40.0, -60.0 })
-        {
-            const auto y = yFor(db);
-            g.setColour(db == -3.0 ? juce::Colour(0xffffc857) : juce::Colour(0xff26323d));
-            g.drawHorizontalLine((int)y, graph.getX(), graph.getRight());
-            g.setColour(juce::Colour(0xff93a7b0));
-            g.drawText(numberText(db, 0) + " dB", (int)graph.getX() + 6, (int)y - 14, 62, 14, juce::Justification::centredLeft);
-        }
-
-        for (double frequency : { startHz, currentCutoffHz / 10.0, currentCutoffHz, currentCutoffHz * 10.0, stopHz })
-        {
-            if (frequency < startHz * 0.999 || frequency > stopHz * 1.001)
-                continue;
-            const auto x = xFor(frequency);
-            g.setColour(std::abs(frequency - currentCutoffHz) < 0.001 ? juce::Colour(0xff78dcca) : juce::Colour(0xff26323d));
-            g.drawVerticalLine((int)x, graph.getY(), graph.getBottom());
-            g.setColour(juce::Colour(0xff93a7b0));
-            g.drawText(numberText(frequency, frequency < 1.0 ? 2 : 0) + " Hz", (int)x - 25, (int)graph.getBottom() - 18, 58, 14, juce::Justification::centred);
-        }
-
-        if (samples.empty())
-        {
-            g.setColour(juce::Colour(0xff93a7b0));
-            g.setFont(juce::Font(15.0f));
-            g.drawText("No AC sweep loaded", graph.toNearestInt(), juce::Justification::centred);
-            return;
-        }
-
-        juce::Path curve;
-        for (size_t index = 0; index < samples.size(); ++index)
-        {
-            const auto x = xFor(samples[index].frequencyHz);
-            const auto y = yFor(samples[index].gainDb);
-            if (index == 0)
-                curve.startNewSubPath(x, y);
-            else
-                curve.lineTo(x, y);
-        }
-
-        g.setColour(juce::Colour(0xff78dcca));
-        g.strokePath(curve, juce::PathStrokeType(2.5f));
-        g.setColour(juce::Colour(0xffffc857));
-        g.fillEllipse(xFor(currentCutoffHz) - 4.5f, yFor(-3.01029995664) - 4.5f, 9.0f, 9.0f);
-
-        g.setColour(juce::Colour(0xffdce9ee));
-        g.setFont(juce::Font(13.0f, juce::Font::bold));
-        g.drawText("Normalized gain response", graph.withTrimmedLeft(14.0f).withTrimmedTop(10.0f).toNearestInt(),
-                   juce::Justification::topLeft);
-    }
-
-    juce::Label title;
-    juce::Label status;
-    juce::TextButton runButton;
-    std::vector<RunCard> runCards;
-    std::vector<Point> samples;
-    double currentCutoffHz = 10.0;
-    double currentImpedanceOhms = 8.0;
-    double currentCapacitanceFarads = 0.0;
-    double currentInductanceHenries = 0.0;
-    juce::File currentCsv;
-    juce::File currentReport;
-};
 
 class SpecIngestionPanel final : public NotesPanel
 {
@@ -10616,7 +10515,7 @@ ElectronicsWorkbench::ElectronicsWorkbench()
     openDiagramButton.onClick = [this] { showOpenDiagramMenu(); };
     openDiagramButton.setTooltip("Open a saved diagram from the current project");
     ercButton.onClick = [this] { runElectricalRuleCheck(); };
-    transientButton.onClick = [this] { exportCircuitArtifacts(); };
+    transientButton.onClick = [this] { showAnalytics(); };
     compileButton.onClick = [this] { exportFrustRealtimePreview(); };
     snapModeButton.onClick = [this] {
         if (setSnapEnabled != nullptr)
@@ -10658,20 +10557,14 @@ ElectronicsWorkbench::ElectronicsWorkbench()
                                                            juce::String, juce::String, juce::String, juce::String) {
         propertiesPanel->showPart(refdes);
     });
-    auto analysis = std::make_unique<AnalysisLabPanel>();
-    auto* analysisPanel = analysis.get();
-    analysisPanel->onRun = [this] { designRlcHighPassFilter(); };
-    showAnalysisNote = [analysisPanel](const juce::String& heading, const juce::String& body) {
-        analysisPanel->addRunCard(heading, body);
+    auto analyticsOwner = std::make_unique<AnalyticsPanel>();
+    analyticsPanel = analyticsOwner.get();
+    analyticsPanel->getNetlist = [schematicPanel, propertiesPanel] {
+        propertiesPanel->commitPending();
+        return schematicPanel->analyticsNetlist();
     };
-    showFrequencyResponse = [analysisPanel](const juce::File& csvFile,
-                                            const juce::File& reportFile,
-                                            double cutoffHz,
-                                            double impedanceOhms,
-                                            double capacitanceFarads,
-                                            double inductanceHenries) {
-        analysisPanel->setResponse(csvFile, reportFile, cutoffHz, impedanceOhms, capacitanceFarads, inductanceHenries);
-    };
+    analyticsPanel->outputFolder = [this] { return generatedRunDirectory(); };
+    analyticsPanel->bringToFront = [this] { showAnalytics(); };
     schematicPanel->setInstrumentOpenListener([this](juce::String refdes, juce::String symbolId) {
         openInstrumentWindow(refdes, symbolId);
     });
@@ -10804,6 +10697,8 @@ ElectronicsWorkbench::ElectronicsWorkbench()
     agentTools.schematicTool = [this, schematicPanel](const juce::String& name, const juce::var& args) {
         if (name.startsWith("project_") || name.startsWith("diagram_"))
             return projectTool(name, args);
+        if (name.startsWith("analytics_"))
+            return analyticsTool(name, args);
         return schematicPanel->runSchematicTool(name, args);
     };
     schematicPanel->outputDirectory = [this] { return generatedRunDirectory(); };
@@ -10818,7 +10713,7 @@ ElectronicsWorkbench::ElectronicsWorkbench()
     auto* agentPanel = agent.get();
     openAgentSettingsDialog = [agentPanel] { agentPanel->showAiSettingsForSelected(); };
     dockManager->registerPanel("schematic", "Schematic", std::move(schematic), CreationDock::DockTargetZone::CenterTab);
-    dockManager->registerPanel("simulation", "Simulation", std::move(analysis), CreationDock::DockTargetZone::CenterTab);
+    analyticsDockPanel = dockManager->registerPanel("analytics", "Analytics", std::move(analyticsOwner), CreationDock::DockTargetZone::CenterTab);
     dockManager->registerPanel("console", "Frust Math Console", std::make_unique<ConsolePanel>(logConsole), CreationDock::DockTargetZone::Bottom);
     dockManager->registerPanel("agent", "BYOK Agent", std::move(agent), CreationDock::DockTargetZone::Right);
     dockManager->registerPanel("properties", "Properties", std::move(properties), CreationDock::DockTargetZone::Right);
@@ -10925,7 +10820,7 @@ void ElectronicsWorkbench::adjustSchematicZoom(float factor)
 
 juce::StringArray ElectronicsWorkbench::getMenuBarNames()
 {
-    return { "File", "Circuit", "Simulation", "Agent", "View", "Help" };
+    return { "File", "Circuit", "Analytics", "Agent", "View", "Help" };
 }
 
 juce::PopupMenu ElectronicsWorkbench::getMenuForIndex(int, const juce::String& menuName)
@@ -10947,12 +10842,13 @@ juce::PopupMenu ElectronicsWorkbench::getMenuForIndex(int, const juce::String& m
         menu.addSeparator();
         menu.addItem(runErc, "Run ERC");
     }
-    else if (menuName == "Simulation")
+    else if (menuName == "Analytics")
     {
-        menu.addItem(designRlcHighPass, "Design 10 Hz / 8 Ohm RLC High-Pass");
+        menu.addItem(openAnalyticsItem, "Open Analytics");
         menu.addSeparator();
-        menu.addItem(runOperatingPoint, "Run Operating Point");
-        menu.addItem(runTransient, "Run Transient");
+        for (size_t i = 0; i < analytics::analyses().size(); ++i)
+            menu.addItem(analyticsMenuBase + (int)i, analytics::analyses()[i].title + "...");
+        menu.addSeparator();
         menu.addItem(runCompiledPreview, "Compile Realtime Preview");
     }
     else if (menuName == "Agent")
@@ -10975,6 +10871,13 @@ juce::PopupMenu ElectronicsWorkbench::getMenuForIndex(int, const juce::String& m
 
 void ElectronicsWorkbench::menuItemSelected(int menuItemID, int)
 {
+    if (menuItemID >= analyticsMenuBase && menuItemID < analyticsMenuBase + (int)analytics::analyses().size())
+    {
+        if (analyticsPanel != nullptr)
+            analyticsPanel->selectAnalysis(analytics::analyses()[(size_t)(menuItemID - analyticsMenuBase)].id);
+        showAnalytics();
+        return;
+    }
     if (menuItemID >= recentProjectBase)
     {
         handleProjectMenu(menuItemID);
@@ -11009,9 +10912,7 @@ void ElectronicsWorkbench::menuItemSelected(int menuItemID, int)
         case importComponent: appendLog("Component ingestion stub: BYOK agent/provider workflow pending."); break;
         case autoLayoutDiagramItem: autoLayoutDiagram(); break;
         case runErc: runElectricalRuleCheck(); break;
-        case designRlcHighPass: designRlcHighPassFilter(); break;
-        case runOperatingPoint: runOperatingPointAnalysis(); break;
-        case runTransient: runTransientAnalysis(); break;
+        case openAnalyticsItem: showAnalytics(); break;
         case runCompiledPreview: exportFrustRealtimePreview(); break;
         case openAgentSettings:
             if (openAgentSettingsDialog != nullptr) openAgentSettingsDialog();
@@ -11304,13 +11205,18 @@ juce::String ElectronicsWorkbench::buildAssistantToolManifestJson() const
     text << "      \"status\": \"active\",\n";
     text << "      \"inputs\": { \"refdes\": \"existing wired instrument reference designator\" }\n";
     text << "    }";
+    std::vector<ToolSpecText> manifestSpecs;
     for (const auto& spec : schematicToolSpecs)
+        manifestSpecs.push_back({ spec.name, spec.description, spec.schema });
+    for (const auto& spec : analyticsToolSpecs())
+        manifestSpecs.push_back(spec);
+    for (const auto& spec : manifestSpecs)
     {
         text << ",\n    {\n";
         text << "      \"name\": " << jsonQuote(spec.name) << ",\n";
-        text << "      \"displayName\": " << jsonQuote(juce::String(spec.name).replaceFirstOccurrenceOf("_", ".")) << ",\n";
+        text << "      \"displayName\": " << jsonQuote(spec.name.replaceFirstOccurrenceOf("_", ".")) << ",\n";
         text << "      \"description\": " << jsonQuote(spec.description) << ",\n";
-        text << "      \"mode\": \"modify_schematic_model\",\n";
+        text << "      \"mode\": " << (spec.name.startsWith("analytics_") ? "\"read_only_analysis\"" : "\"modify_schematic_model\"") << ",\n";
         text << "      \"status\": \"active\",\n";
         text << "      \"inputSchema\": " << spec.schema << "\n";
         text << "    }";
@@ -12748,9 +12654,6 @@ juce::String ElectronicsWorkbench::designRlcHighPassFilterTool(double cutoffHz, 
         }
     }
 
-    if (showFrequencyResponse != nullptr)
-        showFrequencyResponse(csvFile, reportFile, design.cutoffHz, design.impedanceOhms,
-                              design.capacitanceFarads, design.inductanceHenries);
 
     juce::String result;
     result << "{\n";
@@ -12898,63 +12801,154 @@ void ElectronicsWorkbench::exportFrustRealtimePreview()
               + " live parameter(s).");
 }
 
-void ElectronicsWorkbench::runOperatingPointAnalysis()
+// Analytics is a main window of its own: the dock panel floats out into a large
+// resizable window (it can still be docked back as a tab by dragging).
+void ElectronicsWorkbench::showAnalytics()
 {
-    const auto result = exportCircuitArtifactsTool();
-    const auto parsed = juce::JSON::parse(result);
-    if (!parsed.isObject() || !(bool)parsed.getProperty("ok", false))
-    {
-        const auto error = parsed.getProperty("error", result).toString();
-        appendLog("Operating point setup failed: " + error);
-        if (showAnalysisNote != nullptr)
-            showAnalysisNote("Operating Point Failed", error);
+    auto* panel = analyticsDockPanel.getComponent();
+    if (dockManager == nullptr || panel == nullptr)
         return;
+    auto* window = dynamic_cast<CreationDock::FloatingDockWindow*>(panel->getTopLevelComponent());
+    if (window == nullptr)
+    {
+        dockManager->floatPanel(panel);
+        window = dynamic_cast<CreationDock::FloatingDockWindow*>(panel->getTopLevelComponent());
+        if (window != nullptr)
+            if (const auto* display = juce::Desktop::getInstance().getDisplays().getPrimaryDisplay())
+            {
+                const auto area = display->userArea;
+                window->setBounds(area.reduced(area.getWidth() / 14, area.getHeight() / 14));
+            }
     }
-
-    const auto dir = parsed.getProperty("artifactDirectory", generatedRunDirectory().getFullPathName()).toString();
-    appendLog("Opened Analysis Lab for operating point setup: " + dir);
-    if (showAnalysisNote != nullptr)
-        showAnalysisNote("Operating Point",
-                         "Prepared circuit artifacts for DC operating point analysis. Next pass will render the node-voltage/current table directly here. Artifacts: " + dir);
+    if (window != nullptr)
+    {
+        window->setVisible(true);
+        window->toFront(true);
+    }
+    else if (auto* zone = panel->findParentComponentOfClass<CreationDock::DockZone>())
+        zone->setActivePanel(panel);
 }
 
-void ElectronicsWorkbench::runTransientAnalysis()
+juce::String ElectronicsWorkbench::analyticsTool(const juce::String& name, const juce::var& args)
 {
-    const auto result = exportCircuitArtifactsTool();
-    const auto parsed = juce::JSON::parse(result);
-    if (!parsed.isObject() || !(bool)parsed.getProperty("ok", false))
+    auto quoteJson = [](const juce::String& t) { return juce::JSON::toString(juce::var(t)); };
+    auto fail = [&](const juce::String& error) {
+        return "{ \"ok\": false, \"tool\": " + quoteJson(name) + ", \"error\": " + quoteJson(error) + " }";
+    };
+    if (analyticsPanel == nullptr)
+        return fail("The Analytics window is unavailable.");
+    auto settingsFrom = [](const juce::var& object) {
+        analytics::Settings s;
+        if (const auto* o = object.getDynamicObject())
+            for (const auto& p : o->getProperties())
+                s[p.name.toString()] = p.value.toString();
+        return s;
+    };
+
+    if (name == "analytics_list")
     {
-        const auto error = parsed.getProperty("error", result).toString();
-        appendLog("Transient setup failed: " + error);
-        if (showAnalysisNote != nullptr)
-            showAnalysisNote("Transient Failed", error);
-        return;
+        const auto netlist = analyticsPanel->getNetlist != nullptr ? analyticsPanel->getNetlist() : analytics::Netlist {};
+        auto* root = new juce::DynamicObject();
+        root->setProperty("ok", true);
+        root->setProperty("tool", name);
+        juce::Array<juce::var> list;
+        for (const auto& a : analytics::analyses())
+        {
+            auto* o = new juce::DynamicObject();
+            o->setProperty("tool", "analytics_" + a.key);
+            o->setProperty("title", a.title);
+            o->setProperty("description", a.description);
+            juce::Array<juce::var> fields;
+            for (const auto& f : analytics::fieldsFor(a.id))
+            {
+                auto* fo = new juce::DynamicObject();
+                fo->setProperty("key", f.key);
+                fo->setProperty("label", f.label);
+                fo->setProperty("group", f.group);
+                if (f.unit.isNotEmpty()) fo->setProperty("unit", f.unit);
+                if (f.defaultValue.isNotEmpty()) fo->setProperty("default", f.defaultValue);
+                if (!f.options.isEmpty()) fo->setProperty("choices", juce::var(f.options));
+                if (f.help.isNotEmpty()) fo->setProperty("help", f.help);
+                fields.add(juce::var(fo));
+            }
+            o->setProperty("settings", fields);
+            list.add(juce::var(o));
+        }
+        root->setProperty("analyses", list);
+        juce::Array<juce::var> nets;
+        for (const auto& n : netlist.nets)
+        {
+            auto* o = new juce::DynamicObject();
+            o->setProperty("net", n.name);
+            o->setProperty("pins", n.pins);
+            nets.add(juce::var(o));
+        }
+        root->setProperty("nets", nets);
+        root->setProperty("sources", juce::var(analytics::sourceChoices(netlist)));
+        root->setProperty("sweepTargets", juce::var(analytics::targetChoices(netlist, true)));
+        root->setProperty("warnings", juce::var(netlist.warnings));
+        return juce::JSON::toString(juce::var(root), true);
     }
-
-    const auto dir = parsed.getProperty("artifactDirectory", generatedRunDirectory().getFullPathName()).toString();
-    appendLog("Opened Analysis Lab for transient setup: " + dir);
-    if (showAnalysisNote != nullptr)
-        showAnalysisNote("Transient",
-                         "Prepared circuit artifacts for time-domain analysis. Next pass will render waveform probes and scope traces directly here. Artifacts: " + dir);
-}
-
-void ElectronicsWorkbench::designRlcHighPassFilter()
-{
-    const auto result = designHighPassTool != nullptr
-        ? designHighPassTool(10.0, 8.0)
-        : juce::String("{ \"ok\": false, \"error\": \"High-pass filter design tool is unavailable.\" }");
-    const auto parsed = juce::JSON::parse(result);
-    if (!parsed.isObject() || !(bool)parsed.getProperty("ok", false))
+    if (name == "analytics_result")
     {
-        appendLog("High-pass design failed: " + parsed.getProperty("error", result).toString());
-        return;
+        const auto& runs = analyticsPanel->history();
+        const auto index = args.getProperty("index", "0").toString().getIntValue();
+        if (runs.empty()) return fail("There is no Analytics result yet.");
+        if (index < 0 || index >= (int)runs.size()) return fail("History holds " + juce::String((int)runs.size()) + " result(s).");
+        const auto& run = runs[runs.size() - 1 - (size_t)index];
+        return analytics::toJson(run.result, run.files);
     }
-
-    appendLog("Designed 10 Hz / 8 ohm RLC high-pass filter. "
-              "C1=" + parsed.getProperty("capacitanceLabel", {}).toString()
-              + ", L1=" + parsed.getProperty("inductanceLabel", {}).toString()
-              + ", cutoff gain=" + parsed.getProperty("cutoffGainDb", {}).toString()
-              + " dB. Graph: " + parsed.getProperty("responseSvg", {}).toString());
+    if (name == "analytics_open")
+    {
+        const auto* info = analytics::findAnalysis(args.getProperty("analysis", {}).toString());
+        if (info == nullptr) return fail("Unknown analysis. Use one of the keys from analytics_list.");
+        analyticsPanel->selectAnalysis(info->id);
+        analyticsPanel->setSettings(info->id, settingsFrom(args.getProperty("settings", {})));
+        showAnalytics();
+        return "{ \"ok\": true, \"tool\": " + quoteJson(name) + ", \"analysis\": " + quoteJson(info->key) + " }";
+    }
+    if (name == "analytics_measure")
+    {
+        const auto kindName = args.getProperty("measurement", {}).toString().trim();
+        signal_measure::Request request;
+        bool known = false;
+        for (auto k : signal_measure::allKinds())
+            if (kindName.equalsIgnoreCase(signal_measure::kindName(k))) { request.kind = k; known = true; }
+        if (!known)
+        {
+            juce::StringArray kinds;
+            for (auto k : signal_measure::allKinds()) kinds.add(signal_measure::kindName(k));
+            return fail("Unknown measurement. Use one of: " + kinds.joinIntoString(", "));
+        }
+        auto number = [&](const char* key, double& out) {
+            const auto t = args.getProperty(key, {}).toString().trim();
+            double v = 0.0;
+            if (t.isNotEmpty() && circuit_sim::parseValue(t.toStdString(), v)) { out = v; return true; }
+            return false;
+        };
+        number("from", request.from);
+        number("to", request.to);
+        number("at", request.at);
+        number("level", request.level);
+        double nth = 1.0;
+        if (number("nth", nth)) request.nth = juce::jmax(1, (int)nth);
+        number("low_percent", request.lowPercent);
+        number("high_percent", request.highPercent);
+        number("band_percent", request.bandPercent);
+        const auto edge = args.getProperty("edge", "Rising").toString();
+        request.edge = edge.equalsIgnoreCase("Falling") ? signal_measure::Edge::Falling
+                     : edge.equalsIgnoreCase("Either") ? signal_measure::Edge::Either : signal_measure::Edge::Rising;
+        juce::String label;
+        const auto r = analyticsPanel->measureLatest(args.getProperty("trace", {}).toString(), request, label);
+        if (!r.ok) return fail(juce::String(r.error));
+        return "{ \"ok\": true, \"tool\": " + quoteJson(name) + ", \"value\": " + juce::String(r.value, 12)
+             + ", \"text\": " + quoteJson(label) + " }";
+    }
+    const auto* info = analytics::findAnalysis(name.fromFirstOccurrenceOf("analytics_", false, false));
+    if (info == nullptr)
+        return fail("Unknown analytics tool.");
+    const auto& run = analyticsPanel->runNow(info->id, settingsFrom(args));
+    return analytics::toJson(run.result, run.files);
 }
 
 juce::String ElectronicsWorkbench::autoLayoutDiagramTool()

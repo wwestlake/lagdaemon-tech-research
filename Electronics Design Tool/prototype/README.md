@@ -68,6 +68,50 @@ shows `Project > Diagram`; the last project and diagram reopen on start;
 switching diagrams saves the current one; closing asks about unsaved changes.
 The agent has matching `project_*` and `diagram_*` tools.
 
+## Analytics (SPICE)
+
+The **Analytics** button (toolbar), the **Analytics** menu, or any agent
+analytics run opens the Analytics window, a large window of its own (it can
+be docked back as a tab). Every analysis runs on the open diagram exactly as
+it is and never changes a part:
+
+| Analysis | What it gives |
+| --- | --- |
+| Operating Point (.OP) | node voltages, element currents and power, sources, per-device region and gm / r_pi / r_o / C_diff |
+| DC Sweep (.DC) | any source, part value or temperature swept, optionally nested |
+| AC / Bode (.AC) | magnitude, phase, group delay; peak, -3 dB corners, 0 dB crossing |
+| Transient (.TRAN) | sine, square, pulse, PWL and exponential sources; corners hit exactly |
+| Fourier / THD (.FOUR) | harmonics, normalized levels and phases, THD |
+| Noise (.NOISE) | output and input-referred density, integrated rms, per-element contributions |
+| Transfer Function (.TF) | small-signal gain, input and output resistance |
+| Sensitivity (.SENS) | DC output or AC gain change per +1 % of every parameter |
+| Pole-Zero (.PZ) | poles, zeros, damping, Q, s-plane plot (signed-log axes) |
+| Temperature Sweep (.TEMP) | operating point across temperature, drift per degree |
+| Monte Carlo / Tolerance | distribution, mean, sigma, worst case of a chosen result |
+
+AC, transient, noise and DC sweeps take a parametric step (.STEP) over any
+part parameter or temperature. Plots have two cursors with deltas, drag and
+wheel zoom, and a legend that hides/solos traces; measurements (.MEAS: rise
+time, overshoot, settling, RMS, -3 dB, unity gain, phase/gain margin...) are
+added under the plot. Every run is kept in the history and written as CSV
+plus `result.json` to `outputs/<diagram>/analytics/<time>_<analysis>/`.
+
+The engine is `Source/Analytics.*` on the `CircuitSolver` math pack (MNA:
+Newton with SPICE junction limiting, gmin and source stepping; trapezoidal
+transient with step halving; small-signal Y(s) = G + sC for AC, noise, TF,
+sensitivity and pole-zero) and `SignalMeasure` (measurements). The agent has
+one tool per analysis (`analytics_operating_point` ... `analytics_monte_carlo`)
+plus `analytics_list`, `analytics_measure`, `analytics_result` and
+`analytics_open`, built from the same field tables as the window's forms.
+`tools/solver_tests` checks every analysis against hand-calculated values.
+
+Device models: BJTs are Ebers-Moll with Early voltage, transit time and
+junction capacitances; diodes have Cj0 and transit time; op amps are a linear
+gain stage, a dominant pole at GBW / A0, and a rail-limited output stage;
+models scale with temperature (SPICE Is(T), Vt(T), resistor tempco, MOSFET
+Vth/K). Not modelled yet: op amp noise, slew rate and output resistance,
+flicker noise, logic gates.
+
 `File > Preferences...` opens a searchable preferences window (Layout,
 Display, Units, Projects). Settings are stored in
 `%APPDATA%\DjehutiElectronicsLab\preferences.json` and take effect at once.

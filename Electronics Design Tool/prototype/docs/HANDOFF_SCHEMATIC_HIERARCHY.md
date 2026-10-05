@@ -131,7 +131,22 @@ no separate "agent tools" pass.
    preferences_list, preferences_set. Second pass (not started): Simulation
    (AC points/decade, transient samples, tolerances, instrument refresh) and
    Instruments (default scope settings, meter input resistance).
-5. Agent tools for remaining existing features (move, select) as those areas
+5. **SPICE Analytics - done (2026-10-05).** The demo Simulation tab (a fixed
+   "10 Hz / 8 Ohm HPF" button that rewrote C1/L1) and the stub Simulation
+   menu items are gone. Analytics window (`AnalyticsPanel`), engine
+   (`Analytics`), measurements (`SignalMeasure`) and the solver's full
+   analysis set; see README "Analytics (SPICE)". Verified on the "SPICE Full
+   Test Bench" diagram (CE stage, op-amp low-pass, diode clipper, series RLC)
+   against hand calculations: bias, TF, AC, noise, temperature drift,
+   sensitivities, Monte Carlo sigma, RLC poles, overshoot, HD2 (incl. Early).
+   Properties pane has a Save button; pending edits are applied before any
+   analysis and when the selection changes. User net labels survive auto
+   layout. Still open: op amp noise/slew/output resistance, flicker noise,
+   logic gate simulation, and the remaining demos/stubs listed to the user
+   (design_rlc_high_pass and design_push_pull agent tools, Spec Ingestion and
+   Parts Sourcing tabs, component import, the Frust console, the Xyce export
+   path and its ERC notes).
+6. Agent tools for remaining existing features (move, select) as those areas
    are touched. `schematic_delete_components` added (blocks must be expanded
    first; deleting a block in the UI still leaves its inner sheet behind -
    open gap).

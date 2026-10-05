@@ -41,10 +41,8 @@ private:
         resetLayout,
         importComponent,
         runErc,
-        runOperatingPoint,
-        runTransient,
         runCompiledPreview,
-        designRlcHighPass,
+        openAnalyticsItem,
         autoLayoutDiagramItem,
         toggleStampModeItem,
         openAgentSettings,
@@ -54,6 +52,7 @@ private:
 
     static constexpr int recentProjectBase = 1000;
     static constexpr int diagramMenuBase = 2000;
+    static constexpr int analyticsMenuBase = 3000;
 
     juce::File layoutFile() const;
     juce::File generatedRunDirectory() const;
@@ -125,9 +124,10 @@ private:
     void showSpecDocument();
     void exportCircuitArtifacts();
     void exportFrustRealtimePreview();
-    void runOperatingPointAnalysis();
-    void runTransientAnalysis();
-    void designRlcHighPassFilter();
+    void showAnalytics();
+    juce::String analyticsTool(const juce::String& name, const juce::var& args);
+    class AnalyticsPanel* analyticsPanel = nullptr;
+    juce::Component::SafePointer<CreationDock::DockPanel> analyticsDockPanel;
     void autoLayoutDiagram();
     void applySchematicZoom(float zoom);
     void adjustSchematicZoom(float factor);
@@ -140,7 +140,7 @@ private:
     juce::TextButton newButton { "New" };
     juce::TextButton openDiagramButton { "Open" };
     juce::TextButton ercButton { "ERC" };
-    juce::TextButton transientButton { "Transient" };
+    juce::TextButton transientButton { "Analytics" };
     juce::TextButton compileButton { "Compile Preview" };
     juce::ToggleButton stampModeButton { "Stamp Mode" };
     juce::ToggleButton snapModeButton { "Snap" };
@@ -165,8 +165,6 @@ private:
     std::function<juce::String()> designPushPullTool;
     std::function<juce::String()> autoLayoutTool;
     std::function<juce::String()> exportSchematicImage;
-    std::function<void(const juce::File&, const juce::File&, double, double, double, double)> showFrequencyResponse;
-    std::function<void(const juce::String&, const juce::String&)> showAnalysisNote;
     std::function<void()> openAgentSettingsDialog;
     std::function<void(bool)> setSnapEnabled;
     std::function<void(float)> setSchematicZoom;

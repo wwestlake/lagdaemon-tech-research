@@ -35,22 +35,42 @@ ParamSpec fraction(juce::String key, juce::String label, juce::String def, juce:
     return { key, label, Kind::Fraction, {}, {}, def, Storage::Param, help };
 }
 
+ParamSpec when(ParamSpec spec, juce::String condition)
+{
+    spec.showWhen = std::move(condition);
+    return spec;
+}
+
 std::vector<ParamSpec> waveformSource(const juce::String& unit)
 {
+    const auto one = unit == "A" ? juce::String("1m") : juce::String("1");
     return {
-        choice("waveform", "Waveform", { "Sine", "Square" }, "Sine"),
-        quantity("amplitude", "Amplitude (peak)", unit, unit == "A" ? "1m" : "1", Storage::Value),
-        quantity("frequency", "Frequency", "Hz", "1k", Storage::Frequency),
-        quantity("offset", "DC offset", unit, "0"),
-        quantity("phase", "Phase", "deg", "0"),
-        quantity("duty", "Duty cycle (square)", "", "0.5"),
+        choice("waveform", "Waveform", { "Sine", "Square", "Pulse", "PWL", "Exp" }, "Sine"),
+        when(quantity("amplitude", "Amplitude (peak)", unit, one, Storage::Value), "waveform=Sine|Square"),
+        when(quantity("frequency", "Frequency", "Hz", "1k", Storage::Frequency), "waveform=Sine|Square"),
+        when(quantity("offset", "DC offset", unit, "0"), "waveform=Sine|Square"),
+        when(quantity("phase", "Phase", "deg", "0"), "waveform=Sine|Square"),
+        when(quantity("duty", "Duty cycle", "", "0.5"), "waveform=Square"),
+        when(quantity("offset", "Initial value (V1)", unit, "0"), "waveform=Pulse|Exp"),
+        when(quantity("pulsed_value", "Pulsed value (V2)", unit, one), "waveform=Pulse|Exp"),
+        when(quantity("delay", "Delay", "s", "0"), "waveform=Pulse|Exp"),
+        when(quantity("rise", "Rise time", "s", "1n"), "waveform=Pulse"),
+        when(quantity("fall", "Fall time", "s", "1n"), "waveform=Pulse"),
+        when(quantity("width", "Pulse width", "s", "500u"), "waveform=Pulse"),
+        when(quantity("period", "Period (0 = single pulse)", "s", "1m"), "waveform=Pulse"),
+        when(quantity("tau1", "Rise time constant", "s", "100u"), "waveform=Exp"),
+        when(quantity("delay2", "Fall starts at", "s", "1m"), "waveform=Exp"),
+        when(quantity("tau2", "Fall time constant", "s", "100u"), "waveform=Exp"),
+        when(text("pwl", "Points (time value, ...)", "0 0, 1m " + one + ", 2m " + one + ", 3m 0", Storage::Param,
+                  "Time-value pairs separated by commas, times increasing; the value holds after the last point."), "waveform=PWL"),
     };
 }
 
 std::map<juce::String, std::vector<ParamSpec>> buildCatalog()
 {
     std::map<juce::String, std::vector<ParamSpec>> c;
-    c["resistor"] = { quantity("value", "Resistance", "ohm", "10k", Storage::Value) };
+    c["resistor"] = { quantity("value", "Resistance", "ohm", "10k", Storage::Value),
+                      quantity("tempco", "Temperature coefficient", "ppm/K", "0", Storage::Param, "Used by temperature analyses (models are at 27 C)") };
     c["potentiometer"] = { quantity("value", "Total resistance", "ohm", "10k", Storage::Value),
                            fraction("position", "Wiper position", "0.5", "0 = pin 1 end, 1 = pin 2 end") };
     c["capacitor"] = { quantity("value", "Capacitance", "F", "1u", Storage::Value) };
@@ -64,13 +84,19 @@ std::map<juce::String, std::vector<ParamSpec>> buildCatalog()
                          quantity("coupling", "Coupling k", "", "0.999") };
     c["diode"] = { text("value", "Model", "1N4148", Storage::Value),
                    quantity("saturation_current", "Saturation current Is", "A", "2.52n"),
-                   quantity("emission", "Emission coefficient n", "", "1.752") };
+                   quantity("emission", "Emission coefficient n", "", "1.752"),
+                   quantity("cj0", "Junction capacitance Cj0", "F", "4p"),
+                   quantity("transit_time", "Transit time TT", "s", "20n") };
     c["zener_diode"] = { quantity("value", "Zener voltage", "V", "5.1", Storage::Value),
                          quantity("saturation_current", "Saturation current Is", "A", "1n"),
-                         quantity("emission", "Emission coefficient n", "", "1.5") };
+                         quantity("emission", "Emission coefficient n", "", "1.5"),
+                         quantity("cj0", "Junction capacitance Cj0", "F", "100p"),
+                         quantity("transit_time", "Transit time TT", "s", "0") };
     c["schottky_diode"] = { text("value", "Model", "BAT54", Storage::Value),
                             quantity("saturation_current", "Saturation current Is", "A", "100n"),
-                            quantity("emission", "Emission coefficient n", "", "1.05") };
+                            quantity("emission", "Emission coefficient n", "", "1.05"),
+                            quantity("cj0", "Junction capacitance Cj0", "F", "10p"),
+                            quantity("transit_time", "Transit time TT", "s", "0") };
     c["led"] = { choice("value", "Colour", { "Red", "Green", "Yellow", "Blue", "White" }, "Red", Storage::Value) };
     c["battery"] = { quantity("value", "Voltage", "V", "9", Storage::Value) };
     c["voltage_source"] = { quantity("value", "Voltage", "V", "5", Storage::Value) };
@@ -84,16 +110,23 @@ std::map<juce::String, std::vector<ParamSpec>> buildCatalog()
     c["cccs"] = { quantity("value", "Current gain", "A/A", "10", Storage::Value) };
     c["opamp_741"] = { text("value", "Model", "uA741", Storage::Value),
                        quantity("gain", "Open-loop gain", "V/V", "200k"),
+                       quantity("gbw", "Gain-bandwidth product", "Hz", "1meg", Storage::Param, "Dominant pole at GBW / open-loop gain; 0 = no roll-off"),
                        quantity("headroom", "Output headroom from rails", "V", "1.5") };
     for (const auto* id : { "npn", "pnp" })
         c[id] = { text("value", "Model", juce::String(id) == "npn" ? "generic_npn" : "generic_pnp", Storage::Value),
                   quantity("beta", "Current gain (beta)", "", "100"),
-                  quantity("saturation_current", "Saturation current Is", "A", "10f") };
+                  quantity("saturation_current", "Saturation current Is", "A", "10f"),
+                  quantity("early_voltage", "Early voltage VAF", "V", "100", Storage::Param, "0 = no Early effect"),
+                  quantity("transit_time", "Forward transit time TF", "s", "300p", Storage::Param, "Sets fT with the junction capacitances"),
+                  quantity("cje", "B-E junction capacitance", "F", "4.5p"),
+                  quantity("cjc", "B-C junction capacitance", "F", "3.5p") };
     for (const auto* id : { "nmos", "pmos" })
         c[id] = { text("value", "Model", juce::String(id) == "nmos" ? "generic_nmos" : "generic_pmos", Storage::Value),
                   quantity("threshold", "Threshold voltage |Vth|", "V", "2"),
                   quantity("k", "Transconductance K", "A/V^2", "20m"),
-                  quantity("lambda", "Channel-length modulation", "1/V", "0.01") };
+                  quantity("lambda", "Channel-length modulation", "1/V", "0.01"),
+                  quantity("cgs", "Gate-source capacitance", "F", "20p"),
+                  quantity("cgd", "Gate-drain capacitance", "F", "5p") };
     for (const auto* id : { "njfet", "pjfet" })
         c[id] = { text("value", "Model", "generic_jfet", Storage::Value),
                   quantity("idss", "Idss", "A", "10m"),
@@ -137,6 +170,14 @@ const std::vector<ParamSpec>& paramsFor(const juce::String& symbolId)
     return found != catalog().end() ? found->second : none;
 }
 
+bool isShown(const ParamSpec& spec, const std::function<juce::String(const juce::String&)>& valueOf)
+{
+    if (spec.showWhen.isEmpty())
+        return true;
+    const auto key = spec.showWhen.upToFirstOccurrenceOf("=", false, false).trim();
+    const auto allowed = juce::StringArray::fromTokens(spec.showWhen.fromFirstOccurrenceOf("=", false, false), "|", "");
+    return allowed.contains(valueOf(key).trim());
+}
 const ParamSpec* findParam(const juce::String& symbolId, const juce::String& key)
 {
     for (const auto& spec : paramsFor(symbolId))
