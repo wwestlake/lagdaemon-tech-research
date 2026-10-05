@@ -112,6 +112,11 @@ const SchematicToolSpec schematicToolSpecs[] = {
         R"({"type":"object","properties":{"block":{"type":"string","description":"Block refdes or name."},"port":{"type":"string","description":"Current pin name, such as IN or OUT2."},"name":{"type":"string","description":"New pin name."}},"required":["block","port","name"],"additionalProperties":false})"
     },
     {
+        "schematic_subdiagram_expose_parameter",
+        "Expose an internal component parameter on a sub-diagram block so users and the assistant can set it from the outside block properties. This is explicit: choose the internal part and parameter key to expose.",
+        R"({"type":"object","properties":{"block":{"type":"string","description":"Block refdes or name."},"parameterName":{"type":"string","description":"Outside-facing parameter name, such as voltage or internal_resistance."},"targetRefdes":{"type":"string","description":"Internal component refdes, such as V1 or R1."},"targetParameter":{"type":"string","description":"Internal parameter key, such as value, frequency, busName, or a key returned by schematic_get_parameters."}},"required":["block","parameterName","targetRefdes","targetParameter"],"additionalProperties":false})"
+    },
+    {
         "schematic_subdiagram_list",
         "List every sub-diagram block with its name, the sheet it sits on, its pins, and its member components, plus which sheet is being viewed.",
         R"({"type":"object","properties":{},"additionalProperties":false})"
@@ -1933,6 +1938,7 @@ public:
 
         if (auto rail = hitTestRailBus(modelPosition); rail >= 0)
         {
+            pushUndoSnapshot();
             beginWireDrag(createRailTap(rail, p), modelPosition);
             repaint();
             return;
@@ -1940,6 +1946,7 @@ public:
 
         if (auto pin = hitTestPin(modelPosition); pin.instanceIndex >= 0)
         {
+            pushUndoSnapshot();
             beginWireDrag(WireNode::forPin(pin), modelPosition);
             repaint();
             return;
@@ -1947,6 +1954,7 @@ public:
 
         if (auto junction = hitTestJunction(modelPosition); junction >= 0)
         {
+            pushUndoSnapshot();
             beginWireDrag(WireNode::forJunction(junction), modelPosition);
             repaint();
             return;
@@ -1954,6 +1962,7 @@ public:
 
         if (auto wireIndex = hitTestWire(modelPosition); wireIndex >= 0)
         {
+            pushUndoSnapshot();
             beginWireDrag(createJunctionOnWire(wireIndex, p), modelPosition);
             repaint();
             return;
@@ -1981,6 +1990,7 @@ public:
             else
                 selectedInstances.addIfNotAlreadyThere(instanceIndex);
             draggingInstance = true;
+            dragSnapshotTaken = false;
             dragStartMouse = modelPosition;
             dragStartPosition = instances[(size_t)selectedInstance].position;
             captureSelectedDragStarts();
@@ -1992,12 +2002,13 @@ public:
         if (getStampPlacementEnabled != nullptr && getStampPlacementEnabled())
         {
             const auto selected = getSelectedSymbolId != nullptr ? getSelectedSymbolId() : juce::String("resistor");
+            pushUndoSnapshot();
             placeSymbol(selected, p);
             repaint();
             return;
         }
 
-        beginSelectionBox(modelPosition);
+        beginSelectionBox(modelPosition, event.mods.isShiftDown());
     }
 
     void mouseDoubleClick(const juce::MouseEvent& event) override
@@ -2060,6 +2071,11 @@ public:
         if (!draggingInstance || selectedInstance < 0 || selectedInstance >= (int)instances.size())
             return;
 
+        if (!dragSnapshotTaken)
+        {
+            pushUndoSnapshot();
+            dragSnapshotTaken = true;
+        }
         const auto delta = snapPoint(dragStartPosition + (modelPosition - dragStartMouse)) - dragStartPosition;
         if (selectedInstances.size() > 1)
             moveSelectedInstances(delta);
@@ -2079,6 +2095,7 @@ public:
         }
 
         draggingInstance = false;
+        dragSnapshotTaken = false;
         selectingBox = false;
         resizingRail = false;
         resizingRailInstance = -1;
@@ -2116,6 +2133,7 @@ public:
         menu.addItem(10, "Rename Sub-Diagram...", blockUnderMouse >= 0);
         menu.addItem(11, "Expand Sub-Diagram", blockUnderMouse >= 0);
         menu.addItem(15, "Save Sub-Diagram to User Library...", blockUnderMouse >= 0);
+        menu.addItem(16, "Expose Block Parameter...", blockUnderMouse >= 0);
         menu.addItem(12, "Up One Level", currentSheet.isNotEmpty());
         const auto libraryNames = userBlockNames();
         if (!libraryNames.isEmpty())
@@ -2178,6 +2196,8 @@ public:
             }
             else if (result == 15 && blockIndexFor(blockRefdes) >= 0)
                 promptSaveBlockToLibrary(blockIndexFor(blockRefdes));
+            else if (result == 16 && blockIndexFor(blockRefdes) >= 0)
+                promptExposeBlockParameter(blockIndexFor(blockRefdes));
             else if (result == 12)
             {
                 const auto block = blockForSheet(currentSheet);
@@ -2203,6 +2223,13 @@ public:
 
     bool keyPressed(const juce::KeyPress& key) override
     {
+        if (key.getModifiers().isCommandDown() && !key.getModifiers().isShiftDown()
+            && (key.getTextCharacter() == 'z' || key.getTextCharacter() == 'Z'))
+            return undoEdit();
+        if ((key.getModifiers().isCommandDown() && (key.getTextCharacter() == 'y' || key.getTextCharacter() == 'Y'))
+            || (key.getModifiers().isCommandDown() && key.getModifiers().isShiftDown()
+                && (key.getTextCharacter() == 'z' || key.getTextCharacter() == 'Z')))
+            return redoEdit();
         if (key == juce::KeyPress::backspaceKey && currentSheet.isNotEmpty())
         {
             const auto block = blockForSheet(currentSheet);
@@ -3133,6 +3160,10 @@ private:
     juce::Point<float> dragStartMouse;
     juce::Point<float> dragStartPosition;
     juce::Point<float> wireDragPosition;
+    juce::StringArray undoStack;
+    juce::StringArray redoStack;
+    bool dragSnapshotTaken = false;
+    bool selectionBoxAppend = false;
     std::function<juce::String()> getSelectedSymbolId;
     std::function<bool()> getStampPlacementEnabled;
     std::function<void(juce::String)> onStatus;
@@ -3168,6 +3199,57 @@ private:
     static juce::String nullableQuote(const juce::String& text)
     {
         return text.isEmpty() ? juce::String("null") : quote(text);
+    }
+
+    void pushUndoSnapshot()
+    {
+        const auto snapshot = buildCircuitJson();
+        if (undoStack.isEmpty() || undoStack[undoStack.size() - 1] != snapshot)
+        {
+            undoStack.add(snapshot);
+            while (undoStack.size() > 80)
+                undoStack.remove(0);
+        }
+        redoStack.clear();
+    }
+
+    bool restoreSnapshot(const juce::String& snapshot)
+    {
+        juce::String error;
+        if (!loadCircuitJson(snapshot, error))
+        {
+            if (onStatus) onStatus("Could not restore schematic: " + error);
+            return false;
+        }
+        return true;
+    }
+
+    bool undoEdit()
+    {
+        if (undoStack.isEmpty())
+        {
+            if (onStatus) onStatus("Nothing to undo.");
+            return true;
+        }
+        redoStack.add(buildCircuitJson());
+        const auto snapshot = undoStack[undoStack.size() - 1];
+        undoStack.remove(undoStack.size() - 1);
+        if (restoreSnapshot(snapshot) && onStatus) onStatus("Undo.");
+        return true;
+    }
+
+    bool redoEdit()
+    {
+        if (redoStack.isEmpty())
+        {
+            if (onStatus) onStatus("Nothing to redo.");
+            return true;
+        }
+        undoStack.add(buildCircuitJson());
+        const auto snapshot = redoStack[redoStack.size() - 1];
+        redoStack.remove(redoStack.size() - 1);
+        if (restoreSnapshot(snapshot) && onStatus) onStatus("Redo.");
+        return true;
     }
 
     static juce::String safeFileStem(juce::String text)
@@ -4145,10 +4227,14 @@ private:
         selectedInstance = selectedInstances.isEmpty() ? -1 : selectedInstances.getLast();
     }
 
-    void beginSelectionBox(juce::Point<float> start)
+    void beginSelectionBox(juce::Point<float> start, bool append)
     {
-        selectedInstances.clear();
-        selectedInstance = -1;
+        selectionBoxAppend = append;
+        if (!selectionBoxAppend)
+        {
+            selectedInstances.clear();
+            selectedInstance = -1;
+        }
         selectingBox = true;
         selectionBoxStart = start;
         selectionBoxEnd = start;
@@ -4167,14 +4253,15 @@ private:
     void updateSelectionFromBox()
     {
         const auto box = currentSelectionBox();
-        selectedInstances.clear();
+        if (!selectionBoxAppend)
+            selectedInstances.clear();
         for (int i = 0; i < (int)instances.size(); ++i)
         {
             if (!onSheet(i))
                 continue;
             const auto symbol = symbolForInstance(instances[(size_t)i]);
             if (box.intersects(orientedBounds(instances[(size_t)i], symbol).expanded(4.0f)))
-                selectedInstances.add(i);
+                selectedInstances.addIfNotAlreadyThere(i);
         }
         selectedInstance = selectedInstances.isEmpty() ? -1 : selectedInstances.getLast();
         notifySelection();
@@ -4481,8 +4568,8 @@ private:
 
     // Folds `members` (on the current sheet) into a block. Every signal net
     // that crosses the boundary becomes a block pin outside and a port
-    // bubble of the same name inside. Ground and named supplies are global
-    // symbols and never become pins.
+    // bubble of the same name inside. Selected net markers are intentional
+    // terminals, so they also become pins even for ground and named supplies.
     juce::String createSubDiagram(std::vector<int> members, juce::String name, juce::String& error)
     {
         std::set<int> inside;
@@ -4495,6 +4582,7 @@ private:
             return {};
         }
         name = name.trim().isNotEmpty() ? name.trim() : juce::String("Sub-diagram");
+        pushUndoSnapshot();
 
         // Ground symbols, supply ports and labels wired only to members go inside.
         for (int i = 0; i < (int)instances.size(); ++i)
@@ -4553,18 +4641,40 @@ private:
         }
 
         struct Crossing { juce::String net; schematic::BlockPort port; std::vector<PinRef> in, out; };
+        std::map<juce::String, schematic::BlockPort> explicitPorts;
+        for (int i : inside)
+        {
+            const auto& instance = instances[(size_t)i];
+            if (!schematic::isPowerSymbol(instance.symbolId))
+                continue;
+            const auto net = netFor({ i, 0 }, netNames);
+            if (net == "floating")
+                continue;
+            auto name = instance.symbolId == "ground" ? juce::String("GND") : instance.busName.trim();
+            if (name.isEmpty())
+                name = instance.value.trim().isNotEmpty() ? instance.value.trim() : net;
+            const auto rightSide = instance.symbolId == "power_port" ? true
+                                 : instance.symbolId == "ground" ? false
+                                 : instance.position.x >= innerBox.getCentreX();
+            explicitPorts[net] = { name, rightSide };
+        }
+
         std::vector<Crossing> crossings;
         int inputs = 0, outputs = 0;
         std::set<juce::String> usedNames;
         for (const auto& [net, side] : nets)
         {
-            if (side.in.empty() || side.out.empty() || supplyNets.count(net) != 0)
+            const auto explicitPort = explicitPorts.find(net);
+            if (side.in.empty() || (side.out.empty() && explicitPort == explicitPorts.end())
+                || (supplyNets.count(net) != 0 && explicitPort == explicitPorts.end()))
                 continue;
             float outX = 0.0f;
             for (const auto& pin : side.out) outX += pinPosition(pin).x;
-            outX /= (float)side.out.size();
-            const auto rightSide = outX > innerBox.getCentreX();
-            auto portName = side.label.isNotEmpty() ? side.label
+            const auto rightSide = explicitPort != explicitPorts.end()
+                ? explicitPort->second.rightSide
+                : (outX / (float)side.out.size()) > innerBox.getCentreX();
+            auto portName = explicitPort != explicitPorts.end() ? explicitPort->second.name
+                          : side.label.isNotEmpty() ? side.label
                           : rightSide ? (++outputs == 1 ? juce::String("OUT") : "OUT" + juce::String(outputs))
                                       : (++inputs == 1 ? juce::String("IN") : "IN" + juce::String(inputs));
             while (usedNames.count(portName) != 0)
@@ -5180,6 +5290,35 @@ private:
         }), true);
     }
 
+    void promptExposeBlockParameter(int blockIndex)
+    {
+        if (blockIndex < 0 || blockIndex >= (int)instances.size() || instances[(size_t)blockIndex].symbolId != "sub_block")
+            return;
+
+        auto* dialog = new juce::AlertWindow("Expose Block Parameter",
+                                             "Choose an internal component parameter to show on this block.",
+                                             juce::AlertWindow::NoIcon);
+        dialog->addTextEditor("name", "voltage", "Block parameter name");
+        dialog->addTextEditor("targetRefdes", {}, "Internal component refdes");
+        dialog->addTextEditor("targetParameter", "value", "Internal parameter key");
+        dialog->addButton("Expose", 1, juce::KeyPress(juce::KeyPress::returnKey));
+        dialog->addButton("Cancel", 0, juce::KeyPress(juce::KeyPress::escapeKey));
+        juce::Component::SafePointer<juce::AlertWindow> safe(dialog);
+        const auto blockRefdes = instances[(size_t)blockIndex].refdes;
+        dialog->enterModalState(true, juce::ModalCallbackFunction::create([this, safe, blockRefdes](int result) {
+            if (result != 1 || safe == nullptr)
+                return;
+            juce::String error;
+            const auto ok = exposeBlockParameter(blockRefdes,
+                                                 safe->getTextEditor("name")->getText(),
+                                                 safe->getTextEditor("targetRefdes")->getText(),
+                                                 safe->getTextEditor("targetParameter")->getText(),
+                                                 error);
+            if (onStatus)
+                onStatus(ok ? "Exposed block parameter." : "Could not expose parameter: " + error);
+        }), true);
+    }
+
     void promptSubDiagramFromSelection()
     {
         std::vector<int> members;
@@ -5770,6 +5909,13 @@ private:
 public:
     // ---- Supply forms: a rail, or a symbol at every pin (same net either way) ----
 
+    void promptExposeBlockParameterFor(const juce::String& blockRefdes)
+    {
+        const auto block = blockIndexFor(blockRefdes);
+        if (block >= 0)
+            promptExposeBlockParameter(block);
+    }
+
     // Pins wired to a rail through its taps or its anchor.
     std::vector<PinRef> railAttachedPins(int rail, std::set<int>& taps) const
     {
@@ -6072,6 +6218,52 @@ public:
                 instance.busName = newName.trim();
                 instance.value = newName.trim();
             }
+        forceDeferredRepaint();
+        return true;
+    }
+
+    bool exposeBlockParameter(const juce::String& blockKey,
+                              const juce::String& parameterName,
+                              const juce::String& targetRefdes,
+                              const juce::String& targetParameter,
+                              juce::String& error)
+    {
+        const auto block = blockIndexFor(blockKey);
+        if (block < 0) { error = "No sub-diagram block " + blockKey + "."; return false; }
+        const auto exposed = parameterName.trim();
+        if (exposed.isEmpty() || !exposed.containsOnly("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_"))
+        {
+            error = "Parameter names use letters, digits and _ only.";
+            return false;
+        }
+        const auto target = instanceIndexForRefdesAnySheet(targetRefdes.trim());
+        if (target < 0) { error = "No internal component " + targetRefdes + "."; return false; }
+        if (instances[(size_t)target].sheet != instances[(size_t)block].childSheet)
+        {
+            error = targetRefdes + " is not directly inside " + instances[(size_t)block].refdes + ".";
+            return false;
+        }
+        const auto targetKey = targetParameter.trim();
+        if (targetKey.isEmpty())
+        {
+            error = "Choose the internal parameter key to expose.";
+            return false;
+        }
+        if (parts::findParam(instances[(size_t)target].symbolId, targetKey) == nullptr
+            && instances[(size_t)target].params.count(targetKey) == 0)
+        {
+            juce::StringArray keys;
+            for (const auto& s : parts::paramsFor(instances[(size_t)target].symbolId)) keys.add(s.key);
+            error = instances[(size_t)target].refdes + " has no parameter " + targetKey
+                  + (keys.isEmpty() ? juce::String(".") : ". Available: " + keys.joinIntoString(", ") + ".");
+            return false;
+        }
+
+        pushUndoSnapshot();
+        auto& blockInstance = instances[(size_t)block];
+        blockInstance.params[exposed] = partValue(instances[(size_t)target], targetKey);
+        blockInstance.params["paramTarget." + exposed] = instances[(size_t)target].refdes + "." + targetKey;
+        notifySelection();
         forceDeferredRepaint();
         return true;
     }
@@ -6828,6 +7020,14 @@ public:
             return ok("\"block\": " + blockJson(blockIndexFor(text("block"))));
         }
 
+        if (name == "schematic_subdiagram_expose_parameter")
+        {
+            juce::String error;
+            if (!exposeBlockParameter(text("block"), text("parameterName"), text("targetRefdes"), text("targetParameter"), error))
+                return toolFailure(name, error);
+            return ok("\"block\": " + blockJson(blockIndexFor(text("block"))) + ", \"parameter\": " + quote(text("parameterName")));
+        }
+
         if (name == "schematic_subdiagram_list")
         {
             juce::String list = "\"viewing\": " + quote(sheetName(currentSheet)) + ", \"blocks\": [";
@@ -7243,55 +7443,51 @@ private:
 
     void deleteSelected()
     {
-        if (selectedInstance < 0 || selectedInstance >= (int)instances.size())
+        std::set<int> deadInstances;
+        for (int index : selectedInstances)
+            if (index >= 0 && index < (int)instances.size())
+                deadInstances.insert(index);
+        if (deadInstances.empty() && selectedInstance >= 0 && selectedInstance < (int)instances.size())
+            deadInstances.insert(selectedInstance);
+
+        if (deadInstances.empty())
         {
             if (onStatus) onStatus("Nothing selected to delete.");
             return;
         }
 
-        const auto removedName = instances[(size_t)selectedInstance].refdes;
-        wires.erase(std::remove_if(wires.begin(), wires.end(), [&](const Wire& wire) {
-            return nodeTouchesInstance(wire.a, selectedInstance) || nodeTouchesInstance(wire.b, selectedInstance);
-        }), wires.end());
+        pushUndoSnapshot();
+        std::set<juce::String> deadSheets;
+        bool changed = true;
+        while (changed)
+        {
+            changed = false;
+            for (int index : deadInstances)
+                if (index >= 0 && index < (int)instances.size() && instances[(size_t)index].symbolId == "sub_block")
+                    deadSheets.insert(instances[(size_t)index].childSheet);
+            for (int i = 0; i < (int)instances.size(); ++i)
+                if (deadSheets.count(instances[(size_t)i].sheet) != 0 && deadInstances.insert(i).second)
+                    changed = true;
+        }
+
+        std::set<int> deadJunctions;
+        for (int j = 0; j < (int)junctions.size(); ++j)
+            if (deadSheets.count(junctionSheet(j)) != 0)
+                deadJunctions.insert(j);
+
+        juce::StringArray names;
+        for (int index : deadInstances)
+            if (index >= 0 && index < (int)instances.size() && instances[(size_t)index].sheet == currentSheet)
+                names.add(instances[(size_t)index].refdes);
 
         juce::StringArray returnedProbes;
-        for (const auto& probe : probes)
-            if (nodeTouchesInstance(probe.node, selectedInstance))
-                returnedProbes.add(probe.id);
-        probes.erase(std::remove_if(probes.begin(), probes.end(), [&](const Probe& probe) {
-            return nodeTouchesInstance(probe.node, selectedInstance);
-        }), probes.end());
-
-        instances.erase(instances.begin() + selectedInstance);
-        for (auto& wire : wires)
-        {
-            adjustNodeAfterDeletingInstance(wire.a, selectedInstance);
-            adjustNodeAfterDeletingInstance(wire.b, selectedInstance);
-        }
-        for (auto& probe : probes)
-            adjustNodeAfterDeletingInstance(probe.node, selectedInstance);
-        for (auto& group : groups)
-        {
-            group.memberInstances.erase(std::remove(group.memberInstances.begin(),
-                                                    group.memberInstances.end(),
-                                                    selectedInstance),
-                                        group.memberInstances.end());
-            for (auto& member : group.memberInstances)
-                if (member > selectedInstance)
-                    --member;
-        }
-        groups.erase(std::remove_if(groups.begin(), groups.end(), [](const Group& group) {
-            return group.memberInstances.empty();
-        }), groups.end());
-
-        selectedInstance = -1;
-        selectedInstances.clear();
-        selectedGroup = -1;
-        notifySelection();
+        removeInstancesAndJunctions(deadInstances, deadJunctions, returnedProbes);
         for (const auto& probeId : returnedProbes)
             if (onProbeChanged) onProbeChanged(probeId, {}, {});
-        if (onStatus) onStatus("Deleted " + removedName + ".");
-        repaint();
+        notifySelection();
+        if (onStatus) onStatus("Deleted " + juce::String(names.size()) + " selected item(s)"
+                               + (names.isEmpty() ? juce::String(".") : ": " + names.joinIntoString(", ") + "."));
+        forceDeferredRepaint();
     }
 
     void notifySelection()
@@ -8802,6 +8998,11 @@ private:
                 content.addAndMakeVisible(*pinRow.hint);
                 rows.push_back(std::move(pinRow));
             }
+            addHeading("Exposed parameters");
+            auto* expose = actionButtons.add(new juce::TextButton("Expose internal parameter..."));
+            styleActionButton(*expose);
+            expose->onClick = [this] { canvas->promptExposeBlockParameterFor(current); };
+            content.addAndMakeVisible(expose);
         }
         else if (!specs.empty())
         {
