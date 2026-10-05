@@ -84,7 +84,29 @@ library (`D:\DjehutiRoute`, MIT), which also provides the router. The agent
 has `pcb_board_get`, `pcb_board_list_options`, `pcb_board_use_standard`,
 `pcb_board_set_shape`, `pcb_board_set_outline`, `pcb_board_add_hole`,
 `pcb_board_add_cutout`, `pcb_board_remove` and `pcb_board_set_stackup`.
-Footprints, placement and routing build on this next.
+
+**Parts and routing.** *Update parts from schematic* puts the diagram's
+parts on the board as footprints carrying the schematic's nets (the same net
+names Analytics shows). Every symbol has a default footprint and alternatives
+(0805/1206/axial passives, SOD-123, SOT-23, TO-92, TO-220, SOIC-8/DIP-8 for the
+741, trimmers, headers for sources and batteries, relays, transformers, test
+points); instruments and ideal controlled sources stay off the board. The
+first sync lays the whole board out automatically (most-connected first, each
+part where its pads land nearest the pads already placed on the same nets,
+inside any outline, clear of holes, cutouts, the edge and other parts); later
+syncs keep parts where they are and place only new ones. Parts drag on the
+canvas, rotate with R or right-click, and change footprint in the sidebar.
+Yellow lines are the connections still to make. *Route board* runs
+DjehutiRoute on a worker thread with the track width, clearance and via rules
+from the sidebar, draws the copper per layer with vias, and runs the exact
+design-rule check; any violation is marked on the board. Moving a part,
+changing a rule or the board clears the stale copper. Parts, rules and the
+routed copper are saved in the diagram file under `pcb_layout`. Code:
+`Source/PcbLayout.*` (footprints, placement, route and check), drawn by
+`PcbPanel`. The agent has `pcb_layout_get`, `pcb_footprints_list`,
+`pcb_sync_from_schematic`, `pcb_auto_place`, `pcb_place_part`,
+`pcb_set_footprint`, `pcb_set_route_rules`, `pcb_route`, `pcb_clear_routes`
+and `pcb_drc`.
 
 ## Analytics (SPICE)
 

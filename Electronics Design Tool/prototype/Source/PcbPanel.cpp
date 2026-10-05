@@ -3,6 +3,7 @@
 #include <djehuti_route/outline.h>
 
 #include <cmath>
+#include <thread>
 #include <limits>
 
 namespace
@@ -10,6 +11,24 @@ namespace
 const juce::Colour background(0xff10161d), sideColour(0xff151a20), raised(0xff1d2731), border(0xff33424d);
 const juce::Colour textColour(0xffdce9ee), muted(0xff93a7b0), faint(0xff71808c), accent(0xff78dcca), warning(0xffffb36b);
 const juce::Colour boardFill(0xff1e4a2c), edgeGold(0xffd2b45a), gridMinor(0xff18212a), gridMajor(0xff222e39);
+const juce::Colour padCopper(0xffc9a227), silk(0xffe6e6e6), ratsnestColour(0xffffd24a);
+
+// Copper layer colours: top red, bottom blue, inner layers after.
+juce::Colour layerColour(int layer, int layerCount)
+{
+    static const juce::Colour inner[] { juce::Colour(0xff4fbf6a), juce::Colour(0xffd8a33f), juce::Colour(0xffb05fd8), juce::Colour(0xff3fd8c8) };
+    if (layer == 0) return juce::Colour(0xffd8553f);
+    if (layer == layerCount - 1) return juce::Colour(0xff3f7fd8);
+    return inner[(layer - 1) % 4];
+}
+
+// The board as routing sees it (thickness does not matter to copper).
+juce::String routeKey(const pcb::BoardDesign& b)
+{
+    auto v = b.toVar();
+    if (auto* o = v.getDynamicObject()) o->removeProperty("thickness");
+    return juce::JSON::toString(v, true);
+}
 
 juce::String mmText(double v, int decimals = 2)
 {
@@ -117,6 +136,116 @@ public:
         repaint();
     }
 
+    juce::String selectedPart() const
+    {
+        if (selection.kind == Kind::Part && selection.index < (int)owner.layout.parts.size())
+            return owner.layout.parts[(size_t)selection.index].refdes;
+        return {};
+    }
+
+    void selectPart(const juce::String& refdes)
+    {
+        for (size_t i = 0; i < owner.layout.parts.size(); ++i)
+            if (owner.layout.parts[i].refdes == refdes) { selection = { Kind::Part, (int)i, 0 }; repaint(); return; }
+        selection = {};
+        repaint();
+    }
+
+    void clearSelection()
+    {
+        selection = {};
+        repaint();
+    }
+
+    void rotateSelected()
+    {
+        if (selection.kind != Kind::Part || selection.index >= (int)owner.layout.parts.size()) return;
+        auto next = owner.layout;
+        auto& part = next.parts[(size_t)selection.index];
+        part.rotation = (part.rotation + 90) % 360;
+        next.clearRoute();
+        owner.editedLayout(next);
+    }
+
+    void drawLayout(juce::Graphics& g) const
+    {
+        const auto& l = owner.layout;
+        const int layers = owner.board.layers;
+        // Copper: bottom first, top last.
+        for (int layer = layers - 1; layer >= 0; --layer)
+        {
+            g.setColour(layerColour(layer, layers).withAlpha(layer == 0 ? 0.9f : 0.75f));
+            for (const auto& t : l.tracks)
+            {
+                if (t.layer != layer || t.points.size() < 2) continue;
+                juce::Path path;
+                path.startNewSubPath(toScreen(t.points[0]));
+                for (size_t i = 1; i < t.points.size(); ++i) path.lineTo(toScreen(t.points[i]));
+                g.strokePath(path, juce::PathStrokeType(std::max(1.0f, (float)(t.width * zoom)), juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
+            }
+        }
+        // Parts: pads, courtyard, name.
+        for (size_t i = 0; i < l.parts.size(); ++i)
+        {
+            const auto& part = l.parts[i];
+            const auto r = pcb::courtyardOf(part);
+            const juce::Rectangle<float> box(toScreen({ r.getX(), r.getBottom() }), toScreen({ r.getRight(), r.getY() }));
+            const bool selected = selection.kind == Kind::Part && selection.index == (int)i;
+            for (const auto& pad : pcb::padsOf(part))
+            {
+                const auto c = toScreen(pad.centre);
+                const float w = (float)(pad.w * zoom), h = (float)(pad.h * zoom);
+                g.setColour(pad.drill > 0.0 ? padCopper : padCopper.interpolatedWith(layerColour(0, layers), 0.25f));
+                if (pad.round) g.fillEllipse(c.x - w / 2, c.y - w / 2, w, w);
+                else g.fillRect(c.x - w / 2, c.y - h / 2, w, h);
+                if (pad.drill > 0.0)
+                {
+                    const float d = (float)(pad.drill * zoom);
+                    g.setColour(background);
+                    g.fillEllipse(c.x - d / 2, c.y - d / 2, d, d);
+                }
+                if (pad.number == "1" && part.footprint != "TestPoint-THT")
+                {
+                    // Pin 1 mark on the silkscreen.
+                    g.setColour(silk.withAlpha(0.8f));
+                    const float m = std::max(2.0f, (float)(0.35 * zoom));
+                    const float off = std::max(w, h) / 2 + m;
+                    g.fillEllipse(c.x - off - m / 2, c.y - off - m / 2, m, m);
+                }
+            }
+            g.setColour(selected ? accent : silk.withAlpha(0.55f));
+            g.drawRect(box, selected ? 2.0f : 1.0f);
+            if (box.getWidth() > 18.0f)
+            {
+                g.setColour(silk.withAlpha(0.9f));
+                g.setFont(juce::jlimit(9.0f, 14.0f, std::min(box.getHeight(), box.getWidth() / 3.0f) * 0.4f));
+                g.drawText(part.refdes, box, juce::Justification::centred, false);
+            }
+        }
+        for (const auto& v : l.vias)
+        {
+            const auto c = toScreen(v.at);
+            const float d = std::max(4.0f, (float)(v.diameter * zoom)), h = std::max(1.5f, (float)(v.drill * zoom));
+            g.setColour(juce::Colour(0xffdddddd));
+            g.fillEllipse(c.x - d / 2, c.y - d / 2, d, d);
+            g.setColour(background);
+            g.fillEllipse(c.x - h / 2, c.y - h / 2, h, h);
+        }
+        g.setColour(ratsnestColour.withAlpha(0.85f));
+        for (const auto& [a, b2] : pcb::ratsnest(l))
+            g.drawLine(juce::Line<float>(toScreen(a), toScreen(b2)), 1.0f);
+        for (const auto& m : l.violations)
+        {
+            if (!m.located) continue;
+            const auto c = toScreen(m.at);
+            g.setColour(warning);
+            g.drawEllipse(c.x - 7, c.y - 7, 14, 14, 2.0f);
+            g.drawLine(c.x - 4, c.y - 4, c.x + 4, c.y + 4, 1.5f);
+            g.drawLine(c.x - 4, c.y + 4, c.x + 4, c.y - 4, 1.5f);
+        }
+    }
+
+
     void deleteSelection()
     {
         auto next = owner.board;
@@ -172,6 +301,14 @@ public:
             case Kind::Cutout:
             case Kind::CutoutVertex:
                 return "Cutout " + juce::String(selection.index + 1) + ". Drag to move it, drag its corners, Delete to remove.";
+            case Kind::Part:
+                if (selection.index < (int)owner.layout.parts.size())
+                {
+                    const auto& part = owner.layout.parts[(size_t)selection.index];
+                    return part.refdes + " " + part.value + " (" + part.footprint + ") at (" + juce::String(part.at.x, 2) + ", " + juce::String(part.at.y, 2)
+                         + ") mm, " + juce::String(part.rotation) + " deg. Drag to move, R or right-click to rotate.";
+                }
+                break;
             default:
                 break;
         }
@@ -210,7 +347,8 @@ public:
             }
             drawDimensions(g);
         }
-        else if (!drawing)
+        drawLayout(g);
+        if (b.outline.size() < 3 && !drawing)
         {
             g.setColour(faint);
             g.setFont(14.0f);
@@ -319,10 +457,13 @@ public:
         if (e.mods.isRightButtonDown() || e.mods.isPopupMenu())
         {
             selection = hitTest(e.position);
-            deleteSelection();
+            owner.selectionChanged();
+            if (selection.kind == Kind::Part) rotateSelected();
+            else deleteSelection();
             return;
         }
         selection = hitTest(e.position);
+        owner.selectionChanged();
         if (selection.kind == Kind::None)
         {
             // An edge: insert a corner there and drag it.
@@ -344,6 +485,7 @@ public:
             }
         }
         before = owner.board;
+        beforeLayout = owner.layout;
         dragStartMm = snapPoint(toMm(e.position));
         dragging = true;
         repaint();
@@ -379,6 +521,10 @@ public:
                 for (size_t i = 0; i < b.cutouts[(size_t)selection.index].size(); ++i)
                     b.cutouts[(size_t)selection.index][i] = before.cutouts[(size_t)selection.index][i] + delta;
                 break;
+            case Kind::Part:
+                if (selection.index < (int)owner.layout.parts.size())
+                    owner.layout.parts[(size_t)selection.index].at = beforeLayout.parts[(size_t)selection.index].at + delta;
+                break;
             default:
                 break;
         }
@@ -388,6 +534,18 @@ public:
 
     void mouseUp(const juce::MouseEvent&) override
     {
+        if (dragging && selection.kind == Kind::Part)
+        {
+            dragging = false;
+            if (selection.index < (int)owner.layout.parts.size()
+                && owner.layout.parts[(size_t)selection.index].at != beforeLayout.parts[(size_t)selection.index].at)
+            {
+                auto after = owner.layout;
+                after.clearRoute(); // the copper no longer matches the parts
+                owner.layout = beforeLayout;
+                owner.editedLayout(after);
+            }
+        }
         if (dragging)
         {
             dragging = false;
@@ -432,6 +590,11 @@ public:
             repaint();
             return true;
         }
+        if ((key.getKeyCode() == 'R' || key.getKeyCode() == 'r') && !key.getModifiers().isCommandDown() && selection.kind == Kind::Part)
+        {
+            rotateSelected();
+            return true;
+        }
         if (key == juce::KeyPress::deleteKey || key == juce::KeyPress::backspaceKey)
         {
             deleteSelection();
@@ -446,7 +609,7 @@ public:
     }
 
 private:
-    enum class Kind { None, Vertex, Hole, Cutout, CutoutVertex };
+    enum class Kind { None, Vertex, Hole, Cutout, CutoutVertex, Part };
     struct Selection
     {
         Kind kind = Kind::None;
@@ -462,6 +625,7 @@ private:
     bool panning = false, dragging = false;
     Selection selection;
     pcb::BoardDesign before;
+    pcb::Layout beforeLayout;
     pcb::Point dragStartMm;
     std::vector<pcb::Point> drawPoints;
     int hoverEdge = -1;
@@ -546,6 +710,10 @@ private:
                 if (toScreen(b.cutouts[c][i]).getDistanceFrom(s) <= 7.0f)
                     return { Kind::CutoutVertex, (int)c, (int)i };
         const auto p = toMm(s);
+        const auto& parts = owner.layout.parts;
+        for (int i = (int)parts.size() - 1; i >= 0; --i)
+            if (pcb::courtyardOf(parts[(size_t)i]).contains(p))
+                return { Kind::Part, i, 0 };
         for (size_t c = 0; c < b.cutouts.size(); ++c)
         {
             juce::Path path;
@@ -593,6 +761,7 @@ PcbPanel::PcbPanel()
     addAndMakeVisible(sidebarViewport);
     styleLabel(info, 12.5f, muted);
     styleLabel(problems, 12.5f, warning);
+    styleLabel(routeInfo, 12.5f, muted);
     rebuildSidebar();
 }
 
@@ -616,8 +785,10 @@ void PcbPanel::setDesign(const pcb::BoardDesign& design, bool fromFile)
 void PcbPanel::edited(const pcb::BoardDesign& next, bool refit)
 {
     const auto before = board.bounds();
-    undoStack.push_back(board);
+    undoStack.push_back({ board, layout });
     if (undoStack.size() > 200) undoStack.pop_front();
+    if (layout.routed && routeKey(board) != routeKey(next))
+        layout.clearRoute(); // the copper was routed for the old board
     board = next;
     updateInfo();
     if (refit && board.bounds() != before) canvas->fit();
@@ -628,12 +799,123 @@ void PcbPanel::edited(const pcb::BoardDesign& next, bool refit)
 void PcbPanel::undo()
 {
     if (undoStack.empty()) return;
-    board = undoStack.back();
+    board = undoStack.back().board;
+    layout = undoStack.back().layout;
     undoStack.pop_back();
     rebuildSidebar();
     if (canvas->autoFit) canvas->fit();
     canvas->repaint();
     if (onChanged) onChanged();
+}
+
+void PcbPanel::editedLayout(const pcb::Layout& next)
+{
+    undoStack.push_back({ board, layout });
+    if (undoStack.size() > 200) undoStack.pop_front();
+    layout = next;
+    updateInfo();
+    canvas->repaint();
+    if (onChanged) onChanged();
+}
+
+void PcbPanel::setLayout(const pcb::Layout& next, bool fromFile)
+{
+    if (fromFile)
+    {
+        layout = next;
+        canvas->clearSelection();
+        selectedPart.clear();
+        lastReport.clear();
+        updateInfo();
+        canvas->repaint();
+    }
+    else
+        editedLayout(next);
+    juce::Component::SafePointer<PcbPanel> safe(this);
+    juce::MessageManager::callAsync([safe] { if (safe != nullptr) safe->rebuildSidebar(); });
+}
+
+pcb::SyncReport PcbPanel::syncFromSchematic()
+{
+    pcb::SyncReport report;
+    if (!getSchematicParts) return report;
+    auto next = layout;
+    report = pcb::syncFromSchematic(next, getSchematicParts(), board);
+    juce::StringArray lines;
+    lines.add("From the schematic: " + juce::String(report.added.size()) + " added, " + juce::String(report.updated.size()) + " updated, "
+              + juce::String(report.removed.size()) + " removed.");
+    for (const auto& s2 : report.skipped) lines.add("Not on the board: " + s2);
+    lastReport = lines.joinIntoString("\n");
+    setLayout(next);
+    return report;
+}
+
+juce::StringArray PcbPanel::autoPlace()
+{
+    auto next = layout;
+    const auto notPlaced = pcb::autoPlace(next, board);
+    lastReport = notPlaced.isEmpty() ? juce::String("Placed " + juce::String((int)next.parts.size()) + " parts.")
+                                     : "Did not fit, set beside the board: " + notPlaced.joinIntoString(", ") + ". Make the board bigger or move parts.";
+    setLayout(next);
+    return notPlaced;
+}
+
+namespace
+{
+// Parts and rules, without the routing: what a route result belongs to.
+juce::String layoutKey(pcb::Layout l)
+{
+    l.clearRoute();
+    return juce::JSON::toString(l.toVar(), true);
+}
+}
+
+void PcbPanel::route(std::optional<pcb::RouteRules> rules, std::function<void()> finished)
+{
+    if (routing)
+    {
+        if (finished) finished();
+        return;
+    }
+    routing = true;
+    auto start = layout;
+    if (rules) start.rules = *rules;
+    const auto keyBefore = layoutKey(layout);
+    const auto boardBefore = board;
+    lastReport = "Routing...";
+    updateInfo();
+    juce::Component::SafePointer<PcbPanel> safe(this);
+    std::thread([safe, start, keyBefore, boardBefore, finished] {
+        auto next = start;
+        pcb::routeLayout(next, boardBefore);
+        juce::MessageManager::callAsync([safe, next, keyBefore, boardBefore, finished] {
+            if (safe != nullptr)
+            {
+                auto& self = *safe;
+                self.routing = false;
+                if (layoutKey(self.layout) == keyBefore && routeKey(self.board) == routeKey(boardBefore))
+                {
+                    self.lastReport.clear();
+                    self.setLayout(next);
+                }
+                else
+                {
+                    self.lastReport = "The parts or board changed while routing; route again.";
+                    self.updateInfo();
+                }
+            }
+            if (finished) finished();
+        });
+    }).detach();
+}
+
+void PcbPanel::selectionChanged()
+{
+    const auto now = canvas->selectedPart();
+    if (now == selectedPart) return;
+    selectedPart = now;
+    juce::Component::SafePointer<PcbPanel> safe(this);
+    juce::MessageManager::callAsync([safe] { if (safe != nullptr) safe->rebuildSidebar(); });
 }
 
 void PcbPanel::zoomToFit()
@@ -672,8 +954,40 @@ void PcbPanel::updateInfo()
                  + juce::String((int)board.outline.size()) + " corners, " + juce::String((int)board.holes.size()) + " hole(s), "
                  + juce::String((int)board.cutouts.size()) + " cutout(s), " + juce::String(board.layers) + " copper layer(s)",
                  juce::dontSendNotification);
-    const auto list = board.problems();
+    auto list = board.problems();
+    list.addArray(pcb::placementProblems(layout, board));
     problems.setText(list.isEmpty() ? juce::String() : list.joinIntoString("\n"), juce::dontSendNotification);
+
+    juce::StringArray r;
+    if (lastReport.isNotEmpty()) r.add(lastReport);
+    if (layout.parts.empty())
+        r.add("No parts on the board yet. Update parts from schematic puts the diagram's parts on it.");
+    else
+    {
+        int toMake = 0;
+        std::map<juce::String, int> padsPerNet;
+        for (const auto& pad : pcb::allPads(layout))
+            if (pad.net.isNotEmpty()) ++padsPerNet[pad.net];
+        for (const auto& [net, n] : padsPerNet) toMake += n - 1;
+        r.add(juce::String((int)layout.parts.size()) + " parts, " + juce::String((int)padsPerNet.size()) + " nets, " + juce::String(toMake) + " connections.");
+        if (layout.routeError.isNotEmpty())
+            r.add("Not routed: " + layout.routeError);
+        else if (layout.routed)
+        {
+            double length = 0.0;
+            for (const auto& t : layout.tracks)
+                for (size_t i = 1; i < t.points.size(); ++i) length += t.points[i - 1].getDistanceFrom(t.points[i]);
+            r.add("Routed " + juce::String(layout.routedConnections) + " of " + juce::String(layout.connections) + " connections ("
+                  + juce::String(layout.iterations) + " passes, " + juce::String(layout.seconds, 2) + " s): " + juce::String(length, 1) + " mm of track, "
+                  + juce::String((int)layout.vias.size()) + " vias.");
+            r.add("Design rules: " + (layout.violations.empty() ? juce::String("no violations.") : juce::String((int)layout.violations.size()) + " violation(s):"));
+            for (size_t i = 0; i < layout.violations.size() && i < 6; ++i) r.add("  " + layout.violations[i].message);
+            for (int i = 0; i < layout.unrouted.size() && i < 6; ++i) r.add("Unrouted " + layout.unrouted[i]);
+        }
+        else
+            r.add("Not routed yet: yellow lines are the connections to make.");
+    }
+    routeInfo.setText(r.joinIntoString("\n"), juce::dontSendNotification);
 }
 
 void PcbPanel::rebuildSidebar()
@@ -839,6 +1153,54 @@ void PcbPanel::rebuildSidebar()
     });
     field("Board thickness (mm)", board.thickness, [this](double v) { if (std::abs(v - board.thickness) > 1e-9) { auto next = board; next.thickness = v; edited(next); } });
     field("Copper to edge clearance (mm)", board.edgeClearance, [this](double v) { if (std::abs(v - board.edgeClearance) > 1e-9) { auto next = board; next.edgeClearance = v; edited(next); } });
+
+    heading("PARTS AND ROUTING");
+    auto later = [this](std::function<void(PcbPanel&)> action) {
+        // Buttons rebuild this sidebar, so their work runs after the click returns.
+        juce::Component::SafePointer<PcbPanel> safe(this);
+        return [safe, action] { juce::MessageManager::callAsync([safe, action] { if (safe != nullptr) action(*safe); }); };
+    };
+    button("Update parts from schematic", later([](PcbPanel& p) { p.syncFromSchematic(); }));
+    button("Auto place all parts", later([](PcbPanel& p) { p.autoPlace(); }));
+    if (const auto* part = layout.find(selectedPart))
+    {
+        label(part->refdes + "  " + part->value + "  (" + part->symbolId + ")", 16, textColour);
+        const auto options = pcb::footprintsFor(part->symbolId);
+        combo(options, options.indexOf(part->footprint), [this, options, refdes = part->refdes](int i) {
+            juce::Component::SafePointer<PcbPanel> safe(this);
+            juce::MessageManager::callAsync([safe, i, options, refdes] {
+                if (safe == nullptr || i < 0 || i >= options.size()) return;
+                auto next = safe->layout;
+                if (auto* p = next.find(refdes); p != nullptr && p->footprint != options[i])
+                {
+                    p->footprint = options[i];
+                    next.clearRoute();
+                    safe->setLayout(next);
+                }
+            });
+        });
+        if (const auto* fp = pcb::findFootprint(part->footprint))
+            label(fp->description, 34, faint);
+        button("Rotate 90 deg (R)", later([](PcbPanel& p) { p.canvas->rotateSelected(); p.rebuildSidebar(); }));
+    }
+    auto rule = [&](const juce::String& caption, double value, std::function<void(pcb::RouteRules&, double)> set) {
+        field(caption, value, [this, set, value](double v) {
+            if (v <= 0.0 || std::abs(v - value) < 1e-9) return;
+            auto next = layout;
+            set(next.rules, v);
+            next.clearRoute();
+            editedLayout(next);
+        });
+    };
+    rule("Track width (mm)", layout.rules.trackWidth, [](pcb::RouteRules& r, double v) { r.trackWidth = v; });
+    rule("Clearance (mm)", layout.rules.clearance, [](pcb::RouteRules& r, double v) { r.clearance = v; });
+    rule("Via diameter (mm)", layout.rules.viaDiameter, [](pcb::RouteRules& r, double v) { r.viaDiameter = v; });
+    rule("Via drill (mm)", layout.rules.viaDrill, [](pcb::RouteRules& r, double v) { r.viaDrill = v; });
+    button("Route board", later([](PcbPanel& p) { p.route(); }));
+    button("Clear routing", later([](PcbPanel& p) { auto next = p.layout; next.clearRoute(); p.lastReport.clear(); p.setLayout(next); }));
+    routeInfo.setBounds(10, y, w, 190);
+    sidebar.addAndMakeVisible(routeInfo);
+    y += 196;
 
     heading("SNAP");
     const juce::StringArray snaps { "0.1", "0.25", "0.5", "1", "1.27", "2.54" };

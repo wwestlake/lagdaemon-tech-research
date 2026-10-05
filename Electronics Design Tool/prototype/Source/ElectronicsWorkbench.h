@@ -130,6 +130,7 @@ private:
     class FrustPanel* frustPanel = nullptr;
     class PcbPanel* pcbPanel = nullptr;
     juce::String pcbTool(const juce::String& name, const juce::var& args);
+    juce::String pcbLayoutTool(const juce::String& name, const juce::var& args);
     juce::String frustTool(const juce::String& name, const juce::var& args);
     juce::Component::SafePointer<CreationDock::DockPanel> analyticsDockPanel;
     void autoLayoutDiagram();

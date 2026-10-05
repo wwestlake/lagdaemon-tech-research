@@ -142,6 +142,8 @@ target_sources(DjehutiElectronicsLab PRIVATE
     Source/FrustPanel.cpp
     Source/PcbBoard.h
     Source/PcbBoard.cpp
+    Source/PcbLayout.h
+    Source/PcbLayout.cpp
     Source/PcbPanel.h
     Source/PcbPanel.cpp
 )

@@ -262,6 +262,56 @@ const SchematicToolSpec schematicToolSpecs[] = {
         R"({"type":"object","properties":{"layers":{"type":"integer"},"thickness":{"type":"number"},"edge_clearance":{"type":"number"}},"additionalProperties":false})"
     },
     {
+        "pcb_layout_get",
+        "The parts on the board in the PCB tab: each part's refdes, value, footprint, position (mm, y up), rotation and every pad with its position and net; the route rules; the routing result (connections routed of total, track length, vias, unrouted pads with reasons, design-rule violations) and placement problems.",
+        R"({"type":"object","properties":{},"additionalProperties":false})"
+    },
+    {
+        "pcb_footprints_list",
+        "List the footprints (id, description, pads with positions, sizes and drills, courtyard). With symbol_id, also the footprints that fit that schematic symbol, the default first.",
+        R"({"type":"object","properties":{"symbol_id":{"type":"string","description":"Schematic symbol id such as resistor, npn, opamp_741."}},"additionalProperties":false})"
+    },
+    {
+        "pcb_sync_from_schematic",
+        "Put the open diagram's parts on the board as footprints with the schematic's nets on their pads. New parts are placed in free space (the first time, the whole board is laid out); parts already there keep their place; removed parts come off; changed nets apply. Instruments and ideal controlled sources are left off (listed as skipped). Clears the routing.",
+        R"({"type":"object","properties":{},"additionalProperties":false})"
+    },
+    {
+        "pcb_auto_place",
+        "Place every part again automatically: most-connected first, each where its pads land nearest the pads already placed on the same nets, inside the outline and clear of holes, cutouts, the board edge and other parts. Parts that do not fit are set beside the board and listed. Clears the routing.",
+        R"({"type":"object","properties":{},"additionalProperties":false})"
+    },
+    {
+        "pcb_place_part",
+        "Move a part on the board: its footprint origin to x, y (mm, y up) and optionally its rotation (0, 90, 180, 270 degrees counter-clockwise). Clears the routing; returns placement problems.",
+        R"({"type":"object","properties":{"refdes":{"type":"string"},"x":{"type":"number"},"y":{"type":"number"},"rotation":{"type":"integer"}},"required":["refdes","x","y"],"additionalProperties":false})"
+    },
+    {
+        "pcb_set_footprint",
+        "Change a part's footprint to one that fits its symbol (see pcb_footprints_list with symbol_id), e.g. a resistor to 1206 or Axial-P10.16. Clears the routing.",
+        R"({"type":"object","properties":{"refdes":{"type":"string"},"footprint":{"type":"string"}},"required":["refdes","footprint"],"additionalProperties":false})"
+    },
+    {
+        "pcb_set_route_rules",
+        "Set the routing rules in mm: track width, copper clearance, via diameter and via drill. Omitted fields stay. Clears the routing.",
+        R"({"type":"object","properties":{"track_width":{"type":"number"},"clearance":{"type":"number"},"via_diameter":{"type":"number"},"via_drill":{"type":"number"}},"additionalProperties":false})"
+    },
+    {
+        "pcb_route",
+        "Route every net on the board with the DjehutiRoute autorouter (A* on a grid at track width + clearance, negotiated congestion, vias between layers) using the current rules, or the rules given here, then check the copper with the exact design-rule check. Returns connections routed of total, track length, vias, unrouted pads and violations. The board must be valid and parts placed without problems.",
+        R"({"type":"object","properties":{"track_width":{"type":"number"},"clearance":{"type":"number"},"via_diameter":{"type":"number"},"via_drill":{"type":"number"}},"additionalProperties":false})"
+    },
+    {
+        "pcb_clear_routes",
+        "Remove all tracks and vias from the board (parts stay).",
+        R"({"type":"object","properties":{},"additionalProperties":false})"
+    },
+    {
+        "pcb_drc",
+        "Re-check the board as it is now with the exact design-rule check: track, via and pad clearances, shorts, copper to board edge and cutouts, open connections, and placement problems (parts off the board, overlapping, over holes).",
+        R"({"type":"object","properties":{},"additionalProperties":false})"
+    },
+    {
         "frust_run",
         "Compile Frust source with the app's embedded Frust compiler (in memory, LLVM JIT) and run it in the app. The source must define `pub fn run() -> String`; print_line(text: String) -> i64 adds output lines. Returns the output, or compile diagnostics with line numbers. The code is shown in the Frust panel.",
         R"({"type":"object","properties":{"source":{"type":"string","description":"Frust source defining pub fn run() -> String."}},"required":["source"],"additionalProperties":false})"
@@ -6012,6 +6062,37 @@ public:
         return n;
     }
 
+    // Every part with each pin's net (readable names, as Analytics shows them),
+    // for the PCB. Net markers and sub-diagram plumbing are not parts.
+    std::vector<pcb::SchematicPart> pcbParts() const
+    {
+        const auto netNames = computeNetNames();
+        std::map<juce::String, juce::String> names;
+        std::set<juce::String> used;
+        auto boardNet = [&](const juce::String& net) -> juce::String {
+            if (net.isEmpty() || net == "floating") return {};
+            if (const auto found = names.find(net); found != names.end()) return found->second;
+            auto name = netDisplayName(net, netNames).trim();
+            if (name.isEmpty() || used.count(name.toLowerCase()) != 0) name = net;
+            used.insert(name.toLowerCase());
+            names[net] = name;
+            return name;
+        };
+        std::vector<pcb::SchematicPart> parts;
+        for (int i = 0; i < (int)instances.size(); ++i)
+        {
+            const auto& inst = instances[(size_t)i];
+            if (isNetMarker(inst.symbolId) || inst.symbolId == "sub_block" || inst.symbolId == "block_port" || inst.symbolId == "annotation_text")
+                continue;
+            pcb::SchematicPart part { inst.refdes, inst.symbolId, inst.value, {} };
+            const auto symbol = symbolForInstance(inst);
+            for (int p = 0; p < (int)symbol.pins.size(); ++p)
+                part.pins.push_back({ symbol.pins[(size_t)p].name, boardNet(netFor({ i, p }, netNames)) });
+            parts.push_back(part);
+        }
+        return parts;
+    }
+
 private:
     // Pin label (R1.2, SCOPE1.CH1) -> solver node, or -1.
     int simNodeForLabel(const SimNetlist& sim, const juce::String& label, juce::String& error) const
@@ -9443,6 +9524,9 @@ public:
                                    const juce::String&, const juce::String&, const juce::String&)> capabilityGapRecord;
         std::function<juce::String()> toolManifest;
         std::function<juce::String(const juce::String&, const juce::var&)> schematicTool;
+        // Long-running tools (PCB routing): called on the message thread; when it
+        // returns true it has taken the call and calls `done` with the result later.
+        std::function<bool(const juce::String&, const juce::var&, std::function<void(juce::String)>)> longTool;
         std::function<void(const juce::String&)> log;
     };
 
@@ -9884,6 +9968,12 @@ private:
             ai_provider::ToolCall call;
             call.name = name.toStdString();
             call.argumentsJson = juce::JSON::toString(arguments, true).toStdString();
+            if (tools.longTool != nullptr
+                && tools.longTool(name.replaceCharacter('.', '_'), arguments, [completion](juce::String result) {
+                       const auto parsed = juce::JSON::parse(result);
+                       completion(!parsed.isObject() || (bool)parsed.getProperty("ok", true), result, {});
+                   }))
+                return;
             const auto result = executeToolNow(call);
             const auto parsed = juce::JSON::parse(result);
             completion(!parsed.isObject() || (bool)parsed.getProperty("ok", true), result, {});
@@ -10320,7 +10410,16 @@ private:
             if (safeThis == nullptr)
                 wait->result = "{ \"ok\": false, \"error\": \"Assistant panel closed.\" }";
             else
+            {
+                const auto name = juce::String(call.name).replaceCharacter('.', '_');
+                if (safeThis->tools.longTool != nullptr
+                    && safeThis->tools.longTool(name, juce::JSON::parse(juce::String(call.argumentsJson)), [wait](juce::String result) {
+                           wait->result = result;
+                           wait->done.signal();
+                       }))
+                    return;
                 wait->result = safeThis->executeToolNow(call);
+            }
             wait->done.signal();
         });
 
@@ -10626,14 +10725,23 @@ ElectronicsWorkbench::ElectronicsWorkbench()
     // The board (PCB tab) is saved in the same diagram file, under "pcb".
     auto pcbOwner = std::make_unique<PcbPanel>();
     pcbPanel = pcbOwner.get();
+    pcbPanel->getSchematicParts = [schematicPanel, propertiesPanel] {
+        propertiesPanel->commitPending();
+        return schematicPanel->pcbParts();
+    };
     resetCircuit = [this, panel = schematic.get()] {
         panel->clearCircuit();
-        if (pcbPanel != nullptr) pcbPanel->setDesign(pcb::BoardDesign::standard("fab-100"), true);
+        if (pcbPanel != nullptr)
+        {
+            pcbPanel->setDesign(pcb::BoardDesign::standard("fab-100"), true);
+            pcbPanel->setLayout({}, true);
+        }
     };
     getCircuitJson = [this, panel = schematic.get()] {
         auto json = panel->buildCircuitJson().trimEnd();
         if (pcbPanel != nullptr && json.endsWithChar('}'))
-            json = json.dropLastCharacters(1).trimEnd() + ",\n  \"pcb\": " + juce::JSON::toString(pcbPanel->design().toVar(), true) + "\n}";
+            json = json.dropLastCharacters(1).trimEnd() + ",\n  \"pcb\": " + juce::JSON::toString(pcbPanel->design().toVar(), true)
+                 + ",\n  \"pcb_layout\": " + juce::JSON::toString(pcbPanel->layoutState().toVar(), true) + "\n}";
         return json;
     };
     getXyceNetlist = [panel = schematic.get()] { return panel->buildXyceNetlist(); };
@@ -10642,7 +10750,11 @@ ElectronicsWorkbench::ElectronicsWorkbench()
         if (!panel->loadCircuitJson(json, error))
             return false;
         if (pcbPanel != nullptr)
-            pcbPanel->setDesign(pcb::BoardDesign::fromVar(juce::JSON::parse(json).getProperty("pcb", {})), true);
+        {
+            const auto parsed = juce::JSON::parse(json);
+            pcbPanel->setDesign(pcb::BoardDesign::fromVar(parsed.getProperty("pcb", {})), true);
+            pcbPanel->setLayout(pcb::Layout::fromVar(parsed.getProperty("pcb_layout", {})), true);
+        }
         return true;
     };
     placeSymbolTool = [panel = schematic.get()](const juce::String& symbolId,
@@ -10764,6 +10876,29 @@ ElectronicsWorkbench::ElectronicsWorkbench()
         return capabilityGapRecordTool(category, description, neededCapability, evidence, source, status);
     };
     agentTools.toolManifest = [this] { return buildAssistantToolManifestJson(); };
+    agentTools.longTool = [this](const juce::String& name, const juce::var& args, std::function<void(juce::String)> done) {
+        if (name != "pcb_route" || pcbPanel == nullptr)
+            return false;
+        if (pcbPanel->isRouting())
+        {
+            done(R"({"ok": false, "tool": "pcb_route", "error": "The board is already being routed."})");
+            return true;
+        }
+        auto rules = pcbPanel->layoutState().rules;
+        auto set = [&](const char* key, double& field) {
+            if (args.hasProperty(key) && (double)args.getProperty(key, 0.0) > 0.0) field = (double)args.getProperty(key, field);
+        };
+        set("track_width", rules.trackWidth);
+        set("clearance", rules.clearance);
+        set("via_diameter", rules.viaDiameter);
+        set("via_drill", rules.viaDrill);
+        juce::Component::SafePointer<ElectronicsWorkbench> safe(this);
+        pcbPanel->route(rules, [safe, done] {
+            done(safe != nullptr ? safe->pcbLayoutTool("pcb_route_result", juce::var(new juce::DynamicObject()))
+                                 : juce::String(R"({"ok": false, "tool": "pcb_route", "error": "The app closed."})"));
+        });
+        return true;
+    };
     agentTools.schematicTool = [this, schematicPanel](const juce::String& name, const juce::var& args) {
         if (name.startsWith("project_") || name.startsWith("diagram_"))
             return projectTool(name, args);
@@ -10773,6 +10908,8 @@ ElectronicsWorkbench::ElectronicsWorkbench()
             return frustTool(name, args);
         if (name.startsWith("pcb_board_"))
             return pcbTool(name, args);
+        if (name.startsWith("pcb_"))
+            return pcbLayoutTool(name, args);
         return schematicPanel->runSchematicTool(name, args);
     };
     schematicPanel->outputDirectory = [this] { return generatedRunDirectory(); };
@@ -13244,3 +13381,226 @@ void ElectronicsWorkbench::showSpecDocument()
     appendLog("Research spec path: " + spec.getFullPathName());
 }
 
+
+// The parts on the board and their routing (pcb_* tools other than pcb_board_*).
+juce::String ElectronicsWorkbench::pcbLayoutTool(const juce::String& name, const juce::var& args)
+{
+    auto pointVar = [](pcb::Point p) {
+        juce::Array<juce::var> a { std::round(p.x * 1000.0) / 1000.0, std::round(p.y * 1000.0) / 1000.0 };
+        return juce::var(a);
+    };
+    auto markersVar = [&](const std::vector<pcb::Marker>& list) {
+        juce::Array<juce::var> a;
+        for (const auto& m : list)
+        {
+            auto* o = new juce::DynamicObject();
+            o->setProperty("kind", m.kind);
+            o->setProperty("message", m.message);
+            if (m.located) o->setProperty("at", pointVar(m.at));
+            a.add(juce::var(o));
+        }
+        return a;
+    };
+    auto reply = [&](bool ok, const juce::String& error, bool withPads, juce::DynamicObject* extra) {
+        auto* root = extra != nullptr ? extra : new juce::DynamicObject();
+        root->setProperty("ok", ok);
+        root->setProperty("tool", name == "pcb_route_result" ? juce::String("pcb_route") : name);
+        if (error.isNotEmpty()) root->setProperty("error", error);
+        if (pcbPanel != nullptr)
+        {
+            const auto& l = pcbPanel->layoutState();
+            juce::Array<juce::var> parts;
+            for (const auto& p : l.parts)
+            {
+                auto* o = new juce::DynamicObject();
+                o->setProperty("refdes", p.refdes);
+                o->setProperty("symbol", p.symbolId);
+                o->setProperty("value", p.value);
+                o->setProperty("footprint", p.footprint);
+                o->setProperty("at", pointVar(p.at));
+                o->setProperty("rotation", p.rotation);
+                if (withPads)
+                {
+                    juce::Array<juce::var> pads;
+                    for (const auto& pad : pcb::padsOf(p))
+                    {
+                        auto* q = new juce::DynamicObject();
+                        q->setProperty("pad", pad.number);
+                        q->setProperty("pin", pad.pin);
+                        q->setProperty("net", pad.net);
+                        q->setProperty("at", pointVar(pad.centre));
+                        pads.add(juce::var(q));
+                    }
+                    o->setProperty("pads", pads);
+                }
+                parts.add(juce::var(o));
+            }
+            root->setProperty("parts", parts);
+            auto* rules = new juce::DynamicObject();
+            rules->setProperty("track_width", l.rules.trackWidth);
+            rules->setProperty("clearance", l.rules.clearance);
+            rules->setProperty("via_diameter", l.rules.viaDiameter);
+            rules->setProperty("via_drill", l.rules.viaDrill);
+            root->setProperty("rules", juce::var(rules));
+            root->setProperty("nets", juce::var(pcb::netNames(l)));
+            root->setProperty("placementProblems", juce::var(pcb::placementProblems(l, pcbPanel->design())));
+            root->setProperty("routed", l.routed);
+            if (l.routeError.isNotEmpty()) root->setProperty("routeError", l.routeError);
+            if (l.routed)
+            {
+                double length = 0.0;
+                for (const auto& t : l.tracks)
+                    for (size_t i = 1; i < t.points.size(); ++i) length += t.points[i - 1].getDistanceFrom(t.points[i]);
+                root->setProperty("connections", l.connections);
+                root->setProperty("routedConnections", l.routedConnections);
+                root->setProperty("passes", l.iterations);
+                root->setProperty("seconds", l.seconds);
+                root->setProperty("trackLengthMm", std::round(length * 100.0) / 100.0);
+                root->setProperty("tracks", (int)l.tracks.size());
+                root->setProperty("vias", (int)l.vias.size());
+                root->setProperty("unrouted", juce::var(l.unrouted));
+                root->setProperty("violations", markersVar(l.violations));
+            }
+        }
+        return juce::JSON::toString(juce::var(root), true);
+    };
+    if (pcbPanel == nullptr)
+        return reply(false, "The PCB tab is unavailable.", false, nullptr);
+
+    auto applyRules = [&](pcb::Layout& l) {
+        auto set = [&](const char* key, double& field) {
+            if (args.hasProperty(key) && (double)args.getProperty(key, 0.0) > 0.0) field = (double)args.getProperty(key, field);
+        };
+        set("track_width", l.rules.trackWidth);
+        set("clearance", l.rules.clearance);
+        set("via_diameter", l.rules.viaDiameter);
+        set("via_drill", l.rules.viaDrill);
+    };
+
+    if (name == "pcb_layout_get")
+        return reply(true, {}, true, nullptr);
+    if (name == "pcb_footprints_list")
+    {
+        auto* root = new juce::DynamicObject();
+        root->setProperty("ok", true);
+        root->setProperty("tool", name);
+        juce::Array<juce::var> list;
+        for (const auto& f : pcb::footprints())
+        {
+            auto* o = new juce::DynamicObject();
+            o->setProperty("id", f.id);
+            o->setProperty("name", f.name);
+            o->setProperty("description", f.description);
+            o->setProperty("courtyard", pointVar({ f.courtyardW, f.courtyardH }));
+            juce::Array<juce::var> pads;
+            for (const auto& d : f.pads)
+            {
+                auto* q = new juce::DynamicObject();
+                q->setProperty("pad", d.number);
+                q->setProperty("at", pointVar({ d.x, d.y }));
+                q->setProperty("size", pointVar({ d.w, d.h }));
+                q->setProperty("shape", d.round ? "round" : "rect");
+                if (d.drill > 0.0) q->setProperty("drill", d.drill);
+                pads.add(juce::var(q));
+            }
+            o->setProperty("pads", pads);
+            list.add(juce::var(o));
+        }
+        root->setProperty("footprints", list);
+        const auto symbol = args.getProperty("symbol_id", "").toString();
+        if (symbol.isNotEmpty())
+        {
+            root->setProperty("symbol_id", symbol);
+            root->setProperty("fits", juce::var(pcb::footprintsFor(symbol)));
+            const auto reason = pcb::notOnBoardReason(symbol);
+            if (reason.isNotEmpty()) root->setProperty("notOnBoard", reason);
+        }
+        return juce::JSON::toString(juce::var(root), true);
+    }
+    if (name == "pcb_sync_from_schematic")
+    {
+        const auto report = pcbPanel->syncFromSchematic();
+        auto* extra = new juce::DynamicObject();
+        extra->setProperty("added", juce::var(report.added));
+        extra->setProperty("updated", juce::var(report.updated));
+        extra->setProperty("removed", juce::var(report.removed));
+        extra->setProperty("skipped", juce::var(report.skipped));
+        return reply(true, {}, false, extra);
+    }
+    if (name == "pcb_auto_place")
+    {
+        const auto notPlaced = pcbPanel->autoPlace();
+        auto* extra = new juce::DynamicObject();
+        extra->setProperty("didNotFit", juce::var(notPlaced));
+        return reply(true, {}, false, extra);
+    }
+    if (name == "pcb_place_part" || name == "pcb_set_footprint")
+    {
+        auto next = pcbPanel->layoutState();
+        const auto refdes = args.getProperty("refdes", "").toString();
+        auto* part = next.find(refdes);
+        if (part == nullptr)
+            return reply(false, "No part " + refdes + " on the board; see pcb_layout_get (or pcb_sync_from_schematic first).", false, nullptr);
+        if (name == "pcb_place_part")
+        {
+            part->at = { (double)args.getProperty("x", part->at.x), (double)args.getProperty("y", part->at.y) };
+            if (args.hasProperty("rotation"))
+            {
+                const int r = (int)args.getProperty("rotation", 0);
+                if (r != 0 && r != 90 && r != 180 && r != 270)
+                    return reply(false, "Rotation must be 0, 90, 180 or 270.", false, nullptr);
+                part->rotation = r;
+            }
+        }
+        else
+        {
+            const auto footprint = args.getProperty("footprint", "").toString();
+            const auto options = pcb::footprintsFor(part->symbolId);
+            const int index = options.indexOf(footprint, true);
+            if (index < 0)
+                return reply(false, footprint + " does not fit " + part->symbolId + "; fits: " + options.joinIntoString(", ") + ".", false, nullptr);
+            part->footprint = options[index];
+        }
+        next.clearRoute();
+        pcbPanel->setLayout(next);
+        return reply(true, {}, false, nullptr);
+    }
+    if (name == "pcb_set_route_rules")
+    {
+        auto next = pcbPanel->layoutState();
+        applyRules(next);
+        next.clearRoute();
+        pcbPanel->setLayout(next);
+        return reply(true, {}, false, nullptr);
+    }
+    if (name == "pcb_route")
+    {
+        auto next = pcbPanel->layoutState();
+        applyRules(next);
+        pcb::routeLayout(next, pcbPanel->design());
+        pcbPanel->setLayout(next);
+        const auto& l = pcbPanel->layoutState();
+        return reply(l.routed, l.routeError, false, nullptr);
+    }
+    if (name == "pcb_route_result")
+    {
+        const auto& l = pcbPanel->layoutState();
+        return reply(l.routed, l.routeError, false, nullptr);
+    }
+    if (name == "pcb_clear_routes")
+    {
+        auto next = pcbPanel->layoutState();
+        next.clearRoute();
+        pcbPanel->setLayout(next);
+        return reply(true, {}, false, nullptr);
+    }
+    if (name == "pcb_drc")
+    {
+        const auto markers = pcb::checkLayout(pcbPanel->layoutState(), pcbPanel->design());
+        auto* extra = new juce::DynamicObject();
+        extra->setProperty("drcViolations", (int)markers.size());
+        extra->setProperty("drc", markersVar(markers));
+        return reply(true, {}, false, extra);
+    }
+    return reply(false, "Unknown PCB tool " + name + ".", false, nullptr);
+}
