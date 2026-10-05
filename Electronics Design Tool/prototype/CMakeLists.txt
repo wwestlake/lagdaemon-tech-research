@@ -33,6 +33,33 @@ if(NOT TARGET ai_provider)
     add_subdirectory("${FRUSTLANG_ROOT}/projects/04_ai_provider" ai_provider_build)
 endif()
 
+# The Frust compiler, embedded: the app writes Frust source, compiles it in
+# memory (LLVM JIT through frust_plugin_host) and calls the compiled functions.
+# Same machine paths as Frust's own windows-vcpkg preset; LLVM is the existing
+# install, never rebuilt and never fetched through vcpkg.
+set(FRUST_VCPKG_INSTALLED_DIR "D:/000 Creation Suite/apps/CreationEngine/vcpkg_installed/x64-windows" CACHE PATH
+    "Existing vcpkg_installed/<triplet> directory containing LLVM; Frust never runs vcpkg.")
+set(FLEX_EXECUTABLE "D:/tools/winflexbison/win_flex.exe" CACHE FILEPATH "Flex for the Frust grammar")
+set(BISON_EXECUTABLE "D:/tools/winflexbison/win_bison.exe" CACHE FILEPATH "Bison for the Frust grammar")
+set(FRUST_WINFLEXBISON_DIR "D:/tools/winflexbison" CACHE PATH "WinFlexBison directory (FlexLexer.h)")
+if(NOT TARGET frate_lib)
+    add_subdirectory("${FRUSTLANG_ROOT}/projects/05_frate" frust_frate_build)
+endif()
+if(NOT TARGET frust_lang)
+    add_subdirectory("${FRUSTLANG_ROOT}/projects/01_language_paradigms/02_functional" frust_lang_build)
+endif()
+if(NOT TARGET frust_plugin_host)
+    add_subdirectory("${FRUSTLANG_ROOT}/projects/09_frust_plugin_host" frust_plugin_host_build)
+endif()
+if(MSVC)
+    # Frust's targets share an archive/PDB directory; one compiler process at a time.
+    foreach(frust_target frate_lib frust_lang frust_runtime frust_plugin_host)
+        if(TARGET ${frust_target})
+            target_compile_options(${frust_target} PRIVATE /FS /MP1)
+        endif()
+    endforeach()
+endif()
+
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY_DEBUG   "${CMAKE_CURRENT_SOURCE_DIR}/bin/Debug")
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY_RELEASE "${CMAKE_CURRENT_SOURCE_DIR}/bin/Release")
 
@@ -103,6 +130,10 @@ target_sources(DjehutiElectronicsLab PRIVATE
     Source/ElectronicsKnowledge.cpp
     Source/LocalAgentApi.h
     Source/LocalAgentApi.cpp
+    Source/FrustEngine.h
+    Source/FrustEngine.cpp
+    Source/FrustPanel.h
+    Source/FrustPanel.cpp
 )
 
 target_compile_definitions(DjehutiElectronicsLab PRIVATE
@@ -118,6 +149,7 @@ target_link_libraries(DjehutiElectronicsLab PRIVATE
     CreationDock
     ai_provider
     libavoid
+    frust_plugin_host
     juce::juce_core
     juce::juce_data_structures
     juce::juce_events
@@ -127,6 +159,15 @@ target_link_libraries(DjehutiElectronicsLab PRIVATE
 )
 
 juce_generate_juce_header(DjehutiElectronicsLab)
+
+# Headless check that the embedded Frust compiler compiles and runs code.
+juce_add_console_app(FrustEngineSmoke PRODUCT_NAME "Frust Engine Smoke")
+set_target_properties(FrustEngineSmoke PROPERTIES OUTPUT_NAME "frust_engine_smoke")
+target_sources(FrustEngineSmoke PRIVATE tools/frust_smoke/FrustSmoke.cpp Source/FrustEngine.cpp)
+target_include_directories(FrustEngineSmoke PRIVATE Source)
+target_compile_definitions(FrustEngineSmoke PRIVATE JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0)
+target_link_libraries(FrustEngineSmoke PRIVATE frust_plugin_host juce::juce_core)
+juce_generate_juce_header(FrustEngineSmoke)
 
 # Circuit solver checks against hand-calculated results (plain C++, no JUCE).
 add_executable(CircuitSolverTests

@@ -8,6 +8,7 @@
 #include "CircuitSolver.h"
 #include "Analytics.h"
 #include "AnalyticsPanel.h"
+#include "FrustPanel.h"
 #include "Preferences.h"
 
 #include <ai_provider/AiConfig.h>
@@ -212,6 +213,16 @@ const SchematicToolSpec schematicToolSpecs[] = {
         "diagram_delete",
         "Remove a diagram from the open project. Its file is moved to the project's deleted folder, not erased.",
         R"({"type":"object","properties":{"name":{"type":"string","description":"Diagram name."}},"required":["name"],"additionalProperties":false})"
+    },
+    {
+        "frust_run",
+        "Compile Frust source with the app's embedded Frust compiler (in memory, LLVM JIT) and run it in the app. The source must define `pub fn run() -> String`; print_line(text: String) -> i64 adds output lines. Returns the output, or compile diagnostics with line numbers. The code is shown in the Frust panel.",
+        R"({"type":"object","properties":{"source":{"type":"string","description":"Frust source defining pub fn run() -> String."}},"required":["source"],"additionalProperties":false})"
+    },
+    {
+        "frust_check",
+        "Compile Frust source with the embedded compiler without running it and return any diagnostics (file, line, column, message). Same source rules as frust_run.",
+        R"({"type":"object","properties":{"source":{"type":"string","description":"Frust source defining pub fn run() -> String."}},"required":["source"],"additionalProperties":false})"
     },
     {
         "instrument_read",
@@ -8783,10 +8794,7 @@ public:
     ConsolePanel(juce::TextEditor*& externalLog)
     {
         styleTextEditor(console, true);
-        console.setReadOnly(false);
-        console.setText("// Embedded Frust math console research stub\n"
-                        "// Future: circuit API, datasets, FFT, solvers, plots.\n\n"
-                        "> ");
+        console.setReadOnly(true);
         externalLog = &console;
         addAndMakeVisible(console);
     }
@@ -10699,6 +10707,8 @@ ElectronicsWorkbench::ElectronicsWorkbench()
             return projectTool(name, args);
         if (name.startsWith("analytics_"))
             return analyticsTool(name, args);
+        if (name == "frust_check" || name == "frust_run")
+            return frustTool(name, args);
         return schematicPanel->runSchematicTool(name, args);
     };
     schematicPanel->outputDirectory = [this] { return generatedRunDirectory(); };
@@ -10714,7 +10724,10 @@ ElectronicsWorkbench::ElectronicsWorkbench()
     openAgentSettingsDialog = [agentPanel] { agentPanel->showAiSettingsForSelected(); };
     dockManager->registerPanel("schematic", "Schematic", std::move(schematic), CreationDock::DockTargetZone::CenterTab);
     analyticsDockPanel = dockManager->registerPanel("analytics", "Analytics", std::move(analyticsOwner), CreationDock::DockTargetZone::CenterTab);
-    dockManager->registerPanel("console", "Frust Math Console", std::make_unique<ConsolePanel>(logConsole), CreationDock::DockTargetZone::Bottom);
+    auto frustOwner = std::make_unique<FrustPanel>();
+    frustPanel = frustOwner.get();
+    dockManager->registerPanel("frust", "Frust", std::move(frustOwner), CreationDock::DockTargetZone::Bottom);
+    dockManager->registerPanel("console", "Console", std::make_unique<ConsolePanel>(logConsole), CreationDock::DockTargetZone::Bottom);
     dockManager->registerPanel("agent", "BYOK Agent", std::move(agent), CreationDock::DockTargetZone::Right);
     dockManager->registerPanel("properties", "Properties", std::move(properties), CreationDock::DockTargetZone::Right);
     dockManager->registerPanel("ingestion", "Spec Ingestion", std::make_unique<SpecIngestionPanel>(), CreationDock::DockTargetZone::Right);
@@ -12949,6 +12962,39 @@ juce::String ElectronicsWorkbench::analyticsTool(const juce::String& name, const
         return fail("Unknown analytics tool.");
     const auto& run = analyticsPanel->runNow(info->id, settingsFrom(args));
     return analytics::toJson(run.result, run.files);
+}
+
+juce::String ElectronicsWorkbench::frustTool(const juce::String& name, const juce::var& args)
+{
+    auto* root = new juce::DynamicObject();
+    root->setProperty("tool", name);
+    if (frustPanel == nullptr)
+    {
+        root->setProperty("ok", false);
+        root->setProperty("error", "The Frust panel is unavailable.");
+        return juce::JSON::toString(juce::var(root));
+    }
+    const auto source = args.getProperty("source", {}).toString();
+    const auto result = name == "frust_run" ? frustPanel->runNow(source) : frustPanel->checkNow(source);
+    root->setProperty("ok", result.ok);
+    if (name == "frust_run" && result.ok)
+        root->setProperty("output", juce::String(result.output));
+    if (!result.error.empty())
+        root->setProperty("error", juce::String(result.error));
+    juce::Array<juce::var> diagnostics;
+    for (const auto& d : result.diagnostics)
+    {
+        auto* o = new juce::DynamicObject();
+        o->setProperty("severity", d.error ? "error" : "warning");
+        o->setProperty("line", d.line);
+        o->setProperty("column", d.column);
+        o->setProperty("message", juce::String(d.message));
+        diagnostics.add(juce::var(o));
+    }
+    root->setProperty("diagnostics", diagnostics);
+    root->setProperty("compileMs", result.compileMs);
+    if (name == "frust_run") root->setProperty("runMs", result.runMs);
+    return juce::JSON::toString(juce::var(root), true);
 }
 
 juce::String ElectronicsWorkbench::autoLayoutDiagramTool()
