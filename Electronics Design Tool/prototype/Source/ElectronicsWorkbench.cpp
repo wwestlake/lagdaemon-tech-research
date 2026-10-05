@@ -4767,7 +4767,8 @@ private:
         {
             auto pins = crossings[k].out;
             pins.push_back({ blockIndex, (int)k });
-            outsideNets.push_back(pins);
+            if (pins.size() >= 2)
+                outsideNets.push_back(pins);
         }
         wireNetsOnCurrentSheet(outsideNets);
 
@@ -4780,7 +4781,8 @@ private:
         {
             auto pins = crossings[k].in;
             pins.push_back({ bubbleIndex[k], 0 });
-            insideNets.push_back(pins);
+            if (pins.size() >= 2)
+                insideNets.push_back(pins);
         }
         wireNetsOnCurrentSheet(insideNets);
         if (prefs::isOn("layout.subdiagram_inner_layout"))
@@ -4788,6 +4790,12 @@ private:
         currentSheet = parentSheet;
         routeSignature.clear();
         const auto finalBlock = blockForSheet(child); // the inner layout renumbered instances
+        if (finalBlock < 0)
+        {
+            error = "Sub-diagram was created, but its block could not be found after layout.";
+            forceDeferredRepaint();
+            return {};
+        }
 
         for (const auto& probeId : droppedProbes)
             if (onProbeChanged) onProbeChanged(probeId, {}, {});
