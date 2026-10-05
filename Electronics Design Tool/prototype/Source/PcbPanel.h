@@ -39,6 +39,10 @@ public:
     // message thread. `rules` replace the current ones for this route.
     void route(std::optional<pcb::RouteRules> rules = {}, std::function<void()> finished = {});
     bool isRouting() const { return routing; }
+    // Compares the board's copper with the schematic as it is now (see pcb::verifyNetlist).
+    const pcb::NetlistCheck& verify();
+    const pcb::NetlistCheck& lastVerification() const { return verification; }
+    void visibilityChanged() override;
 
     void paint(juce::Graphics& g) override;
     void resized() override;
@@ -65,12 +69,13 @@ private:
     std::deque<Snapshot> undoStack;
     juce::String selectedPart;
     juce::String lastReport;
+    pcb::NetlistCheck verification;
 
     std::unique_ptr<Canvas> canvas;
     juce::Component sidebar;
     juce::Viewport sidebarViewport;
     juce::OwnedArray<juce::Component> sidebarItems;
-    juce::Label info, problems, routeInfo;
+    juce::Label info, problems, routeInfo, verifyInfo;
     bool rebuilding = false;
     bool routing = false;
 };

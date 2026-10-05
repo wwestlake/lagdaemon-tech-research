@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <functional>
 #include <limits>
 #include <set>
 
@@ -753,6 +754,192 @@ std::vector<Marker> checkLayout(const Layout& layout, const BoardDesign& board)
     for (const auto& p : placementProblems(layout, board))
         markers.push_back({ "Placement", p, {}, false });
     return markers;
+}
+
+juce::String netlistCheckNote()
+{
+    return "Pads map to schematic pins by each footprint's standard pinout (pcb_footprints_list); check those against your parts' datasheets.";
+}
+
+NetlistCheck verifyNetlist(const Layout& layout, const BoardDesign& board, const std::vector<SchematicPart>& schematic)
+{
+    NetlistCheck check;
+    check.routed = layout.routed;
+    const int layers = std::max(1, board.layers);
+
+    // ---- Copper items: pads (shapes) and capsules (track segments, vias).
+    struct Item
+    {
+        bool isPad = false;
+        dr::Shape shape;
+        dr::Point a, b;
+        double radius = 0.0; // nm
+        int firstLayer = 0, lastLayer = 0;
+        dr::Rect box;
+        int pad = -1;
+    };
+    std::vector<Item> items;
+    const auto pads = allPads(layout);
+    for (size_t i = 0; i < pads.size(); ++i)
+    {
+        Item it;
+        it.isPad = true;
+        it.shape = shapeOf(pads[i]);
+        it.firstLayer = 0;
+        it.lastLayer = pads[i].drill > 0.0 ? layers - 1 : 0;
+        it.box = it.shape.bounds();
+        it.pad = (int)i;
+        items.push_back(it);
+    }
+    for (const auto& t : layout.tracks)
+        for (size_t k = 1; k < t.points.size(); ++k)
+        {
+            Item it;
+            it.a = { dr::mm(t.points[k - 1].x), dr::mm(t.points[k - 1].y) };
+            it.b = { dr::mm(t.points[k].x), dr::mm(t.points[k].y) };
+            it.radius = (double)dr::mm(t.width) / 2.0;
+            it.firstLayer = it.lastLayer = t.layer;
+            it.box = dr::segmentBounds(it.a, it.b).expanded((dr::Coord)std::ceil(it.radius));
+            items.push_back(it);
+        }
+    for (const auto& v : layout.vias)
+    {
+        Item it;
+        it.a = it.b = { dr::mm(v.at.x), dr::mm(v.at.y) };
+        it.radius = (double)dr::mm(v.diameter) / 2.0;
+        it.firstLayer = 0;
+        it.lastLayer = layers - 1;
+        it.box = dr::segmentBounds(it.a, it.b).expanded((dr::Coord)std::ceil(it.radius));
+        items.push_back(it);
+    }
+
+    std::vector<int> parent(items.size());
+    for (size_t i = 0; i < parent.size(); ++i) parent[i] = (int)i;
+    std::function<int(int)> find = [&](int x) { return parent[(size_t)x] == x ? x : parent[(size_t)x] = find(parent[(size_t)x]); };
+    auto touching = [](const Item& x, const Item& y) {
+        if (x.isPad && y.isPad) return x.shape.distanceTo(y.shape) <= 1.0;
+        if (x.isPad) return x.shape.distanceTo(y.a, y.b) <= y.radius + 1.0;
+        if (y.isPad) return y.shape.distanceTo(x.a, x.b) <= x.radius + 1.0;
+        return dr::segmentSegmentDistance(x.a, x.b, y.a, y.b) <= x.radius + y.radius + 1.0;
+    };
+    for (size_t i = 0; i < items.size(); ++i)
+        for (size_t j = i + 1; j < items.size(); ++j)
+        {
+            const auto& x = items[i];
+            const auto& y = items[j];
+            if (std::max(x.firstLayer, y.firstLayer) > std::min(x.lastLayer, y.lastLayer)) continue;
+            if (!x.box.expanded(2).intersects(y.box)) continue;
+            if (touching(x, y)) parent[(size_t)find((int)i)] = find((int)j);
+        }
+
+    // ---- Parts: present on both sides, same symbol, every pin has a pad.
+    std::map<juce::String, const SchematicPart*> sch;
+    for (const auto& sp : schematic)
+        if (notOnBoardReason(sp.symbolId).isEmpty()) sch[sp.refdes.toLowerCase()] = &sp;
+    std::set<juce::String> comparable; // refdes (lower case) compared pin by pin
+    for (const auto& [key, sp] : sch)
+    {
+        const auto* part = layout.find(sp->refdes);
+        if (part == nullptr)
+            check.problems.add(sp->refdes + " is in the schematic but not on the board.");
+        else if (part->symbolId != sp->symbolId)
+            check.problems.add(sp->refdes + " is a " + sp->symbolId + " in the schematic but a " + part->symbolId + " on the board.");
+        else
+            comparable.insert(key);
+    }
+    for (const auto& part : layout.parts)
+        if (sch.count(part.refdes.toLowerCase()) == 0)
+            check.problems.add(part.refdes + " is on the board but not in the schematic.");
+
+    // Pin label -> schematic net key, and -> board node.
+    std::map<juce::String, juce::String> netOf;   // "R1.2" -> net name, or "~R1.2" when unconnected
+    std::map<juce::String, int> nodeOf;           // "R1.2" -> copper node
+    std::map<juce::String, juce::String> shownNet; // net key -> how to show it
+    for (const auto& key : comparable)
+    {
+        const auto* sp = sch[key];
+        const auto* part = layout.find(sp->refdes);
+        std::set<juce::String> symbolPins;
+        for (const auto& [pin, net] : sp->pins)
+        {
+            symbolPins.insert(pin);
+            const auto label = sp->refdes + "." + pin;
+            int pad = -1;
+            for (size_t i = 0; i < pads.size(); ++i)
+                if (pads[i].refdes == part->refdes && pads[i].pin == pin) { pad = (int)i; break; }
+            if (pad < 0)
+            {
+                check.problems.add(label + " has no pad on footprint " + part->footprint + ".");
+                continue;
+            }
+            const auto netKey = net.isNotEmpty() ? net : "~" + label;
+            netOf[label] = netKey;
+            shownNet[netKey] = net.isNotEmpty() ? "net " + net : label + " (unconnected in the schematic)";
+            nodeOf[label] = find(pad);
+        }
+        for (size_t i = 0; i < pads.size(); ++i)
+        {
+            if (pads[i].refdes != part->refdes) continue;
+            const auto label = pads[i].pin.isNotEmpty() ? sp->refdes + "." + pads[i].pin : sp->refdes + " pad " + pads[i].number;
+            if (pads[i].pin.isNotEmpty() && symbolPins.count(pads[i].pin) == 0)
+                check.problems.add(sp->refdes + " pad " + pads[i].number + " carries pin " + pads[i].pin + ", which " + sp->symbolId + " does not have.");
+            if (pads[i].pin.isEmpty())
+            {
+                // A not-connected pad is its own net: copper to it is an extra connection.
+                netOf[label] = "~" + label;
+                shownNet["~" + label] = label + " (not connected)";
+                nodeOf[label] = find((int)i);
+            }
+        }
+    }
+    check.pinsCompared = (int)netOf.size();
+
+    auto listOf = [](const std::vector<juce::String>& labels) {
+        juce::StringArray a;
+        for (size_t i = 0; i < labels.size() && i < 6; ++i) a.add(labels[i]);
+        return a.joinIntoString(", ") + (labels.size() > 6 ? ", ..." : "");
+    };
+    if (layout.routed)
+    {
+        // Opens: a schematic net whose pins sit on more than one copper node.
+        std::map<juce::String, std::map<int, std::vector<juce::String>>> byNet;
+        for (const auto& [label, net] : netOf) byNet[net][nodeOf[label]].push_back(label);
+        for (const auto& [net, nodes] : byNet)
+        {
+            size_t pins = 0;
+            for (const auto& [node, labels] : nodes) pins += labels.size();
+            if (pins >= 2) ++check.schematicNets;
+            if (nodes.size() < 2) continue;
+            juce::StringArray groups;
+            for (const auto& [node, labels] : nodes) groups.add("{" + listOf(labels) + "}");
+            check.problems.add("Open: " + shownNet[net] + " is in " + juce::String((int)nodes.size()) + " unconnected pieces on the board: "
+                               + groups.joinIntoString(" | ") + ".");
+        }
+        // Shorts: copper joining pins of different schematic nets.
+        std::map<int, std::map<juce::String, std::vector<juce::String>>> byNode;
+        for (const auto& [label, node] : nodeOf) byNode[node][netOf[label]].push_back(label);
+        for (const auto& [node, nets] : byNode)
+        {
+            size_t pins = 0;
+            for (const auto& [net, labels] : nets) pins += labels.size();
+            if (pins >= 2) ++check.boardNodes;
+            if (nets.size() < 2) continue;
+            juce::StringArray groups;
+            for (const auto& [net, labels] : nets) groups.add(shownNet[net] + " {" + listOf(labels) + "}");
+            check.problems.add("Short: copper joins " + groups.joinIntoString(" and ") + ".");
+        }
+    }
+
+    check.matches = layout.routed && check.problems.isEmpty();
+    if (!layout.routed)
+        check.summary = check.problems.isEmpty() ? "Not routed yet: the copper cannot be compared with the schematic."
+                                                 : "Not routed yet, and the parts do not match the schematic:";
+    else if (check.matches)
+        check.summary = "Board matches the schematic: " + juce::String(check.pinsCompared) + " pins, " + juce::String(check.schematicNets)
+                      + " nets, connectivity taken from the copper.";
+    else
+        check.summary = "Board does NOT match the schematic: " + juce::String(check.problems.size()) + " problem(s).";
+    return check;
 }
 
 std::vector<std::pair<Point, Point>> ratsnest(const Layout& layout)

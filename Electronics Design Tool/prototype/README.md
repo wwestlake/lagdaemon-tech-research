@@ -101,7 +101,19 @@ DjehutiRoute on a worker thread with the track width, clearance and via rules
 from the sidebar, draws the copper per layer with vias, and runs the exact
 design-rule check; any violation is marked on the board. Moving a part,
 changing a rule or the board clears the stale copper. Parts, rules and the
-routed copper are saved in the diagram file under `pcb_layout`. Code:
+routed copper are saved in the diagram file under `pcb_layout`.
+
+**Board versus schematic.** After every route (and on load, on showing the
+tab, or with *Check board against schematic*) the board is compared with the
+schematic as it is now: connectivity is extracted from the copper geometry
+alone (pads, tracks and vias that touch on a shared layer are one node,
+whatever net the router labelled them), each pad is mapped to its part and
+pin by the footprint's pin map, and every pin is compared. Opens (a schematic
+net split on the board), shorts (copper joining different nets or a
+not-connected pad), parts missing or extra, changed symbols and pins without
+a pad are listed; the sidebar says MATCHES or DOES NOT MATCH. The pin maps
+follow standard pinouts and must still be checked against the datasheets of
+the parts used. Agent: `pcb_verify_netlist`. Code:
 `Source/PcbLayout.*` (footprints, placement, route and check), drawn by
 `PcbPanel`. The agent has `pcb_layout_get`, `pcb_footprints_list`,
 `pcb_sync_from_schematic`, `pcb_auto_place`, `pcb_place_part`,

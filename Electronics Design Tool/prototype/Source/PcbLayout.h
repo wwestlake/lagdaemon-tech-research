@@ -149,6 +149,24 @@ void routeLayout(Layout& layout, const BoardDesign& board);
 // Re-checks the stored copper against the current parts and board.
 std::vector<Marker> checkLayout(const Layout& layout, const BoardDesign& board);
 
+// Board versus schematic (layout versus schematic). Connectivity is extracted
+// from the copper geometry alone - pads, tracks and vias that touch on a
+// shared layer are one node, whatever net the router labelled them - then
+// each pad is mapped back to its part and pin through the footprint's pin
+// map and compared, pin by pin, with the schematic as it is now: missing
+// connections (opens), extra connections (shorts), parts missing or extra,
+// changed symbols, pins without a pad.
+struct NetlistCheck
+{
+    bool routed = false, matches = false;
+    int pinsCompared = 0, schematicNets = 0, boardNodes = 0;
+    juce::StringArray problems;
+    juce::String summary;
+};
+NetlistCheck verifyNetlist(const Layout& layout, const BoardDesign& board, const std::vector<SchematicPart>& schematic);
+// What the check rests on that geometry cannot prove.
+juce::String netlistCheckNote();
+
 // Lines still to be routed: every net's spanning tree when unrouted, else the
 // nets with unrouted pads.
 std::vector<std::pair<Point, Point>> ratsnest(const Layout& layout);

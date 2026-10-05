@@ -302,6 +302,11 @@ const SchematicToolSpec schematicToolSpecs[] = {
         R"({"type":"object","properties":{"track_width":{"type":"number"},"clearance":{"type":"number"},"via_diameter":{"type":"number"},"via_drill":{"type":"number"}},"additionalProperties":false})"
     },
     {
+        "pcb_verify_netlist",
+        "Check that the board is electrically identical to the schematic as it is now: connectivity is extracted from the copper geometry alone (pads, tracks and vias that touch are one node, whatever net the router assigned), each pad is mapped to its part and pin by the footprint's pin map, and every pin is compared with the schematic's nets. Reports opens (a schematic net split on the board), shorts (copper joining different nets or a not-connected pad), parts missing or extra, changed symbols and pins without a pad. Runs automatically after every route.",
+        R"({"type":"object","properties":{},"additionalProperties":false})"
+    },
+    {
         "pcb_clear_routes",
         "Remove all tracks and vias from the board (parts stay).",
         R"({"type":"object","properties":{},"additionalProperties":false})"
@@ -7094,6 +7099,9 @@ public:
                     return toolFailure(name, "No part " + refdes + (deleted.isEmpty() ? juce::String(".") : ". Already deleted: " + deleted.joinIntoString(", ")));
                 if (instances[(size_t)index].symbolId == "sub_block")
                     return toolFailure(name, refdes + " is a sub-diagram block; expand it first with schematic_subdiagram_expand.");
+                // Exactly this part: deleteSelected() prefers the UI's multi-selection,
+                // which would delete whatever the user has selected instead.
+                selectedInstances.clear();
                 selectedInstance = index;
                 deleteSelected();
                 deleted.add(refdes);
@@ -10725,10 +10733,8 @@ ElectronicsWorkbench::ElectronicsWorkbench()
     // The board (PCB tab) is saved in the same diagram file, under "pcb".
     auto pcbOwner = std::make_unique<PcbPanel>();
     pcbPanel = pcbOwner.get();
-    pcbPanel->getSchematicParts = [schematicPanel, propertiesPanel] {
-        propertiesPanel->commitPending();
-        return schematicPanel->pcbParts();
-    };
+    // Read only: the board check runs passively (on load, on showing the tab).
+    pcbPanel->getSchematicParts = [schematicPanel] { return schematicPanel->pcbParts(); };
     resetCircuit = [this, panel = schematic.get()] {
         panel->clearCircuit();
         if (pcbPanel != nullptr)
@@ -13446,6 +13452,19 @@ juce::String ElectronicsWorkbench::pcbLayoutTool(const juce::String& name, const
             root->setProperty("placementProblems", juce::var(pcb::placementProblems(l, pcbPanel->design())));
             root->setProperty("routed", l.routed);
             if (l.routeError.isNotEmpty()) root->setProperty("routeError", l.routeError);
+            if (name == "pcb_route" || name == "pcb_route_result" || name == "pcb_layout_get" || name == "pcb_verify_netlist")
+            {
+                const auto& v = name == "pcb_verify_netlist" ? pcbPanel->verify() : pcbPanel->lastVerification();
+                auto* o = new juce::DynamicObject();
+                o->setProperty("matches", v.matches);
+                o->setProperty("summary", v.summary);
+                o->setProperty("pinsCompared", v.pinsCompared);
+                o->setProperty("schematicNets", v.schematicNets);
+                o->setProperty("boardNodes", v.boardNodes);
+                o->setProperty("problems", juce::var(v.problems));
+                o->setProperty("note", pcb::netlistCheckNote());
+                root->setProperty("schematicCheck", juce::var(o));
+            }
             if (l.routed)
             {
                 double length = 0.0;
@@ -13581,6 +13600,11 @@ juce::String ElectronicsWorkbench::pcbLayoutTool(const juce::String& name, const
         pcbPanel->setLayout(next);
         const auto& l = pcbPanel->layoutState();
         return reply(l.routed, l.routeError, false, nullptr);
+    }
+    if (name == "pcb_verify_netlist")
+    {
+        const auto& v = pcbPanel->verify();
+        return reply(v.matches, {}, false, nullptr);
     }
     if (name == "pcb_route_result")
     {

@@ -762,6 +762,7 @@ PcbPanel::PcbPanel()
     styleLabel(info, 12.5f, muted);
     styleLabel(problems, 12.5f, warning);
     styleLabel(routeInfo, 12.5f, muted);
+    styleLabel(verifyInfo, 12.5f, muted);
     rebuildSidebar();
 }
 
@@ -790,6 +791,7 @@ void PcbPanel::edited(const pcb::BoardDesign& next, bool refit)
     if (layout.routed && routeKey(board) != routeKey(next))
         layout.clearRoute(); // the copper was routed for the old board
     board = next;
+    verify();
     updateInfo();
     if (refit && board.bounds() != before) canvas->fit();
     canvas->repaint();
@@ -813,9 +815,29 @@ void PcbPanel::editedLayout(const pcb::Layout& next)
     undoStack.push_back({ board, layout });
     if (undoStack.size() > 200) undoStack.pop_front();
     layout = next;
+    verify();
     updateInfo();
     canvas->repaint();
     if (onChanged) onChanged();
+}
+
+const pcb::NetlistCheck& PcbPanel::verify()
+{
+    verification = getSchematicParts ? pcb::verifyNetlist(layout, board, getSchematicParts()) : pcb::NetlistCheck {};
+    juce::StringArray lines;
+    lines.add(verification.summary);
+    for (int i = 0; i < verification.problems.size() && i < 8; ++i) lines.add("- " + verification.problems[i]);
+    if (verification.problems.size() > 8) lines.add("- ... " + juce::String(verification.problems.size() - 8) + " more (pcb_verify_netlist lists all)");
+    if (verification.routed) lines.add(pcb::netlistCheckNote());
+    verifyInfo.setText(lines.joinIntoString("\n"), juce::dontSendNotification);
+    verifyInfo.setColour(juce::Label::textColourId, verification.matches ? accent : verification.routed ? warning : muted);
+    return verification;
+}
+
+void PcbPanel::visibilityChanged()
+{
+    // The schematic may have changed while another tab was showing.
+    if (isShowing()) { verify(); updateInfo(); }
 }
 
 void PcbPanel::setLayout(const pcb::Layout& next, bool fromFile)
@@ -826,6 +848,7 @@ void PcbPanel::setLayout(const pcb::Layout& next, bool fromFile)
         canvas->clearSelection();
         selectedPart.clear();
         lastReport.clear();
+        verify();
         updateInfo();
         canvas->repaint();
     }
@@ -1201,6 +1224,10 @@ void PcbPanel::rebuildSidebar()
     routeInfo.setBounds(10, y, w, 190);
     sidebar.addAndMakeVisible(routeInfo);
     y += 196;
+    button("Check board against schematic", later([](PcbPanel& p) { p.verify(); p.rebuildSidebar(); }));
+    verifyInfo.setBounds(10, y, w, 200);
+    sidebar.addAndMakeVisible(verifyInfo);
+    y += 206;
 
     heading("SNAP");
     const juce::StringArray snaps { "0.1", "0.25", "0.5", "1", "1.27", "2.54" };
