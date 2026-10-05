@@ -1155,6 +1155,7 @@ private:
         add({ "oscilloscope_2ch", "2-Channel Oscilloscope", "Instrument" });
         add({ "digital_multimeter", "Digital Multimeter", "Instrument" });
         add({ "bode_analyzer", "Frequency Analyzer (Bode)", "Instrument" });
+        add({ "annotation_text", "Text Note", "Annotation" });
     }
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(ComponentLibraryPanel)
@@ -2135,12 +2136,15 @@ public:
         menu.addItem(15, "Save Sub-Diagram to User Library...", blockUnderMouse >= 0);
         menu.addItem(16, "Expose Block Parameter...", blockUnderMouse >= 0);
         menu.addItem(12, "Up One Level", currentSheet.isNotEmpty());
-        const auto libraryNames = userBlockNames();
-        if (!libraryNames.isEmpty())
+        const auto libraryBlocks = userBlocks();
+        if (!libraryBlocks.empty())
         {
             juce::PopupMenu libraryMenu;
-            for (int i = 0; i < libraryNames.size(); ++i)
-                libraryMenu.addItem(1000 + i, libraryNames[i]);
+            std::map<juce::String, juce::PopupMenu> categories;
+            for (int i = 0; i < (int)libraryBlocks.size(); ++i)
+                categories[libraryBlocks[(size_t)i].category].addItem(1000 + i, libraryBlocks[(size_t)i].name);
+            for (auto& [category, submenu] : categories)
+                libraryMenu.addSubMenu(category, submenu);
             menu.addSubMenu("Place User Library Block", libraryMenu);
         }
         const auto supplyUnderMouse = [&] {
@@ -2167,12 +2171,12 @@ public:
         menu.addItem(3, "Disconnect Here");
 
         const auto supplyRefdes = supplyUnderMouse >= 0 ? instances[(size_t)supplyUnderMouse].refdes : juce::String();
-        menu.showMenuAsync(juce::PopupMenu::Options(), [this, modelPosition, blockUnderMouse, supplyRefdes, libraryNames](int result) {
+        menu.showMenuAsync(juce::PopupMenu::Options(), [this, modelPosition, blockUnderMouse, supplyRefdes, libraryBlocks](int result) {
             const auto blockRefdes = blockUnderMouse >= 0 ? instances[(size_t)blockUnderMouse].refdes : juce::String();
-            if (result >= 1000 && result < 1000 + libraryNames.size())
+            if (result >= 1000 && result < 1000 + (int)libraryBlocks.size())
             {
                 juce::String error;
-                const auto placed = placeUserBlock(libraryNames[result - 1000], modelPosition, {}, error);
+                const auto placed = placeUserBlock(libraryBlocks[(size_t)(result - 1000)].name, modelPosition, {}, error);
                 if (placed.isEmpty() && onStatus) onStatus("Could not place library block: " + error);
                 return;
             }
@@ -3450,6 +3454,7 @@ private:
         if (symbolId == "fuse") return "1A";
         if (symbolId == "oscilloscope_2ch") return "2ch";
         if (symbolId == "digital_multimeter") return "DC V";
+        if (symbolId == "annotation_text") return "Note";
         return "";
     }
 
@@ -3501,6 +3506,7 @@ private:
         if (symbolId == "logic_xor") return "digital.logic.xor";
         if (symbolId == "oscilloscope_2ch") return "instrument.oscilloscope";
         if (symbolId == "digital_multimeter") return "instrument.multimeter";
+        if (symbolId == "annotation_text") return "documentation.annotation";
         return "unknown";
     }
 
@@ -5256,18 +5262,32 @@ private:
         return blockJson(blockIndex);
     }
 
-    juce::StringArray userBlockNames() const
+    struct UserBlockInfo
     {
-        juce::StringArray names;
+        juce::String name;
+        juce::String category;
+    };
+
+    std::vector<UserBlockInfo> userBlocks() const
+    {
+        std::vector<UserBlockInfo> blocks;
         const auto files = userBlockLibraryFolder().findChildFiles(juce::File::findFiles, false, "*.block.json");
         for (const auto& file : files)
         {
             const auto parsed = juce::JSON::parse(file);
             if (const auto* object = parsed.getDynamicObject())
-                names.add(stringProperty(*object, "name", file.getFileNameWithoutExtension()));
+            {
+                auto category = stringProperty(*object, "category", "User Blocks").trim();
+                if (category.isEmpty())
+                    category = "User Blocks";
+                blocks.push_back({ stringProperty(*object, "name", file.getFileNameWithoutExtension()), category });
+            }
         }
-        names.sortNatural();
-        return names;
+        std::sort(blocks.begin(), blocks.end(), [](const UserBlockInfo& a, const UserBlockInfo& b) {
+            const auto categoryCompare = a.category.compareIgnoreCase(b.category);
+            return categoryCompare == 0 ? a.name.compareIgnoreCase(b.name) < 0 : categoryCompare < 0;
+        });
+        return blocks;
     }
 
     void promptSaveBlockToLibrary(int blockIndex)
@@ -7644,6 +7664,9 @@ private:
         if (instance.symbolId == "sub_block")
             return; // name and pin names are drawn inside the block
 
+        if (instance.symbolId == "annotation_text")
+            return; // note text is drawn inside the symbol body
+
         if (instance.symbolId == "block_port")
         {
             // Port name inside the bubble, always upright.
@@ -9797,7 +9820,7 @@ private:
             {
                 "schematic_place_symbol",
                 "Place a schematic symbol or instrument node at a grid coordinate. Use deliberate layout spacing: keep symbols at least 144 px apart horizontally or 96 px vertically, arrange signal flow left-to-right, put sources on the left, outputs/load on the right, grounds below, instruments to the far right, and never reuse the same x/y for multiple parts.",
-                R"({"type":"object","properties":{"symbolId":{"type":"string","description":"Supported symbol id: resistor, potentiometer, capacitor, capacitor_polarized, variable_capacitor, inductor, coupled_inductor, transformer, diode, zener_diode, led, schottky_diode, power_bus, ground_bus, power_port, net_label, battery, voltage_source, ac_voltage_source, current_source, ac_current_source, vcvs, vccs, ccvs, cccs, signal_source, ground, opamp_741, npn, pnp, nmos, pmos, njfet, pjfet, switch_spst, switch_spdt, relay_spst, fuse, connector_2, connector_3, test_point, logic_not, logic_and, logic_or, logic_nand, logic_nor, logic_xor, oscilloscope_2ch, or digital_multimeter. Use ground and power_port symbols at each pin that needs ground or a supply instead of long wires: power_port takes busName like +12V (drawn pointing up) or -12V (place with a leading minus; drawn pointing down); ports with the same busName are the same net. net_label takes busName as its label; labels with the same name are one net. After placing and connecting, call schematic_auto_layout once for a standards-conforming drawing. Unsupported symbols are rejected, not substituted."},"x":{"type":"number","description":"Grid x coordinate. Leave at least 144 px horizontal space from other symbols."},"y":{"type":"number","description":"Grid y coordinate. Leave at least 96 px vertical space from other symbols."},"value":{"type":"string"},"frequency":{"type":"string"},"busName":{"type":"string"}},"required":["symbolId","x","y"],"additionalProperties":false})"
+                R"({"type":"object","properties":{"symbolId":{"type":"string","description":"Supported symbol id: resistor, potentiometer, capacitor, capacitor_polarized, variable_capacitor, inductor, coupled_inductor, transformer, diode, zener_diode, led, schottky_diode, power_bus, ground_bus, power_port, net_label, battery, voltage_source, ac_voltage_source, current_source, ac_current_source, vcvs, vccs, ccvs, cccs, signal_source, ground, opamp_741, npn, pnp, nmos, pmos, njfet, pjfet, switch_spst, switch_spdt, relay_spst, fuse, connector_2, connector_3, test_point, logic_not, logic_and, logic_or, logic_nand, logic_nor, logic_xor, oscilloscope_2ch, digital_multimeter, bode_analyzer, or annotation_text. Use annotation_text for free-form schematic notes. Use ground and power_port symbols at each pin that needs ground or a supply instead of long wires: power_port takes busName like +12V (drawn pointing up) or -12V (place with a leading minus; drawn pointing down); ports with the same busName are the same net. net_label takes busName as its label; labels with the same name are one net. After placing and connecting, call schematic_auto_layout once for a standards-conforming drawing. Unsupported symbols are rejected, not substituted."},"x":{"type":"number","description":"Grid x coordinate. Leave at least 144 px horizontal space from other symbols."},"y":{"type":"number","description":"Grid y coordinate. Leave at least 96 px vertical space from other symbols."},"value":{"type":"string"},"frequency":{"type":"string"},"busName":{"type":"string"}},"required":["symbolId","x","y"],"additionalProperties":false})"
             },
             {
                 "schematic_connect",

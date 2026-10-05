@@ -48,7 +48,8 @@
     { "id": "logic_nor", "name": "NOR Gate - behavioral", "category": "Digital" },
     { "id": "logic_xor", "name": "XOR Gate - behavioral", "category": "Digital" },
     { "id": "oscilloscope_2ch", "name": "2-Channel Oscilloscope", "category": "Instrument" },
-    { "id": "digital_multimeter", "name": "Digital Multimeter", "category": "Instrument" }
+    { "id": "digital_multimeter", "name": "Digital Multimeter", "category": "Instrument" },
+    { "id": "annotation_text", "name": "Text Note", "category": "Annotation" }
   ],
   "archetypes": [
     { "id": "passive.resistor", "defaultSymbol": "resistor", "defaultValue": "10k" },
@@ -65,7 +66,8 @@
     { "id": "discrete.bjt.npn", "defaultSymbol": "npn" },
     { "id": "digital.logic.not", "defaultSymbol": "logic_not" },
     { "id": "instrument.oscilloscope", "defaultSymbol": "oscilloscope_2ch" },
-    { "id": "instrument.multimeter", "defaultSymbol": "digital_multimeter" }
+    { "id": "instrument.multimeter", "defaultSymbol": "digital_multimeter" },
+    { "id": "documentation.annotation", "defaultSymbol": "annotation_text", "defaultValue": "Note" }
   ],
   "partFamilies": [
     { "family": "2N2222", "archetype": "discrete.bjt.npn", "notes": "Common hobby NPN transistor family." },

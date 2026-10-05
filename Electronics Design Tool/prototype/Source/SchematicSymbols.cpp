@@ -297,7 +297,7 @@ const juce::StringArray& supportedSymbolIds()
         "nmos", "pmos", "njfet", "pjfet", "switch_spst", "switch_spdt", "relay_spst",
         "fuse", "connector_2", "connector_3", "test_point", "logic_not", "logic_and",
         "logic_or", "logic_nand", "logic_nor", "logic_xor", "oscilloscope_2ch",
-        "digital_multimeter", "bode_analyzer"
+        "digital_multimeter", "bode_analyzer", "annotation_text"
     };
     return ids;
 }
@@ -363,6 +363,7 @@ SymbolDef symbolFor(const juce::String& id)
     if (id == "oscilloscope_2ch")    return make(id, "SCOPE", { -60, -48, 120, 96 }, { { "CH1", { -72, -24 } }, { "CH2", { -72, 24 } }, { "REF", { 0, 72 } } }, true);
     if (id == "bode_analyzer")       return make(id, "BODE", { -60, -48, 120, 96 }, { { "IN", { -72, -24 } }, { "OUT", { -72, 24 } }, { "REF", { 0, 72 } } }, true);
     if (id == "digital_multimeter")  return make(id, "DMM", { -48, -36, 96, 72 }, { { "HI", { -72, -24 } }, { "LO", { -72, 24 } } }, true);
+    if (id == "annotation_text")     return make(id, "NOTE", { -96, -42, 192, 84 }, {});
     return {};
 }
 
@@ -397,6 +398,7 @@ juce::String refdesPrefixFor(const juce::String& id)
     if (id == "oscilloscope_2ch") return "SCOPE";
     if (id == "digital_multimeter") return "DMM";
     if (id == "bode_analyzer") return "FRA";
+    if (id == "annotation_text") return "NOTE";
     return "U";
 }
 
@@ -597,7 +599,21 @@ void drawSymbolArt(juce::Graphics& g, const SymbolDef& symbol, const juce::Strin
     const auto& id = symbol.id;
     g.setColour(lineColour);
 
-    if (id == "resistor")
+    if (id == "annotation_text")
+    {
+        const juce::Rectangle<float> body { -96.0f, -42.0f, 192.0f, 84.0f };
+        g.setColour(juce::Colour(0xff17222b));
+        g.fillRoundedRectangle(body, 4.0f);
+        g.setColour(juce::Colour(0xff78dcca));
+        g.drawRoundedRectangle(body, 4.0f, 1.6f);
+        g.setColour(juce::Colour(0xffdce9ee));
+        g.setFont(juce::Font(12.0f));
+        g.drawFittedText(readout.isNotEmpty() ? readout : juce::String("Note"),
+                         body.reduced(8.0f).toNearestInt(),
+                         juce::Justification::centredLeft,
+                         4);
+    }
+    else if (id == "resistor")
     {
         line(g, { -48, 0 }, { -30, 0 });
         line(g, { 30, 0 }, { 48, 0 });

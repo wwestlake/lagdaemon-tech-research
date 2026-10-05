@@ -119,6 +119,7 @@ std::map<juce::String, std::vector<ParamSpec>> buildCatalog()
     c["bode_analyzer"] = { quantity("start_frequency", "Start frequency", "Hz", "10"),
                            quantity("stop_frequency", "Stop frequency", "Hz", "100k"),
                            quantity("points_per_decade", "Points per decade", "", "20") };
+    c["annotation_text"] = { text("value", "Text", "Note", Storage::Value) };
     return c;
 }
 
@@ -163,6 +164,7 @@ juce::String displayName(const juce::String& id)
         { "power_bus", "Power Bus" }, { "ground_bus", "Ground Bus" },
         { "oscilloscope_2ch", "Oscilloscope" }, { "digital_multimeter", "Digital Multimeter" }, { "bode_analyzer", "Frequency Analyzer" },
         { "sub_block", "Sub-diagram Block" }, { "block_port", "Sub-diagram Port" },
+        { "annotation_text", "Text Note" },
         { "logic_not", "Inverter" }, { "logic_and", "AND Gate" }, { "logic_or", "OR Gate" },
         { "logic_nand", "NAND Gate" }, { "logic_nor", "NOR Gate" }, { "logic_xor", "XOR Gate" } };
     const auto found = names.find(id);
