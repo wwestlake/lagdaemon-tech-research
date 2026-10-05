@@ -2,12 +2,14 @@
 // Each expected value is worked out on paper first (see the comments).
 
 #include "../../Source/CircuitSolver.h"
+#include "../../Source/SignalMeasure.h"
 
 #include <cmath>
 #include <crtdbg.h>
 #include <cstdlib>
 #include <cstdio>
 #include <string>
+#include <vector>
 
 using namespace circuit_sim;
 
@@ -203,6 +205,328 @@ int main()
         checkTrue("reject abc", !parseValue("abc", v));
         checkTrue("reject 1x2", !parseValue("1x2", v));
         checkTrue("format 4700 ohm", formatValue(4700.0, "ohm") == "4.7 kohm", "(" + formatValue(4700.0, "ohm") + ")");
+    }
+
+    // ---- SPICE analytics -------------------------------------------------------
+
+    // 10. DC sweep: V1 0..10 V into 1k / R2. Vmid = V1 * R2 / (1k + R2).
+    //     V1 = 4 V, R2 = 1k -> 2 V; V1 = 8 V, R2 = 3k (outer step) -> 6 V.
+    {
+        Circuit c;
+        auto top = c.addNode(), mid = c.addNode();
+        const auto v1 = c.addVoltageSource("V1", top, 0, dc(0.0));
+        c.addResistor("R1", top, mid, 1000.0);
+        const auto r2 = c.addResistor("R2", mid, 0, 1000.0);
+        SweepAxis inner, outer;
+        inner.element = v1; inner.parameter = "dc";
+        for (int i = 0; i <= 10; ++i) inner.values.push_back(i);
+        outer.element = r2; outer.parameter = "value"; outer.values = { 1000.0, 3000.0 };
+        const auto sw = solveDcSweep(c, inner, outer);
+        checkTrue("DC sweep solves", sw.ok, sw.error);
+        if (sw.ok)
+        {
+            check("DC sweep V1=4, R2=1k -> Vmid (V)", sw.points[0][4].voltages[(size_t)mid], 2.0, 1e-6);
+            check("DC sweep V1=8, R2=3k -> Vmid (V)", sw.points[1][8].voltages[(size_t)mid], 6.0, 1e-6);
+        }
+    }
+
+    // 11. Transfer function of the 1k/1k divider from V1 to mid:
+    //     gain 0.5, Rin = 2k, Rout = 1k || 1k = 500 ohm.
+    //     Current source into 2k: transimpedance 2000 ohm, Rin 2k, Rout 2k.
+    {
+        Circuit c;
+        auto top = c.addNode(), mid = c.addNode();
+        const auto v1 = c.addVoltageSource("V1", top, 0, dc(10.0));
+        c.addResistor("R1", top, mid, 1000.0);
+        c.addResistor("R2", mid, 0, 1000.0);
+        const auto tf = solveTransferFunction(c, mid, 0, v1);
+        checkTrue("TF solves", tf.ok, tf.error);
+        check("TF gain (V/V)", tf.gain, 0.5, 1e-9);
+        check("TF input resistance (ohm)", tf.inputResistance, 2000.0, 1e-3);
+        check("TF output resistance (ohm)", tf.outputResistance, 500.0, 1e-3);
+
+        Circuit d;
+        auto n = d.addNode();
+        Waveform w; w.offset = 1e-3;
+        const auto i1 = d.addCurrentSource("I1", 0, n, w); // pushes current into n
+        d.addResistor("R", n, 0, 2000.0);
+        const auto ti = solveTransferFunction(d, n, 0, i1);
+        check("TF transimpedance (ohm)", ti.gain, 2000.0, 1e-3);
+        check("TF current-input Rin (ohm)", ti.inputResistance, 2000.0, 1e-3);
+    }
+
+    // 12. Noise.
+    //  a) 1k/1k divider: output sees 500 ohm -> sqrt(4kT*500) = 2.87889e-9 V/rtHz at 300.15 K,
+    //     input-referred x2 = 5.75779e-9; flat, so 10 Hz..100 kHz integrates to 9.10341e-7 V rms.
+    //  b) 1k || 1nF: integrated over all frequencies sqrt(kT/C) = 2.03569e-6 V rms (1 Hz..1 GHz here).
+    //  c) Diode forced to 1 mA: shot current sqrt(2qI) = 1.79007e-11 A/rtHz through rd = 25.852 ohm
+    //     -> 4.62769e-10 V/rtHz at the diode; input-referred (current input) = 1.79007e-11 A/rtHz.
+    {
+        Circuit c;
+        auto top = c.addNode(), mid = c.addNode();
+        const auto v1 = c.addVoltageSource("V1", top, 0, dc(1.0));
+        c.addResistor("R1", top, mid, 1000.0);
+        c.addResistor("R2", mid, 0, 1000.0);
+        const auto nr = solveNoise(c, mid, 0, v1, 10.0, 100e3, 10);
+        checkTrue("noise (divider) solves", nr.ok, nr.error);
+        if (nr.ok)
+        {
+            check("noise output density (V/rtHz)", nr.outputDensity[3], 2.87889e-9, 2e-13);
+            check("noise input-referred density (V/rtHz)", nr.inputDensity[3], 5.75779e-9, 4e-13);
+            check("noise integrated output (V rms)", nr.integratedOutputRms, 9.10341e-7, 2e-10);
+            check("noise contributions: two resistors", (double)nr.contributions.size(), 2.0, 0.0);
+        }
+
+        Circuit k;
+        auto n = k.addNode();
+        Waveform w; w.offset = 0.0;
+        const auto i1 = k.addCurrentSource("I1", 0, n, w);
+        k.addResistor("R", n, 0, 1000.0);
+        k.addCapacitor("C", n, 0, 1e-9);
+        const auto kn = solveNoise(k, n, 0, i1, 1.0, 1e9, 50);
+        checkTrue("noise (kT/C) solves", kn.ok, kn.error);
+        check("noise kT/C integrated (V rms)", kn.integratedOutputRms, 2.03569e-6, 2.03569e-6 * 0.01);
+
+        Circuit s;
+        auto a = s.addNode();
+        Waveform id; id.offset = 1e-3;
+        const auto src = s.addCurrentSource("I1", 0, a, id);
+        s.addDiode("D1", a, 0);
+        const auto sn = solveNoise(s, a, 0, src, 100.0, 1000.0, 1);
+        checkTrue("noise (shot) solves", sn.ok, sn.error);
+        if (sn.ok)
+        {
+            check("shot noise voltage at diode (V/rtHz)", sn.outputDensity[0], 4.62769e-10, 1e-13);
+            check("shot noise input-referred (A/rtHz)", sn.inputDensity[0], 1.79007e-11, 5e-15);
+        }
+    }
+
+    // 13. Sensitivity of the 10 V, 1k/1k divider midpoint:
+    //     dV/dR2 = V R1/(R1+R2)^2 = 2.5e-3 V/ohm -> +0.025 V per +1 %; R1 -> -0.025 V; V1 -> +0.05 V.
+    //     AC: RC low-pass at fc, d(dB)/d(ln R) = -(20/ln 10)/2 -> -0.0434294 dB per +1 % of R (and of C).
+    {
+        Circuit c;
+        auto top = c.addNode(), mid = c.addNode();
+        c.addVoltageSource("V1", top, 0, dc(10.0));
+        c.addResistor("R1", top, mid, 1000.0);
+        c.addResistor("R2", mid, 0, 1000.0);
+        const auto sr = solveDcSensitivity(c, mid, 0);
+        checkTrue("DC sensitivity solves", sr.ok, sr.error);
+        auto find = [&](const SensitivityResult& r, const std::string& e, const std::string& p) {
+            for (const auto& item : r.items) if (item.element == e && item.parameter == p) return item;
+            return SensitivityItem {};
+        };
+        check("sens R2 d/dR (V/ohm)", find(sr, "R2", "value").absolute, 2.5e-3, 1e-6);
+        check("sens R2 per 1 % (V)", find(sr, "R2", "value").normalized, 0.025, 1e-5);
+        check("sens R1 per 1 % (V)", find(sr, "R1", "value").normalized, -0.025, 1e-5);
+        check("sens V1 per 1 % (V)", find(sr, "V1", "dc").normalized, 0.05, 1e-5);
+
+        Circuit lp;
+        auto in = lp.addNode(), out = lp.addNode();
+        const auto v = lp.addVoltageSource("V1", in, 0, sine(1.0, 1000.0));
+        lp.addResistor("R", in, out, 1000.0);
+        lp.addCapacitor("C", out, 0, 1e-6);
+        const auto as = solveAcSensitivity(lp, out, 0, v, 1.0 / (2.0 * 3.14159265358979 * 1e-3));
+        checkTrue("AC sensitivity solves", as.ok, as.error);
+        check("AC sens R per 1 % (dB)", find(as, "R", "value").normalized, -0.0434294, 2e-5);
+        check("AC sens C per 1 % (dB)", find(as, "C", "value").normalized, -0.0434294, 2e-5);
+        check("AC sens nominal gain (dB)", as.output, -3.0103, 1e-3);
+    }
+
+    // 14. Poles and zeros.
+    //  RC low-pass 1k/1u: one pole at -1000 rad/s, no finite zero.
+    //  RC high-pass: pole at -1000 rad/s, zero at 0.
+    //  Series RLC (100 ohm, 10 mH, 1 uF), output across C: poles -5000 +/- j8660.25 rad/s.
+    {
+        Circuit lp;
+        auto in = lp.addNode(), out = lp.addNode();
+        const auto v = lp.addVoltageSource("V1", in, 0, dc(0.0));
+        lp.addResistor("R", in, out, 1000.0);
+        lp.addCapacitor("C", out, 0, 1e-6);
+        const auto pz = solvePoleZero(lp, out, 0, v);
+        checkTrue("PZ low-pass solves", pz.ok, pz.error);
+        checkTrue("PZ low-pass has 1 pole, 0 zeros", pz.poles.size() == 1 && pz.zeros.empty(),
+                  "(" + std::to_string(pz.poles.size()) + " poles, " + std::to_string(pz.zeros.size()) + " zeros)");
+        if (!pz.poles.empty()) check("PZ low-pass pole (rad/s)", pz.poles[0].real(), -1000.0, 1e-3);
+        check("PZ low-pass DC gain", pz.dcGain, 1.0, 1e-9);
+
+        Circuit hp;
+        auto hin = hp.addNode(), hout = hp.addNode();
+        const auto hv = hp.addVoltageSource("V1", hin, 0, dc(0.0));
+        hp.addCapacitor("C", hin, hout, 1e-6);
+        hp.addResistor("R", hout, 0, 1000.0);
+        const auto hz = solvePoleZero(hp, hout, 0, hv);
+        checkTrue("PZ high-pass solves", hz.ok, hz.error);
+        checkTrue("PZ high-pass has 1 pole, 1 zero", hz.poles.size() == 1 && hz.zeros.size() == 1,
+                  "(" + std::to_string(hz.poles.size()) + " poles, " + std::to_string(hz.zeros.size()) + " zeros)");
+        if (!hz.poles.empty()) check("PZ high-pass pole (rad/s)", hz.poles[0].real(), -1000.0, 1e-3);
+        if (!hz.zeros.empty()) check("PZ high-pass zero |s| (rad/s)", std::abs(hz.zeros[0]), 0.0, 1e-3);
+
+        Circuit rlc;
+        auto a = rlc.addNode(), b = rlc.addNode(), o = rlc.addNode();
+        const auto rv = rlc.addVoltageSource("V1", a, 0, dc(0.0));
+        rlc.addResistor("R", a, b, 100.0);
+        rlc.addInductor("L", b, o, 10e-3);
+        rlc.addCapacitor("C", o, 0, 1e-6);
+        const auto rz = solvePoleZero(rlc, o, 0, rv);
+        checkTrue("PZ RLC solves", rz.ok, rz.error);
+        checkTrue("PZ RLC has 2 poles", rz.poles.size() == 2, "(" + std::to_string(rz.poles.size()) + ")");
+        if (rz.poles.size() == 2)
+        {
+            check("PZ RLC pole real (rad/s)", rz.poles[0].real(), -5000.0, 1e-2);
+            check("PZ RLC pole |imag| (rad/s)", std::abs(rz.poles[0].imag()), 8660.254, 1e-2);
+            check("PZ RLC conjugate pair", rz.poles[0].imag() + rz.poles[1].imag(), 0.0, 1e-6);
+        }
+    }
+
+    // 15. Fourier: v = sin(wt) + 0.1 sin(3wt) at 1 kHz -> H1 = 1, H3 = 0.1, THD = 10 %.
+    //     A pure 1 V, 1 kHz sine through a resistor: THD ~ 0.
+    {
+        std::vector<double> t, v;
+        for (int k = 0; k <= 4000; ++k)
+        {
+            const auto time = k * 1e-6;
+            t.push_back(time);
+            v.push_back(std::sin(2.0 * 3.14159265358979 * 1000.0 * time) + 0.1 * std::sin(2.0 * 3.14159265358979 * 3000.0 * time));
+        }
+        const auto fr = fourier(t, v, 1000.0, 9, 2);
+        checkTrue("Fourier solves", fr.ok, fr.error);
+        if (fr.ok)
+        {
+            check("Fourier H1 (V)", fr.magnitude[0], 1.0, 1e-4);
+            check("Fourier H3 (V)", fr.magnitude[2], 0.1, 1e-4);
+            check("Fourier H2 (V)", fr.magnitude[1], 0.0, 1e-4);
+            check("Fourier THD (%)", fr.thdPercent, 10.0, 1e-2);
+        }
+        Circuit c;
+        auto n = c.addNode();
+        c.addVoltageSource("V1", n, 0, sine(1.0, 1000.0));
+        c.addResistor("R", n, 0, 1000.0);
+        const auto tr = solveTransient(c, 5e-3, 1e-6, {}, 1 << 20);
+        std::vector<double> vn;
+        for (const auto& s : tr.voltages) vn.push_back(s[(size_t)n]);
+        const auto fs = fourier(tr.time, vn, 1000.0, 9, 1);
+        check("Fourier of a source sine: THD (%)", fs.thdPercent, 0.0, 1e-3);
+        check("Fourier of a source sine: H1 (V)", fs.magnitude.empty() ? 0.0 : fs.magnitude[0], 1.0, 1e-4);
+    }
+
+    // 16. Pulse and PWL sources.
+    //     RC 1k/1u driven by a 0 -> 1 V pulse at 1 ms (1 us edges): one time constant later
+    //     (t = 2 ms + half the edge) v = 1 - e^-1 = 0.632121.
+    {
+        Circuit c;
+        auto in = c.addNode(), out = c.addNode();
+        Waveform p;
+        p.kind = Waveform::Kind::Pulse;
+        p.offset = 0.0; p.pulsed = 1.0; p.delay = 1e-3; p.rise = 1e-6; p.fall = 1e-6; p.width = 10e-3; p.period = 0.0;
+        c.addVoltageSource("V1", in, 0, p);
+        c.addResistor("R", in, out, 1000.0);
+        c.addCapacitor("C", out, 0, 1e-6);
+        TransientSettings ts;
+        ts.stop = 4e-3; ts.step = 1e-5; ts.maxSamples = 1 << 20;
+        const auto tr = solveTransient(c, ts);
+        checkTrue("pulse transient solves", tr.ok, tr.error);
+        // Compare at the first stored sample past one tau with the exact 1 - e^-(t - 1.0005 ms)/tau there.
+        double at = 0.0, when = 0.0;
+        for (size_t s = 0; s < tr.time.size(); ++s)
+            if (tr.time[s] >= 2.0005e-3) { at = tr.voltages[s][(size_t)out]; when = tr.time[s]; break; }
+        check("RC pulse response near one tau (V)", at, 1.0 - std::exp(-(when - 1.0005e-3) / 1e-3), 2e-4);
+        bool cornerHit = false;
+        for (auto time : tr.time) if (std::abs(time - 1.001e-3) < 1e-12) cornerHit = true;
+        checkTrue("pulse corner at 1.001 ms is a time point", cornerHit);
+
+        Waveform w;
+        w.kind = Waveform::Kind::Pwl;
+        w.points = { { 0.0, 0.0 }, { 1e-3, 5.0 }, { 3e-3, 5.0 }, { 4e-3, -1.0 } };
+        check("PWL at 0.5 ms (V)", w.valueAt(0.5e-3), 2.5, 1e-12);
+        check("PWL at 3.5 ms (V)", w.valueAt(3.5e-3), 2.0, 1e-12);
+        check("PWL after the last point (V)", w.valueAt(9e-3), -1.0, 1e-12);
+    }
+
+    // 17. Temperature: diode forced to 1 mA (Is = 1e-14 at 27 C, n = 1).
+    //     27 C: Vd = Vt ln(I/Is + 1) = 0.654791 V.
+    //     127 C: Vt = 34.4823 mV, Is = Is0 (T/Tn)^3 exp(Eg/Vt (T/Tn - 1)) = 1.07739e-9 A -> Vd = 0.473820 V.
+    {
+        Circuit c;
+        auto a = c.addNode();
+        Waveform id; id.offset = 1e-3;
+        c.addCurrentSource("I1", 0, a, id);
+        c.addDiode("D1", a, 0);
+        const auto cold = solveOperatingPoint(c);
+        const auto hot = solveOperatingPoint(atTemperature(c, 127.0));
+        check("diode Vd at 27 C (V)", cold.voltages[(size_t)a], 0.654791, 1e-5);
+        check("diode Vd at 127 C (V)", hot.voltages[(size_t)a], 0.473820, 1e-5);
+
+        Circuit r;
+        auto n = r.addNode();
+        r.addVoltageSource("V1", n, 0, dc(1.0));
+        const auto res = r.addResistor("R", n, 0, 1000.0);
+        r.elements()[(size_t)res].tc1 = 0.004;
+        const auto rh = atTemperature(r, 77.0);
+        check("resistor tc1 = 4000 ppm/K at +50 K (ohm)", rh.elements()[(size_t)res].value, 1200.0, 1e-9);
+    }
+
+    // 18. Device detail and diffusion capacitance.
+    //  NPN with Vbe = 0.65 V, no Early effect: gm = Ic / Vt.
+    //  Diode at 1 mA with tt = 1 us: rd = 25.852 ohm, Cd = tt / rd, corner 1/(2 pi tt) = 159.155 kHz,
+    //  |Z| there = rd / sqrt(2) = 18.2801 ohm.
+    {
+        Circuit c;
+        auto b = c.addNode(), col = c.addNode();
+        c.addVoltageSource("VB", b, 0, dc(0.65));
+        c.addVoltageSource("VC", col, 0, dc(10.0));
+        const auto q = c.addBjt("Q1", true, col, b, 0);
+        const auto op = solveOperatingPoint(c);
+        const auto info = deviceInfo(c, op, q);
+        double ic = 0.0, gm = 0.0;
+        for (const auto& [name, value] : info.values) { if (name == "Ic") ic = value; if (name == "gm") gm = value; }
+        check("BJT gm / (Ic/Vt)", ic > 0.0 ? gm / (ic / 0.025852) : 0.0, 1.0, 1e-3);
+        checkTrue("BJT region forward active", info.region == "forward active", "(" + info.region + ")");
+
+        Circuit d;
+        auto a = d.addNode();
+        Waveform id; id.offset = 1e-3; id.acMagnitude = 1.0;
+        d.addCurrentSource("I1", 0, a, id);
+        DiodeModel m; m.transitTime = 1e-6;
+        d.addDiode("D1", a, 0, m);
+        const auto ac = solveAcAt(d, { 159154.943 });
+        check("diode |Z| at 1/(2 pi tt) (ohm)", ac.ok ? std::abs(ac.voltages[0][(size_t)a]) : 0.0, 18.2801, 2e-3);
+
+        // Power: 10 V across 1k + 1k -> each resistor 25 mW, the source delivers 50 mW.
+        Circuit p;
+        auto top = p.addNode(), mid = p.addNode();
+        const auto v1 = p.addVoltageSource("V1", top, 0, dc(10.0));
+        const auto r1 = p.addResistor("R1", top, mid, 1000.0);
+        p.addResistor("R2", mid, 0, 1000.0);
+        const auto pop = solveOperatingPoint(p);
+        check("R1 power (W)", absorbedPower(p, pop, r1), 0.025, 1e-9);
+        check("V1 power absorbed (W)", absorbedPower(p, pop, v1), -0.05, 1e-9);
+    }
+
+    // 19. Measurements.
+    //  1 - e^-t/tau, tau = 1 ms: 10-90 % rise = tau ln 9 = 2.19722 ms.
+    //  Integrator-like loop gain f0/f with -90 deg: unity gain at f0 = 1 kHz, phase margin 90 deg.
+    {
+        std::vector<double> t, y;
+        for (int k = 0; k <= 20000; ++k) { t.push_back(k * 1e-6); y.push_back(1.0 - std::exp(-t.back() / 1e-3)); }
+        signal_measure::Request rq;
+        rq.kind = signal_measure::Kind::RiseTime;
+        check("measure rise time (s)", signal_measure::measure(rq, t, y).value, 2.19722e-3, 2e-6);
+        std::vector<double> step { 0.0, 1.2, 1.0, 1.0 }, st { 0.0, 1.0, 2.0, 3.0 };
+        rq.kind = signal_measure::Kind::OvershootPercent;
+        check("measure overshoot (%)", signal_measure::measure(rq, st, step).value, 20.0, 1e-9);
+        std::vector<double> f, db, ph;
+        for (int k = 0; k <= 60; ++k) { f.push_back(10.0 * std::pow(10.0, k / 15.0)); db.push_back(20.0 * std::log10(1000.0 / f.back())); ph.push_back(-90.0); }
+        rq.kind = signal_measure::Kind::UnityGainFrequency;
+        check("measure unity-gain frequency (Hz)", signal_measure::measure(rq, f, db, ph).value, 1000.0, 1e-6);
+        rq.kind = signal_measure::Kind::PhaseMargin;
+        check("measure phase margin (deg)", signal_measure::measure(rq, f, db, ph).value, 90.0, 1e-9);
+        std::vector<double> sq;
+        for (size_t k = 0; k < t.size(); ++k) sq.push_back(std::sin(2.0 * 3.14159265358979 * 1000.0 * t[k]));
+        rq.kind = signal_measure::Kind::Rms;
+        check("measure RMS of a 1 V sine (V)", signal_measure::measure(rq, t, sq).value, 0.707107, 1e-5);
+        rq.kind = signal_measure::Kind::Frequency;
+        check("measure frequency (Hz)", signal_measure::measure(rq, t, sq).value, 1000.0, 1e-3);
     }
 
     std::printf("\n%s: %d failure(s)\n", failures == 0 ? "ALL PASSED" : "FAILED", failures);
