@@ -87,17 +87,29 @@ public:
         repaint();
     }
 
+    // The view follows the board until the user zooms or pans; Zoom to fit
+    // hands it back. A fit asked for while the tab is hidden (no size yet)
+    // happens when the canvas is laid out.
+    bool autoFit = true;
+
+    void resized() override
+    {
+        if (autoFit) fit();
+    }
+
     void fit()
     {
+        autoFit = true;
         const auto b = owner.board.bounds();
-        if (b.isEmpty() || getWidth() < 50 || getHeight() < 50)
+        if (b.isEmpty() || getWidth() < 20 || getHeight() < 20)
         {
             zoom = 5.0;
             origin = { 60.0, getHeight() - 60.0 };
             repaint();
             return;
         }
-        const double margin = 70.0;
+        // Room for the dimension lines, but never more than a slice of a narrow canvas.
+        const double margin = std::min(70.0, 0.15 * std::min(getWidth(), getHeight()));
         zoom = std::min((getWidth() - 2 * margin) / std::max(1.0, b.getWidth()), (getHeight() - 2 * margin) / std::max(1.0, b.getHeight()));
         zoom = juce::jlimit(0.2, 400.0, zoom);
         origin.x = getWidth() / 2.0 - (b.getCentreX()) * zoom;
@@ -135,7 +147,7 @@ public:
         if (changed)
         {
             selection = {};
-            owner.edited(next);
+            owner.edited(next, false);
         }
     }
 
@@ -322,7 +334,7 @@ public:
                 segmentDistance(toMm(e.position), b.outline[(size_t)edge], b.outline[((size_t)edge + 1) % b.outline.size()], &closest);
                 next.outline.insert(next.outline.begin() + edge + 1, snapPoint(closest));
                 next.source = "custom";
-                owner.edited(next);
+                owner.edited(next, false);
                 selection = { Kind::Vertex, edge + 1, 0 };
             }
             else
@@ -342,6 +354,7 @@ public:
         if (panning)
         {
             origin += { (double)(e.position.x - lastMouse.x), (double)(e.position.y - lastMouse.y) };
+            autoFit = false;
             lastMouse = e.position;
             repaint();
             return;
@@ -382,7 +395,7 @@ public:
             {
                 auto after = owner.board;
                 owner.board = before;
-                owner.edited(after); // one undo step for the whole drag
+                owner.edited(after, false); // one undo step for the whole drag
             }
         }
         panning = false;
@@ -404,6 +417,7 @@ public:
     {
         const auto anchor = toMm(e.position);
         zoom = juce::jlimit(0.2, 400.0, zoom * std::pow(1.15, wheel.deltaY * 6.0));
+        autoFit = false;
         origin.x = e.position.x - anchor.x * zoom;
         origin.y = e.position.y + anchor.y * zoom;
         repaint();
@@ -561,7 +575,7 @@ private:
         next.outline = drawPoints;
         drawing = false;
         drawPoints.clear();
-        owner.edited(next);
+        owner.edited(next, false);
         fit();
     }
 };
@@ -599,12 +613,14 @@ void PcbPanel::setDesign(const pcb::BoardDesign& design, bool fromFile)
     canvas->fit();
 }
 
-void PcbPanel::edited(const pcb::BoardDesign& next)
+void PcbPanel::edited(const pcb::BoardDesign& next, bool refit)
 {
+    const auto before = board.bounds();
     undoStack.push_back(board);
     if (undoStack.size() > 200) undoStack.pop_front();
     board = next;
     updateInfo();
+    if (refit && board.bounds() != before) canvas->fit();
     canvas->repaint();
     if (onChanged) onChanged();
 }
@@ -615,6 +631,7 @@ void PcbPanel::undo()
     board = undoStack.back();
     undoStack.pop_back();
     rebuildSidebar();
+    if (canvas->autoFit) canvas->fit();
     canvas->repaint();
     if (onChanged) onChanged();
 }

@@ -34,7 +34,7 @@ public:
 private:
     class Canvas;
     void rebuildSidebar();
-    void edited(const pcb::BoardDesign& next); // records undo, applies, notifies
+    void edited(const pcb::BoardDesign& next, bool refit = true); // records undo, applies, notifies; refit unless the edit came from the canvas
     void updateInfo();
 
     pcb::BoardDesign board;
