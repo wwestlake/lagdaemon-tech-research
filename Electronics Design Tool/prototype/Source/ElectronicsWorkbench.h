@@ -115,6 +115,7 @@ private:
                                          const juce::String& status) const;
     juce::String runElectricalRuleCheckTool();
     juce::String exportCircuitArtifactsTool();
+    juce::String exportFrustRealtimePreviewTool();
     juce::String writeAgentMarkdownTool(const juce::String& title, const juce::String& markdown);
     juce::String researchWebSearchTool(const juce::String& query, int maxResults) const;
     juce::String designRlcHighPassFilterTool(double cutoffHz, double impedanceOhms);
@@ -122,6 +123,7 @@ private:
     juce::String autoLayoutDiagramTool();
     void showSpecDocument();
     void exportCircuitArtifacts();
+    void exportFrustRealtimePreview();
     void designRlcHighPassFilter();
     void autoLayoutDiagram();
     void applySchematicZoom(float zoom);
