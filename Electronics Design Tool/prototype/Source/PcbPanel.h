@@ -4,6 +4,8 @@
 
 #include "PcbBoard.h"
 #include "PcbLayout.h"
+#include "PcbArtwork.h"
+#include "PcbFab.h"
 
 #include <deque>
 #include <functional>
@@ -44,6 +46,11 @@ public:
     const pcb::NetlistCheck& lastVerification() const { return verification; }
     void visibilityChanged() override;
 
+    // Fabrication output (set by the workbench): where files go and the name they carry.
+    std::function<juce::File()> fabFolder;
+    std::function<juce::String()> boardName;
+    pcb::fab::ExportResult exportFab();
+
     void paint(juce::Graphics& g) override;
     void resized() override;
     bool keyPressed(const juce::KeyPress& key) override;
@@ -68,6 +75,14 @@ private:
     pcb::Layout layout;
     std::deque<Snapshot> undoStack;
     juce::String selectedPart;
+    int selectedText = -1, selectedGraphic = -1;
+    // New text and graphics go on this layer with this line width.
+    juce::String artLayer { "F.SilkS" };
+    double artLineWidth = 0.15;
+    bool artFilled = false;
+    juce::String lastExportText;
+    // Applies a text / graphic edit; copper art changes the routing, so its copper is cleared.
+    void commitArt(pcb::Layout next, bool copperTouched);
     juce::String lastReport;
     pcb::NetlistCheck verification;
 
@@ -75,7 +90,7 @@ private:
     juce::Component sidebar;
     juce::Viewport sidebarViewport;
     juce::OwnedArray<juce::Component> sidebarItems;
-    juce::Label info, problems, routeInfo, verifyInfo;
+    juce::Label info, problems, routeInfo, verifyInfo, exportInfo;
     bool rebuilding = false;
     bool routing = false;
 };

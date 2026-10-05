@@ -89,6 +89,42 @@ struct ViaMm
     double diameter = 0.6, drill = 0.3;
 };
 
+// Text printed or etched on the board (vector font, see PcbFont.h).
+struct BoardText
+{
+    juce::String text { "TEXT" };
+    Point at;                  // anchor, mm
+    double height = 1.0;       // cap height, mm
+    double lineWidth = 0.15;   // stroke width, mm
+    double rotation = 0.0;     // degrees counter-clockwise
+    int align = 0;             // -1 left, 0 centre, 1 right
+    juce::String layer { "F.SilkS" }; // F.SilkS, B.SilkS, F.Cu, B.Cu (bottom layers mirrored)
+};
+
+// Simple graphics: line (points 0-1), rect (opposite corners 0-1), circle
+// (centre 0, radius), arc (centre 0, radius, start to end angle CCW, degrees),
+// polygon (points, closed). Outlined with lineWidth, or filled.
+struct BoardGraphic
+{
+    juce::String kind { "line" };
+    std::vector<Point> points;
+    double radius = 0.0, startAngle = 0.0, endAngle = 90.0;
+    double lineWidth = 0.15;
+    bool filled = false;
+    juce::String layer { "F.SilkS" };
+};
+
+// How the fabrication layers are made from the board.
+struct FabRules
+{
+    double maskExpansion = 0.05;  // solder mask opening beyond each pad, mm
+    double pasteReduction = 0.0;  // paste opening inset from each SMD pad, mm
+    double silkLineWidth = 0.15;  // part outlines and labels
+    double labelHeight = 0.8;     // part reference text height
+    bool tentVias = true;         // vias covered by mask
+    bool partLabels = true;       // reference designators on the silkscreen
+};
+
 struct Marker
 {
     juce::String kind, message;
@@ -100,6 +136,9 @@ struct Layout
 {
     std::vector<PlacedPart> parts;
     RouteRules rules;
+    std::vector<BoardText> texts;
+    std::vector<BoardGraphic> graphics;
+    FabRules fab;
 
     // Routing result (cleared when anything it depends on changes).
     bool routed = false;

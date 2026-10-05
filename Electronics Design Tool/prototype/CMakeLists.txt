@@ -144,6 +144,12 @@ target_sources(DjehutiElectronicsLab PRIVATE
     Source/PcbBoard.cpp
     Source/PcbLayout.h
     Source/PcbLayout.cpp
+    Source/PcbFont.h
+    Source/PcbFont.cpp
+    Source/PcbArtwork.h
+    Source/PcbArtwork.cpp
+    Source/PcbFab.h
+    Source/PcbFab.cpp
     Source/PcbPanel.h
     Source/PcbPanel.cpp
 )

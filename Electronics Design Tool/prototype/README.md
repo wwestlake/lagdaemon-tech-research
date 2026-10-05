@@ -113,7 +113,43 @@ net split on the board), shorts (copper joining different nets or a
 not-connected pad), parts missing or extra, changed symbols and pins without
 a pad are listed; the sidebar says MATCHES or DOES NOT MATCH. The pin maps
 follow standard pinouts and must still be checked against the datasheets of
-the parts used. Agent: `pcb_verify_netlist`. Code:
+the parts used. Agent: `pcb_verify_netlist`.
+
+**Text and graphics.** Text (any height, line width, rotation, alignment)
+and simple graphics (line, rectangle, circle, arc, polygon; outlined or
+filled) go on the top or bottom silkscreen or the top or bottom copper.
+Bottom layers are mirrored so they read from underneath. Text uses a
+single-stroke vector font (`Source/PcbFont.*`) that the canvas and the Gerber
+writer share, and part labels use it too. Copper text and graphics are
+router keepouts and are checked by the design-rule check; adding or moving
+them clears the routing. Text under 0.8 mm or lines under 0.15 mm draw a
+warning. The silkscreen is shown as printed: part outlines, labels and pin-1
+marks, cut back at every solder mask opening. Agent: `pcb_text_add/edit/remove`,
+`pcb_graphic_add/edit/remove`.
+
+**Fab files.** *Export fab files* (or `pcb_export_fab`) writes to
+`outputs/<diagram>/fab/` and zips it all:
+
+| File | Format |
+| --- | --- |
+| `-F_Cu`, `-In<n>_Cu`, `-B_Cu.gbr` | Gerber X2 copper, with aperture functions |
+| `-F_Mask`, `-B_Mask.gbr` | solder mask openings (negative), vias tented by default |
+| `-F_Silkscreen`, `-B_Silkscreen.gbr` | legend, cleared at mask openings (clear polarity) |
+| `-F_Paste.gbr` | SMD stencil openings |
+| `-Edge_Cuts.gbr` | board profile with cutouts |
+| `-PTH.drl`, `-NPTH.drl` | Excellon, plated (pads, vias) and non-plated (mounting holes) |
+| `-job.gbrjob` | Gerber job file: size, layer count, thickness, rules, file list |
+| `-netlist.ipc` | IPC-D-356A test netlist (mm) for the fab's electrical test |
+| `-pos.csv`, `-bom.csv` | pick and place, bill of materials |
+
+Every Gerber, drill and netlist file is read back after writing and compared
+object by object with the board; any mismatch fails the export. The result
+also says whether the board is ready for fab: fully routed, no design-rule
+violations, and matching the schematic. Mask expansion, paste reduction,
+silkscreen line width, label height, via tenting and part labels are set in
+the sidebar or with `pcb_set_fab_rules`. Code: `Source/PcbArtwork.*`
+(silkscreen, mask, paste, copper art) and `Source/PcbFab.*` (writers and
+readers). Code:
 `Source/PcbLayout.*` (footprints, placement, route and check), drawn by
 `PcbPanel`. The agent has `pcb_layout_get`, `pcb_footprints_list`,
 `pcb_sync_from_schematic`, `pcb_auto_place`, `pcb_place_part`,

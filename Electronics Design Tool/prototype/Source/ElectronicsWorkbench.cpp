@@ -307,6 +307,46 @@ const SchematicToolSpec schematicToolSpecs[] = {
         R"({"type":"object","properties":{},"additionalProperties":false})"
     },
     {
+        "pcb_text_add",
+        "Add text to the board, printed on the silkscreen or etched in copper, drawn with the board's vector font exactly as it goes into the Gerber files. Position (mm, y up) is the anchor; height is the cap height (fabs usually need 0.8 mm or more, line width 0.15 mm or more); rotation in degrees counter-clockwise; align left, centre or right; layer F.SilkS (default), B.SilkS, F.Cu or B.Cu (bottom layers are mirrored so they read from underneath). Copper text is kept clear by the router and clears the routing. Returns its number.",
+        R"({"type":"object","properties":{"text":{"type":"string","description":"Text; \\n starts a new line."},"x":{"type":"number"},"y":{"type":"number"},"height":{"type":"number"},"line_width":{"type":"number"},"rotation":{"type":"number"},"align":{"type":"string","description":"left, centre or right"},"layer":{"type":"string"}},"required":["text","x","y"],"additionalProperties":false})"
+    },
+    {
+        "pcb_text_edit",
+        "Change a board text by its number (1-based, as pcb_layout_get lists texts): any of text, x, y, height, line_width, rotation, align, layer.",
+        R"({"type":"object","properties":{"index":{"type":"integer"},"text":{"type":"string"},"x":{"type":"number"},"y":{"type":"number"},"height":{"type":"number"},"line_width":{"type":"number"},"rotation":{"type":"number"},"align":{"type":"string"},"layer":{"type":"string"}},"required":["index"],"additionalProperties":false})"
+    },
+    {
+        "pcb_text_remove",
+        "Remove a board text by its number (1-based).",
+        R"({"type":"object","properties":{"index":{"type":"integer"}},"required":["index"],"additionalProperties":false})"
+    },
+    {
+        "pcb_graphic_add",
+        "Add a simple graphic to the board on F.SilkS (default), B.SilkS, F.Cu or B.Cu: line (points [start, end]), rect (points [corner, opposite corner]), circle (points [centre], radius), arc (points [centre], radius, start_angle to end_angle in degrees counter-clockwise), polygon (points, 3 or more corners). Outlined with line_width (default 0.15 mm) or filled. Copper graphics are kept clear by the router and clear the routing. Returns its number.",
+        R"({"type":"object","properties":{"kind":{"type":"string"},"points":{"type":"array","items":{"type":"array","items":{"type":"number"},"minItems":2,"maxItems":2}},"radius":{"type":"number"},"start_angle":{"type":"number"},"end_angle":{"type":"number"},"line_width":{"type":"number"},"filled":{"type":"boolean"},"layer":{"type":"string"}},"required":["kind","points"],"additionalProperties":false})"
+    },
+    {
+        "pcb_graphic_edit",
+        "Change a board graphic by its number (1-based, as pcb_layout_get lists graphics): any of points, radius, start_angle, end_angle, line_width, filled, layer.",
+        R"({"type":"object","properties":{"index":{"type":"integer"},"points":{"type":"array","items":{"type":"array","items":{"type":"number"},"minItems":2,"maxItems":2}},"radius":{"type":"number"},"start_angle":{"type":"number"},"end_angle":{"type":"number"},"line_width":{"type":"number"},"filled":{"type":"boolean"},"layer":{"type":"string"}},"required":["index"],"additionalProperties":false})"
+    },
+    {
+        "pcb_graphic_remove",
+        "Remove a board graphic by its number (1-based).",
+        R"({"type":"object","properties":{"index":{"type":"integer"}},"required":["index"],"additionalProperties":false})"
+    },
+    {
+        "pcb_set_fab_rules",
+        "Set how the fabrication layers are made, in mm: solder mask expansion beyond pads, paste reduction inside SMD pads, silkscreen line width, part label height; tent_vias (vias covered by mask) and part_labels (reference designators on the silkscreen). Omitted fields stay.",
+        R"({"type":"object","properties":{"mask_expansion":{"type":"number"},"paste_reduction":{"type":"number"},"silk_line_width":{"type":"number"},"label_height":{"type":"number"},"tent_vias":{"type":"boolean"},"part_labels":{"type":"boolean"}},"additionalProperties":false})"
+    },
+    {
+        "pcb_export_fab",
+        "Write the fabrication and assembly files to the diagram's outputs/fab folder and zip them: Gerber X2 copper per layer, solder mask, paste, silkscreen (top and bottom) and board profile; Excellon drills (plated and non-plated); Gerber job file; IPC-D-356A netlist for the fab's electrical test; pick-and-place and BOM CSVs. Every Gerber, drill and netlist file is read back and compared with the board. Reports ok (files correct), readyForFab (also fully routed, no DRC violations, matches the schematic), files, zip path, per-file checks and problems.",
+        R"({"type":"object","properties":{},"additionalProperties":false})"
+    },
+    {
         "pcb_clear_routes",
         "Remove all tracks and vias from the board (parts stay).",
         R"({"type":"object","properties":{},"additionalProperties":false})"
@@ -10733,6 +10773,8 @@ ElectronicsWorkbench::ElectronicsWorkbench()
     // The board (PCB tab) is saved in the same diagram file, under "pcb".
     auto pcbOwner = std::make_unique<PcbPanel>();
     pcbPanel = pcbOwner.get();
+    pcbPanel->fabFolder = [this] { return generatedRunDirectory().getChildFile("fab"); };
+    pcbPanel->boardName = [this] { return currentDiagram.isNotEmpty() ? currentDiagram : juce::String("board"); };
     // Read only: the board check runs passively (on load, on showing the tab).
     pcbPanel->getSchematicParts = [schematicPanel] { return schematicPanel->pcbParts(); };
     resetCircuit = [this, panel = schematic.get()] {
@@ -13452,6 +13494,14 @@ juce::String ElectronicsWorkbench::pcbLayoutTool(const juce::String& name, const
             root->setProperty("placementProblems", juce::var(pcb::placementProblems(l, pcbPanel->design())));
             root->setProperty("routed", l.routed);
             if (l.routeError.isNotEmpty()) root->setProperty("routeError", l.routeError);
+            if (withPads)
+            {
+                const auto lv = l.toVar();
+                root->setProperty("texts", lv.getProperty("texts", {}));
+                root->setProperty("graphics", lv.getProperty("graphics", {}));
+                root->setProperty("fab", lv.getProperty("fab", {}));
+            }
+            root->setProperty("artworkWarnings", juce::var(pcb::artworkWarnings(l)));
             if (name == "pcb_route" || name == "pcb_route_result" || name == "pcb_layout_get" || name == "pcb_verify_netlist")
             {
                 const auto& v = name == "pcb_verify_netlist" ? pcbPanel->verify() : pcbPanel->lastVerification();
@@ -13625,6 +13675,132 @@ juce::String ElectronicsWorkbench::pcbLayoutTool(const juce::String& name, const
         extra->setProperty("drcViolations", (int)markers.size());
         extra->setProperty("drc", markersVar(markers));
         return reply(true, {}, false, extra);
+    }
+    auto layerOk = [](const juce::String& layer) { return pcb::artLayers().contains(layer); };
+    auto layerError = juce::String("layer must be one of F.SilkS, B.SilkS, F.Cu, B.Cu.");
+    auto pointList = [](const juce::var& v) {
+        std::vector<pcb::Point> list;
+        if (const auto* a = v.getArray())
+            for (const auto& p : *a)
+                if (const auto* xy = p.getArray(); xy != nullptr && xy->size() >= 2)
+                    list.push_back({ (double)(*xy)[0], (double)(*xy)[1] });
+        return list;
+    };
+    if (name == "pcb_text_add" || name == "pcb_text_edit")
+    {
+        auto next = pcbPanel->layoutState();
+        pcb::BoardText t;
+        int index = -1;
+        if (name == "pcb_text_edit")
+        {
+            index = (int)args.getProperty("index", 0) - 1;
+            if (index < 0 || index >= (int)next.texts.size())
+                return reply(false, "No text " + juce::String(index + 1) + "; the board has " + juce::String((int)next.texts.size()) + ".", false, nullptr);
+            t = next.texts[(size_t)index];
+        }
+        const bool wasCopper = t.layer.endsWith(".Cu") && index >= 0;
+        if (args.hasProperty("text")) t.text = args.getProperty("text", "").toString();
+        if (args.hasProperty("x")) t.at.x = (double)args.getProperty("x", 0.0);
+        if (args.hasProperty("y")) t.at.y = (double)args.getProperty("y", 0.0);
+        if (args.hasProperty("height")) t.height = (double)args.getProperty("height", t.height);
+        if (args.hasProperty("line_width")) t.lineWidth = (double)args.getProperty("line_width", t.lineWidth);
+        if (args.hasProperty("rotation")) t.rotation = (double)args.getProperty("rotation", 0.0);
+        if (args.hasProperty("align"))
+        {
+            const auto a = args.getProperty("align", "").toString().toLowerCase();
+            t.align = a.startsWith("l") ? -1 : a.startsWith("r") ? 1 : 0;
+        }
+        if (args.hasProperty("layer")) t.layer = args.getProperty("layer", "").toString();
+        if (t.text.trim().isEmpty()) return reply(false, "text is empty.", false, nullptr);
+        if (t.height <= 0.0 || t.lineWidth <= 0.0) return reply(false, "height and line_width must be positive.", false, nullptr);
+        if (!layerOk(t.layer)) return reply(false, layerError, false, nullptr);
+        if (index < 0) next.texts.push_back(t);
+        else next.texts[(size_t)index] = t;
+        if (wasCopper || t.layer.endsWith(".Cu")) next.clearRoute();
+        pcbPanel->setLayout(next);
+        auto* extra = new juce::DynamicObject();
+        extra->setProperty("index", index < 0 ? (int)next.texts.size() : index + 1);
+        const auto b = pcb::boundsOf(pcb::textArtwork(t));
+        extra->setProperty("boundsMm", juce::Array<juce::var> { b.getX(), b.getY(), b.getRight(), b.getBottom() });
+        return reply(true, {}, true, extra);
+    }
+    if (name == "pcb_graphic_add" || name == "pcb_graphic_edit")
+    {
+        auto next = pcbPanel->layoutState();
+        pcb::BoardGraphic g;
+        int index = -1;
+        if (name == "pcb_graphic_edit")
+        {
+            index = (int)args.getProperty("index", 0) - 1;
+            if (index < 0 || index >= (int)next.graphics.size())
+                return reply(false, "No graphic " + juce::String(index + 1) + "; the board has " + juce::String((int)next.graphics.size()) + ".", false, nullptr);
+            g = next.graphics[(size_t)index];
+        }
+        const bool wasCopper = g.layer.endsWith(".Cu") && index >= 0;
+        if (args.hasProperty("kind")) g.kind = args.getProperty("kind", "").toString().toLowerCase();
+        if (args.hasProperty("points")) g.points = pointList(args.getProperty("points", {}));
+        if (args.hasProperty("radius")) g.radius = (double)args.getProperty("radius", 0.0);
+        if (args.hasProperty("start_angle")) g.startAngle = (double)args.getProperty("start_angle", 0.0);
+        if (args.hasProperty("end_angle")) g.endAngle = (double)args.getProperty("end_angle", 0.0);
+        if (args.hasProperty("line_width")) g.lineWidth = (double)args.getProperty("line_width", g.lineWidth);
+        if (args.hasProperty("filled")) g.filled = (bool)args.getProperty("filled", false);
+        if (args.hasProperty("layer")) g.layer = args.getProperty("layer", "").toString();
+        const juce::StringArray kinds { "line", "rect", "circle", "arc", "polygon" };
+        if (!kinds.contains(g.kind)) return reply(false, "kind must be line, rect, circle, arc or polygon.", false, nullptr);
+        if (!layerOk(g.layer)) return reply(false, layerError, false, nullptr);
+        if (g.lineWidth <= 0.0) return reply(false, "line_width must be positive.", false, nullptr);
+        const size_t need = g.kind == "polygon" ? 3 : (g.kind == "line" || g.kind == "rect") ? 2 : 1;
+        if (g.points.size() < need) return reply(false, g.kind + " needs " + juce::String((int)need) + " point(s).", false, nullptr);
+        if ((g.kind == "circle" || g.kind == "arc") && g.radius <= 0.0) return reply(false, g.kind + " needs a positive radius.", false, nullptr);
+        if (index < 0) next.graphics.push_back(g);
+        else next.graphics[(size_t)index] = g;
+        if (wasCopper || g.layer.endsWith(".Cu")) next.clearRoute();
+        pcbPanel->setLayout(next);
+        auto* extra = new juce::DynamicObject();
+        extra->setProperty("index", index < 0 ? (int)next.graphics.size() : index + 1);
+        return reply(true, {}, true, extra);
+    }
+    if (name == "pcb_text_remove" || name == "pcb_graphic_remove")
+    {
+        auto next = pcbPanel->layoutState();
+        const bool isText = name == "pcb_text_remove";
+        const int index = (int)args.getProperty("index", 0) - 1;
+        const int count = isText ? (int)next.texts.size() : (int)next.graphics.size();
+        if (index < 0 || index >= count)
+            return reply(false, "No " + juce::String(isText ? "text " : "graphic ") + juce::String(index + 1) + ".", false, nullptr);
+        const auto layer = isText ? next.texts[(size_t)index].layer : next.graphics[(size_t)index].layer;
+        if (isText) next.texts.erase(next.texts.begin() + index);
+        else next.graphics.erase(next.graphics.begin() + index);
+        if (layer.endsWith(".Cu")) next.clearRoute();
+        pcbPanel->setLayout(next);
+        return reply(true, {}, true, nullptr);
+    }
+    if (name == "pcb_set_fab_rules")
+    {
+        auto next = pcbPanel->layoutState();
+        auto& f = next.fab;
+        if (args.hasProperty("mask_expansion")) f.maskExpansion = std::max(0.0, (double)args.getProperty("mask_expansion", f.maskExpansion));
+        if (args.hasProperty("paste_reduction")) f.pasteReduction = std::max(0.0, (double)args.getProperty("paste_reduction", f.pasteReduction));
+        if (args.hasProperty("silk_line_width") && (double)args.getProperty("silk_line_width", 0.0) > 0.0) f.silkLineWidth = (double)args.getProperty("silk_line_width", 0.0);
+        if (args.hasProperty("label_height") && (double)args.getProperty("label_height", 0.0) > 0.0) f.labelHeight = (double)args.getProperty("label_height", 0.0);
+        if (args.hasProperty("tent_vias")) f.tentVias = (bool)args.getProperty("tent_vias", true);
+        if (args.hasProperty("part_labels")) f.partLabels = (bool)args.getProperty("part_labels", true);
+        pcbPanel->setLayout(next);
+        return reply(true, {}, true, nullptr);
+    }
+    if (name == "pcb_export_fab")
+    {
+        const auto r = pcbPanel->exportFab();
+        auto* extra = new juce::DynamicObject();
+        extra->setProperty("filesOk", r.ok);
+        extra->setProperty("readyForFab", r.readyForFab);
+        extra->setProperty("summary", r.summary);
+        extra->setProperty("folder", r.folder.getFullPathName());
+        extra->setProperty("zip", r.zip.getFullPathName());
+        extra->setProperty("files", juce::var(r.files));
+        extra->setProperty("checks", juce::var(r.checks));
+        extra->setProperty("problems", juce::var(r.problems));
+        return reply(r.ok, r.ok ? juce::String() : r.summary, false, extra);
     }
     return reply(false, "Unknown PCB tool " + name + ".", false, nullptr);
 }

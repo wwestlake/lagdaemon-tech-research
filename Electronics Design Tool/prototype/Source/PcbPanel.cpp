@@ -72,6 +72,18 @@ double parseMm(const juce::String& text, double fallback)
     return t.containsOnly("0123456789.-+eE") && t.isNotEmpty() ? t.getDoubleValue() : fallback;
 }
 
+bool insidePolygon(const std::vector<pcb::Point>& poly, pcb::Point p)
+{
+    bool inside = false;
+    for (size_t i = 0, j = poly.size() - 1; i < poly.size(); j = i++)
+        if ((poly[i].y > p.y) != (poly[j].y > p.y)
+            && p.x < (poly[j].x - poly[i].x) * (p.y - poly[i].y) / (poly[j].y - poly[i].y) + poly[i].x)
+            inside = !inside;
+    return inside;
+}
+
+bool isCopperLayer(const juce::String& layer) { return layer.endsWith(".Cu"); }
+
 double segmentDistance(pcb::Point p, pcb::Point a, pcb::Point b, pcb::Point* closest = nullptr)
 {
     const auto d = b - a;
@@ -98,8 +110,20 @@ public:
     double snap = 0.5;
     bool drawing = false;
 
+    juce::String drawMode { "outline" }; // outline, or a graphic kind: line, rect, circle, arc, polygon
+
+    void startArt(const juce::String& kind)
+    {
+        drawMode = kind;
+        drawing = true;
+        drawPoints.clear();
+        selection = {};
+        repaint();
+    }
+
     void startDrawing()
     {
+        drawMode = "outline";
         drawing = true;
         drawPoints.clear();
         selection = {};
@@ -151,6 +175,47 @@ public:
         repaint();
     }
 
+    int selectedTextIndex() const { return selection.kind == Kind::Text ? selection.index : -1; }
+    int selectedGraphicIndex() const { return selection.kind == Kind::Graphic ? selection.index : -1; }
+    void selectText(int i) { selection = { Kind::Text, i, 0 }; repaint(); }
+    void selectGraphic(int i) { selection = { Kind::Graphic, i, 0 }; repaint(); }
+
+    void drawArt(juce::Graphics& g, const pcb::Artwork& art) const
+    {
+        for (const auto& f : art.fills)
+        {
+            juce::Path p;
+            addPolygon(p, f);
+            g.fillPath(p);
+        }
+        for (const auto& s : art.strokes)
+        {
+            if (s.points.size() < 2) continue;
+            juce::Path p;
+            p.startNewSubPath(toScreen(s.points[0]));
+            for (size_t i = 1; i < s.points.size(); ++i) p.lineTo(toScreen(s.points[i]));
+            g.strokePath(p, juce::PathStrokeType(std::max(1.0f, (float)(s.width * zoom)), juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
+        }
+    }
+
+    // Draws with the given areas cut out (silkscreen stops at the mask openings, as in the Gerber).
+    void drawClipped(juce::Graphics& g, const std::vector<pcb::Opening>& areas, const std::function<void()>& draw) const
+    {
+        juce::Path clip;
+        clip.setUsingNonZeroWinding(false);
+        clip.addRectangle(getLocalBounds().toFloat());
+        for (const auto& a : areas)
+        {
+            const auto c2 = toScreen(a.centre);
+            const float w = (float)(a.w * zoom), h = (float)(a.h * zoom);
+            if (a.round) clip.addEllipse(c2.x - w / 2, c2.y - w / 2, w, w);
+            else clip.addRectangle(c2.x - w / 2, c2.y - h / 2, w, h);
+        }
+        juce::Graphics::ScopedSaveState state(g);
+        g.reduceClipRegion(clip);
+        draw();
+    }
+
     void clearSelection()
     {
         selection = {};
@@ -184,7 +249,14 @@ public:
                 g.strokePath(path, juce::PathStrokeType(std::max(1.0f, (float)(t.width * zoom)), juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
             }
         }
-        // Parts: pads, courtyard, name.
+        // Copper text and graphics.
+        for (const auto& layer : { juce::String("B.Cu"), juce::String("F.Cu") })
+        {
+            if (layer == "B.Cu" && layers < 2) continue;
+            g.setColour(layerColour(pcb::copperLayerIndex(layer, layers), layers).withAlpha(0.9f));
+            drawArt(g, pcb::userArtwork(l, layer));
+        }
+        // Parts: pads, courtyard.
         for (size_t i = 0; i < l.parts.size(); ++i)
         {
             const auto& part = l.parts[i];
@@ -213,14 +285,24 @@ public:
                     g.fillEllipse(c.x - off - m / 2, c.y - off - m / 2, m, m);
                 }
             }
-            g.setColour(selected ? accent : silk.withAlpha(0.55f));
+            g.setColour(selected ? accent : silk.withAlpha(0.15f));
             g.drawRect(box, selected ? 2.0f : 1.0f);
-            if (box.getWidth() > 18.0f)
-            {
-                g.setColour(silk.withAlpha(0.9f));
-                g.setFont(juce::jlimit(9.0f, 14.0f, std::min(box.getHeight(), box.getWidth() / 3.0f) * 0.4f));
-                g.drawText(part.refdes, box, juce::Justification::centred, false);
-            }
+        }
+        // Silkscreen as printed: bottom (seen through the board) then top.
+        g.setColour(juce::Colour(0xffc8b8ff).withAlpha(0.5f));
+        drawClipped(g, pcb::silkClearAreas(l, false), [&] { drawArt(g, pcb::silkscreen(l, false)); });
+        g.setColour(silk.withAlpha(0.92f));
+        drawClipped(g, pcb::silkClearAreas(l, true), [&] { drawArt(g, pcb::silkscreen(l, true)); });
+        // Selected text or graphic.
+        juce::Rectangle<double> sel;
+        if (selection.kind == Kind::Text && selection.index < (int)l.texts.size())
+            sel = pcb::boundsOf(pcb::textArtwork(l.texts[(size_t)selection.index]));
+        else if (selection.kind == Kind::Graphic && selection.index < (int)l.graphics.size())
+            sel = pcb::boundsOf(pcb::graphicArtwork(l.graphics[(size_t)selection.index]));
+        if (!sel.isEmpty())
+        {
+            g.setColour(accent);
+            g.drawRect(juce::Rectangle<float>(toScreen({ sel.getX(), sel.getBottom() }), toScreen({ sel.getRight(), sel.getY() })).expanded(3.0f), 1.5f);
         }
         for (const auto& v : l.vias)
         {
@@ -248,6 +330,27 @@ public:
 
     void deleteSelection()
     {
+        if (selection.kind == Kind::Text || selection.kind == Kind::Graphic)
+        {
+            auto next = owner.layout;
+            bool copper = false;
+            if (selection.kind == Kind::Text && selection.index < (int)next.texts.size())
+            {
+                copper = isCopperLayer(next.texts[(size_t)selection.index].layer);
+                next.texts.erase(next.texts.begin() + selection.index);
+            }
+            else if (selection.kind == Kind::Graphic && selection.index < (int)next.graphics.size())
+            {
+                copper = isCopperLayer(next.graphics[(size_t)selection.index].layer);
+                next.graphics.erase(next.graphics.begin() + selection.index);
+            }
+            else
+                return;
+            selection = {};
+            owner.commitArt(next, copper);
+            owner.selectionChanged();
+            return;
+        }
         auto next = owner.board;
         bool changed = false;
         if (selection.kind == Kind::Hole && selection.index < (int)next.holes.size())
@@ -301,6 +404,16 @@ public:
             case Kind::Cutout:
             case Kind::CutoutVertex:
                 return "Cutout " + juce::String(selection.index + 1) + ". Drag to move it, drag its corners, Delete to remove.";
+            case Kind::Text:
+                if (selection.index < (int)owner.layout.texts.size())
+                    return "Text \"" + owner.layout.texts[(size_t)selection.index].text + "\" on " + owner.layout.texts[(size_t)selection.index].layer
+                         + ". Drag to move; edit it in the sidebar; Delete removes it.";
+                break;
+            case Kind::Graphic:
+                if (selection.index < (int)owner.layout.graphics.size())
+                    return "Graphic (" + owner.layout.graphics[(size_t)selection.index].kind + ") on " + owner.layout.graphics[(size_t)selection.index].layer
+                         + ". Drag to move; edit it in the sidebar; Delete removes it.";
+                break;
             case Kind::Part:
                 if (selection.index < (int)owner.layout.parts.size())
                 {
@@ -397,8 +510,25 @@ public:
             g.drawText(selectionText(), getLocalBounds().removeFromTop(26).reduced(10, 4), juce::Justification::centredLeft);
         }
 
+        // A graphic being drawn: its shape with the cursor as the next point.
+        if (drawing && drawMode != "outline")
+        {
+            auto pts = drawPoints;
+            pts.push_back(cursorMm);
+            g.setColour(accent.withAlpha(0.8f));
+            drawArt(g, pcb::graphicArtwork(graphicFrom(pts)));
+            for (const auto& p : drawPoints) drawHandle(g, toScreen(p), false);
+            g.setColour(muted);
+            g.setFont(12.5f);
+            const juce::String help = drawMode == "line" ? "Line: click the start, then the end."
+                                    : drawMode == "rect" ? "Rectangle: click one corner, then the opposite corner."
+                                    : drawMode == "circle" ? "Circle: click the centre, then a point on the circle."
+                                    : drawMode == "arc" ? "Arc: click the centre, then the start, then the end (counter-clockwise)."
+                                                        : "Polygon: click corners, click the first corner (or double-click) to close.";
+            g.drawText(help + " Esc cancels.", getLocalBounds().removeFromTop(26).reduced(10, 4), juce::Justification::centredLeft);
+        }
         // The outline being drawn.
-        if (drawing)
+        if (drawing && drawMode == "outline")
         {
             g.setColour(accent);
             for (size_t i = 1; i < drawPoints.size(); ++i)
@@ -444,9 +574,19 @@ public:
         {
             if (e.mods.isRightButtonDown()) return;
             const auto p = snapPoint(toMm(e.position));
-            if (drawPoints.size() >= 3 && toScreen(drawPoints.front()).getDistanceFrom(e.position) <= 8.0f)
+            if (drawPoints.size() >= 3 && toScreen(drawPoints.front()).getDistanceFrom(e.position) <= 8.0f
+                && (drawMode == "outline" || drawMode == "polygon"))
             {
-                finishDrawing();
+                if (drawMode == "outline") finishDrawing();
+                else finishArt();
+                return;
+            }
+            if (drawMode != "outline" && drawMode != "polygon")
+            {
+                if (drawPoints.empty() || drawPoints.back() != p) drawPoints.push_back(p);
+                const size_t needed = drawMode == "arc" ? 3 : 2;
+                if (drawPoints.size() >= needed) finishArt();
+                repaint();
                 return;
             }
             if (drawPoints.empty() || drawPoints.back() != p)
@@ -525,6 +665,18 @@ public:
                 if (selection.index < (int)owner.layout.parts.size())
                     owner.layout.parts[(size_t)selection.index].at = beforeLayout.parts[(size_t)selection.index].at + delta;
                 break;
+            case Kind::Text:
+                if (selection.index < (int)owner.layout.texts.size())
+                    owner.layout.texts[(size_t)selection.index].at = beforeLayout.texts[(size_t)selection.index].at + delta;
+                break;
+            case Kind::Graphic:
+                if (selection.index < (int)owner.layout.graphics.size())
+                {
+                    auto& gr = owner.layout.graphics[(size_t)selection.index];
+                    const auto& was = beforeLayout.graphics[(size_t)selection.index];
+                    for (size_t k = 0; k < gr.points.size(); ++k) gr.points[k] = was.points[k] + delta;
+                }
+                break;
             default:
                 break;
         }
@@ -534,6 +686,18 @@ public:
 
     void mouseUp(const juce::MouseEvent&) override
     {
+        if (dragging && (selection.kind == Kind::Text || selection.kind == Kind::Graphic))
+        {
+            dragging = false;
+            if (juce::JSON::toString(owner.layout.toVar(), true) != juce::JSON::toString(beforeLayout.toVar(), true))
+            {
+                auto after = owner.layout;
+                const bool copper = selection.kind == Kind::Text ? isCopperLayer(after.texts[(size_t)selection.index].layer)
+                                                                 : isCopperLayer(after.graphics[(size_t)selection.index].layer);
+                owner.layout = beforeLayout;
+                owner.commitArt(after, copper);
+            }
+        }
         if (dragging && selection.kind == Kind::Part)
         {
             dragging = false;
@@ -564,7 +728,11 @@ public:
     {
         if (drawing)
         {
-            if (drawPoints.size() >= 3) finishDrawing();
+            if (drawPoints.size() >= 3)
+            {
+                if (drawMode == "outline") finishDrawing();
+                else if (drawMode == "polygon") finishArt();
+            }
             return;
         }
         if (hitTest(e.position).kind == Kind::None && edgeAt(e.position) < 0)
@@ -609,7 +777,46 @@ public:
     }
 
 private:
-    enum class Kind { None, Vertex, Hole, Cutout, CutoutVertex, Part };
+    enum class Kind { None, Vertex, Hole, Cutout, CutoutVertex, Part, Text, Graphic };
+
+    // The graphic the clicked points describe (also the drawing preview).
+    pcb::BoardGraphic graphicFrom(const std::vector<pcb::Point>& pts) const
+    {
+        pcb::BoardGraphic gr;
+        gr.kind = drawMode;
+        gr.layer = owner.artLayer;
+        gr.lineWidth = owner.artLineWidth;
+        gr.filled = owner.artFilled && drawMode != "line" && drawMode != "arc";
+        if (pts.empty()) return gr;
+        if (drawMode == "circle" || drawMode == "arc")
+        {
+            gr.points = { pts[0] };
+            gr.radius = pts.size() >= 2 ? pts[0].getDistanceFrom(pts[1]) : 0.0;
+            if (drawMode == "arc" && pts.size() >= 2)
+            {
+                gr.startAngle = juce::radiansToDegrees(std::atan2(pts[1].y - pts[0].y, pts[1].x - pts[0].x));
+                gr.endAngle = pts.size() >= 3 ? juce::radiansToDegrees(std::atan2(pts[2].y - pts[0].y, pts[2].x - pts[0].x)) : gr.startAngle;
+                if (gr.endAngle <= gr.startAngle) gr.endAngle += 360.0;
+            }
+        }
+        else
+            gr.points = pts;
+        return gr;
+    }
+
+    void finishArt()
+    {
+        auto gr = graphicFrom(drawPoints);
+        drawing = false;
+        drawPoints.clear();
+        const bool ok = gr.kind == "polygon" ? gr.points.size() >= 3 : (gr.kind == "circle" || gr.kind == "arc") ? gr.radius > 0.0 : gr.points.size() >= 2;
+        if (!ok) { repaint(); return; }
+        auto next = owner.layout;
+        next.graphics.push_back(gr);
+        owner.commitArt(next, isCopperLayer(gr.layer));
+        selection = { Kind::Graphic, (int)owner.layout.graphics.size() - 1, 0 };
+        owner.selectionChanged();
+    }
     struct Selection
     {
         Kind kind = Kind::None;
@@ -710,6 +917,21 @@ private:
                 if (toScreen(b.cutouts[c][i]).getDistanceFrom(s) <= 7.0f)
                     return { Kind::CutoutVertex, (int)c, (int)i };
         const auto p = toMm(s);
+        const auto& texts = owner.layout.texts;
+        for (int i = (int)texts.size() - 1; i >= 0; --i)
+            if (pcb::boundsOf(pcb::textArtwork(texts[(size_t)i])).expanded(0.3).contains(p))
+                return { Kind::Text, i, 0 };
+        const auto& graphics = owner.layout.graphics;
+        for (int i = (int)graphics.size() - 1; i >= 0; --i)
+        {
+            const auto art = pcb::graphicArtwork(graphics[(size_t)i]);
+            for (const auto& f : art.fills)
+                if (f.size() >= 3 && insidePolygon(f, p)) return { Kind::Graphic, i, 0 };
+            for (const auto& st : art.strokes)
+                for (size_t k = 1; k < st.points.size(); ++k)
+                    if (segmentDistance(p, st.points[k - 1], st.points[k]) <= std::max(st.width / 2.0, 5.0 / zoom))
+                        return { Kind::Graphic, i, 0 };
+        }
         const auto& parts = owner.layout.parts;
         for (int i = (int)parts.size() - 1; i >= 0; --i)
             if (pcb::courtyardOf(parts[(size_t)i]).contains(p))
@@ -763,6 +985,7 @@ PcbPanel::PcbPanel()
     styleLabel(problems, 12.5f, warning);
     styleLabel(routeInfo, 12.5f, muted);
     styleLabel(verifyInfo, 12.5f, muted);
+    styleLabel(exportInfo, 12.5f, muted);
     rebuildSidebar();
 }
 
@@ -932,11 +1155,37 @@ void PcbPanel::route(std::optional<pcb::RouteRules> rules, std::function<void()>
     }).detach();
 }
 
+void PcbPanel::commitArt(pcb::Layout next, bool copperTouched)
+{
+    if (copperTouched) next.clearRoute(); // the routing assumed the old copper art
+    editedLayout(next);
+    juce::Component::SafePointer<PcbPanel> safe(this);
+    juce::MessageManager::callAsync([safe] { if (safe != nullptr) safe->rebuildSidebar(); });
+}
+
+pcb::fab::ExportResult PcbPanel::exportFab()
+{
+    const auto check = verify();
+    const auto folder = fabFolder ? fabFolder() : juce::File::getSpecialLocation(juce::File::tempDirectory).getChildFile("djehuti_fab");
+    const auto result = pcb::fab::exportFab(layout, board, folder, boardName ? boardName() : juce::String("board"), check.matches, check.summary);
+    juce::StringArray lines;
+    lines.add(result.summary);
+    for (int i = 0; i < result.problems.size() && i < 6; ++i) lines.add("- " + result.problems[i]);
+    if (result.zip.existsAsFile()) lines.add("Zip: " + result.zip.getFullPathName());
+    lastExportText = lines.joinIntoString("\n");
+    exportInfo.setText(lastExportText, juce::dontSendNotification);
+    exportInfo.setColour(juce::Label::textColourId, result.readyForFab ? accent : warning);
+    return result;
+}
+
 void PcbPanel::selectionChanged()
 {
     const auto now = canvas->selectedPart();
-    if (now == selectedPart) return;
+    const int text = canvas->selectedTextIndex(), graphic = canvas->selectedGraphicIndex();
+    if (now == selectedPart && text == selectedText && graphic == selectedGraphic) return;
     selectedPart = now;
+    selectedText = text;
+    selectedGraphic = graphic;
     juce::Component::SafePointer<PcbPanel> safe(this);
     juce::MessageManager::callAsync([safe] { if (safe != nullptr) safe->rebuildSidebar(); });
 }
@@ -979,6 +1228,7 @@ void PcbPanel::updateInfo()
                  juce::dontSendNotification);
     auto list = board.problems();
     list.addArray(pcb::placementProblems(layout, board));
+    list.addArray(pcb::artworkWarnings(layout));
     problems.setText(list.isEmpty() ? juce::String() : list.joinIntoString("\n"), juce::dontSendNotification);
 
     juce::StringArray r;
@@ -1228,6 +1478,131 @@ void PcbPanel::rebuildSidebar()
     verifyInfo.setBounds(10, y, w, 200);
     sidebar.addAndMakeVisible(verifyInfo);
     y += 206;
+
+    heading("TEXT AND GRAPHICS");
+    auto textField = [&](const juce::String& caption, const juce::String& value, std::function<void(juce::String)> apply) {
+        label(caption);
+        auto* e = new juce::TextEditor();
+        sidebarItems.add(e);
+        styleEditor(*e);
+        e->setText(value, false);
+        auto commit = [e, apply, value] { if (e->getText() != value) apply(e->getText()); };
+        e->onReturnKey = commit;
+        e->onFocusLost = commit;
+        e->setBounds(10, y, w, 26);
+        sidebar.addAndMakeVisible(e);
+        y += 32;
+    };
+    const auto& layerNames = pcb::artLayers();
+    const juce::StringArray layerLabels { "Top silkscreen", "Bottom silkscreen", "Top copper", "Bottom copper" };
+    label("New text and graphics go on:");
+    combo(layerLabels, layerNames.indexOf(artLayer), [this, layerNames](int i) { artLayer = layerNames[i]; });
+    field("Line width (mm)", artLineWidth, [this](double v) { if (v > 0.0) artLineWidth = v; });
+    combo({ "Outlined", "Filled" }, artFilled ? 1 : 0, [this](int i) { artFilled = i == 1; });
+    button("Add text", later([](PcbPanel& p) {
+        auto next = p.layout;
+        pcb::BoardText t;
+        t.at = p.board.bounds().getCentre();
+        t.layer = p.artLayer;
+        t.lineWidth = std::max(0.15, p.artLineWidth);
+        next.texts.push_back(t);
+        p.commitArt(next, t.layer.endsWith(".Cu"));
+        p.canvas->selectText((int)p.layout.texts.size() - 1);
+        p.selectionChanged();
+    }));
+    for (const auto& [kind, caption] : std::vector<std::pair<juce::String, juce::String>> {
+             { "line", "Draw line" }, { "rect", "Draw rectangle" }, { "circle", "Draw circle" }, { "arc", "Draw arc" }, { "polygon", "Draw polygon" } })
+        button(caption, [this, kind = kind] { canvas->startArt(kind); });
+
+    if (selectedText >= 0 && selectedText < (int)layout.texts.size())
+    {
+        const auto t = layout.texts[(size_t)selectedText];
+        const int index = selectedText;
+        label("Selected text " + juce::String(index + 1), 16, textColour);
+        auto editText = [this, index](std::function<void(pcb::BoardText&)> change) {
+            auto next = layout;
+            if (index >= (int)next.texts.size()) return;
+            const bool wasCopper = next.texts[(size_t)index].layer.endsWith(".Cu");
+            change(next.texts[(size_t)index]);
+            commitArt(next, wasCopper || next.texts[(size_t)index].layer.endsWith(".Cu"));
+        };
+        textField("Text", t.text, [editText](juce::String v) { editText([v](pcb::BoardText& x) { x.text = v; }); });
+        field("Height (mm)", t.height, [editText](double v) { if (v > 0.0) editText([v](pcb::BoardText& x) { x.height = v; }); });
+        field("Line width (mm)", t.lineWidth, [editText](double v) { if (v > 0.0) editText([v](pcb::BoardText& x) { x.lineWidth = v; }); });
+        field("Rotation (deg)", t.rotation, [editText](double v) { editText([v](pcb::BoardText& x) { x.rotation = v; }); });
+        combo({ "Align left", "Align centre", "Align right" }, t.align + 1, [editText](int i) {
+            juce::MessageManager::callAsync([editText, i] { editText([i](pcb::BoardText& x) { x.align = i - 1; }); });
+        });
+        combo(layerLabels, layerNames.indexOf(t.layer), [editText, layerNames](int i) {
+            juce::MessageManager::callAsync([editText, layerNames, i] { editText([layerNames, i](pcb::BoardText& x) { x.layer = layerNames[i]; }); });
+        });
+        button("Delete text", later([index](PcbPanel& p) {
+            auto next = p.layout;
+            if (index >= (int)next.texts.size()) return;
+            const bool copper = next.texts[(size_t)index].layer.endsWith(".Cu");
+            next.texts.erase(next.texts.begin() + index);
+            p.canvas->clearSelection();
+            p.commitArt(next, copper);
+            p.selectionChanged();
+        }));
+    }
+    if (selectedGraphic >= 0 && selectedGraphic < (int)layout.graphics.size())
+    {
+        const auto gr = layout.graphics[(size_t)selectedGraphic];
+        const int index = selectedGraphic;
+        label("Selected graphic " + juce::String(index + 1) + " (" + gr.kind + ")", 16, textColour);
+        auto editGraphic = [this, index](std::function<void(pcb::BoardGraphic&)> change) {
+            auto next = layout;
+            if (index >= (int)next.graphics.size()) return;
+            const bool wasCopper = next.graphics[(size_t)index].layer.endsWith(".Cu");
+            change(next.graphics[(size_t)index]);
+            commitArt(next, wasCopper || next.graphics[(size_t)index].layer.endsWith(".Cu"));
+        };
+        field("Line width (mm)", gr.lineWidth, [editGraphic](double v) { if (v > 0.0) editGraphic([v](pcb::BoardGraphic& x) { x.lineWidth = v; }); });
+        if (gr.kind == "circle" || gr.kind == "arc")
+            field("Radius (mm)", gr.radius, [editGraphic](double v) { if (v > 0.0) editGraphic([v](pcb::BoardGraphic& x) { x.radius = v; }); });
+        if (gr.kind != "line" && gr.kind != "arc")
+            combo({ "Outlined", "Filled" }, gr.filled ? 1 : 0, [editGraphic](int i) {
+                juce::MessageManager::callAsync([editGraphic, i] { editGraphic([i](pcb::BoardGraphic& x) { x.filled = i == 1; }); });
+            });
+        combo(layerLabels, layerNames.indexOf(gr.layer), [editGraphic, layerNames](int i) {
+            juce::MessageManager::callAsync([editGraphic, layerNames, i] { editGraphic([layerNames, i](pcb::BoardGraphic& x) { x.layer = layerNames[i]; }); });
+        });
+        button("Delete graphic", later([index](PcbPanel& p) {
+            auto next = p.layout;
+            if (index >= (int)next.graphics.size()) return;
+            const bool copper = next.graphics[(size_t)index].layer.endsWith(".Cu");
+            next.graphics.erase(next.graphics.begin() + index);
+            p.canvas->clearSelection();
+            p.commitArt(next, copper);
+            p.selectionChanged();
+        }));
+    }
+
+    heading("FAB OUTPUT");
+    auto fabRule = [&](const juce::String& caption, double value, std::function<void(pcb::FabRules&, double)> set) {
+        field(caption, value, [this, set, value](double v) {
+            if (v < 0.0 || std::abs(v - value) < 1e-9) return;
+            auto next = layout;
+            set(next.fab, v);
+            editedLayout(next);
+        });
+    };
+    fabRule("Solder mask expansion (mm)", layout.fab.maskExpansion, [](pcb::FabRules& f, double v) { f.maskExpansion = v; });
+    fabRule("Paste reduction (mm)", layout.fab.pasteReduction, [](pcb::FabRules& f, double v) { f.pasteReduction = v; });
+    fabRule("Silkscreen line width (mm)", layout.fab.silkLineWidth, [](pcb::FabRules& f, double v) { if (v > 0.0) f.silkLineWidth = v; });
+    fabRule("Part label height (mm)", layout.fab.labelHeight, [](pcb::FabRules& f, double v) { if (v > 0.0) f.labelHeight = v; });
+    combo({ "Vias covered by mask (tented)", "Vias open" }, layout.fab.tentVias ? 0 : 1, [this](int i) {
+        juce::MessageManager::callAsync([this, i] { auto next = layout; next.fab.tentVias = i == 0; editedLayout(next); rebuildSidebar(); });
+    });
+    combo({ "Part labels on silkscreen", "No part labels" }, layout.fab.partLabels ? 0 : 1, [this](int i) {
+        juce::MessageManager::callAsync([this, i] { auto next = layout; next.fab.partLabels = i == 0; editedLayout(next); rebuildSidebar(); });
+    });
+    button("Export fab files", later([](PcbPanel& p) { p.exportFab(); p.rebuildSidebar(); }));
+    exportInfo.setText(lastExportText, juce::dontSendNotification);
+    exportInfo.setBounds(10, y, w, 150);
+    sidebar.addAndMakeVisible(exportInfo);
+    y += 156;
 
     heading("SNAP");
     const juce::StringArray snaps { "0.1", "0.25", "0.5", "1", "1.27", "2.54" };

@@ -1,5 +1,7 @@
 #include "PcbLayout.h"
 
+#include "PcbArtwork.h"
+
 #include <djehuti_route/drc.h>
 #include <djehuti_route/router.h>
 
@@ -367,6 +369,7 @@ dr::Board routeBoardOf(const Layout& layout, const BoardDesign& board, juce::Str
         p.drill = dr::mm(pad.drill);
         b.pads.push_back(p);
     }
+    addCopperArtKeepouts(layout, b);
     return b;
 }
 
@@ -545,6 +548,7 @@ juce::StringArray placementProblems(const Layout& layout, const BoardDesign& boa
             if (r.intersects(courtyardOf(layout.parts[k])))
                 out.add(part.refdes + " overlaps " + layout.parts[k].refdes + ".");
     }
+    out.addArray(copperArtProblems(layout, board));
     return out;
 }
 
@@ -1005,6 +1009,44 @@ juce::var Layout::toVar() const
     r->setProperty("via_diameter", rules.viaDiameter);
     r->setProperty("via_drill", rules.viaDrill);
     root->setProperty("rules", juce::var(r));
+    juce::Array<juce::var> textList, graphicList;
+    for (const auto& t : texts)
+    {
+        auto* o = new juce::DynamicObject();
+        o->setProperty("text", t.text);
+        o->setProperty("at", pointVar(t.at));
+        o->setProperty("height", t.height);
+        o->setProperty("line_width", t.lineWidth);
+        o->setProperty("rotation", t.rotation);
+        o->setProperty("align", t.align);
+        o->setProperty("layer", t.layer);
+        textList.add(juce::var(o));
+    }
+    for (const auto& g : graphics)
+    {
+        auto* o = new juce::DynamicObject();
+        o->setProperty("kind", g.kind);
+        juce::Array<juce::var> pts;
+        for (const auto& p : g.points) pts.add(pointVar(p));
+        o->setProperty("points", pts);
+        o->setProperty("radius", g.radius);
+        o->setProperty("start_angle", g.startAngle);
+        o->setProperty("end_angle", g.endAngle);
+        o->setProperty("line_width", g.lineWidth);
+        o->setProperty("filled", g.filled);
+        o->setProperty("layer", g.layer);
+        graphicList.add(juce::var(o));
+    }
+    root->setProperty("texts", textList);
+    root->setProperty("graphics", graphicList);
+    auto* f = new juce::DynamicObject();
+    f->setProperty("mask_expansion", fab.maskExpansion);
+    f->setProperty("paste_reduction", fab.pasteReduction);
+    f->setProperty("silk_line_width", fab.silkLineWidth);
+    f->setProperty("label_height", fab.labelHeight);
+    f->setProperty("tent_vias", fab.tentVias);
+    f->setProperty("part_labels", fab.partLabels);
+    root->setProperty("fab", juce::var(f));
     if (routed)
     {
         auto* route = new juce::DynamicObject();
@@ -1075,6 +1117,41 @@ Layout Layout::fromVar(const juce::var& value)
     l.rules.clearance = (double)r.getProperty("clearance", l.rules.clearance);
     l.rules.viaDiameter = (double)r.getProperty("via_diameter", l.rules.viaDiameter);
     l.rules.viaDrill = (double)r.getProperty("via_drill", l.rules.viaDrill);
+    if (const auto* list = value.getProperty("texts", {}).getArray())
+        for (const auto& v : *list)
+        {
+            BoardText t;
+            t.text = v.getProperty("text", t.text).toString();
+            t.at = varPoint(v.getProperty("at", {}));
+            t.height = (double)v.getProperty("height", t.height);
+            t.lineWidth = (double)v.getProperty("line_width", t.lineWidth);
+            t.rotation = (double)v.getProperty("rotation", t.rotation);
+            t.align = (int)v.getProperty("align", t.align);
+            t.layer = v.getProperty("layer", t.layer).toString();
+            l.texts.push_back(t);
+        }
+    if (const auto* list = value.getProperty("graphics", {}).getArray())
+        for (const auto& v : *list)
+        {
+            BoardGraphic g;
+            g.kind = v.getProperty("kind", g.kind).toString();
+            if (const auto* pts = v.getProperty("points", {}).getArray())
+                for (const auto& p : *pts) g.points.push_back(varPoint(p));
+            g.radius = (double)v.getProperty("radius", g.radius);
+            g.startAngle = (double)v.getProperty("start_angle", g.startAngle);
+            g.endAngle = (double)v.getProperty("end_angle", g.endAngle);
+            g.lineWidth = (double)v.getProperty("line_width", g.lineWidth);
+            g.filled = (bool)v.getProperty("filled", g.filled);
+            g.layer = v.getProperty("layer", g.layer).toString();
+            l.graphics.push_back(g);
+        }
+    const auto f = value.getProperty("fab", {});
+    l.fab.maskExpansion = (double)f.getProperty("mask_expansion", l.fab.maskExpansion);
+    l.fab.pasteReduction = (double)f.getProperty("paste_reduction", l.fab.pasteReduction);
+    l.fab.silkLineWidth = (double)f.getProperty("silk_line_width", l.fab.silkLineWidth);
+    l.fab.labelHeight = (double)f.getProperty("label_height", l.fab.labelHeight);
+    l.fab.tentVias = (bool)f.getProperty("tent_vias", l.fab.tentVias);
+    l.fab.partLabels = (bool)f.getProperty("part_labels", l.fab.partLabels);
     const auto route = value.getProperty("route", {});
     if (route.isObject())
     {
