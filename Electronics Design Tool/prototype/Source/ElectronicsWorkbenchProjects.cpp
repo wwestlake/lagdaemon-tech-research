@@ -414,6 +414,38 @@ void ElectronicsWorkbench::confirmCloseThen(std::function<void()> proceed)
                                  });
 }
 
+void ElectronicsWorkbench::showOpenDiagramMenu()
+{
+    if (!project.isOpen())
+    {
+        appendLog("Open or create a project before opening a diagram.");
+        return;
+    }
+    if (project.diagrams.empty())
+    {
+        appendLog("Project " + project.name + " has no saved diagrams yet.");
+        return;
+    }
+
+    juce::PopupMenu menu;
+    for (size_t i = 0; i < project.diagrams.size(); ++i)
+        menu.addItem(diagramMenuBase + (int)i,
+                     project.diagrams[i].name,
+                     true,
+                     project.diagrams[i].name.equalsIgnoreCase(currentDiagram));
+
+    menu.showMenuAsync(juce::PopupMenu::Options(), [this](int result) {
+        if (result < diagramMenuBase || result >= diagramMenuBase + 1000)
+            return;
+        const auto index = (size_t)(result - diagramMenuBase);
+        if (index >= project.diagrams.size())
+            return;
+        juce::String error;
+        if (!openDiagram(project.diagrams[index].name, error))
+            appendLog("Open Diagram failed: " + error);
+    });
+}
+
 void ElectronicsWorkbench::handleProjectMenu(int menuItemID)
 {
     juce::String error;

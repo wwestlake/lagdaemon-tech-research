@@ -10279,12 +10279,12 @@ public:
     }
 };
 
-class FrequencyResponsePanel final : public juce::Component
+class AnalysisLabPanel final : public juce::Component
 {
 public:
-    FrequencyResponsePanel()
+    AnalysisLabPanel()
     {
-        title.setText("Analysis / Frequency Response", juce::dontSendNotification);
+        title.setText("Analysis Lab", juce::dontSendNotification);
         title.setFont(juce::Font(16.0f, juce::Font::bold));
         title.setColour(juce::Label::textColourId, juce::Colour(0xff78dcca));
         addAndMakeVisible(title);
@@ -10302,6 +10302,15 @@ public:
         status.setColour(juce::Label::textColourId, juce::Colour(0xff93a7b0));
         status.setJustificationType(juce::Justification::centredLeft);
         addAndMakeVisible(status);
+    }
+
+    void addRunCard(const juce::String& heading, const juce::String& body)
+    {
+        runCards.insert(runCards.begin(), { heading, body });
+        if (runCards.size() > 8)
+            runCards.pop_back();
+        status.setText(heading, juce::dontSendNotification);
+        repaint();
     }
 
     void setResponse(const juce::File& csvFile,
@@ -10344,19 +10353,32 @@ public:
 
         g.setColour(juce::Colour(0xffdce9ee));
         g.setFont(juce::Font(14.0f, juce::Font::bold));
-        g.drawText("2nd Order RLC High-Pass AC Analysis", area.removeFromTop(24), juce::Justification::centredLeft);
+        g.drawText("SPICE / Solver Analytics", area.removeFromTop(24), juce::Justification::centredLeft);
 
         g.setColour(juce::Colour(0xff93a7b0));
         g.setFont(juce::Font(12.5f));
-        const auto summary = samples.empty()
-            ? juce::String("Run the analysis to draw the response curve here.")
-            : "fc " + numberText(currentCutoffHz, 3) + " Hz, Z0 " + numberText(currentImpedanceOhms, 3)
-                + " ohm, C1 " + humanCapacitance(currentCapacitanceFarads)
-                + ", L1 " + humanInductance(currentInductanceHenries);
+        const auto summary = "Center workspace for operating point, transient, AC/Bode, sweeps, power, FFT/THD, run history, and raw artifacts.";
         g.drawText(summary, area.removeFromTop(22), juce::Justification::centredLeft);
         area.removeFromTop(8);
 
-        auto graph = area.removeFromTop(std::max(260, area.getHeight() - 86)).toFloat();
+        auto cardsArea = area.removeFromTop(std::min(150, std::max(70, 46 + (int)runCards.size() * 52)));
+        drawRunCards(g, cardsArea.toFloat());
+        area.removeFromTop(10);
+
+        g.setColour(juce::Colour(0xffdce9ee));
+        g.setFont(juce::Font(14.0f, juce::Font::bold));
+        g.drawText("AC / Bode Response", area.removeFromTop(22), juce::Justification::centredLeft);
+        g.setColour(juce::Colour(0xff93a7b0));
+        g.setFont(juce::Font(12.0f));
+        const auto bodeSummary = samples.empty()
+            ? juce::String("No AC sweep loaded yet.")
+            : "fc " + numberText(currentCutoffHz, 3) + " Hz, Z0 " + numberText(currentImpedanceOhms, 3)
+                + " ohm, C1 " + humanCapacitance(currentCapacitanceFarads)
+                + ", L1 " + humanInductance(currentInductanceHenries);
+        g.drawText(bodeSummary, area.removeFromTop(20), juce::Justification::centredLeft);
+        area.removeFromTop(8);
+
+        auto graph = area.removeFromTop(std::max(260, area.getHeight() - 76)).toFloat();
         drawGraph(g, graph);
 
         area.removeFromTop(8);
@@ -10385,6 +10407,53 @@ private:
         double frequencyHz = 0.0;
         double gainDb = 0.0;
     };
+
+    struct RunCard
+    {
+        juce::String heading;
+        juce::String body;
+    };
+
+    void drawRunCards(juce::Graphics& g, juce::Rectangle<float> area)
+    {
+        g.setColour(juce::Colour(0xff111922));
+        g.fillRoundedRectangle(area, 4.0f);
+        g.setColour(juce::Colour(0xff33424d));
+        g.drawRoundedRectangle(area, 4.0f, 1.0f);
+
+        auto row = area.reduced(10.0f);
+        g.setFont(juce::Font(13.0f, juce::Font::bold));
+        g.setColour(juce::Colour(0xff78dcca));
+        g.drawText("Run History", row.removeFromTop(18.0f).toNearestInt(), juce::Justification::centredLeft);
+        row.removeFromTop(6.0f);
+
+        if (runCards.empty())
+        {
+            g.setFont(juce::Font(12.5f));
+            g.setColour(juce::Colour(0xff93a7b0));
+            g.drawText("Run an analysis from the Simulation menu or an instrument panel.", row.toNearestInt(), juce::Justification::centredLeft, true);
+            return;
+        }
+
+        for (const auto& card : runCards)
+        {
+            if (row.getHeight() < 38.0f)
+                break;
+            auto cardBounds = row.removeFromTop(46.0f);
+            row.removeFromTop(6.0f);
+            g.setColour(juce::Colour(0xff17222b));
+            g.fillRoundedRectangle(cardBounds, 3.0f);
+            g.setColour(juce::Colour(0xff26323d));
+            g.drawRoundedRectangle(cardBounds, 3.0f, 1.0f);
+            auto textArea = cardBounds.reduced(8.0f);
+            g.setFont(juce::Font(12.0f, juce::Font::bold));
+            g.setColour(juce::Colour(0xffdce9ee));
+            g.drawText(card.heading, textArea.removeFromTop(16.0f).toNearestInt(), juce::Justification::centredLeft, true);
+            g.setFont(juce::Font(11.5f));
+            g.setColour(juce::Colour(0xff93a7b0));
+            g.drawText(card.body, textArea.toNearestInt(), juce::Justification::centredLeft, true);
+        }
+    }
 
     void drawGraph(juce::Graphics& g, juce::Rectangle<float> graph)
     {
@@ -10462,6 +10531,7 @@ private:
     juce::Label title;
     juce::Label status;
     juce::TextButton runButton;
+    std::vector<RunCard> runCards;
     std::vector<Point> samples;
     double currentCutoffHz = 10.0;
     double currentImpedanceOhms = 8.0;
@@ -10522,7 +10592,7 @@ ElectronicsWorkbench::ElectronicsWorkbench()
     statusLabel.setJustificationType(juce::Justification::centredRight);
     addAndMakeVisible(statusLabel);
 
-    for (auto* b : { &newButton, &ercButton, &transientButton, &compileButton,
+    for (auto* b : { &newButton, &openDiagramButton, &ercButton, &transientButton, &compileButton,
                      &zoomOutButton, &zoomResetButton, &zoomInButton })
     {
         b->setColour(juce::TextButton::buttonColourId, juce::Colour(0xff253341));
@@ -10543,6 +10613,8 @@ ElectronicsWorkbench::ElectronicsWorkbench()
 
     newButton.onClick = [this] { showNewDiagramDialog(); };
     newButton.setTooltip("New diagram in the open project (creates a project first if none is open)");
+    openDiagramButton.onClick = [this] { showOpenDiagramMenu(); };
+    openDiagramButton.setTooltip("Open a saved diagram from the current project");
     ercButton.onClick = [this] { runElectricalRuleCheck(); };
     transientButton.onClick = [this] { exportCircuitArtifacts(); };
     compileButton.onClick = [this] { exportFrustRealtimePreview(); };
@@ -10586,9 +10658,12 @@ ElectronicsWorkbench::ElectronicsWorkbench()
                                                            juce::String, juce::String, juce::String, juce::String) {
         propertiesPanel->showPart(refdes);
     });
-    auto analysis = std::make_unique<FrequencyResponsePanel>();
+    auto analysis = std::make_unique<AnalysisLabPanel>();
     auto* analysisPanel = analysis.get();
     analysisPanel->onRun = [this] { designRlcHighPassFilter(); };
+    showAnalysisNote = [analysisPanel](const juce::String& heading, const juce::String& body) {
+        analysisPanel->addRunCard(heading, body);
+    };
     showFrequencyResponse = [analysisPanel](const juce::File& csvFile,
                                             const juce::File& reportFile,
                                             double cutoffHz,
@@ -10810,6 +10885,8 @@ void ElectronicsWorkbench::resized()
     titleLabel.setBounds(toolbar.removeFromLeft(230));
     newButton.setBounds(toolbar.removeFromLeft(70));
     toolbar.removeFromLeft(6);
+    openDiagramButton.setBounds(toolbar.removeFromLeft(76));
+    toolbar.removeFromLeft(6);
     ercButton.setBounds(toolbar.removeFromLeft(70));
     toolbar.removeFromLeft(6);
     transientButton.setBounds(toolbar.removeFromLeft(100));
@@ -10933,8 +11010,8 @@ void ElectronicsWorkbench::menuItemSelected(int menuItemID, int)
         case autoLayoutDiagramItem: autoLayoutDiagram(); break;
         case runErc: runElectricalRuleCheck(); break;
         case designRlcHighPass: designRlcHighPassFilter(); break;
-        case runOperatingPoint: exportCircuitArtifacts(); break;
-        case runTransient: exportCircuitArtifacts(); break;
+        case runOperatingPoint: runOperatingPointAnalysis(); break;
+        case runTransient: runTransientAnalysis(); break;
         case runCompiledPreview: exportFrustRealtimePreview(); break;
         case openAgentSettings:
             if (openAgentSettingsDialog != nullptr) openAgentSettingsDialog();
@@ -12819,6 +12896,46 @@ void ElectronicsWorkbench::exportFrustRealtimePreview()
               + parsed.getProperty("artifactDirectory", generatedRunDirectory().getFullPathName()).toString()
               + " with " + parsed.getProperty("liveParameterCount", 0).toString()
               + " live parameter(s).");
+}
+
+void ElectronicsWorkbench::runOperatingPointAnalysis()
+{
+    const auto result = exportCircuitArtifactsTool();
+    const auto parsed = juce::JSON::parse(result);
+    if (!parsed.isObject() || !(bool)parsed.getProperty("ok", false))
+    {
+        const auto error = parsed.getProperty("error", result).toString();
+        appendLog("Operating point setup failed: " + error);
+        if (showAnalysisNote != nullptr)
+            showAnalysisNote("Operating Point Failed", error);
+        return;
+    }
+
+    const auto dir = parsed.getProperty("artifactDirectory", generatedRunDirectory().getFullPathName()).toString();
+    appendLog("Opened Analysis Lab for operating point setup: " + dir);
+    if (showAnalysisNote != nullptr)
+        showAnalysisNote("Operating Point",
+                         "Prepared circuit artifacts for DC operating point analysis. Next pass will render the node-voltage/current table directly here. Artifacts: " + dir);
+}
+
+void ElectronicsWorkbench::runTransientAnalysis()
+{
+    const auto result = exportCircuitArtifactsTool();
+    const auto parsed = juce::JSON::parse(result);
+    if (!parsed.isObject() || !(bool)parsed.getProperty("ok", false))
+    {
+        const auto error = parsed.getProperty("error", result).toString();
+        appendLog("Transient setup failed: " + error);
+        if (showAnalysisNote != nullptr)
+            showAnalysisNote("Transient Failed", error);
+        return;
+    }
+
+    const auto dir = parsed.getProperty("artifactDirectory", generatedRunDirectory().getFullPathName()).toString();
+    appendLog("Opened Analysis Lab for transient setup: " + dir);
+    if (showAnalysisNote != nullptr)
+        showAnalysisNote("Transient",
+                         "Prepared circuit artifacts for time-domain analysis. Next pass will render waveform probes and scope traces directly here. Artifacts: " + dir);
 }
 
 void ElectronicsWorkbench::designRlcHighPassFilter()

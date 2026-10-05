@@ -78,6 +78,7 @@ private:
     void showNewProjectDialog();
     void showOpenProjectDialog();
     void showNewDiagramDialog();
+    void showOpenDiagramMenu();
     void handleProjectMenu(int menuItemID);
     void showPreferences();
     std::unique_ptr<juce::DocumentWindow> preferencesWindow;
@@ -124,6 +125,8 @@ private:
     void showSpecDocument();
     void exportCircuitArtifacts();
     void exportFrustRealtimePreview();
+    void runOperatingPointAnalysis();
+    void runTransientAnalysis();
     void designRlcHighPassFilter();
     void autoLayoutDiagram();
     void applySchematicZoom(float zoom);
@@ -135,6 +138,7 @@ private:
     juce::Label titleLabel;
     juce::Label statusLabel;
     juce::TextButton newButton { "New" };
+    juce::TextButton openDiagramButton { "Open" };
     juce::TextButton ercButton { "ERC" };
     juce::TextButton transientButton { "Transient" };
     juce::TextButton compileButton { "Compile Preview" };
@@ -162,6 +166,7 @@ private:
     std::function<juce::String()> autoLayoutTool;
     std::function<juce::String()> exportSchematicImage;
     std::function<void(const juce::File&, const juce::File&, double, double, double, double)> showFrequencyResponse;
+    std::function<void(const juce::String&, const juce::String&)> showAnalysisNote;
     std::function<void()> openAgentSettingsDialog;
     std::function<void(bool)> setSnapEnabled;
     std::function<void(float)> setSchematicZoom;
