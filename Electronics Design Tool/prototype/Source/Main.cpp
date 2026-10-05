@@ -7,7 +7,8 @@ class ElectronicsLabApplication final : public juce::JUCEApplication
 public:
     const juce::String getApplicationName() override { return "Djehuti Electronics Lab"; }
     const juce::String getApplicationVersion() override { return "0.1.0"; }
-    bool moreThanOneInstanceAllowed() override { return true; }
+    // One copy at a time: starting the app again brings the running one forward.
+    bool moreThanOneInstanceAllowed() override { return false; }
 
     void initialise(const juce::String&) override
     {
@@ -24,7 +25,15 @@ public:
         quit();
     }
 
-    void anotherInstanceStarted(const juce::String&) override {}
+    void anotherInstanceStarted(const juce::String&) override
+    {
+        if (mainWindow == nullptr)
+            return;
+        if (mainWindow->isMinimised())
+            mainWindow->setMinimised(false);
+        mainWindow->setVisible(true);
+        mainWindow->toFront(true);
+    }
 
 private:
     class MainWindow final : public juce::DocumentWindow
