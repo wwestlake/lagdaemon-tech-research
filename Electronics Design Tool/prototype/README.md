@@ -68,6 +68,24 @@ shows `Project > Diagram`; the last project and diagram reopen on start;
 switching diagrams saves the current one; closing asks about unsaved changes.
 The agent has matching `project_*` and `diagram_*` tools.
 
+## PCB (board outline)
+
+The **PCB** tab holds the diagram's board, saved in the diagram file under
+`pcb`. The outline comes from a standard board (Eurocard sizes, Raspberry Pi
+HAT, Arduino Uno envelope, credit card, 100 x 100 / 50 x 50 mm, with their
+mounting holes), a parametric shape (rectangle, rounded or chamfered corners,
+L, U, T, circle, regular polygon such as a hexagon), or one drawn by hand:
+any straight-edged outline. Corners drag, a click on an edge adds a corner,
+right-click deletes; mounting holes and cutouts are added and dragged; layers,
+thickness and copper-to-edge clearance are set beside it; problems (crossing
+edges, holes off the board) show as the outline changes. Ctrl+Z undoes. The
+board geometry, outline generators and validation come from the DjehutiRoute
+library (`D:\DjehutiRoute`, MIT), which also provides the router. The agent
+has `pcb_board_get`, `pcb_board_list_options`, `pcb_board_use_standard`,
+`pcb_board_set_shape`, `pcb_board_set_outline`, `pcb_board_add_hole`,
+`pcb_board_add_cutout`, `pcb_board_remove` and `pcb_board_set_stackup`.
+Footprints, placement and routing build on this next.
+
 ## Analytics (SPICE)
 
 The **Analytics** button (toolbar), the **Analytics** menu, or any agent

@@ -51,6 +51,12 @@ endif()
 if(NOT TARGET frust_plugin_host)
     add_subdirectory("${FRUSTLANG_ROOT}/projects/09_frust_plugin_host" frust_plugin_host_build)
 endif()
+# DjehutiRoute: the MIT PCB router and board outlines (own repository).
+set(DJEHUTI_ROUTE_ROOT "D:/DjehutiRoute" CACHE PATH "DjehutiRoute repository")
+if(NOT TARGET djehuti_route)
+    add_subdirectory("${DJEHUTI_ROUTE_ROOT}" djehuti_route_build)
+endif()
+
 if(MSVC)
     # Frust's targets share an archive/PDB directory; one compiler process at a time.
     foreach(frust_target frate_lib frust_lang frust_runtime frust_plugin_host)
@@ -134,6 +140,10 @@ target_sources(DjehutiElectronicsLab PRIVATE
     Source/FrustEngine.cpp
     Source/FrustPanel.h
     Source/FrustPanel.cpp
+    Source/PcbBoard.h
+    Source/PcbBoard.cpp
+    Source/PcbPanel.h
+    Source/PcbPanel.cpp
 )
 
 target_compile_definitions(DjehutiElectronicsLab PRIVATE
@@ -150,6 +160,7 @@ target_link_libraries(DjehutiElectronicsLab PRIVATE
     ai_provider
     libavoid
     frust_plugin_host
+    djehuti_route
     juce::juce_core
     juce::juce_data_structures
     juce::juce_events

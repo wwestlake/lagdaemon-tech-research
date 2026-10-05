@@ -9,6 +9,8 @@
 #include "Analytics.h"
 #include "AnalyticsPanel.h"
 #include "FrustPanel.h"
+#include "PcbPanel.h"
+#include <djehuti_route/outline.h>
 #include "Preferences.h"
 
 #include <ai_provider/AiConfig.h>
@@ -213,6 +215,51 @@ const SchematicToolSpec schematicToolSpecs[] = {
         "diagram_delete",
         "Remove a diagram from the open project. Its file is moved to the project's deleted folder, not erased.",
         R"({"type":"object","properties":{"name":{"type":"string","description":"Diagram name."}},"required":["name"],"additionalProperties":false})"
+    },
+    {
+        "pcb_board_get",
+        "The board in the PCB tab: where its outline came from (standard board, shape and parameters, or drawn), outline corners in mm, mounting holes, cutouts, copper layers, thickness, edge clearance, size, area, and any problems (crossing edges, holes off the board).",
+        R"({"type":"object","properties":{},"additionalProperties":false})"
+    },
+    {
+        "pcb_board_list_options",
+        "List the standard board sizes (id, name, description) and the parametric shapes (id, parameters with defaults) the board can be made from.",
+        R"({"type":"object","properties":{},"additionalProperties":false})"
+    },
+    {
+        "pcb_board_use_standard",
+        "Make the board a standard size by id (from pcb_board_list_options), with its mounting holes: eurocard, half-eurocard, double-eurocard, rpi-hat, arduino-uno-shield, credit-card, fab-100, fab-50.",
+        R"({"type":"object","properties":{"id":{"type":"string"}},"required":["id"],"additionalProperties":false})"
+    },
+    {
+        "pcb_board_set_shape",
+        "Make the board a parametric shape: rectangle, rounded_rectangle, chamfered_rectangle, l_shape, u_shape, t_shape, circle, polygon (regular: sides and across_flats; a hexagon is sides 6). Parameters in mm, missing ones take their defaults. Holes, cutouts and stackup are kept.",
+        R"({"type":"object","properties":{"shape":{"type":"string"},"params":{"type":"object","description":"Parameter name to millimetres, such as {\"width\": 80, \"height\": 60, \"notch_width\": 30, \"notch_height\": 20}.","additionalProperties":{"type":"number"}}},"required":["shape"],"additionalProperties":false})"
+    },
+    {
+        "pcb_board_set_outline",
+        "Set any straight-edged board outline from its corners in order (mm, y up), for shapes the presets do not cover. The outline must not cross itself; holes, cutouts and stackup are kept.",
+        R"({"type":"object","properties":{"points":{"type":"array","items":{"type":"array","items":{"type":"number"},"minItems":2,"maxItems":2},"description":"Corners [[x, y], ...] in mm."}},"required":["points"],"additionalProperties":false})"
+    },
+    {
+        "pcb_board_add_hole",
+        "Add a round mounting hole (non-plated) through the board at x, y (mm) with a diameter (mm, e.g. 3.2 for M3).",
+        R"({"type":"object","properties":{"x":{"type":"number"},"y":{"type":"number"},"diameter":{"type":"number"}},"required":["x","y","diameter"],"additionalProperties":false})"
+    },
+    {
+        "pcb_board_add_cutout",
+        "Cut a straight-edged opening through the board (slot, window): its corners in order, in mm. It must be inside the board without touching the edge.",
+        R"({"type":"object","properties":{"points":{"type":"array","items":{"type":"array","items":{"type":"number"},"minItems":2,"maxItems":2}}},"required":["points"],"additionalProperties":false})"
+    },
+    {
+        "pcb_board_remove",
+        "Remove a mounting hole or a cutout by its number (1-based, as pcb_board_get lists them).",
+        R"({"type":"object","properties":{"kind":{"type":"string","description":"hole or cutout"},"index":{"type":"integer"}},"required":["kind","index"],"additionalProperties":false})"
+    },
+    {
+        "pcb_board_set_stackup",
+        "Set the copper layer count (1, 2, 4, 6, 8), board thickness (mm) and copper-to-edge clearance (mm). Omitted fields stay as they are.",
+        R"({"type":"object","properties":{"layers":{"type":"integer"},"thickness":{"type":"number"},"edge_clearance":{"type":"number"}},"additionalProperties":false})"
     },
     {
         "frust_run",
@@ -10576,12 +10623,27 @@ ElectronicsWorkbench::ElectronicsWorkbench()
     schematicPanel->setInstrumentOpenListener([this](juce::String refdes, juce::String symbolId) {
         openInstrumentWindow(refdes, symbolId);
     });
-    resetCircuit = [panel = schematic.get()] { panel->clearCircuit(); };
-    getCircuitJson = [panel = schematic.get()] { return panel->buildCircuitJson(); };
+    // The board (PCB tab) is saved in the same diagram file, under "pcb".
+    auto pcbOwner = std::make_unique<PcbPanel>();
+    pcbPanel = pcbOwner.get();
+    resetCircuit = [this, panel = schematic.get()] {
+        panel->clearCircuit();
+        if (pcbPanel != nullptr) pcbPanel->setDesign(pcb::BoardDesign::standard("fab-100"), true);
+    };
+    getCircuitJson = [this, panel = schematic.get()] {
+        auto json = panel->buildCircuitJson().trimEnd();
+        if (pcbPanel != nullptr && json.endsWithChar('}'))
+            json = json.dropLastCharacters(1).trimEnd() + ",\n  \"pcb\": " + juce::JSON::toString(pcbPanel->design().toVar(), true) + "\n}";
+        return json;
+    };
     getXyceNetlist = [panel = schematic.get()] { return panel->buildXyceNetlist(); };
     getErcReport = [panel = schematic.get()] { return panel->buildErcReport(); };
-    loadCircuitJson = [panel = schematic.get()](const juce::String& json, juce::String& error) {
-        return panel->loadCircuitJson(json, error);
+    loadCircuitJson = [this, panel = schematic.get()](const juce::String& json, juce::String& error) {
+        if (!panel->loadCircuitJson(json, error))
+            return false;
+        if (pcbPanel != nullptr)
+            pcbPanel->setDesign(pcb::BoardDesign::fromVar(juce::JSON::parse(json).getProperty("pcb", {})), true);
+        return true;
     };
     placeSymbolTool = [panel = schematic.get()](const juce::String& symbolId,
                                                 float x,
@@ -10709,6 +10771,8 @@ ElectronicsWorkbench::ElectronicsWorkbench()
             return analyticsTool(name, args);
         if (name == "frust_check" || name == "frust_run")
             return frustTool(name, args);
+        if (name.startsWith("pcb_board_"))
+            return pcbTool(name, args);
         return schematicPanel->runSchematicTool(name, args);
     };
     schematicPanel->outputDirectory = [this] { return generatedRunDirectory(); };
@@ -10724,6 +10788,7 @@ ElectronicsWorkbench::ElectronicsWorkbench()
     openAgentSettingsDialog = [agentPanel] { agentPanel->showAiSettingsForSelected(); };
     dockManager->registerPanel("schematic", "Schematic", std::move(schematic), CreationDock::DockTargetZone::CenterTab);
     analyticsDockPanel = dockManager->registerPanel("analytics", "Analytics", std::move(analyticsOwner), CreationDock::DockTargetZone::CenterTab);
+    dockManager->registerPanel("pcb", "PCB", std::move(pcbOwner), CreationDock::DockTargetZone::CenterTab);
     auto frustOwner = std::make_unique<FrustPanel>();
     frustPanel = frustOwner.get();
     dockManager->registerPanel("frust", "Frust", std::move(frustOwner), CreationDock::DockTargetZone::Bottom);
@@ -12962,6 +13027,155 @@ juce::String ElectronicsWorkbench::analyticsTool(const juce::String& name, const
         return fail("Unknown analytics tool.");
     const auto& run = analyticsPanel->runNow(info->id, settingsFrom(args));
     return analytics::toJson(run.result, run.files);
+}
+
+juce::String ElectronicsWorkbench::pcbTool(const juce::String& name, const juce::var& args)
+{
+    auto reply = [&](bool ok, const juce::String& error) {
+        auto* root = new juce::DynamicObject();
+        root->setProperty("ok", ok);
+        root->setProperty("tool", name);
+        if (error.isNotEmpty()) root->setProperty("error", error);
+        if (pcbPanel != nullptr)
+        {
+            const auto& d = pcbPanel->design();
+            root->setProperty("board", d.toVar());
+            const auto b = d.bounds();
+            root->setProperty("widthMm", b.getWidth());
+            root->setProperty("heightMm", b.getHeight());
+            root->setProperty("areaMm2", d.areaMm2());
+            root->setProperty("problems", juce::var(d.problems()));
+        }
+        return juce::JSON::toString(juce::var(root), true);
+    };
+    if (pcbPanel == nullptr)
+        return reply(false, "The PCB tab is unavailable.");
+    auto points = [](const juce::var& v) {
+        std::vector<pcb::Point> list;
+        if (const auto* a = v.getArray())
+            for (const auto& p : *a)
+                if (const auto* xy = p.getArray(); xy != nullptr && xy->size() >= 2)
+                    list.push_back({ (double)(*xy)[0], (double)(*xy)[1] });
+        return list;
+    };
+    auto next = pcbPanel->design();
+    if (name == "pcb_board_get")
+        return reply(true, {});
+    if (name == "pcb_board_list_options")
+    {
+        auto* root = new juce::DynamicObject();
+        root->setProperty("ok", true);
+        root->setProperty("tool", name);
+        juce::Array<juce::var> standards;
+        for (const auto& s : djehuti::route::standardBoards())
+        {
+            auto* o = new juce::DynamicObject();
+            o->setProperty("id", juce::String(s.id));
+            o->setProperty("name", juce::String(s.name));
+            o->setProperty("description", juce::String(s.description));
+            standards.add(juce::var(o));
+        }
+        root->setProperty("standards", standards);
+        juce::Array<juce::var> shapeList;
+        for (const auto& s : pcb::shapes())
+        {
+            auto* o = new juce::DynamicObject();
+            o->setProperty("id", s.id);
+            o->setProperty("name", s.name);
+            auto* params = new juce::DynamicObject();
+            for (const auto& p : s.params) params->setProperty(juce::Identifier(p.key), p.defaultValue);
+            o->setProperty("params", juce::var(params));
+            shapeList.add(juce::var(o));
+        }
+        root->setProperty("shapes", shapeList);
+        return juce::JSON::toString(juce::var(root), true);
+    }
+    if (name == "pcb_board_use_standard")
+    {
+        const auto id = args.getProperty("id", {}).toString();
+        if (djehuti::route::findStandardBoard(id.toStdString()) == nullptr)
+            return reply(false, "No standard board " + id + "; see pcb_board_list_options.");
+        auto board = pcb::BoardDesign::standard(id);
+        board.layers = next.layers;
+        board.thickness = next.thickness;
+        board.edgeClearance = next.edgeClearance;
+        pcbPanel->setDesign(board);
+        return reply(true, {});
+    }
+    if (name == "pcb_board_set_shape")
+    {
+        const auto shape = args.getProperty("shape", {}).toString();
+        if (pcb::findShape(shape) == nullptr)
+            return reply(false, "No shape " + shape + "; see pcb_board_list_options.");
+        std::map<juce::String, double> params;
+        if (const auto* o = args.getProperty("params", {}).getDynamicObject())
+            for (const auto& p : o->getProperties())
+                params[p.name.toString()] = (double)p.value;
+        auto board = pcb::BoardDesign::fromShape(shape, params);
+        board.holes = next.holes;
+        board.cutouts = next.cutouts;
+        board.layers = next.layers;
+        board.thickness = next.thickness;
+        board.edgeClearance = next.edgeClearance;
+        pcbPanel->setDesign(board);
+        return reply(true, {});
+    }
+    if (name == "pcb_board_set_outline")
+    {
+        const auto pts = points(args.getProperty("points", {}));
+        if (pts.size() < 3)
+            return reply(false, "An outline needs at least 3 corners.");
+        next.source = "custom";
+        next.outline = pts;
+        pcbPanel->setDesign(next);
+        return reply(next.problems().isEmpty(), next.problems().joinIntoString(" "));
+    }
+    if (name == "pcb_board_add_hole")
+    {
+        const double d = (double)args.getProperty("diameter", 0.0);
+        if (d <= 0.0)
+            return reply(false, "The diameter must be positive.");
+        next.holes.push_back({ { (double)args.getProperty("x", 0.0), (double)args.getProperty("y", 0.0) }, d });
+        pcbPanel->setDesign(next);
+        return reply(next.problems().isEmpty(), next.problems().joinIntoString(" "));
+    }
+    if (name == "pcb_board_add_cutout")
+    {
+        const auto pts = points(args.getProperty("points", {}));
+        if (pts.size() < 3)
+            return reply(false, "A cutout needs at least 3 corners.");
+        next.cutouts.push_back(pts);
+        pcbPanel->setDesign(next);
+        return reply(next.problems().isEmpty(), next.problems().joinIntoString(" "));
+    }
+    if (name == "pcb_board_remove")
+    {
+        const auto kind = args.getProperty("kind", {}).toString();
+        const int index = (int)args.getProperty("index", 0) - 1;
+        if (kind == "hole" && index >= 0 && index < (int)next.holes.size())
+            next.holes.erase(next.holes.begin() + index);
+        else if (kind == "cutout" && index >= 0 && index < (int)next.cutouts.size())
+            next.cutouts.erase(next.cutouts.begin() + index);
+        else
+            return reply(false, "No " + kind + " number " + juce::String(index + 1) + ".");
+        pcbPanel->setDesign(next);
+        return reply(true, {});
+    }
+    if (name == "pcb_board_set_stackup")
+    {
+        if (args.hasProperty("layers"))
+        {
+            const int layers = (int)args.getProperty("layers", 2);
+            if (layers != 1 && layers != 2 && layers != 4 && layers != 6 && layers != 8)
+                return reply(false, "Layers must be 1, 2, 4, 6 or 8.");
+            next.layers = layers;
+        }
+        if (args.hasProperty("thickness")) next.thickness = (double)args.getProperty("thickness", 1.6);
+        if (args.hasProperty("edge_clearance")) next.edgeClearance = (double)args.getProperty("edge_clearance", 0.3);
+        pcbPanel->setDesign(next);
+        return reply(true, {});
+    }
+    return reply(false, "Unknown PCB tool.");
 }
 
 juce::String ElectronicsWorkbench::frustTool(const juce::String& name, const juce::var& args)
