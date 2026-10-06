@@ -13,7 +13,7 @@
 #include <djehuti_route/outline.h>
 #include "Preferences.h"
 #include "AudioPipeline.h"
-#include "FrustAudioGenerator.h"
+#include "AudioDsp.h"
 
 #include <ai_provider/AiConfig.h>
 
@@ -11244,6 +11244,14 @@ void ElectronicsWorkbench::menuItemSelected(int menuItemID, int)
         case runCompiledPreview: exportFrustRealtimePreview(); break;
         case startAudioSimItem:
         {
+            if (isAudioSimRunning)
+            {
+                audioPipeline->setProcessCallback(nullptr);
+                isAudioSimRunning = false;
+                appendLog("Audio Pipeline Test stopped.");
+                break;
+            }
+
             if (getSimCircuit == nullptr)
                 break;
                 
@@ -11257,12 +11265,23 @@ void ElectronicsWorkbench::menuItemSelected(int menuItemID, int)
                 break;
             }
             
+            audio_dsp::Config config;
+            config.audioInputElement = audioIn;
+            config.audioOutputNode = audioOut;
+            config.sampleRate = audioPipeline->getDeviceManager().getAudioDeviceSetup().sampleRate;
+            auto model = audio_dsp::build(circuit, config);
+            if (!model.ok)
+            {
+                appendLog("Failed to build DSP model:\n" + juce::String(model.error));
+                break;
+            }
+
             // Generate the Frust DSP code
-            auto source = FrustAudioGenerator::generate(circuit, audioIn, audioOut, FrustAudioGenerator::Method::MNA);
+            auto source = juce::String(model.frustSource());
             
             // Ensure manifest is added
-            auto manifest = frust_engine::manifestLine("audio_dsp", "Generated DSP processing function.");
-            source = juce::String(manifest) + source;
+            auto manifest = frust_engine::manifestLine("audio_dsp", "Generated DSP processing function.", audio_dsp::Model::requiredHostFunctions());
+            source = juce::String(manifest) + "\n" + source;
 
             // Load into our engine
             auto result = audioEngine.load("audio_dsp", source.toStdString());
@@ -11273,18 +11292,23 @@ void ElectronicsWorkbench::menuItemSelected(int menuItemID, int)
             }
 
             // Get the function pointer.
-            // In Frust, our signature is `pub fn process_sample(audio_in: f64) -> f64`
-            typedef double (*ProcessFn)(double);
+            // In Frust, our signature is `pub fn process_sample(audio_in: f64, ws: Array<f64, size>) -> f64`
+            typedef double (*ProcessFn)(double, double*);
             auto* fn = reinterpret_cast<ProcessFn>(audioEngine.function("audio_dsp", "process_sample"));
             
             if (fn != nullptr)
             {
                 appendLog("Audio DSP compiled and loaded. Wiring to pipeline...");
-                audioPipeline->setProcessCallback([fn](const float* in, float* out, int samples) {
+                auto workspace = std::make_shared<std::vector<double>>(model.initialWorkspace);
+                if (workspace->size() < (size_t)model.workspaceSize)
+                    workspace->resize(model.workspaceSize, 0.0);
+
+                audioPipeline->setProcessCallback([fn, workspace](const float* in, float* out, int samples) {
                     for (int i = 0; i < samples; ++i) {
-                        out[i] = static_cast<float>(fn(static_cast<double>(in[i])));
+                        out[i] = static_cast<float>(fn(static_cast<double>(in[i]), workspace->data()));
                     }
                 });
+                isAudioSimRunning = true;
             }
             else
             {
