@@ -310,37 +310,111 @@ double Model::step(std::vector<double>& ws, double audioInVolts) const
     std::vector<double> p_v = p0;
     std::vector<double> p_i(portCount, 0.0);
     
-    for (int p = 0; p < portCount; ++p)
+    if (portCount > 0)
     {
-        if (devices[p].kind == Device::Kind::Diode)
+        for (int p = 0; p < portCount; ++p)
+            p_v[p] = ws[stateCount + p];
+            
+        std::vector<double> deriv(portCount, 0.0);
+        std::vector<double> current(portCount, 0.0);
+        std::vector<double> F(portCount, 0.0);
+        std::vector<double> J(portCount * portCount, 0.0);
+        
+        for (int it = 0; it < maxIterations; ++it)
         {
-            double v = ws[stateCount + p];
             double vt = 0.02585;
             double is = 1e-14;
-            for (int it = 0; it < 40; ++it)
+            
+            for (int p = 0; p < portCount; ++p)
             {
-                // Clamp v to avoid exponential overflow
-                v = std::max(-100.0, std::min(v, 2.0));
-                
-                double exp_val = std::exp(v / vt);
-                double current = is * (exp_val - 1.0);
-                double deriv = (is / vt) * exp_val;
-                
-                double f = v - p0[p] - portK[p * portCount + p] * current;
-                double df = 1.0 - portK[p * portCount + p] * deriv;
-                
-                double delta = f / df;
-                
-                // Damping for large steps
-                if (delta > 0.05) delta = 0.05;
-                if (delta < -0.05) delta = -0.05;
-                
-                v -= delta;
-                if (std::abs(delta) < 1e-6) break;
+                if (devices[p].kind == Device::Kind::Diode)
+                {
+                    p_v[p] = std::max(-100.0, std::min(p_v[p], 2.0));
+                    double exp_val = std::exp(p_v[p] / vt);
+                    current[p] = is * (exp_val - 1.0);
+                    deriv[p] = (is / vt) * exp_val;
+                }
             }
-            p_v[p] = v;
-            p_i[p] = is * (std::exp(v / vt) - 1.0);
-            ws[stateCount + p] = v;
+            
+            double max_abs_F = 0.0;
+            for (int p = 0; p < portCount; ++p)
+            {
+                double k_i = 0.0;
+                for (int q = 0; q < portCount; ++q)
+                    k_i += portK[p * portCount + q] * current[q];
+                F[p] = p_v[p] - p0[p] - k_i;
+                max_abs_F = std::max(max_abs_F, std::abs(F[p]));
+            }
+            
+            if (max_abs_F < 1e-6) break;
+            
+            for (int p = 0; p < portCount; ++p)
+            {
+                for (int q = 0; q < portCount; ++q)
+                {
+                    J[p * portCount + q] = (p == q ? 1.0 : 0.0) - portK[p * portCount + q] * deriv[q];
+                }
+            }
+            
+            std::vector<double> delta = F;
+            bool singular = false;
+            // Gaussian elimination with partial pivoting
+            for (int c = 0; c < portCount; ++c)
+            {
+                int pivot = c;
+                double max_val = std::abs(J[c * portCount + c]);
+                for (int r = c + 1; r < portCount; ++r)
+                {
+                    if (std::abs(J[r * portCount + c]) > max_val)
+                    {
+                        max_val = std::abs(J[r * portCount + c]);
+                        pivot = r;
+                    }
+                }
+                if (max_val < 1e-12)
+                {
+                    singular = true;
+                    break;
+                }
+                if (pivot != c)
+                {
+                    for (int q = c; q < portCount; ++q) std::swap(J[c * portCount + q], J[pivot * portCount + q]);
+                    std::swap(delta[c], delta[pivot]);
+                }
+                for (int r = c + 1; r < portCount; ++r)
+                {
+                    double factor = J[r * portCount + c] / J[c * portCount + c];
+                    for (int q = c; q < portCount; ++q)
+                        J[r * portCount + q] -= factor * J[c * portCount + q];
+                    delta[r] -= factor * delta[c];
+                }
+            }
+            if (singular) break;
+            
+            for (int r = portCount - 1; r >= 0; --r)
+            {
+                for (int c = r + 1; c < portCount; ++c)
+                    delta[r] -= J[r * portCount + c] * delta[c];
+                delta[r] /= J[r * portCount + r];
+            }
+            
+            for (int p = 0; p < portCount; ++p)
+            {
+                if (delta[p] > 0.05) delta[p] = 0.05;
+                if (delta[p] < -0.05) delta[p] = -0.05;
+                p_v[p] -= delta[p];
+            }
+        }
+        
+        for (int p = 0; p < portCount; ++p)
+        {
+            ws[stateCount + p] = p_v[p];
+            if (devices[p].kind == Device::Kind::Diode)
+            {
+                double vt = 0.02585;
+                double is = 1e-14;
+                p_i[p] = is * (std::exp(p_v[p] / vt) - 1.0);
+            }
         }
     }
     
@@ -384,53 +458,137 @@ std::string Model::frustSource() const
                 if (c == 0) term = "1.0";
                 else if (c == 1) term = "audio_in";
                 else term = "ws[" + std::to_string(c - 1 - inputCount) + "]";
-                ss << "    p0_" << p << " = p0_" << p << " + " << std::setprecision(17) << coeff << " * " << term << ";\n";
+                ss << "    p0_" << p << " = p0_" << p << " + " << std::fixed << std::setprecision(17) << coeff << " * " << term << ";\n";
             }
         }
     }
     
     ss << "\n";
-    for (int p = 0; p < portCount; ++p)
+    if (portCount > 0)
     {
-        ss << "    let mut p_v_" << p << " = p0_" << p << ";\n";
-        ss << "    let mut p_i_" << p << " = 0.0;\n";
-        
-        if (devices[p].kind == Device::Kind::Diode)
+        for (int p = 0; p < portCount; ++p)
         {
-            ss << "    p_v_" << p << " = ws[" << stateCount + p << "];\n";
-            ss << "    let mut vt = 0.02585;\n";
-            ss << "    let mut is = 0.00000000000001;\n";
-            ss << "    let mut it = 0;\n";
-            ss << "    let mut exp_val = 0.0;\n";
-            ss << "    let mut current = 0.0;\n";
-            ss << "    let mut deriv = 0.0;\n";
-            ss << "    let mut f = 0.0;\n";
-            ss << "    let mut df = 0.0;\n";
-            ss << "    let mut delta = 0.0;\n";
-            ss << "    let mut abs_delta = 0.0;\n";
-            ss << "    while (it < 40) {\n";
-            ss << "        while (p_v_" << p << " < -100.0) { p_v_" << p << " = -100.0; };\n";
-            ss << "        while (p_v_" << p << " > 2.0) { p_v_" << p << " = 2.0; };\n";
+            ss << "    let mut p_v_" << p << " = ws[" << stateCount + p << "];\n";
+            ss << "    let mut p_i_" << p << " = 0.0;\n";
+            ss << "    let mut current_" << p << " = 0.0;\n";
+            ss << "    let mut deriv_" << p << " = 0.0;\n";
+            ss << "    let mut F_" << p << " = 0.0;\n";
+            ss << "    let mut delta_" << p << " = 0.0;\n";
+        }
+        for (int p = 0; p < portCount; ++p)
+        {
+            for (int q = 0; q < portCount; ++q)
+                ss << "    let mut J_" << p << "_" << q << " = 0.0;\n";
+        }
+        
+        ss << "    let mut vt = 0.02585;\n";
+        ss << "    let mut is = 0.00000000000001;\n";
+        ss << "    let mut it = 0;\n";
+        ss << "    let mut exp_val = 0.0;\n";
+        ss << "    let mut abs_delta = 1.0;\n";
+        
+        ss << "    while (it < " << maxIterations << ") {\n";
+        
+        for (int p = 0; p < portCount; ++p)
+        {
+            if (devices[p].kind == Device::Kind::Diode)
+            {
+                ss << "        while (p_v_" << p << " < -100.0) { p_v_" << p << " = -100.0; };\n";
+                ss << "        while (p_v_" << p << " > 2.0) { p_v_" << p << " = 2.0; };\n";
+                ss << "        exp_val = djehuti_dsp_exp(p_v_" << p << " / vt);\n";
+                ss << "        current_" << p << " = is * (exp_val - 1.0);\n";
+                ss << "        deriv_" << p << " = (is / vt) * exp_val;\n";
+            }
+        }
+        
+        for (int p = 0; p < portCount; ++p)
+        {
+            ss << "        F_" << p << " = p_v_" << p << " - p0_" << p << ";\n";
+            for (int q = 0; q < portCount; ++q)
+                ss << "        F_" << p << " = F_" << p << " - " << std::fixed << std::setprecision(17) << portK[p * portCount + q] << " * current_" << q << ";\n";
+        }
+        
+        for (int p = 0; p < portCount; ++p)
+        {
+            for (int q = 0; q < portCount; ++q)
+            {
+                double kp = portK[p * portCount + q];
+                if (p == q) ss << "        J_" << p << "_" << q << " = 1.0 - " << std::fixed << std::setprecision(17) << kp << " * deriv_" << q << ";\n";
+                else        ss << "        J_" << p << "_" << q << " = 0.0 - " << std::fixed << std::setprecision(17) << kp << " * deriv_" << q << ";\n";
+            }
+        }
+        
+        for (int c = 0; c < portCount; ++c)
+        {
+            for (int r = c + 1; r < portCount; ++r)
+            {
+                ss << "        let mut abs_c = J_" << c << "_" << c << ";\n";
+                ss << "        while (abs_c < 0.0) { abs_c = 0.0 - abs_c; };\n";
+                ss << "        let mut abs_r = J_" << r << "_" << c << ";\n";
+                ss << "        while (abs_r < 0.0) { abs_r = 0.0 - abs_r; };\n";
+                
+                ss << "        let mut do_swap = 1;\n";
+                ss << "        while (abs_r <= abs_c) { do_swap = 0; abs_r = abs_c + 1.0; };\n";
+                ss << "        while (do_swap > 0) {\n";
+                for (int q = c; q < portCount; ++q)
+                {
+                    ss << "            let mut tmp_J_" << q << " = J_" << c << "_" << q << ";\n";
+                    ss << "            J_" << c << "_" << q << " = J_" << r << "_" << q << ";\n";
+                    ss << "            J_" << r << "_" << q << " = tmp_J_" << q << ";\n";
+                }
+                ss << "            let mut tmp_F = F_" << c << ";\n";
+                ss << "            F_" << c << " = F_" << r << ";\n";
+                ss << "            F_" << r << " = tmp_F;\n";
+                ss << "            do_swap = 0;\n";
+                ss << "        };\n";
+            }
             
-            ss << "        exp_val = djehuti_dsp_exp(p_v_" << p << " / vt);\n";
-            ss << "        current = is * (exp_val - 1.0);\n";
-            ss << "        deriv = (is / vt) * exp_val;\n";
+            ss << "        let mut abs_pivot = J_" << c << "_" << c << ";\n";
+            ss << "        while (abs_pivot < 0.0) { abs_pivot = 0.0 - abs_pivot; };\n";
+            ss << "        while (abs_pivot < 0.000000000001) {\n";
+            ss << "            it = " << maxIterations << ";\n";
+            ss << "            abs_delta = 0.0;\n";
+            ss << "            abs_pivot = 1.0;\n";
+            ss << "        };\n";
             
-            ss << "        f = p_v_" << p << " - p0_" << p << " - " << std::setprecision(17) << portK[p * portCount + p] << " * current;\n";
-            ss << "        df = 1.0 - " << std::setprecision(17) << portK[p * portCount + p] << " * deriv;\n";
-            ss << "        delta = f / df;\n";
-            ss << "        while (delta > 0.05) { delta = 0.05; };\n";
-            ss << "        while (delta < -0.05) { delta = -0.05; };\n";
+            for (int r = c + 1; r < portCount; ++r)
+            {
+                ss << "        let mut factor_" << r << "_" << c << " = J_" << r << "_" << c << " / J_" << c << "_" << c << ";\n";
+                for (int q = c; q < portCount; ++q)
+                    ss << "        J_" << r << "_" << q << " = J_" << r << "_" << q << " - factor_" << r << "_" << c << " * J_" << c << "_" << q << ";\n";
+                ss << "        F_" << r << " = F_" << r << " - factor_" << r << "_" << c << " * F_" << c << ";\n";
+            }
+        }
+        
+        for (int r = portCount - 1; r >= 0; --r)
+        {
+            ss << "        delta_" << r << " = F_" << r << ";\n";
+            for (int c = r + 1; c < portCount; ++c)
+                ss << "        delta_" << r << " = delta_" << r << " - J_" << r << "_" << c << " * delta_" << c << ";\n";
+            ss << "        delta_" << r << " = delta_" << r << " / J_" << r << "_" << r << ";\n";
+        }
+        
+        ss << "        abs_delta = 0.0;\n";
+        for (int p = 0; p < portCount; ++p)
+        {
+            ss << "        while (delta_" << p << " > 0.05) { delta_" << p << " = 0.05; };\n";
+            ss << "        while (delta_" << p << " < -0.05) { delta_" << p << " = -0.05; };\n";
+            ss << "        p_v_" << p << " = p_v_" << p << " - delta_" << p << ";\n";
             
-            ss << "        p_v_" << p << " = p_v_" << p << " - delta;\n";
-            
-            ss << "        abs_delta = delta;\n";
-            ss << "        while (abs_delta < 0.0) { abs_delta = 0.0 - abs_delta; };\n";
-            ss << "        while (abs_delta < 0.000001) { it = 40; abs_delta = 1.0; };\n";
-            ss << "        it = it + 1;\n";
-            ss << "    };\n";
-            ss << "    p_i_" << p << " = is * (djehuti_dsp_exp(p_v_" << p << " / vt) - 1.0);\n";
+            ss << "        let mut abs_p = delta_" << p << ";\n";
+            ss << "        while (abs_p < 0.0) { abs_p = 0.0 - abs_p; };\n";
+            ss << "        while (abs_p > abs_delta) { abs_delta = abs_p; };\n";
+        }
+        
+        ss << "        while (abs_delta < 0.000001) { it = " << maxIterations << "; abs_delta = 1.0; };\n";
+        ss << "        it = it + 1;\n";
+        ss << "    };\n";
+        
+        for (int p = 0; p < portCount; ++p)
+        {
             ss << "    ws[" << stateCount + p << "] = p_v_" << p << ";\n";
+            if (devices[p].kind == Device::Kind::Diode)
+                ss << "    p_i_" << p << " = is * (djehuti_dsp_exp(p_v_" << p << " / vt) - 1.0);\n";
         }
     }
     
@@ -445,14 +603,14 @@ std::string Model::frustSource() const
             if (c == 0) term = "1.0";
             else if (c == 1) term = "audio_in";
             else term = "ws[" + std::to_string(c - 1 - inputCount) + "]";
-            ss << "    y = y + " << std::setprecision(17) << coeff << " * " << term << ";\n";
+            ss << "    y = y + " << std::fixed << std::setprecision(17) << coeff << " * " << term << ";\n";
         }
     }
     for (int p = 0; p < portCount; ++p)
     {
         double coeff = outQ[p];
         if (std::abs(coeff) > 1e-12)
-            ss << "    y = y + " << std::setprecision(17) << coeff << " * p_i_" << p << ";\n";
+            ss << "    y = y + " << std::fixed << std::setprecision(17) << coeff << " * p_i_" << p << ";\n";
     }
 
     ss << "\n";
@@ -468,14 +626,14 @@ std::string Model::frustSource() const
                 if (c == 0) term = "1.0";
                 else if (c == 1) term = "audio_in";
                 else term = "ws[" + std::to_string(c - 1 - inputCount) + "]";
-                ss << "    s_new_" << s << " = s_new_" << s << " + " << std::setprecision(17) << coeff << " * " << term << ";\n";
+                ss << "    s_new_" << s << " = s_new_" << s << " + " << std::fixed << std::setprecision(17) << coeff << " * " << term << ";\n";
             }
         }
         for (int p = 0; p < portCount; ++p)
         {
             double coeff = stateQ[s * portCount + p];
             if (std::abs(coeff) > 1e-12)
-                ss << "    s_new_" << s << " = s_new_" << s << " + " << std::setprecision(17) << coeff << " * p_i_" << p << ";\n";
+                ss << "    s_new_" << s << " = s_new_" << s << " + " << std::fixed << std::setprecision(17) << coeff << " * p_i_" << p << ";\n";
         }
     }
     for (int s = 0; s < stateCount; ++s)
