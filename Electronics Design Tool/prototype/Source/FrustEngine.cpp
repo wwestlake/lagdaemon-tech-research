@@ -5,6 +5,7 @@
 #include <CompilerApi.h>
 
 #include <chrono>
+#include <cmath>
 
 namespace frust_engine
 {
@@ -65,12 +66,24 @@ extern "C" std::int64_t djehuti_frust_log(const char* text)
     return 0;
 }
 
+// Math the generated audio DSP needs (Frust has no exp or log of its own).
+extern "C" double djehuti_dsp_exp(double x) { return std::exp(x); }
+extern "C" double djehuti_dsp_log(double x) { return std::log(x); }
+
+// The Frust compiler emits a call to frust_dbg_tick(line, column) before every
+// expression (its IDE debugger hook). The app does not step through Frust code,
+// so it is a no-op; without it no compiled unit links.
+extern "C" void djehuti_frust_dbg_tick(int, int) {}
+
 void ensureHostSetup()
 {
     static std::once_flag once;
     std::call_once(once, [] {
         frust_plugin_host_set_application_identity("djehuti-electronics-lab");
+        frust_plugin_register_host_function("frust_dbg_tick", reinterpret_cast<void*>(&djehuti_frust_dbg_tick));
         frust_plugin_register_host_function("djehuti_frust_log", reinterpret_cast<void*>(&djehuti_frust_log));
+        frust_plugin_register_host_function("djehuti_dsp_exp", reinterpret_cast<void*>(&djehuti_dsp_exp));
+        frust_plugin_register_host_function("djehuti_dsp_log", reinterpret_cast<void*>(&djehuti_dsp_log));
     });
 }
 

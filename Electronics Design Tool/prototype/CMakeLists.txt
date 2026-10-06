@@ -152,6 +152,10 @@ target_sources(DjehutiElectronicsLab PRIVATE
     Source/PcbFab.cpp
     Source/PcbPanel.h
     Source/PcbPanel.cpp
+    Source/AudioPipeline.h
+    Source/AudioPipeline.cpp
+    Source/FrustAudioGenerator.h
+    Source/FrustAudioGenerator.cpp
 )
 
 target_compile_definitions(DjehutiElectronicsLab PRIVATE
@@ -175,6 +179,9 @@ target_link_libraries(DjehutiElectronicsLab PRIVATE
     juce::juce_graphics
     juce::juce_gui_basics
     juce::juce_gui_extra
+    juce::juce_audio_basics
+    juce::juce_audio_devices
+    juce::juce_audio_utils
 )
 
 juce_generate_juce_header(DjehutiElectronicsLab)

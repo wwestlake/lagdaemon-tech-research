@@ -4,6 +4,10 @@
 #include <CreationDock/DockManager.h>
 
 #include "ProjectStore.h"
+#include "CircuitSolver.h"
+#include "FrustEngine.h"
+
+class AudioPipeline;
 
 class ElectronicsWorkbench final : public juce::Component,
                                    public juce::DragAndDropContainer,
@@ -47,7 +51,8 @@ private:
         toggleStampModeItem,
         openAgentSettings,
         exportAgentTools,
-        openResearchSpec
+        openResearchSpec,
+        startAudioSimItem
     };
 
     static constexpr int recentProjectBase = 1000;
@@ -137,11 +142,14 @@ private:
     void applySchematicZoom(float zoom);
     void adjustSchematicZoom(float factor);
 
+    bool isAudioSimRunning = false;
+    std::unique_ptr<AudioPipeline> audioPipeline;
+    frust_engine::Engine audioEngine;
+
     std::unique_ptr<juce::MenuBarComponent> menuBar;
     std::unique_ptr<CreationDock::DockManager> dockManager;
 
     juce::Label titleLabel;
-    juce::Label statusLabel;
     juce::TextButton newButton { "New" };
     juce::TextButton openDiagramButton { "Open" };
     juce::TextButton ercButton { "ERC" };
@@ -154,6 +162,7 @@ private:
     juce::TextButton zoomInButton { "+" };
 
     juce::TextEditor* logConsole = nullptr;
+juce::TextEditor* logWindow = nullptr;
     juce::String selectedSymbolId = "resistor";
     juce::OwnedArray<juce::DocumentWindow> floatingInstrumentWindows;
     juce::Component::SafePointer<juce::Component> schematicView;
@@ -174,7 +183,11 @@ private:
     std::function<void(bool)> setSnapEnabled;
     std::function<void(float)> setSchematicZoom;
     std::function<float()> getSchematicZoom;
+    std::function<std::tuple<circuit_sim::Circuit, int, int>()> getSimCircuit;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(ElectronicsWorkbench)
 };
+
+
+
 

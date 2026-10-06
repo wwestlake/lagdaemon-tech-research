@@ -139,6 +139,8 @@ std::map<juce::String, std::vector<ParamSpec>> buildCatalog()
     c["power_port"] = { text("busName", "Supply net name", "+5V", Storage::BusName, "Ports with the same name are one net; a leading - draws it pointing down") };
     c["net_label"] = { text("busName", "Label", "NET1", Storage::BusName, "Labels with the same name are one net") };
     c["power_bus"] = { text("busName", "Rail name", "+V", Storage::BusName) };
+    c["audio_in"] = { choice("source", "Input Type", { "Hardware", "File" }, "Hardware"), text("file", "File Path", "") };
+    c["audio_out"] = { choice("sink", "Output Type", { "Hardware", "File" }, "Hardware"), text("file", "File Path", "") };
     c["ground_bus"] = { text("busName", "Rail name", "0", Storage::BusName) };
     c["oscilloscope_2ch"] = { choice("time_per_div", "Time / div", { "10u", "20u", "50u", "100u", "200u", "500u", "1m", "2m", "5m", "10m", "20m", "50m" }, "200u"),
                               choice("ch1_volts_per_div", "CH1 volts / div", { "10m", "20m", "50m", "100m", "200m", "500m", "1", "2", "5", "10" }, "500m"),
@@ -201,7 +203,7 @@ juce::String displayName(const juce::String& id)
         { "nmos", "N-Channel MOSFET" }, { "pmos", "P-Channel MOSFET" }, { "njfet", "N-Channel JFET" }, { "pjfet", "P-Channel JFET" },
         { "switch_spst", "SPST Switch" }, { "switch_spdt", "SPDT Switch" }, { "relay_spst", "SPST Relay" }, { "fuse", "Fuse" },
         { "connector_2", "2-Pin Connector" }, { "connector_3", "3-Pin Connector" }, { "test_point", "Test Point" },
-        { "ground", "Ground" }, { "power_port", "Supply Port" }, { "net_label", "Net Label" },
+        { "ground", "Ground" }, { "power_port", "Supply Port" }, { "audio_in", "Audio Input" }, { "audio_out", "Audio Output" }, { "net_label", "Net Label" },
         { "power_bus", "Power Bus" }, { "ground_bus", "Ground Bus" },
         { "oscilloscope_2ch", "Oscilloscope" }, { "digital_multimeter", "Digital Multimeter" }, { "bode_analyzer", "Frequency Analyzer" },
         { "sub_block", "Sub-diagram Block" }, { "block_port", "Sub-diagram Port" },
@@ -286,3 +288,5 @@ bool validate(const ParamSpec& spec, const juce::String& value, juce::String& er
     return true;
 }
 }
+
+

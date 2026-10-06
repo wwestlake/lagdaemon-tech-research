@@ -291,7 +291,7 @@ const juce::StringArray& supportedSymbolIds()
     static const juce::StringArray ids {
         "resistor", "potentiometer", "capacitor", "capacitor_polarized", "variable_capacitor",
         "inductor", "coupled_inductor", "transformer", "diode", "zener_diode", "led",
-        "schottky_diode", "power_bus", "ground_bus", "power_port", "net_label", "sub_block", "block_port", "battery", "voltage_source",
+        "schottky_diode", "power_bus", "ground_bus", "power_port", "net_label", "sub_block", "block_port", "battery", "voltage_source", "audio_in", "audio_out",
         "ac_voltage_source", "current_source", "ac_current_source", "vcvs", "vccs",
         "ccvs", "cccs", "signal_source", "ground", "opamp_741", "npn", "pnp",
         "nmos", "pmos", "njfet", "pjfet", "switch_spst", "switch_spdt", "relay_spst",
@@ -331,6 +331,8 @@ SymbolDef symbolFor(const juce::String& id)
     if (id == "sub_block")           return make(id, "BLOCK", { -72, -48, 144, 72 }, {});
     if (id == "ground")              return make(id, "GND", { -18, 0, 36, 30 }, { { "0", { 0, 0 } } });
     if (id == "battery")             return make(id, "BAT", { -24, -18, 48, 36 }, { { "+", { 0, -48 } }, { "-", { 0, 48 } } });
+    if (id == "audio_in")          return make(id, "IN", { -24, -24, 48, 48 }, { { "+", { 0, -48 } }, { "-", { 0, 48 } } });
+    if (id == "audio_out")         return make(id, "OUT", { -24, -24, 48, 48 }, { { "1", { 0, 0 } } });
     if (id == "voltage_source")      return make(id, "V", { -24, -24, 48, 48 }, { { "+", { 0, -48 } }, { "-", { 0, 48 } } });
     if (id == "ac_voltage_source")   return make(id, "AC", { -24, -24, 48, 48 }, { { "+", { 0, -48 } }, { "-", { 0, 48 } } });
     if (id == "current_source")      return make(id, "I", { -24, -24, 48, 48 }, { { "+", { 0, -48 } }, { "-", { 0, 48 } } });
@@ -375,6 +377,7 @@ juce::String refdesPrefixFor(const juce::String& id)
     if (id == "transformer") return "T";
     if (id == "diode" || id == "zener_diode" || id == "schottky_diode" || id == "led") return "D";
     if (id == "battery") return "BT";
+    if (id == "audio_in" || id == "audio_out") return "AUDIO";
     if (id == "voltage_source" || id == "ac_voltage_source" || id == "signal_source") return "V";
     if (id == "current_source" || id == "ac_current_source") return "I";
     if (id == "vcvs") return "E";
@@ -732,6 +735,16 @@ void drawSymbolArt(juce::Graphics& g, const SymbolDef& symbol, const juce::Strin
         line(g, { -9, 6 }, { 9, 6 }, 3.0f);
         text(g, "+", { 10, -24, 14, 14 });
     }
+    else if (id == "audio_in")
+    {
+        circleSource(g);
+        text(g, "IN", { -16, -16, 32, 32 });
+    }
+    else if (id == "audio_out")
+    {
+        g.drawEllipse(-12, -12, 24, 24, 2.0f);
+        text(g, "OUT", { -16, -16, 32, 32 });
+    }
     else if (id == "voltage_source")
     {
         circleSource(g);
@@ -938,3 +951,5 @@ void drawSymbolArt(juce::Graphics& g, const SymbolDef& symbol, const juce::Strin
     }
 }
 }
+
+

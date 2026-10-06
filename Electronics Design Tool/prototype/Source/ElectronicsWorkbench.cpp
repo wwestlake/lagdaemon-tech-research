@@ -12,6 +12,8 @@
 #include "PcbPanel.h"
 #include <djehuti_route/outline.h>
 #include "Preferences.h"
+#include "AudioPipeline.h"
+#include "FrustAudioGenerator.h"
 
 #include <ai_provider/AiConfig.h>
 
@@ -1362,6 +1364,8 @@ private:
         add({ "ground_bus", "Ground Bus", "Bus" });
         add({ "battery", "Battery", "Source" });
         add({ "voltage_source", "DC Voltage Source", "Source" });
+        add({ "audio_in", "Audio Input", "Source" });
+        add({ "audio_out", "Audio Output", "Source" });
         add({ "ac_voltage_source", "AC Voltage Source", "Source" });
         add({ "current_source", "DC Current Source", "Source" });
         add({ "ac_current_source", "AC Current Source", "Source" });
@@ -2062,7 +2066,7 @@ public:
                     addFinding("WARN", instance.refdes + " has both pins on " + a + ".");
             }
 
-            if ((instance.symbolId == "voltage_source" || instance.symbolId == "battery" || instance.symbolId == "ac_voltage_source")
+            if ((instance.symbolId == "voltage_source" || instance.symbolId == "battery" || instance.symbolId == "ac_voltage_source" || instance.symbolId == "audio_in")
                 && pinNet(i, "+") == pinNet(i, "-"))
                 addFinding("ERROR", instance.refdes + " has positive and negative terminals on the same net.");
             if (instance.symbolId == "signal_source" && pinNet(i, "OUT") == pinNet(i, "REF"))
@@ -5790,12 +5794,15 @@ private:
         return parsed ? value : fallback;
     }
 
+    public:
     struct SimNetlist
     {
         circuit_sim::Circuit circuit;
         std::map<juce::String, circuit_sim::Node> nodeOfNet;
         std::map<juce::String, int> elementOfPart; // refdes -> element (ammeter source, source)
         juce::StringArray warnings;
+        int audioInputBranch = -1;
+        int audioOutputNode = -1;
     };
 
     // `ohmmeter` >= 0 builds the resistance-measurement circuit for that
@@ -5934,8 +5941,15 @@ private:
                 m.saturationCurrent = 0.01 / std::exp(vf / (m.emission * 0.025852));
                 element = c.addDiode(name, node(i, "A"), node(i, "K"), m);
             }
-            else if (id == "battery" || id == "voltage_source")
+            else if (id == "audio_out")
+            {
+                sim.audioOutputNode = node(i, "1");
+            }
+            else if (id == "battery" || id == "voltage_source" || id == "audio_in")
+            {
                 element = c.addVoltageSource(name, node(i, "+"), node(i, "-"), dcWave(measuringOhms ? 0.0 : number(inst, "value", 5.0)));
+                if (id == "audio_in") sim.audioInputBranch = element;
+            }
             else if (id == "current_source")
             {
                 if (!measuringOhms)
@@ -8751,7 +8765,7 @@ private:
 class PreferencesView final : public juce::Component
 {
 public:
-    PreferencesView()
+    PreferencesView(class AudioPipeline* audioPipeline = nullptr) : audioPipeline(audioPipeline)
     {
         search.setTextToShowWhenEmpty("Search preferences (rail, spacing, grid, units...)", juce::Colour(0xff71808c));
         styleTextEditor(search);
@@ -8759,7 +8773,9 @@ public:
         search.onTextChange = [this] { rebuild(); };
         addAndMakeVisible(search);
 
-        for (const auto& category : prefs::categories())
+        juce::StringArray cats = prefs::categories();
+        cats.add("Audio");
+        for (const auto& category : cats)
         {
             auto* button = categoryButtons.add(new juce::TextButton(category));
             button->setClickingTogglesState(true);
@@ -8771,7 +8787,7 @@ public:
             button->onClick = [this, category] { selectedCategory = category; search.clear(); rebuild(); };
             addAndMakeVisible(button);
         }
-        selectedCategory = prefs::categories()[0];
+        selectedCategory = cats[0];
         categoryButtons[0]->setToggleState(true, juce::dontSendNotification);
 
         viewport.setViewedComponent(&content, false);
@@ -8812,6 +8828,19 @@ private:
     {
         rows.clear();
         content.removeAllChildren();
+        if (selectedCategory == "Audio")
+        {
+            if (audioPipeline != nullptr)
+            {
+                audioSelector = std::make_unique<juce::AudioDeviceSelectorComponent>(
+                    audioPipeline->getDeviceManager(), 0, 2, 0, 2, false, false, true, false);
+                content.addAndMakeVisible(*audioSelector);
+            }
+            layoutRows();
+            return;
+        }
+        audioSelector.reset();
+
         const auto query = search.getText().trim().toLowerCase();
         juce::String lastCategory;
         for (const auto& setting : prefs::all())
@@ -8931,6 +8960,13 @@ private:
     {
         const auto width = std::max(300, viewport.getWidth() - viewport.getScrollBarThickness() - 4);
         int y = 6;
+        if (audioSelector != nullptr)
+        {
+            audioSelector->setBounds(8, y, width - 16, 400);
+            content.setSize(width, y + 420);
+            return;
+        }
+
         for (auto& row : rows)
         {
             if (row.key.isEmpty())
@@ -8962,6 +8998,8 @@ private:
     juce::Component content;
     std::vector<Row> rows;
     std::unique_ptr<juce::FileChooser> chooser;
+    class AudioPipeline* audioPipeline = nullptr;
+    std::unique_ptr<juce::AudioDeviceSelectorComponent> audioSelector;
 };
 
 class ConsolePanel final : public juce::Component
@@ -8980,6 +9018,24 @@ public:
 
 private:
     juce::TextEditor console;
+};
+
+class LogPanel final : public juce::Component
+{
+public:
+    LogPanel(juce::TextEditor*& externalLog)
+    {
+        styleTextEditor(logText, true);
+        logText.setReadOnly(true);
+        externalLog = &logText;
+        addAndMakeVisible(logText);
+    }
+
+    void paint(juce::Graphics& g) override { g.fillAll(juce::Colour(0xff10161d)); }
+    void resized() override { logText.setBounds(getLocalBounds().reduced(6)); }
+
+private:
+    juce::TextEditor logText;
 };
 
 // Properties for the selected part, with controls chosen from the part
@@ -10679,6 +10735,8 @@ public:
 
 ElectronicsWorkbench::ElectronicsWorkbench()
 {
+    audioPipeline = std::make_unique<AudioPipeline>();
+
     menuBar = std::make_unique<juce::MenuBarComponent>(this);
     addAndMakeVisible(menuBar.get());
 
@@ -10687,11 +10745,11 @@ ElectronicsWorkbench::ElectronicsWorkbench()
     titleLabel.setColour(juce::Label::textColourId, juce::Colour(0xffdce9ee));
     addAndMakeVisible(titleLabel);
 
-    statusLabel.setText("Research shell ready", juce::dontSendNotification);
-    statusLabel.setFont(juce::Font(13.0f));
-    statusLabel.setColour(juce::Label::textColourId, juce::Colour(0xff93a7b0));
-    statusLabel.setJustificationType(juce::Justification::centredRight);
-    addAndMakeVisible(statusLabel);
+    
+    
+    
+    
+    
 
     for (auto* b : { &newButton, &openDiagramButton, &ercButton, &transientButton, &compileButton,
                      &zoomOutButton, &zoomResetButton, &zoomInButton })
@@ -10784,6 +10842,10 @@ ElectronicsWorkbench::ElectronicsWorkbench()
             pcbPanel->setDesign(pcb::BoardDesign::standard("fab-100"), true);
             pcbPanel->setLayout({}, true);
         }
+    };
+    getSimCircuit = [panel = schematic.get()] {
+        auto sim = panel->buildSimNetlist();
+        return std::make_tuple(sim.circuit, sim.audioInputBranch, sim.audioOutputNode);
     };
     getCircuitJson = [this, panel = schematic.get()] {
         auto json = panel->buildCircuitJson().trimEnd();
@@ -10978,6 +11040,7 @@ ElectronicsWorkbench::ElectronicsWorkbench()
     frustPanel = frustOwner.get();
     dockManager->registerPanel("frust", "Frust", std::move(frustOwner), CreationDock::DockTargetZone::Bottom);
     dockManager->registerPanel("console", "Console", std::make_unique<ConsolePanel>(logConsole), CreationDock::DockTargetZone::Bottom);
+    dockManager->registerPanel("log", "Log", std::make_unique<LogPanel>(logWindow), CreationDock::DockTargetZone::Bottom);
     dockManager->registerPanel("agent", "BYOK Agent", std::move(agent), CreationDock::DockTargetZone::Right);
     dockManager->registerPanel("properties", "Properties", std::move(properties), CreationDock::DockTargetZone::Right);
     dockManager->registerPanel("ingestion", "Spec Ingestion", std::make_unique<SpecIngestionPanel>(), CreationDock::DockTargetZone::Right);
@@ -11010,7 +11073,7 @@ void ElectronicsWorkbench::showPreferences()
     if (preferencesWindow == nullptr)
     {
         auto* window = new FloatingInstrumentWindow("Preferences");
-        window->setContentOwned(new PreferencesView(), true);
+        window->setContentOwned(new PreferencesView(audioPipeline.get()), true);
         window->centreWithSize(820, 560);
         preferencesWindow.reset(window);
     }
@@ -11059,7 +11122,7 @@ void ElectronicsWorkbench::resized()
     zoomResetButton.setBounds(toolbar.removeFromLeft(58));
     toolbar.removeFromLeft(4);
     zoomInButton.setBounds(toolbar.removeFromLeft(34));
-    statusLabel.setBounds(toolbar);
+    
 
     if (dockManager != nullptr)
         dockManager->setBounds(area);
@@ -11104,6 +11167,8 @@ juce::PopupMenu ElectronicsWorkbench::getMenuForIndex(int, const juce::String& m
         menu.addItem(autoLayoutDiagramItem, "Auto Layout Diagram");
         menu.addSeparator();
         menu.addItem(runErc, "Run ERC");
+        menu.addSeparator();
+        menu.addItem(startAudioSimItem, isAudioSimRunning ? "Stop Audio Pipeline Test" : "Start Audio Pipeline Test");
     }
     else if (menuName == "Analytics")
     {
@@ -11177,6 +11242,56 @@ void ElectronicsWorkbench::menuItemSelected(int menuItemID, int)
         case runErc: runElectricalRuleCheck(); break;
         case openAnalyticsItem: showAnalytics(); break;
         case runCompiledPreview: exportFrustRealtimePreview(); break;
+        case startAudioSimItem:
+        {
+            if (getSimCircuit == nullptr)
+                break;
+                
+            auto data = getSimCircuit();
+            auto circuit = std::get<0>(data);
+            auto audioIn = std::get<1>(data);
+            auto audioOut = std::get<2>(data);
+            if (circuit.elements().empty())
+            {
+                appendLog("Schematic is empty.");
+                break;
+            }
+            
+            // Generate the Frust DSP code
+            auto source = FrustAudioGenerator::generate(circuit, audioIn, audioOut, FrustAudioGenerator::Method::MNA);
+            
+            // Ensure manifest is added
+            auto manifest = frust_engine::manifestLine("audio_dsp", "Generated DSP processing function.");
+            source = juce::String(manifest) + source;
+
+            // Load into our engine
+            auto result = audioEngine.load("audio_dsp", source.toStdString());
+            if (!result.ok)
+            {
+                appendLog("Failed to compile audio DSP:\n" + juce::String(result.report()));
+                break;
+            }
+
+            // Get the function pointer.
+            // In Frust, our signature is `pub fn process_sample(audio_in: f64) -> f64`
+            typedef double (*ProcessFn)(double);
+            auto* fn = reinterpret_cast<ProcessFn>(audioEngine.function("audio_dsp", "process_sample"));
+            
+            if (fn != nullptr)
+            {
+                appendLog("Audio DSP compiled and loaded. Wiring to pipeline...");
+                audioPipeline->setProcessCallback([fn](const float* in, float* out, int samples) {
+                    for (int i = 0; i < samples; ++i) {
+                        out[i] = static_cast<float>(fn(static_cast<double>(in[i])));
+                    }
+                });
+            }
+            else
+            {
+                appendLog("Compiled audio DSP but couldn't find process_sample function.");
+            }
+            break;
+        }
         case openAgentSettings:
             if (openAgentSettingsDialog != nullptr) openAgentSettingsDialog();
             else appendLog("BYOK agent settings are unavailable.");
@@ -11206,9 +11321,9 @@ juce::File ElectronicsWorkbench::generatedRunDirectory() const
 
 void ElectronicsWorkbench::appendLog(const juce::String& text)
 {
-    statusLabel.setText(text, juce::dontSendNotification);
-    if (logConsole != nullptr)
-        logConsole->insertTextAtCaret("\n// " + text + "\n> ");
+    
+    if (logWindow != nullptr)
+        logWindow->insertTextAtCaret("\n// " + text + "\n> ");
 }
 
 void ElectronicsWorkbench::closeFloatingInstrumentWindows()
@@ -13804,3 +13919,15 @@ juce::String ElectronicsWorkbench::pcbLayoutTool(const juce::String& name, const
     }
     return reply(false, "Unknown PCB tool " + name + ".", false, nullptr);
 }
+
+
+
+
+
+
+
+
+
+
+
+

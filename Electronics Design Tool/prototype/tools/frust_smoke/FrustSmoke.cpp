@@ -85,6 +85,56 @@ int main()
               "(" + r2.report() + ")");
     }
 
+    // 6. What the generated audio DSP relies on.
+    //    a) Array<f64, N> parameter is a pointer to the host's buffer; writes
+    //       persist: ws[0] += x each call, x = 0.25 twice -> 0.5, and
+    //       the call returns the new ws[0].
+    //    b) extern host math: djehuti_dsp_exp(0.0) = 1, djehuti_dsp_log(1.0) = 0.
+    //    c) while loop with mutable f64: halve 1.0 until < 0.1 -> 0.0625.
+    //    d) negative literal in parentheses: (0.0 - 2.5) * 2.0 = -5.0.
+    {
+        frust_engine::Engine engine;
+        const auto source = frust_engine::manifestLine("dsp_caps", "audio dsp capabilities", { "djehuti_dsp_exp", "djehuti_dsp_log" })
+                          + "extern fn djehuti_dsp_exp(x: f64) -> f64;\n"
+                            "extern fn djehuti_dsp_log(x: f64) -> f64;\n"
+                            "pub fn accumulate(x: f64, ws: Array<f64, 4>) -> f64 = {\n"
+                            "    ws[0] = ws[0] + x;\n"
+                            "    ws[3] = 7.0;\n"
+                            "    ws[0]\n"
+                            "}\n"
+                            "pub fn math(x: f64) -> f64 = { djehuti_dsp_exp(x) + djehuti_dsp_log(1.0) }\n"
+                            "pub fn halve(x: f64) -> f64 = {\n"
+                            "    let mut v: f64 = x;\n"
+                            "    let mut n: i64 = 0;\n"
+                            "    while (v >= 0.1) { v = v * 0.5; n = n + 1; };\n"
+                            "    v\n"
+                            "}\n"
+                            "pub fn negative(x: f64) -> f64 = { (0.0 - 2.5) * x }\n";
+        const auto r = engine.load("caps", source);
+        check(r.ok, "audio dsp capability unit compiles", "(" + r.report() + ")");
+        using Acc = double (*)(double, double*);
+        using F1 = double (*)(double);
+        auto* acc = reinterpret_cast<Acc>(engine.function("caps", "accumulate"));
+        auto* math = reinterpret_cast<F1>(engine.function("caps", "math"));
+        auto* halve = reinterpret_cast<F1>(engine.function("caps", "halve"));
+        auto* negative = reinterpret_cast<F1>(engine.function("caps", "negative"));
+        if (acc != nullptr)
+        {
+            double ws[4] = { 0.0, 0.0, 0.0, 0.0 };
+            acc(0.25, ws);
+            const auto second = acc(0.25, ws);
+            check(std::abs(ws[0] - 0.5) < 1e-15 && std::abs(second - 0.5) < 1e-15 && ws[3] == 7.0,
+                  "Array<f64, N> parameter writes persist in the host buffer", "(ws0 " + std::to_string(ws[0]) + ")");
+        }
+        else check(false, "accumulate found");
+        if (math != nullptr) check(std::abs(math(0.0) - 1.0) < 1e-15, "extern host exp/log", "(" + std::to_string(math(0.0)) + ")");
+        else check(false, "math found");
+        if (halve != nullptr) check(std::abs(halve(1.0) - 0.0625) < 1e-15, "while loop with mutable f64", "(" + std::to_string(halve(1.0)) + ")");
+        else check(false, "halve found");
+        if (negative != nullptr) check(std::abs(negative(2.0) + 5.0) < 1e-15, "negative constants", "(" + std::to_string(negative(2.0)) + ")");
+        else check(false, "negative found");
+    }
+
     std::printf("\n%s: %d failure(s)\n", failures == 0 ? "ALL PASSED" : "FAILED", failures);
     return failures == 0 ? 0 : 1;
 }

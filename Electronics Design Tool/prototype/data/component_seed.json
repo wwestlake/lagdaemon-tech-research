@@ -18,6 +18,8 @@
     { "id": "ground_bus", "name": "Ground Bus", "category": "Bus" },
     { "id": "battery", "name": "Battery", "category": "Source" },
     { "id": "voltage_source", "name": "DC Voltage Source", "category": "Source" },
+    { "id": "audio_in", "name": "Audio Input", "category": "Source" },
+    { "id": "audio_out", "name": "Audio Output", "category": "Source" },
     { "id": "ac_voltage_source", "name": "AC Voltage Source", "category": "Source" },
     { "id": "current_source", "name": "DC Current Source", "category": "Source" },
     { "id": "ac_current_source", "name": "AC Current Source", "category": "Source" },
@@ -90,3 +92,4 @@
     { "id": "aliexpress", "kind": "consumer_marketplace", "confidenceBias": "low" }
   ]
 }
+
