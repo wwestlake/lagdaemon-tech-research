@@ -117,6 +117,83 @@ bool nearlyEqual(float a, float b)
     return std::abs(a - b) < 0.5f;
 }
 
+bool sameEndpoint(const Endpoint& a, const Endpoint& b)
+{
+    return (a.isPin() && b.isPin() && a.obstacle == b.obstacle && a.pin == b.pin)
+        || (a.isJunction() && b.isJunction() && a.junction == b.junction)
+        || (!a.isPin() && !a.isJunction() && !b.isPin() && !b.isJunction()
+            && a.point.getDistanceFrom(b.point) < 0.5f);
+}
+
+std::vector<Endpoint> uniqueTerminals(const std::vector<Endpoint>& terminals,
+                                      const std::vector<Obstacle>& obstacles)
+{
+    std::vector<Endpoint> unique;
+    for (const auto& terminal : terminals)
+    {
+        if (!terminal.isPin())
+            continue;
+        if (terminal.obstacle < 0 || terminal.obstacle >= (int)obstacles.size())
+            continue;
+        const auto& pins = obstacles[(size_t)terminal.obstacle].pins;
+        if (terminal.pin < 0 || terminal.pin >= (int)pins.size())
+            continue;
+
+        bool seen = false;
+        const auto position = pins[(size_t)terminal.pin].position;
+        for (const auto& existing : unique)
+        {
+            if (sameEndpoint(existing, terminal)
+                || obstacles[(size_t)existing.obstacle].pins[(size_t)existing.pin].position.getDistanceFrom(position) < 0.5f)
+            {
+                seen = true;
+                break;
+            }
+        }
+        if (!seen)
+            unique.push_back(terminal);
+    }
+    return unique;
+}
+
+TreeSolution minimumTerminalTree(const std::vector<Obstacle>& obstacles,
+                                 const std::vector<Endpoint>& terminals)
+{
+    TreeSolution solution;
+    const auto unique = uniqueTerminals(terminals, obstacles);
+    if (unique.size() < 2)
+        return solution;
+    if (unique.size() == 2)
+    {
+        solution.edges.push_back({ unique[0], unique[1] });
+        return solution;
+    }
+
+    std::vector<bool> inTree(unique.size(), false);
+    inTree[0] = true;
+    auto position = [&](size_t k) { return obstacles[(size_t)unique[k].obstacle].pins[(size_t)unique[k].pin].position; };
+    for (size_t added = 1; added < unique.size(); ++added)
+    {
+        float best = std::numeric_limits<float>::max();
+        size_t from = 0, to = 0;
+        for (size_t a = 0; a < unique.size(); ++a)
+            for (size_t b = 0; b < unique.size(); ++b)
+                if (inTree[a] && !inTree[b])
+                {
+                    const auto d = std::abs(position(a).x - position(b).x) + std::abs(position(a).y - position(b).y);
+                    if (d < best)
+                    {
+                        best = d;
+                        from = a;
+                        to = b;
+                    }
+                }
+        inTree[to] = true;
+        solution.edges.push_back({ unique[from], unique[to] });
+    }
+    return solution;
+}
+
 void simplify(Polyline& points)
 {
     Polyline out;
@@ -508,6 +585,15 @@ std::vector<TreeSolution> routeNetTrees(const std::vector<Obstacle>& obstacles,
                                         float gridSize, const Style& style)
 {
     std::vector<TreeSolution> solutions(nets.size());
+
+    // Build schematic net topology deterministically in our integration layer.
+    // libavoid's hyperedge MTST code asserts instead of returning failure when
+    // a crowded terminal set cannot be joined. The ordinary wire router still
+    // draws these edges orthogonally afterward, so the topology step must never
+    // hand an unsafe hyperedge to libavoid.
+    for (size_t n = 0; n < nets.size(); ++n)
+        solutions[n] = minimumTerminalTree(obstacles, nets[n].terminals);
+    return solutions;
 
     Avoid::Router router(Avoid::OrthogonalRouting);
     configureRouter(router, gridSize, style);
