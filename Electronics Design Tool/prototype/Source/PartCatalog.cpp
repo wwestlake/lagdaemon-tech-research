@@ -115,6 +115,15 @@ std::map<juce::String, std::vector<ParamSpec>> buildCatalog()
                        quantity("gain", "Open-loop gain", "V/V", "200k"),
                        quantity("gbw", "Gain-bandwidth product", "Hz", "1meg", Storage::Param, "Dominant pole at GBW / open-loop gain; 0 = no roll-off"),
                        quantity("headroom", "Output headroom from rails", "V", "1.5") };
+    c["opamp_generic"] = { text("value", "Model", "generic_opamp", Storage::Value),
+                           quantity("gain", "Open-loop gain", "V/V", "100k"),
+                           quantity("headroom", "Output headroom from rails", "V", "0") };
+    c["comparator_generic"] = { text("value", "Model", "generic_comparator", Storage::Value),
+                                quantity("gain", "Open-loop gain", "V/V", "1meg"),
+                                quantity("headroom", "Output headroom from rails", "V", "0") };
+    c["comparator_lm311"] = { text("value", "Model", "LM311", Storage::Value),
+                              quantity("gain", "Internal preview gain", "V/V", "1meg"),
+                              quantity("headroom", "Output headroom from rails", "V", "0.2") };
     for (const auto* id : { "npn", "pnp" })
         c[id] = { text("value", "Model", juce::String(id) == "npn" ? "generic_npn" : "generic_pnp", Storage::Value),
                   quantity("beta", "Current gain (beta)", "", "100"),
@@ -202,7 +211,9 @@ juce::String displayName(const juce::String& id)
         { "ac_voltage_source", "AC Voltage Source" }, { "signal_source", "Signal Source" }, { "ac_current_source", "AC Current Source" },
         { "vcvs", "Voltage-Controlled Voltage Source" }, { "vccs", "Voltage-Controlled Current Source" },
         { "ccvs", "Current-Controlled Voltage Source" }, { "cccs", "Current-Controlled Current Source" },
-        { "opamp_741", "Op Amp" }, { "npn", "NPN Transistor" }, { "pnp", "PNP Transistor" },
+        { "opamp_generic", "Generic Op Amp" }, { "opamp_741", "741 Op Amp" },
+        { "comparator_generic", "Generic Comparator" }, { "comparator_lm311", "LM311 Comparator" },
+        { "npn", "NPN Transistor" }, { "pnp", "PNP Transistor" },
         { "nmos", "N-Channel MOSFET" }, { "pmos", "P-Channel MOSFET" }, { "njfet", "N-Channel JFET" }, { "pjfet", "P-Channel JFET" },
         { "switch_spst", "SPST Switch" }, { "switch_spdt", "SPDT Switch" }, { "relay_spst", "SPST Relay" }, { "fuse", "Fuse" },
         { "connector_2", "2-Pin Connector" }, { "connector_3", "3-Pin Connector" }, { "test_point", "Test Point" },
@@ -219,8 +230,10 @@ juce::String displayName(const juce::String& id)
 
 juce::String simulationFidelity(const juce::String& id)
 {
-    if (id == "opamp_741")
+    if (id == "opamp_741" || id == "comparator_lm311")
         return "vendor_model";
+    if (id == "opamp_generic" || id == "comparator_generic")
+        return "generic_model";
     if (id == "diode" || id == "zener_diode" || id == "schottky_diode" || id == "led"
         || id == "npn" || id == "pnp" || id == "nmos" || id == "pmos" || id == "njfet" || id == "pjfet")
         return "generic_model";

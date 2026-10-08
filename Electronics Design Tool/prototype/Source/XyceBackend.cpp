@@ -227,6 +227,52 @@ const std::vector<ModelBinding>& modelBindingRegistry()
             },
         },
         {
+            "opamp_generic",
+            "generic_model",
+            "generic_opamp",
+            "SUBCKT",
+            { "generic_opamp" },
+            {
+                { "IN+", "IN+", 0 },
+                { "IN-", "IN-", 1 },
+                { "V+",  "V+",  3 },
+                { "V-",  "V-",  4 },
+                { "OUT", "OUT", 2 },
+            },
+            true,
+        },
+        {
+            "comparator_generic",
+            "generic_model",
+            "generic_comparator",
+            "SUBCKT",
+            { "generic_comparator" },
+            {
+                { "IN+", "IN+", 0 },
+                { "IN-", "IN-", 1 },
+                { "V+",  "V+",  3 },
+                { "V-",  "V-",  4 },
+                { "OUT", "OUT", 2 },
+            },
+            true,
+        },
+        {
+            "comparator_lm311",
+            "vendor_model",
+            "LM311",
+            "SUBCKT",
+            { "LM311" },
+            {
+                { "IN+",     "IN+",     0 },
+                { "IN-",     "IN-",     1 },
+                { "V+",      "VCC+",    3 },
+                { "V-",      "VCC-",    4 },
+                { "STROBE",  "STROB",   5 },
+                { "COL_OUT", "COL_OUT", 2 },
+                { "EMIT_OUT","EMIT_OUT",6 },
+            },
+        },
+        {
             "diode",
             "vendor_model",
             "1N4148",
@@ -663,7 +709,8 @@ bool appendElement(const analytics::Netlist& n, juce::String& netlist, std::map<
             if (model == nullptr)
                 return false;
 
-            subcircuits.insert(model->rawText);
+            auto modelText = spice_library::resolveModelTextWithDependencies(model->name);
+            subcircuits.insert(modelText.isNotEmpty() ? modelText : model->rawText);
             netlist << elementName(e, index, "X");
             for (const auto& pin : binding->pinsInModelOrder)
             {

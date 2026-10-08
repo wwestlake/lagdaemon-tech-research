@@ -1502,7 +1502,10 @@ private:
         add({ "cccs", "Current-Controlled Current Source", "Controlled Source" });
         add({ "signal_source", "Signal Source", "Source" });
         add({ "ground", "Ground", "Reference" });
-        add({ "opamp_741", "741 Op Amp - provisional", "Analog IC" });
+        add({ "opamp_generic", "Generic Op Amp", "Analog IC" });
+        add({ "opamp_741", "741 Op Amp", "Analog IC" });
+        add({ "comparator_generic", "Generic Comparator", "Analog IC" });
+        add({ "comparator_lm311", "LM311 Comparator", "Analog IC" });
         add({ "npn", "NPN Transistor - generic", "Discrete" });
         add({ "pnp", "PNP Transistor - generic", "Discrete" });
         add({ "nmos", "N-Channel MOSFET - generic", "Discrete" });
@@ -4121,7 +4124,10 @@ private:
         if (symbolId == "behavioral_current_source") return "V(CTRL)/1k";
         if (symbolId == "vcvs" || symbolId == "vccs" || symbolId == "ccvs" || symbolId == "cccs") return "1";
         if (symbolId == "signal_source") return "1";
+        if (symbolId == "opamp_generic") return "generic_opamp";
         if (symbolId == "opamp_741") return "uA741";
+        if (symbolId == "comparator_generic") return "generic_comparator";
+        if (symbolId == "comparator_lm311") return "LM311";
         if (symbolId == "npn") return "generic_npn";
         if (symbolId == "pnp") return "generic_pnp";
         if (symbolId == "nmos") return "generic_nmos";
@@ -4163,7 +4169,8 @@ private:
         if (symbolId == "ccvs") return "source.controlled.ccvs";
         if (symbolId == "cccs") return "source.controlled.cccs";
         if (symbolId == "signal_source") return "source.signal";
-        if (symbolId == "opamp_741") return "analog.op_amp";
+        if (symbolId == "opamp_generic" || symbolId == "opamp_741") return "analog.op_amp";
+        if (symbolId == "comparator_generic" || symbolId == "comparator_lm311") return "analog.comparator";
         if (symbolId == "npn") return "discrete.bjt.npn";
         if (symbolId == "pnp") return "discrete.bjt.pnp";
         if (symbolId == "nmos") return "discrete.fet.nmos";
@@ -4191,7 +4198,10 @@ private:
 
     juce::String familyFor(const juce::String& symbolId) const
     {
+        if (symbolId == "opamp_generic") return "generic_opamp";
         if (symbolId == "opamp_741") return "741";
+        if (symbolId == "comparator_generic") return "generic_comparator";
+        if (symbolId == "comparator_lm311") return "LM311";
         if (symbolId == "npn") return "generic_npn";
         if (symbolId == "pnp") return "generic_pnp";
         if (symbolId == "nmos") return "generic_nmos";
@@ -4264,6 +4274,27 @@ private:
 
     juce::String simulationFidelityFor(const Instance& instance) const
     {
+        if (instance.symbolId == "opamp_generic" || instance.symbolId == "opamp_741"
+            || instance.symbolId == "comparator_generic" || instance.symbolId == "comparator_lm311")
+        {
+            const auto selected = partValue(instance, "value");
+            if (selected.equalsIgnoreCase("generic_opamp") || selected.equalsIgnoreCase("generic_comparator"))
+                return "generic_model";
+
+            static const bool initialized = [] {
+                spice_library::initialize();
+                return true;
+            }();
+            juce::ignoreUnused(initialized);
+            if (const auto* def = spice_library::findModel(selected); def != nullptr && def->kind.equalsIgnoreCase("SUBCKT"))
+                return "vendor_model";
+            if (instance.symbolId == "opamp_741")
+                for (const auto* name : { "UA741", "uA741", "LM741" })
+                    if (const auto* def = spice_library::findModel(name); def != nullptr && def->kind.equalsIgnoreCase("SUBCKT"))
+                        return "vendor_model";
+            return "unsupported";
+        }
+
         if (instance.symbolId == "npn" || instance.symbolId == "pnp"
             || instance.symbolId == "nmos" || instance.symbolId == "pmos"
             || instance.symbolId == "njfet" || instance.symbolId == "pjfet")
@@ -6533,13 +6564,14 @@ private:
                 element = id == "ccvs" ? c.addCcvs(name, node(i, "+"), node(i, "-"), sense, number(inst, "value", 1e3))
                                        : c.addCccs(name, node(i, "+"), node(i, "-"), sense, number(inst, "value", 10.0));
             }
-            else if (id == "opamp_741")
+            else if (id == "opamp_generic" || id == "opamp_741" || id == "comparator_generic" || id == "comparator_lm311")
             {
                 circuit_sim::OpAmpModel m;
-                m.gain = number(inst, "gain", 2e5);
+                m.gain = number(inst, "gain", id.startsWith("comparator") ? 1e6 : 2e5);
                 m.railDrop = number(inst, "headroom", 1.5);
                 const auto gbw = number(inst, "gbw", 1e6);
-                if (gbw > 0.0 && m.gain > 0.0)
+                const auto outPin = id == "comparator_lm311" ? "COL_OUT" : "OUT";
+                if (id == "opamp_741" && gbw > 0.0 && m.gain > 0.0)
                 {
                     // Like a real op amp: a linear gain stage, the dominant pole at GBW / A0 on
                     // the internal node, then an output stage that limits at the rails.
@@ -6556,7 +6588,9 @@ private:
                     c.elements()[(size_t)c.find(name + ".rp")].noiseless = true;
                 }
                 else
-                    element = c.addOpAmp(name, node(i, "IN+"), node(i, "IN-"), node(i, "OUT"), node(i, "V+"), node(i, "V-"), m);
+                    element = c.addOpAmp(name, node(i, "IN+"), node(i, "IN-"), node(i, outPin), node(i, "V+"), node(i, "V-"), m);
+                if (element >= 0)
+                    c.elements()[(size_t)element].modelName = partValue(inst, "value").toStdString();
             }
             else if (id == "npn" || id == "pnp")
             {
@@ -10158,7 +10192,9 @@ private:
             else if (view.symbolId == "nmos") kind = "NMOS";
             else if (view.symbolId == "pmos") kind = "PMOS";
             else if (view.symbolId == "diode") kind = "D";
-            else if (view.symbolId == "opamp_741") kind = "SUBCKT";
+            else if (view.symbolId == "opamp_generic" || view.symbolId == "opamp_741"
+                     || view.symbolId == "comparator_generic" || view.symbolId == "comparator_lm311")
+                kind = "SUBCKT";
 
             if (kind.isNotEmpty())
             {
@@ -11211,7 +11247,7 @@ private:
             {
                 "schematic_place_symbol",
                 "Place a schematic symbol or instrument node at a grid coordinate. Use deliberate layout spacing: keep symbols at least 144 px apart horizontally or 96 px vertically, arrange signal flow left-to-right, put sources on the left, outputs/load on the right, grounds below, instruments to the far right, and never reuse the same x/y for multiple parts.",
-                R"({"type":"object","properties":{"symbolId":{"type":"string","description":"Supported symbol id: resistor, potentiometer, capacitor, capacitor_polarized, variable_capacitor, inductor, coupled_inductor, transformer, diode, zener_diode, led, schottky_diode, power_bus, ground_bus, power_port, net_label, battery, voltage_source, ac_voltage_source, current_source, ac_current_source, vcvs, vccs, ccvs, cccs, signal_source, ground, opamp_741, npn, pnp, nmos, pmos, njfet, pjfet, switch_spst, switch_spdt, relay_spst, fuse, connector_2, connector_3, test_point, logic_not, logic_and, logic_or, logic_nand, logic_nor, logic_xor, oscilloscope_2ch, digital_multimeter, bode_analyzer, or annotation_text. Use annotation_text for free-form schematic notes. Use ground and power_port symbols at each pin that needs ground or a supply instead of long wires: power_port takes busName like +12V (drawn pointing up) or -12V (place with a leading minus; drawn pointing down); ports with the same busName are the same net. net_label takes busName as its label; labels with the same name are one net. After placing and connecting, call schematic_auto_layout once for a standards-conforming drawing. Unsupported symbols are rejected, not substituted."},"x":{"type":"number","description":"Grid x coordinate. Leave at least 144 px horizontal space from other symbols."},"y":{"type":"number","description":"Grid y coordinate. Leave at least 96 px vertical space from other symbols."},"value":{"type":"string"},"frequency":{"type":"string"},"busName":{"type":"string"}},"required":["symbolId","x","y"],"additionalProperties":false})"
+                R"({"type":"object","properties":{"symbolId":{"type":"string","description":"Supported symbol id: resistor, potentiometer, capacitor, capacitor_polarized, variable_capacitor, inductor, coupled_inductor, transformer, diode, zener_diode, led, schottky_diode, power_bus, ground_bus, power_port, net_label, battery, voltage_source, ac_voltage_source, current_source, ac_current_source, vcvs, vccs, ccvs, cccs, signal_source, ground, opamp_generic, opamp_741, comparator_generic, comparator_lm311, npn, pnp, nmos, pmos, njfet, pjfet, switch_spst, switch_spdt, relay_spst, fuse, connector_2, connector_3, test_point, logic_not, logic_and, logic_or, logic_nand, logic_nor, logic_xor, oscilloscope_2ch, digital_multimeter, bode_analyzer, or annotation_text. Use annotation_text for free-form schematic notes. Use ground and power_port symbols at each pin that needs ground or a supply instead of long wires: power_port takes busName like +12V (drawn pointing up) or -12V (place with a leading minus; drawn pointing down); ports with the same busName are the same net. net_label takes busName as its label; labels with the same name are one net. After placing and connecting, call schematic_auto_layout once for a standards-conforming drawing. Unsupported symbols are rejected, not substituted."},"x":{"type":"number","description":"Grid x coordinate. Leave at least 144 px horizontal space from other symbols."},"y":{"type":"number","description":"Grid y coordinate. Leave at least 96 px vertical space from other symbols."},"value":{"type":"string"},"frequency":{"type":"string"},"busName":{"type":"string"}},"required":["symbolId","x","y"],"additionalProperties":false})"
             },
             {
                 "schematic_connect",
@@ -13602,7 +13638,7 @@ juce::String ElectronicsWorkbench::exportFrustRealtimePreviewTool()
         return symbol == "resistor" || symbol == "potentiometer" || symbol == "capacitor"
             || symbol == "capacitor_polarized" || symbol == "variable_capacitor"
             || symbol == "diode" || symbol == "led" || symbol == "schottky_diode"
-            || symbol == "opamp_741" || symbol == "npn" || symbol == "pnp"
+            || symbol == "opamp_generic" || symbol == "opamp_741" || symbol == "comparator_generic" || symbol == "comparator_lm311" || symbol == "npn" || symbol == "pnp"
             || symbol == "nmos" || symbol == "pmos" || symbol == "njfet" || symbol == "pjfet"
             || symbol == "signal_source" || symbol == "ac_voltage_source" || symbol == "voltage_source"
             || symbol == "sub_block" || symbol == "block_port" || symbol == "ground" || symbol == "power_port"

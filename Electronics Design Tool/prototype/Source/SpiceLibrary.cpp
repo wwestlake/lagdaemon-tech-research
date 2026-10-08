@@ -91,6 +91,16 @@ const ModelDef* findModel(const juce::String& name)
     return it != models.end() ? &it->second : nullptr;
 }
 
+const ModelDef* findModelIgnoreCase(const juce::String& name)
+{
+    if (const auto* exact = findModel(name))
+        return exact;
+    for (const auto& [modelName, def] : models)
+        if (modelName.equalsIgnoreCase(name))
+            return &def;
+    return nullptr;
+}
+
 std::vector<juce::String> availableModelsFor(const juce::String& kind)
 {
     std::vector<juce::String> result;
@@ -106,6 +116,39 @@ juce::String resolveModelText(const juce::String& name)
 {
     const auto* def = findModel(name);
     return def ? def->rawText : "";
+}
+
+void appendModelTextWithDependencies(const ModelDef& def, juce::StringArray& seen, juce::String& out)
+{
+    if (seen.contains(def.name, true))
+        return;
+    seen.add(def.name);
+    out << def.rawText.trimEnd() << "\n";
+
+    juce::StringArray lines;
+    lines.addLines(def.rawText);
+    for (const auto& line : lines)
+    {
+        const auto trimmed = line.trim();
+        if (!trimmed.startsWithIgnoreCase("X"))
+            continue;
+        auto tokens = juce::StringArray::fromTokens(trimmed, " \t", "\"");
+        if (tokens.size() < 2)
+            continue;
+        if (const auto* dep = findModelIgnoreCase(tokens[tokens.size() - 1]))
+            appendModelTextWithDependencies(*dep, seen, out);
+    }
+}
+
+juce::String resolveModelTextWithDependencies(const juce::String& name)
+{
+    const auto* def = findModelIgnoreCase(name);
+    if (def == nullptr)
+        return {};
+    juce::StringArray seen;
+    juce::String out;
+    appendModelTextWithDependencies(*def, seen, out);
+    return out.trimEnd();
 }
 
 }

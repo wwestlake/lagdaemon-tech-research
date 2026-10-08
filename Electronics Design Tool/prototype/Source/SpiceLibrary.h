@@ -18,4 +18,5 @@ namespace spice_library
     const ModelDef* findModel(const juce::String& name);
     std::vector<juce::String> availableModelsFor(const juce::String& kind);
     juce::String resolveModelText(const juce::String& name);
+    juce::String resolveModelTextWithDependencies(const juce::String& name);
 }
