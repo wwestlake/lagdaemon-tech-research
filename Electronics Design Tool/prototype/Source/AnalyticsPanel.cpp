@@ -1101,6 +1101,12 @@ AnalyticsPanel::AnalyticsPanel()
     refreshButton.setTooltip("Re-read the nets, sources and parts from the diagram");
     refreshButton.onClick = [this] { refreshChoices(); };
     addAndMakeVisible(refreshButton);
+    styleCombo(engineBox);
+    engineBox.addItem("Xyce", 1);
+    engineBox.addItem("Internal Solver", 2);
+    engineBox.setSelectedId(1, juce::dontSendNotification);
+    engineBox.setTooltip("SPICE engine. Xyce is the default external reference engine; Internal Solver is explicit.");
+    addAndMakeVisible(engineBox);
     styleCombo(historyBox);
     historyBox.setTextWhenNothingSelected("Run history");
     historyBox.onChange = [this] { if (historyBox.getSelectedId() > 0) showRun(historyBox.getSelectedId() - 1); };
@@ -1182,6 +1188,8 @@ void AnalyticsPanel::resized()
     descriptionLabel.setBounds(heading);
     auto controls = area.removeFromTop(38).reduced(12, 3);
     runButton.setBounds(controls.removeFromLeft(100));
+    controls.removeFromLeft(8);
+    engineBox.setBounds(controls.removeFromLeft(150));
     controls.removeFromLeft(8);
     filesButton.setBounds(controls.removeFromRight(juce::jmin(134, controls.getWidth() / 3)));
     controls.removeFromRight(8);
@@ -1340,9 +1348,15 @@ void AnalyticsPanel::runSelected()
     statusLabel.setText("Running " + analytics::infoFor(current).title + " on the open diagram...", juce::dontSendNotification);
     const auto analysis = current;
     const auto values = settings[current];
+    const auto requestedEngine = values.find("engine");
+    const auto engine = (engineBox.getSelectedId() == 2
+                         || (requestedEngine != values.end() && requestedEngine->second.containsIgnoreCase("internal")))
+        ? xyce_backend::Engine::InternalSolver : xyce_backend::Engine::Xyce;
+    const auto outRoot = outputFolder != nullptr ? outputFolder() : juce::File {};
     std::weak_ptr<bool> weak = alive;
-    pool.addJob([this, analysis, values, netlist, weak] {
-        auto result = analytics::run(analysis, values, netlist);
+    pool.addJob([this, analysis, values, netlist, weak, engine, outRoot] {
+        auto result = engine == xyce_backend::Engine::Xyce ? xyce_backend::run(analysis, values, netlist, outRoot)
+                                                           : analytics::run(analysis, values, netlist);
         juce::MessageManager::callAsync([this, weak, result]() mutable {
             if (weak.expired()) return;
             deliver(std::move(result));
@@ -1363,7 +1377,12 @@ const AnalyticsPanel::Run& AnalyticsPanel::runNow(analytics::Analysis analysis, 
 {
     // Exactly what was asked for, on top of the defaults (not what an earlier run left behind).
     const auto netlist = getNetlist != nullptr ? getNetlist() : analytics::Netlist {};
-    auto result = analytics::run(analysis, values, netlist);
+    const auto requestedEngine = values.find("engine");
+    const auto engine = (engineBox.getSelectedId() == 2
+                         || (requestedEngine != values.end() && requestedEngine->second.containsIgnoreCase("internal")))
+        ? xyce_backend::Engine::InternalSolver : xyce_backend::Engine::Xyce;
+    auto result = engine == xyce_backend::Engine::Xyce ? xyce_backend::run(analysis, values, netlist, outputFolder != nullptr ? outputFolder() : juce::File {})
+                                                       : analytics::run(analysis, values, netlist);
     settings[analysis] = result.settings;
     saveSettings();
     if (analysis != current)

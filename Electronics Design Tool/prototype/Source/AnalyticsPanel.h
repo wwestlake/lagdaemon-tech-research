@@ -3,6 +3,7 @@
 #include <JuceHeader.h>
 
 #include "Analytics.h"
+#include "XyceBackend.h"
 
 #include <atomic>
 #include <deque>
@@ -79,6 +80,7 @@ private:
     juce::Viewport formViewport;
     juce::Label titleLabel, descriptionLabel, statusLabel;
     juce::TextButton runButton { "Run" }, filesButton { "Open CSV folder" }, refreshButton { "Refresh nets" };
+    juce::ComboBox engineBox;
     juce::ComboBox historyBox;
     juce::OwnedArray<juce::TextButton> plotButtons;
     std::unique_ptr<PlotView> plot;

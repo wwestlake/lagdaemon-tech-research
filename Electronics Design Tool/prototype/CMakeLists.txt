@@ -132,6 +132,8 @@ target_sources(DjehutiElectronicsLab PRIVATE
     Source/Analytics.cpp
     Source/AnalyticsPanel.h
     Source/AnalyticsPanel.cpp
+    Source/XyceBackend.h
+    Source/XyceBackend.cpp
     Source/SchematicSymbols.h
     Source/SchematicSymbols.cpp
     Source/SchematicLayout.h
