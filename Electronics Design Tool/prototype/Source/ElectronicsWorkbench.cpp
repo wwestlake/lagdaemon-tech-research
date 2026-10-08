@@ -2719,6 +2719,11 @@ public:
             else menu.addItem(14, "Change " + supply.busName + " Ports to a Rail");
         }
         menu.addSeparator();
+        menu.addItem(20, "Copy Parts List");
+        menu.addItem(21, "Copy Recursive Parts List");
+        menu.addItem(22, "Save Parts List as TXT...");
+        menu.addItem(23, "Save Recursive Parts List as TXT...");
+        menu.addSeparator();
         menu.addItem(3, "Disconnect Here");
 
         const auto supplyRefdes = supplyUnderMouse >= 0 ? instances[(size_t)supplyUnderMouse].refdes : juce::String();
@@ -2768,6 +2773,14 @@ public:
                 editSelectedGroupMetadata();
             else if (result == 7)
                 ungroupSelectedGroup();
+            else if (result == 20)
+                copyPartsList(false);
+            else if (result == 21)
+                copyPartsList(true);
+            else if (result == 22)
+                savePartsListAsTxt(false);
+            else if (result == 23)
+                savePartsListAsTxt(true);
             else if (result == 3)
                 disconnectAt(modelPosition);
             else if (result == 4)
@@ -3799,6 +3812,7 @@ private:
     std::vector<Probe> probes;
     std::vector<Group> groups;
     std::vector<SimulationParameter> simulationParameters;
+    std::unique_ptr<juce::FileChooser> partsListChooser;
     WireNode wireDragStart;
     int selectedInstance = -1;
     juce::Array<int> selectedInstances;
@@ -5188,6 +5202,128 @@ private:
             sheet = block >= 0 ? instances[(size_t)block].sheet : juce::String();
         }
         return path;
+    }
+
+    static juce::String partsListCell(juce::String text)
+    {
+        return text.replace("\t", " ").replace("\r\n", " ").replace("\n", " ").replace("\r", " ").trim();
+    }
+
+    bool includeInPartsList(const Instance& instance) const
+    {
+        return instance.symbolId != "block_port" && instance.symbolId != "annotation_text" && !isNetMarker(instance.symbolId);
+    }
+
+    juce::String primaryPartsListValue(const Instance& instance) const
+    {
+        if (instance.symbolId == "sub_block")
+            return instance.value;
+        auto value = partValue(instance, "value");
+        if (value.isEmpty())
+            value = partValue(instance, "busName");
+        if (value.isEmpty())
+            value = partValue(instance, "frequency");
+        return value;
+    }
+
+    juce::String modelInfoForPartsList(const Instance& instance) const
+    {
+        const auto fidelity = simulationFidelityFor(instance);
+        const auto value = partValue(instance, "value");
+        if (fidelity.contains("model") && value.isNotEmpty())
+            return value;
+        if (instance.manufacturerPart.isNotEmpty())
+            return instance.manufacturerPart;
+        return instance.family;
+    }
+
+    void appendPartsListRow(juce::String& text, const Instance& instance, const juce::String& path) const
+    {
+        text << partsListCell(path) << "\t"
+             << partsListCell(sheetName(instance.sheet)) << "\t"
+             << partsListCell(instance.refdes) << "\t"
+             << partsListCell(parts::displayName(instance.symbolId)) << "\t"
+             << partsListCell(instance.symbolId) << "\t"
+             << partsListCell(primaryPartsListValue(instance)) << "\t"
+             << partsListCell(modelInfoForPartsList(instance)) << "\t"
+             << partsListCell(simulationFidelityFor(instance)) << "\t"
+             << partsListCell(instance.family) << "\t"
+             << partsListCell(instance.manufacturerPart) << "\n";
+    }
+
+    void appendPartsListForSheet(juce::String& text, const juce::String& sheet, const juce::String& path,
+                                 bool recursive, juce::StringArray& activeSheets) const
+    {
+        if (activeSheets.contains(sheet))
+        {
+            text << "# Recursion stopped at " << sheetName(sheet) << " to avoid a subdiagram loop.\n\n";
+            return;
+        }
+
+        activeSheets.add(sheet);
+        text << "# Diagram: " << path << "\n";
+        text << "Path\tSheet\tRefdes\tType\tSymbol\tValue\tModel\tFidelity\tFamily\tManufacturer Part\n";
+        for (const auto& instance : instances)
+            if (instance.sheet == sheet && includeInPartsList(instance))
+                appendPartsListRow(text, instance, path);
+        text << "\n";
+
+        if (recursive)
+        {
+            for (const auto& instance : instances)
+                if (instance.sheet == sheet && instance.symbolId == "sub_block" && instance.childSheet.isNotEmpty())
+                {
+                    const auto childPath = path + " > " + instance.refdes + " " + instance.value;
+                    text << "# Subdiagram: " << instance.refdes << " " << instance.value << " -> " << sheetName(instance.childSheet) << "\n";
+                    appendPartsListForSheet(text, instance.childSheet, childPath, true, activeSheets);
+                    text << "# End Subdiagram: " << instance.refdes << " " << instance.value << "\n\n";
+                }
+        }
+        activeSheets.removeString(sheet);
+    }
+
+    juce::String partsListText(bool recursive) const
+    {
+        juce::String text;
+        text << (recursive ? "Recursive Parts List" : "Parts List") << "\n";
+        text << "Starting diagram\t" << sheetName(currentSheet) << "\n\n";
+        juce::StringArray activeSheets;
+        appendPartsListForSheet(text, currentSheet, sheetName(currentSheet), recursive, activeSheets);
+        return text;
+    }
+
+    void copyPartsList(bool recursive) const
+    {
+        juce::SystemClipboard::copyTextToClipboard(partsListText(recursive));
+        if (onStatus) onStatus(recursive ? "Copied recursive parts list." : "Copied parts list.");
+    }
+
+    juce::File defaultPartsListFile(bool recursive) const
+    {
+        const auto folder = outputDirectory != nullptr ? outputDirectory() : juce::File::getSpecialLocation(juce::File::userDocumentsDirectory);
+        const auto suffix = recursive ? "_recursive_parts_list.txt" : "_parts_list.txt";
+        return folder.getChildFile(juce::File::createLegalFileName(sheetName(currentSheet)).replaceCharacter(' ', '_') + suffix);
+    }
+
+    void savePartsListAsTxt(bool recursive)
+    {
+        const auto text = partsListText(recursive);
+        partsListChooser = std::make_unique<juce::FileChooser>(recursive ? "Save Recursive Parts List" : "Save Parts List",
+                                                               defaultPartsListFile(recursive), "*.txt");
+        partsListChooser->launchAsync(juce::FileBrowserComponent::saveMode | juce::FileBrowserComponent::canSelectFiles,
+                                      [safe = juce::Component::SafePointer<SchematicCanvasPanel>(this), text](const juce::FileChooser& fc) {
+            if (safe == nullptr)
+                return;
+            auto file = fc.getResult();
+            if (file == juce::File())
+                return;
+            if (!file.hasFileExtension("txt"))
+                file = file.withFileExtension("txt");
+            if (file.replaceWithText(text) && safe->onStatus)
+                safe->onStatus(file.getFileName() + " saved.");
+            else if (safe->onStatus)
+                safe->onStatus("Could not save parts list: " + file.getFullPathName());
+        });
     }
 
     void openSheet(const juce::String& sheet)
@@ -9713,9 +9849,30 @@ private:
         return juce::JSON::toString(juce::var(rows), true);
     }
 
+    juce::String entriesTsv(bool selectedOnly) const
+    {
+        auto clean = [](juce::String text) {
+            return text.replace("\t", " ").replace("\r\n", " ").replace("\n", " ").replace("\r", " ");
+        };
+        juce::String text = "Time\tReason\tCode\tDetails\n";
+        for (int i = 0; i < (int)entries.size(); ++i)
+        {
+            if (selectedOnly && !table.isRowSelected(i))
+                continue;
+            const auto& e = entries[(size_t)i];
+            text << clean(entryTime(e)) << "\t" << clean(e.reason) << "\t" << clean(e.code) << "\t" << clean(e.details) << "\n";
+        }
+        return text;
+    }
+
     void copyJson(bool selectedOnly)
     {
         juce::SystemClipboard::copyTextToClipboard(entriesJson(selectedOnly));
+    }
+
+    void copyData(bool selectedOnly)
+    {
+        juce::SystemClipboard::copyTextToClipboard(entriesTsv(selectedOnly));
     }
 
     void showDetails(int rowNumber)
@@ -9740,10 +9897,14 @@ private:
             menu.addItem(1, "Open entry details");
         menu.addItem(2, "Copy selected as JSON", table.getNumSelectedRows() > 0);
         menu.addItem(3, "Copy whole log as JSON", !entries.empty());
+        menu.addItem(4, "Copy Data for selected log rows", table.getNumSelectedRows() > 0);
+        menu.addItem(5, "Copy Data for whole log", !entries.empty());
         menu.showMenuAsync(juce::PopupMenu::Options(), [this, rowNumber](int result) {
             if (result == 1) showDetails(rowNumber);
             else if (result == 2) copyJson(true);
             else if (result == 3) copyJson(false);
+            else if (result == 4) copyData(true);
+            else if (result == 5) copyData(false);
         });
     }
 

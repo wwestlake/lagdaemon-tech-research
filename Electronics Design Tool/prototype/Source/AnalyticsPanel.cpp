@@ -748,8 +748,8 @@ public:
         for (size_t i = 0; i < tableAreas.size(); ++i)
             if (tableAreas[i].contains(e.getPosition())) hit = (int)i;
         juce::PopupMenu menu;
-        menu.addItem(1, "Copy this table", hit >= 0);
-        menu.addItem(2, "Copy all results");
+        menu.addItem(1, "Copy Data for this table", hit >= 0);
+        menu.addItem(2, "Copy Data for all results");
         menu.showMenuAsync(juce::PopupMenu::Options(), [this, hit, list](int choice) {
             juce::String text;
             if (choice == 1 && hit >= 0) text = tsv(*list[(size_t)hit]);
