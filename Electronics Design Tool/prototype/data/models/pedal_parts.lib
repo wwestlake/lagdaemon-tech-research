@@ -1,0 +1,537 @@
+.model J201 NJF(Beta=1.07m Betatce=-0.5 Vto=-0.93 Vtotc=-2.5m Lambda=6.75m Is=1.72f Xti=0 Rd=10 Rs=12 Cgd=1p Cgs=1p Fc=0.5 M=500m Pb=0.8 Kf=0 Af=1 Mfg=Linear_Systems)
+
+.MODEL 2N5457 NJF(Beta=1.125m Betatce=-500m Rd=1 Rs=1 Lambda=2.3m Vto=-1.372 Vtotc=-2.5m Is=181.3f Isr=1.747p N=1 Nr=2 Xti=3 Alpha=2.543u Vk=152.2 Cgd=4p M=311.4m Pb=500m Fc=500m Cgs=4.627p Kf=1.045e-002f Af=1)
+
+.MODEL 2N5458 NJF(Beta=488.9u Betatce=-500m Rd=1 Rs=1 Lambda=3.167m Vto=-2.882 Vtotc=-2.5m Is=181.3f Isr=1.747p N=1 Nr=2 Xti=3 Alpha=2.543u Vk=152.2 Cgd=4p M=311.4m Pb=500m Fc=500m Cgs=4.627p Kf=4.284e-003f Af=1)
+
+.MODEL 2N5459 NJF(Beta=377.6u Betatce=-500m Rd=1 Rs=1 Lambda=4.167m Vto=-4.473 Vtotc=-2.5m Is=181.3f Isr=1.747p N=1 Nr=2 Xti=3 Alpha=2.543u Vk=152.2 Cgd=4p M=311.4m Pb=500m Fc=500m Cgs=4.627p Kf=3.227e-003f Af=1)
+
+.model MPF102 NJF(Beta=1.04m Betatce=-.5 Rd=1 Rs=1 Lambda=2m Vto=-3.41 Vtotc=-2.5m Is=33.57f Isr=322.4f N=1 Nr=2 Xti=3 Alpha=311.7 Vk=243.6 Cgd=1.6p M=.3622 Pb=1 Fc=.5 Cgs=2.414p Kf=11.73E-18 Af=1)
+
+.model 2N3904 NPN(IS=1E-14 VAF=100 Bf=300 IKF=0.4 XTB=1.5 BR=4 CJC=4E-12 CJE=8E-12 RB=20 RC=0.1 RE=0.1 TR=250E-9 TF=350E-12 ITF=1 VTF=2 XTF=3 Vceo=40 Icrating=200m mfg=NXP)
+
+.MODEL 2N5088 NPN(IS=5.911f ISE=5.911f ISC=0 XTI=3 BF=1122 BR=1.271 IKF=14.92m IKR=0 XTB=1.5 VAF=62.37 VAR=21.5 VJE=0.65 VJC=0.65 RE=0.15 RC=1.61 RB=10 CJE=4.973p CJC=4.017p XCJC=0.75 FC=0.5 NF=1 NR=1 NE=1.394 NC=2 MJE=0.4146 MJC=0.3174 TF=821.7p TR=4.673n ITF=0.35 VTF=4 XTF=7 EG=1.11 VCEO=35 ICRATING=50m MFG=NSC)
+
+.model 2N5089 NPN(Is=5.911f Xti=3 Eg=1.11 Vaf=62.37 Bf=1.434K Ne=1.421 Ise=5.911f Ikf=15.4m Xtb=1.5 Br=1.262 Nc=2 Isc=0 Ikr=0 Rc=1.61 Cjc=4.017p Mjc=.3174 Vjc=.75 Fc=.5 Cje=4.973p Mje=.4146 Vje=.75 Tr=4.671n Tf=822.3p Itf=.35 Vtf=4 Xtf=7 Rb=10 Vceo=25 Icrating=100m mfg=Fairchild)
+
+.model BC547B NPN(IS=2.39E-14 NF=1.008 ISE=3.545E-15 NE=1.541 BF=294.3 IKF=0.1357 VAF=63.2 NR=1.004 ISC=6.272E-14 NC=1.243 BR=7.946 IKR=0.1144 VAR=25.9 RB=1 IRB=1.00E-06 RBM=1 RE=0.4683 RC=0.85 XTB=0 EG=1.11 XTI=3 CJE=1.358E-11 VJE=0.65 MJE=0.3279 TF=4.391E-10 XTF=120 VTF=2.643 ITF=0.7495 PTF=0 CJC=3.728E-12 VJC=0.3997 MJC=0.2955 XCJC=0.6193 TR=1.00E-32 CJS=0 VJS=0.75 MJS=0.333 FC=0.9579 Vceo=45 Icrating=100m mfg=NXP)
+
+.model BC549C NPN(Is=7.049f Xti=3 Eg=1.11 Vaf=23.89 Bf=493.2 Ise=99.2f Ne=1.829 Ikf=.1542 Nk=.6339 Xtb=1.5 Br=2.886 Isc=7.371p Nc=1.508 Ikr=5.426 Rc=1.175 Cjc=5.5p Mjc=.3132 Vjc=.4924 Fc=.5 Cje=11.5p Mje=.6558 Vje=.5 Tr=10n Tf=420.3p Itf=1.374 Xtf=39.42 Vtf=10 Vceo=30 Icrating=100m mfg=Philips)
+
+.MODEL MPSA18 NPN(IS=33.58f ISE=166.7f ISC=0 XTI=3 BF=236 BR=5.774 IKF=0.1172 IKR=0 XTB=1.5 VAF=100 VAR=30 VJE=0.65 VJC=0.65 RE=0.1 RC=1 RB=10 CJE=7.547p CJC=4.948p XCJC=0.75 FC=0.5 NF=1 NR=1 NE=1.579 NC=2 MJE=0.3765 MJC=0.4109 TF=310.1p TR=800.3p ITF=0.6 VTF=6 XTF=35 EG=1.11 VCEO=45 ICRATING=200m MFG=NSC)
+
+.model 2N2222A NPN (Is=14.34f Xti=3 Eg=1.11 Vaf=74.03 Bf=255.9 Ne=1.307 Ise=14.34f Ikf=.2847 Xtb=1.5 Br=6.092 Nc=2 Isc=0 Ikr=0 Rc=1 Cjc=7.306p Mjc=.3416 Vjc=.75 Fc=.5 Cje=22.01p Mje=.377 Vje=.75 Tr=46.91n Tf=411.1p Itf=.6 Vtf=1.7 Xtf=3 Rb=10 Vceo=40 Icrating=800m mfg=Fairchild)
+
+.model 2N4401 NPN(Is=26.03f Xti=3 Eg=1.11 Vaf=90.7 Bf=4.292K Ne=1.244 Ise=26.03f Ikf=.2061 Xtb=1.5 Br=1.01 Nc=2 Isc=0 Ikr=0 Rc=.5 Cjc=11.01p Mjc=.3763 Vjc=.75 Fc=.5 Cje=24.07p Mje=.3641 Vje=.75 Tr=233.7n Tf=466.5p Itf=0 Vtf=0 Xtf=0 Rb=10 Vceo=40 Icrating=600m mfg=Fairchild)
+
+.model 2N3906 PNP(IS=1E-14 VAF=100 BF=200 IKF=0.4 XTB=1.5 BR=4 CJC=4.5E-12 CJE=10E-12 RB=20 RC=0.1 RE=0.1 TR=250E-9 TF=350E-12 ITF=1 VTF=2 XTF=3 Vceo=40 Icrating=200m mfg=NXP)
+
+.model 2N5087 PNP(Is=6.734f Xti=3 Eg=1.11 Vaf=45.7 Bf=254.1 Ne=1.741 Ise=6.734f Ikf=.1962 Xtb=1.5 Br=2.683 Nc=2 Isc=0 Ikr=0 Rc=1.67 Cjc=6.2p Mjc=.301 Vjc=.75 Fc=.5 Cje=7.5p Mje=.2861 Vje=.75 Tr=10.1n Tf=467.8p Itf=.17 Vtf=5 Xtf=8 Rb=10 Vceo=50 Icrating=100m mfg=Fairchild)
+
+.model BC557B PNP(IS=3.83E-14 NF=1.008 ISE=1.22E-14 NE=1.528 BF=344.4 IKF=0.08039 VAF=21.11 NR=1.005 ISC=2.85E-13 NC=1.28 BR=14.84 IKR=0.047 VAR=32.02 RB=1 IRB=1.00E-06 RBM=1 RE=0.6202 RC=0.5713 XTB=0 EG=1.11 XTI=3 CJE=1.23E-11 VJE=0.6106 MJE=0.378 TF=5.60E-10 XTF=3.414 VTF=5.23 ITF=0.1483 PTF=0 CJC=1.08E-11 VJC=0.1022 MJC=0.3563 XCJC=0.6288 TR=1.00E-32 CJS=0 VJS=0.75 MJS=0.333 FC=0.8027 Vceo=45 Icrating=100m mfg=NXP)
+
+.model 2N4403 PNP(Is=650.6E-18 Xti=3 Eg=1.11 Vaf=115.7 Bf=216.2 Ne=1.829 Ise=58.72f Ikf=1.079 Xtb=1.5 Br=3.578 Nc=2 Isc=0 Ikr=0 Rc=.715 Cjc=14.76p Mjc=.5383 Vjc=.75 Fc=.5 Cje=19.82p Mje=.3357 Vje=.75 Tr=111.6n Tf=603.7p Itf=.65 Vtf=5 Xtf=1.7 Rb=10 Vceo=40 Icrating=600m mfg=Fairchild)
+
+.model 2N7000 VDMOS(Rg=3 Lambda=1m Vto=1.6 Rd=0 Rs=.75 Rb=.14 Kp=.17 mtriode=1.25 Cgdmax=80p Cgdmin=12p Cgs=50p Cjo=50p Is=.04p mfg=Fairchild Vds=60 Ron=2 Qg=1.5n ksubthres=.1)
+
+.model BS170 VDMOS VTO=1.824 RG=270 RS=1.572 RD=1.436 RB=.768 KP=.1233 Cgdmax=20p Cgdmin=3p CGS=28p Cjo=35p Rds=1.2E8 IS=5p Bv=60 Ibv=10u Tt=161.6n
+
+.model 1N4148 D(Is=2.52n Rs=.568 N=1.752 Cjo=4p M=.4 tt=20n Iave=200m Vpk=75 mfg=OnSemi type=silicon)
+
+.model 1N914 D(Is=2.52n Rs=.568 N=1.752 Cjo=4p M=.4 tt=20n Iave=200m Vpk=75 mfg=OnSemi type=silicon)
+
+.MODEL 1N34A D(IS=2.6u RS=6.5 N=1.6 CJO=0.8p EG=0.67 BV=75 IBV=1m Type=GePunctualContact)
+
+.MODEL 1N60 D RS=50.0559 EG=1.11 XTI=3 VJ=0.8 M=0.1 FC=0.5 BV=40 CJO=1.75p IS=1.37773u N=2 TT=100n type=germanium
+
+.model BAT41 D(IS=4.143E-08 RS=1.518 N=1.542 CJO=3.215p VJ=4.000E-01 M=2.751E-01 EG=.67 XTI=6.171 FC=0.5 BV=1.10000e+02 IBV=5.00000e-02 Iave=100m Vpk=100 type=Schottky)
+
+.model BAT46 D(Is=.1703u N=1.06 Rs=1.3 Cjo=35p Vj=.4 M=.5 Eg=.69 XTI=2 Iave=.25 Vpk=100 mfg=NXP type=Schottky)
+
+.model 1N5817 D(Is=31.7u Rs=.051 N=1.373 Cjo=190p M=.3 Eg=.69 Xti=2 Iave=1 Vpk=20 mfg=OnSemi type=Schottky)
+
+.model 1N4001 D(Is=14.11n N=1.984 Rs=33.89m Ikf=94.81 Xti=3 Eg=1.11 Cjo=25.89p M=.44 Vj=.3245 Fc=.5 Bv=75 Ibv=10u Tt=5.7u Iave=1 Vpk=50 mfg=GI type=silicon Vp=25m)
+
+.model 1N4007 D(IS=7.02767n RS=0.0341512 N=1.80803 EG=1.05743 XTI=5 BV=1100 IBV=5e-08 CJO=1e-11 VJ=0.7 M=0.5 FC=0.5 TT=8u Vp=25m mfg=OnSemi type=silicon Vp=25m)
+
+.model 1N4733A D(Is=1.214f Rs=1.078 Ikf=0 N=1 Xti=3 Eg=1.11 Cjo=185p M=.3509 Vj=.75 Fc=.5 Isr=2.601n Nr=2 Bv=5.1 Ibv=.70507 Nbv=.74348 Ibvl=4.8274m Nbvl=6.7393 Tbv1=176.471u Vpk=5.1 type=Zener)
+
+.model 1N4739A D(Is=2.11f Rs=2.512 Ikf=0 N=1 Xti=3 Eg=1.11 Cjo=89p M=.384 Vj=.75 Fc=.5 Isr=2.012n Nr=2 Bv=9.1 Ibv=1.2 Nbv=.72056 Ibvl=10m Nbvl=.21148 Tbv1=604.396u type=zener)
+
+.SUBCKT TL071 1   2   3   4   5
+C1   11 12 3.498E-12
+C2    6  7 15E-12
+DC    5 53 DX
+DE   54  5 DX
+DLP  90 91 DX
+DLN  92 90 DX
+DP    4  3 DX
+BGND 99  0 V=V(3)*.5 + V(4)*.5
+BB    7 99 I=I(VB)*4.715E6 - I(VC)*5E6 + I(VE)*5E6 +
++              I(VLP)*5E6 - I(VLN)*5E6
+GA    6  0 11 12 282.8E-6
+GCM   0  6 10 99 8.942E-9
+ISS   3 10 DC 195E-6
+HLIM 90  0 VLIM 1K
+J1   11  2 10 JX
+J2   12  1 10 JX
+R2    6  9 100E3
+RD1   4 11 3.536E3
+RD2   4 12 3.536E3
+RO1   8  5 150
+RO2   7 99 150
+RP    3  4 2.143E3
+RSS  10 99 1.026E6
+VB    9  0 DC 0
+VC    3 53 DC 2.2
+VE   54  4 DC 2.2
+VLIM  7  8 DC 0
+VLP  91  0 DC 25
+VLN   0 92 DC 25
+
+.SUBCKT TL072 1   2   3   4   5
+C1   11 12 3.498E-12
+C2    6  7 15E-12
+DC    5 53 DX
+DE   54  5 DX
+DLP  90 91 DX
+DLN  92 90 DX
+DP    4  3 DX
+BGND 99  0 V=V(3)*.5 + V(4)*.5
+BB    7 99 I=I(VB)*4.715E6 - I(VC)*5E6 + I(VE)*5E6 +
++              I(VLP)*5E6 - I(VLN)*5E6
+GA    6  0 11 12 282.8E-6
+GCM   0  6 10 99 8.942E-9
+ISS   3 10 DC 195E-6
+HLIM 90  0 VLIM 1K
+J1   11  2 10 JX
+J2   12  1 10 JX
+R2    6  9 100E3
+RD1   4 11 3.536E3
+RD2   4 12 3.536E3
+RO1   8  5 150
+RO2   7 99 150
+RP    3  4 2.143E3
+RSS  10 99 1.026E6
+VB    9  0 DC 0
+VC    3 53 DC 2.2
+VE   54  4 DC 2.2
+VLIM  7  8 DC 0
+VLP  91  0 DC 25
+VLN   0 92 DC 25
+
+.SUBCKT TL074 1   2   3   4   5
+C1   11 12 3.498E-12
+C2    6  7 15E-12
+DC    5 53 DX
+DE   54  5 DX
+DLP  90 91 DX
+DLN  92 90 DX
+DP    4  3 DX
+BGND 99  0 V=V(3)*.5 + V(4)*.5
+BB    7 99 I=I(VB)*4.715E6 - I(VC)*5E6 + I(VE)*5E6 +
++              I(VLP)*5E6 - I(VLN)*5E6
+GA    6  0 11 12 282.8E-6
+GCM   0  6 10 99 8.942E-9
+ISS   3 10 DC 195E-6
+HLIM 90  0 VLIM 1K
+J1   11  2 10 JX
+J2   12  1 10 JX
+R2    6  9 100E3
+RD1   4 11 3.536E3
+RD2   4 12 3.536E3
+RO1   8  5 150
+RO2   7 99 150
+RP    3  4 2.143E3
+RSS  10 99 1.026E6
+VB    9  0 DC 0
+VC    3 53 DC 2.2
+VE   54  4 DC 2.2
+VLIM  7  8 DC 0
+VLP  91  0 DC 25
+VLN   0 92 DC 25
+
+.SUBCKT NE5532   1 2 3 4 50
+*
+VA 5 50 0
+Bi+ 3 50 i=uramp(i(VA))
+Bi- 50 4 i=uramp(-i(VA))
+C1   11 12 7.703E-12
+C2    6  7 23.500E-12
+DC    5 53 DX
+DE   54  5 DX
+DLP  90 91 DX
+DLN  92 90 DX
+DP    4  3 DX
+EGND 99  0 POLY(2) (3,0) (4,0) 0 .5 .5
+FB    7 99 POLY(5) VB VC VE VLP VLN 0 2.893E6 -3E6 3E6 3E6 -3E6
+GA    6  0 11 12 1.382E-3
+GCM   0  6 10 99 13.82E-9
+IEE  10  4 DC 133.0E-6
+HLIM 90  0 VLIM 1K
+Q1   11  2 13 QX
+Q2   12  1 14 QX
+R2    6  9 100.0E3
+RC1   3 11 723.3
+RC2   3 12 723.3
+RE1  13 10 329
+RE2  14 10 329
+REE  10 99 1.504E6
+RO1   8  5 50
+RO2   7 99 25
+RP    3  4 7.757E3
+VB    9  0 DC 0
+VC    3 53 DC 2.700
+VE   54  4 DC 2.700
+VLIM  7  8 DC 0
+VLP  91  0 DC 38
+VLN   0 92 DC 38
+
+.SUBCKT LM358 2 1 4 5 3
+***************************
+
+.SUBCKT LM324 2 1 4 5 3
+***************************
+
+.SUBCKT RC4558 1 2 3 4 5
+**********************************************************
+
+.SUBCKT JRC4558 1 2 3 4 5
+**********************************************************
+
+.SUBCKT LM741   1   2  99  50  28
+*
+*Features:
+*Improved performance over industry standards
+*Plug-in replacement for LM709,LM201,MC1439,748
+*Input and output overload protection
+*
+****************INPUT STAGE**************
+*
+IOS 2 1 20N
+*^Input offset current
+R1 1 3 250K
+R2 3 2 250K
+I1 4 50 100U
+R3 5 99 517
+R4 6 99 517
+Q1 5 2 4 QX
+Q2 6 7 4 QX
+*Fp2=2.55 MHz
+C4 5 6 60.3614P
+*
+***********COMMON MODE EFFECT***********
+*
+I2 99 50 1.6MA
+*^Quiescent supply current
+EOS 7 1 POLY(1) 16 49 1E-3 1
+*Input offset voltage.^
+R8 99 49 40K
+R9 49 50 40K
+*
+*********OUTPUT VOLTAGE LIMITING********
+V2 99 8 1.63
+D1 9 8 DX
+D2 10 9 DX
+V3 10 50 1.63
+*
+**************SECOND STAGE**************
+*
+EH 99 98 99 49 1
+G1 98 9 5 6 2.1E-3
+*Fp1=5 Hz
+R5 98 9 95.493MEG
+C3 98 9 333.33P
+*
+***************POLE STAGE***************
+*
+*Fp=30 MHz
+G3 98 15 9 49 1E-6
+R12 98 15 1MEG
+C5 98 15 5.3052E-15
+*
+*********COMMON-MODE ZERO STAGE*********
+*
+*Fpcm=300 Hz
+G4 98 16 3 49 3.1623E-8
+L2 98 17 530.5M
+R13 17 16 1K
+*
+**************OUTPUT STAGE**************
+*
+F6 50 99 POLY(1) V6 450U 1
+E1 99 23 99 15 1
+R16 24 23 25
+D5 26 24 DX
+V6 26 22 0.65V
+R17 23 25 25
+D6 25 27 DX
+V7 22 27 0.65V
+V5 22 21 0.18V
+D4 21 15 DX
+V4 20 22 0.18V
+D3 15 20 DX
+L3 22 28 100P
+RL3 22 28 100K
+*
+***************MODELS USED**************
+*
+
+.Subckt OPA2134 3 2 5 6 1 7 8 4
+X1 3 2 8 4 1 opa134
+X2 5 6 8 4 7 opa134
+.ends
+
+.SUBCKT LM833  1 2 3 4 5
+C1   11 12 3.501E-12
+C2    6  7 10.00E-12
+DC    5 53 DX
+DE   54  5 DX
+DLP  90 91 DX
+DLN  92 90 DX
+DP    4  3 DX
+EGND 99  0 POLY(2) (3,0) (4,0) 0 .5 .5
+FB    7 99 POLY(5) VB VC VE VLP VLN 0 27.96E6
++ -30E6 30E6 30E6 -30E6
+GA    6  0 11 12 565.5E-6
+GCM   0  6 10 99 5.655E-9
+ISS  10  4 DC 70.00E-6
+HLIM 90  0 VLIM 1K
+J1   11  2 10 JX
+J2   12  1 10 JX
+R2    6  9 100.0E3
+RD1   3 11 1.768E3
+RD2   3 12 1.768E3
+RO1   8  5 10
+RO2   7 99 20
+RP    3  4 29.03E3
+RSS  10 99 2.857E6
+VB    9  0 DC 0
+VC    3 53 DC .9
+VE   54  4 DC .4
+VLIM  7  8 DC 0
+VLP  91  0 DC 30
+VLN   0 92 DC 30
+
+.subckt LM311 1 2 3 4 5 6
+*
+f1 9 3 v1 1
+iee 3 7 dc 100.0E-6
+vi1 21 1 dc .45
+vi2 22 2 dc .45
+q1 9 21 7 qin
+q2 8 22 7 qin
+q3 9 8 4 qmo
+q4 8 8 4 qmi
+
+.SUBCKT LM393 1 2 3 4 5
+*
+F1 9 3 V1 1
+IEE 3 7 DC 100.0E-6
+VI1 21 1 DC .75
+VI2 22 2 DC .75
+Q1 9 21 7 QIN
+Q2 8 22 7 QIN
+Q3 9 8 4 QMO
+Q4 8 8 4 QMI
+
+.subckt NE555 1 2 3 4 5 6 7 8
+A1 N001 2 1 1 1 1 N003 1 SCHMITT Vt=0 Vh=1m
+R1 N001 1 5K
+R2 5 N001 5K
+R3 8 5 5K
+S1 1 7 N012 1 DS
+A2 N006 N003 1 1 1 1 N004 1 SRFLOP Trise=100n tripdt=10n
+A3 6 5 1 1 1 1 N006 1 SCHMITT Vt=0 Vh=1m
+S2 8 3 N010 1 OS
+S3 3 1 1 N010 OS
+A6 1 N013 1 N004 1 1 N012 1 OR Ref=.5 Vlow=-1 Trise=100n
+R7 8 1 4K
+R9 2 1 1G
+R10 6 1 1G
+A4 1 N004 1 N013 1 N010 1 1 OR ref=.5 Vlow=-1 Trise=100n
+A5 4 1 1 1 1 N013 1 1 SCHMITT Vt=.7 Vh=1m
+I1 8 4 .4m load
+D1 4 1 DR
+
+.MODEL CD4066B PMOS (LEVEL=1
+
+
+.SUBCKT CD4013B  S C D R Q QN  VDD VGND  vdd1={vdd} speed1={speed} tripdt1={tripdt}
+.param td1=1e-9*(150-10-40-10)*5/{vdd1}*{speed1}
+.param td2=1e-9*(150-10-40-10)*5/{vdd1}*{speed1}
+.param td3=1e-9*(150+20-10-40-10)*5/{vdd1}*{speed1}
+.param td4=1e-9*(10)*5/{vdd1}*{speed1}
+*
+XIN1  S Si  VDD VGND  CD40_IN_1  vdd2={vdd1}  speed2={speed1}  tripdt2={tripdt1}
+XIN2  C Ci  VDD VGND  CD40_IN_1  vdd2={vdd1}  speed2={speed1}  tripdt2={tripdt1}
+XIN3  D Di  VDD VGND  CD40_IN_1  vdd2={vdd1}  speed2={speed1}  tripdt2={tripdt1}
+XIN4  R Ri  VDD VGND  CD40_IN_1  vdd2={vdd1}  speed2={speed1}  tripdt2={tripdt1}
+*
+ACDEL  Ci 0 0  0  0   0   Cp 0  BUF  tripdt={tripdt1}  td={td1}
+ADDEL  Di 0 0  0  0   0   Dp 0  BUF  tripdt={tripdt1}  td={td3}
+ARINV  Ri 0 0  0  0   0   Rp  0  BUF  tripdt={tripdt1}  td={td2}
+ASINV  Si 0 0  0  0   0   Sp  0  BUF  tripdt={tripdt1}  td={td2}
+A1     Di 0 Cp Sp Rp  QNi Qi0 0  DFLOP  tripdt={tripdt1} td={td4}
+* Force Q=high if R AND S are high.
+ASDEL  Sp 0 0  0  0   0   Sp1 0  BUF   tripdt={tripdt1} td={td4}
+AD     Qi0 Sp1 0 0 0  0   Qi  0  OR   tripdt={tripdt1}
+*
+XOUT1  Qi  Q   VDD VGND  CD40_OUT_1X  vdd2={vdd1} speed2={speed1}  tripdt2={tripdt1}
+XOUT2  QNi QN  VDD VGND  CD40_OUT_1X  vdd2={vdd1} speed2={speed1}  tripdt2={tripdt1}
+.ends
+
+.SUBCKT CD4049UB 1  2   3   4
+*Hex Buffer    In Out Vcc Vss
+M1 2 1 3 3 CD4049P
+M2 2 1 4 4 CD4049N
+
+.SUBCKT 7805 1    2    3
+* In GND Out
+QT6          23  10  2   Q_NPN 0.1
+QT7          5   4   10  Q_NPN 0.1
+QT5          7   6   5   Q_NPN 0.1
+QT1          1   9   8   Q_NPN 0.1
+QT3          11  8   7   Q_NPN 0.1
+QT2          11  13  12  Q_NPN 0.1
+QT17         1   15  14  Q_NPN 10
+C2           10  23      4P
+R16          12  5       500
+R12          16  2       12.1K
+QT18         17  23  16  Q_NPN 0.1
+D1           18  19      D_D
+R11          20  21      850
+R5           22  3       100
+QT14         24  18  2   Q_NPN 0.1
+R21          6   2       2.67K
+R20          3   6       640
+DZ2          25  26      D_5V1
+R19          1   26      16K
+R18          14  3       250M
+R17          25  14      380
+R15          25  15      1.62K
+QT16         1   20  15  Q_NPN 1
+QT15         2   24  21  Q_PNP 0.1
+*OFF
+R14          21  24      4K
+C1           27  24      20P
+R13          19  2       4K
+QT13         24  27  18  Q_NPN 0.1
+QT12         20  25  22  Q_NPN 1
+*OFF
+QT11         20  28  2   Q_NPN 0.1
+*OFF
+QT10         20  11  1   Q_PNP 0.1
+R10          17  27      16.5K
+R9           5   4       1.9K
+R8           4   23      26
+R7           10  2       1.2K
+R6           29  2       1K
+QT9          11  11  1   Q_PNP 0.1
+QT8          27  16  29  Q_NPN 0.1
+QT4          15  6   17  Q_NPN 0.1
+DZ1          2   9       D_5V6
+R4           1   9       80K
+R3           28  2       830
+R2           13  28      4.97K
+R1           8   13      7K
+
+
+.SUBCKT LM317  1     2     3
+*Connections     Input  Adj. Output
+*LM317 voltage regulator
+J1 1 3 4 JN
+Q2 5 5 6 QPL .25
+Q3 5 8 9 QNL
+Q4 8 5 7 QPL .25
+Q5 81 8 3 QNL
+Q6 3 81 10 QPL
+Q7 12 81 13 QNL
+Q8 10 5 11 QPL
+Q9 14 12 10 QPL
+Q10 16 5 17 QPL
+Q11 16 14 15 QNL
+Q12 3 20 16 QPL
+Q13 1 19 20 QNL
+Q14 19 5 18 QPL
+Q15 3 21 19 QPL
+Q16 21 22 16 QPL
+Q17 21 3 24 QNL
+Q18 22 22 16 QPL
+Q19 22 3 241 QNL 10
+Q20 3 25 16 QPL
+Q21 25 26 3 QNL
+Q22A 35 35 1 QPL 2
+Q22B 16 35 1 QPL 2
+Q23 35 16 30 QNL 2
+Q24A 27 40 29 QNL
+Q24B 27 40 28 QNL
+Q25 1 31 41 QNL 40
+Q26 1 41 32 QNL 200
+D1 3 4 DZ
+D2 33 1 DZ
+D3 29 34 DZ
+R1 1 6 310
+R2 1 7 310
+R3 1 11 190
+R4 1 17 82
+R5 1 18 5.6K
+R6 4 8 125K
+R7 8 81 130
+R8 10 12 12.4K
+R9 9 3 180
+R10 13 3 4.1K
+R11 14 3 5.8K
+R12 15 3 72
+R13 20 3 5.1K
+R14 2 24 12K
+R15 24 241 2.4K
+R16 16 25 6.7K
+R17 16 40 12K
+R18 30 41 160
+R19 16 31 170
+R20 26 27 13K
+R21 27 40 400
+R22 3 41 160
+R23 33 34 18K
+R24 28 29 160
+R25 28 32 3
+R26 32 3 50m
+C1 21 3 30PF
+C2 21 2 30PF
+C3 25 26 5PF
+
+.SUBCKT TL431 CATHODE ANODE REF
+Q1 CATHODE REF N005 QN_ED
+R4 N005 N009 3.28k
+R2 N009 N012 2.4k
+R3 N009 N010 7.2k
+Q2 N012 N012 ANODE QN_ED area=1.2
+Q3 N010 N012 N014 QN_ED area=2.2
+R1 N014 ANODE 800
+Q4 N003 N005 N006 QN_ED
+R5 N006 N011 4k
+Q5 N011 N010 ANODE QN_ED
+Q6 N004 N013 ANODE QN_ED area=0.5
+Q7 N003 N003 N001 QP_ED
+Q8 N004 N003 N002 QP_ED
+R7 CATHODE N001 800
+R8 CATHODE N002 800
+Q9 CATHODE N004 N007 QN_ED
+R9 N008 N007 150
+Q10 CATHODE N008 ANODE QN_ED area=5
+R10 N008 ANODE 10k
+Q11 N004 N004 REF QN_ED
+D1 ANODE N004 D_ED
+R6 N013 N012 1k
+D2 ANODE CATHODE D_ED
+C1 CATHODE N004 10p
+C2 N010 N011 20p
+
+.subckt 4N25 1 2 3 4 5
+R1 N003 2 2
+D1 1 N003 LD
+G1 3 5 N003 2 .876m
+C1 1 2 18p
+Q1 3 5 4 [4] NP
+

@@ -151,6 +151,21 @@ bool loadProject(const juce::File& folderOrManifest, Project& out, juce::String&
     if (const auto* diagrams = parsed.getProperty("diagrams", {}).getArray())
         for (const auto& entry : *diagrams)
             project.diagrams.push_back({ entry.getProperty("name", {}).toString(), entry.getProperty("file", {}).toString() });
+            
+    juce::File diagramsFolder = project.folder.getChildFile("diagrams");
+    if (diagramsFolder.isDirectory()) {
+        for (const auto& f : diagramsFolder.findChildFiles(juce::File::findFiles, false, "*.diagram.json")) {
+            bool found = false;
+            for (const auto& d : project.diagrams) {
+                if (project.folder.getChildFile(d.file) == f) { found = true; break; }
+            }
+            if (!found) {
+                juce::String name = f.getFileNameWithoutExtension().upToLastOccurrenceOf(".diagram", false, false);
+                project.diagrams.push_back({name, "diagrams/" + f.getFileName()});
+            }
+        }
+    }
+            
     out = project;
     return true;
 }

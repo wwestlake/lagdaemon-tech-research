@@ -37,6 +37,7 @@ private:
         saveDiagramAsItem,
         renameProjectItem,
         newDiagramItem,
+        openDiagramFileItem,
         renameDiagramItem,
         duplicateDiagramItem,
         deleteDiagramItem,
@@ -52,7 +53,8 @@ private:
         openAgentSettings,
         exportAgentTools,
         openResearchSpec,
-        startAudioSimItem
+        startAudioSimItem,
+        loadAudioSourceItem
     };
 
     static constexpr int recentProjectBase = 1000;
@@ -61,7 +63,7 @@ private:
 
     juce::File layoutFile() const;
     juce::File generatedRunDirectory() const;
-    void appendLog(const juce::String& text);
+    void appendLog(const juce::String& text); void appendLog(const juce::String& reason, const juce::String& code, const juce::String& details);
     void resetResearchState();
 
     // Projects and diagrams (ElectronicsWorkbenchProjects.cpp).
@@ -83,6 +85,7 @@ private:
     void showOpenProjectDialog();
     void showNewDiagramDialog();
     void showOpenDiagramMenu();
+    void showOpenDiagramFileDialog();
     void handleProjectMenu(int menuItemID);
     void showPreferences();
     std::unique_ptr<juce::DocumentWindow> preferencesWindow;
@@ -95,6 +98,8 @@ private:
     juce::String currentDiagram;
     juce::String lastSavedJson;
     std::unique_ptr<juce::FileChooser> projectChooser;
+    std::unique_ptr<juce::FileChooser> audioSourceChooser;
+    std::unique_ptr<juce::FileChooser> diagramChooser;
     void runElectricalRuleCheck();
     void openInstrumentWindow(juce::String refdes, juce::String symbolId);
     void closeFloatingInstrumentWindows();
@@ -129,6 +134,7 @@ private:
     void showSpecDocument();
     void exportCircuitArtifacts();
     void exportFrustRealtimePreview();
+    void chooseAudioSourceFile();
     void showAnalytics();
     juce::String analyticsTool(const juce::String& name, const juce::var& args);
     class AnalyticsPanel* analyticsPanel = nullptr;
@@ -162,7 +168,7 @@ private:
     juce::TextButton zoomInButton { "+" };
 
     juce::TextEditor* logConsole = nullptr;
-juce::TextEditor* logWindow = nullptr;
+juce::Component* logPanel = nullptr;
     juce::String selectedSymbolId = "resistor";
     juce::OwnedArray<juce::DocumentWindow> floatingInstrumentWindows;
     juce::Component::SafePointer<juce::Component> schematicView;
@@ -184,6 +190,7 @@ juce::TextEditor* logWindow = nullptr;
     std::function<void(float)> setSchematicZoom;
     std::function<float()> getSchematicZoom;
     std::function<std::tuple<circuit_sim::Circuit, int, int>()> getSimCircuit;
+    std::function<std::unordered_map<std::string, double>()> getLiveParams;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(ElectronicsWorkbench)
 };

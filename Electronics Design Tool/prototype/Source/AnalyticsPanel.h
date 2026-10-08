@@ -37,6 +37,8 @@ public:
     void selectAnalysis(analytics::Analysis analysis);
     void setSettings(analytics::Analysis analysis, const analytics::Settings& settings);
     analytics::Settings settingsFor(analytics::Analysis analysis) const;
+    juce::var settingsState() const;
+    void restoreSettingsState(const juce::var& state);
 
     // Runs on the calling thread, shows the result, returns the stored run.
     const Run& runNow(analytics::Analysis analysis, const analytics::Settings& settings);

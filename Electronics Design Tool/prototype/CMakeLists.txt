@@ -114,12 +114,18 @@ target_sources(DjehutiElectronicsLab PRIVATE
     Source/ElectronicsWorkbenchProjects.cpp
     Source/ProjectStore.h
     Source/ProjectStore.cpp
+    Source/SpiceLibrary.h
+    Source/SpiceLibrary.cpp
     Source/PartCatalog.h
     Source/PartCatalog.cpp
     Source/Preferences.h
     Source/Preferences.cpp
     Source/CircuitSolver.h
     Source/CircuitSolver.cpp
+    Source/AudioDsp.h
+    Source/AudioDsp.cpp
+    Source/FrustEngine.h
+    Source/FrustEngine.cpp
     Source/SignalMeasure.h
     Source/SignalMeasure.cpp
     Source/Analytics.h
@@ -186,6 +192,73 @@ target_link_libraries(DjehutiElectronicsLab PRIVATE
 
 juce_generate_juce_header(DjehutiElectronicsLab)
 
+juce_add_plugin(DjehutiGeneratedGain
+    COMPANY_NAME "Djehuti"
+    PRODUCT_NAME "Djehuti Generated Gain"
+    PLUGIN_MANUFACTURER_CODE Djht
+    PLUGIN_CODE DgGn
+    FORMATS VST3
+    IS_SYNTH FALSE
+    NEEDS_MIDI_INPUT FALSE
+    NEEDS_MIDI_OUTPUT FALSE
+    IS_MIDI_EFFECT FALSE
+    EDITOR_WANTS_KEYBOARD_FOCUS FALSE
+    COPY_PLUGIN_AFTER_BUILD FALSE
+    VERSION 0.1.0
+)
+
+target_sources(DjehutiGeneratedGain PRIVATE
+    Source/GeneratedVst/GainPluginProcessor.h
+    Source/GeneratedVst/GainPluginProcessor.cpp
+    Source/FrustEngine.h
+    Source/FrustEngine.cpp
+)
+target_include_directories(DjehutiGeneratedGain PRIVATE Source)
+target_compile_definitions(DjehutiGeneratedGain PRIVATE
+    JUCE_WEB_BROWSER=0
+    JUCE_USE_CURL=0
+    JUCE_VST3_CAN_REPLACE_VST2=0
+)
+target_link_libraries(DjehutiGeneratedGain PRIVATE
+    frust_plugin_host
+    juce::juce_core
+    juce::juce_data_structures
+    juce::juce_events
+    juce::juce_graphics
+    juce::juce_gui_basics
+    juce::juce_audio_basics
+    juce::juce_audio_processors
+)
+juce_generate_juce_header(DjehutiGeneratedGain)
+
+juce_add_console_app(GeneratedGainSmoke PRODUCT_NAME "Generated Gain Smoke")
+set_target_properties(GeneratedGainSmoke PROPERTIES
+    OUTPUT_NAME "generated_gain_smoke"
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/bin")
+target_sources(GeneratedGainSmoke PRIVATE
+    tools/generated_vst_tests/GeneratedGainSmoke.cpp
+    Source/GeneratedVst/GainPluginProcessor.cpp
+    Source/FrustEngine.cpp
+)
+target_include_directories(GeneratedGainSmoke PRIVATE Source)
+target_compile_definitions(GeneratedGainSmoke PRIVATE
+    JUCE_WEB_BROWSER=0
+    JUCE_USE_CURL=0
+    JUCE_VST3_CAN_REPLACE_VST2=0
+)
+target_link_libraries(GeneratedGainSmoke PRIVATE
+    frust_plugin_host
+    juce::juce_core
+    juce::juce_data_structures
+    juce::juce_events
+    juce::juce_graphics
+    juce::juce_gui_basics
+    juce::juce_audio_basics
+    juce::juce_audio_processors
+)
+juce_generate_juce_header(GeneratedGainSmoke)
+add_test(NAME GeneratedGainSmoke COMMAND GeneratedGainSmoke)
+
 # Headless check that the embedded Frust compiler compiles and runs code.
 juce_add_console_app(FrustEngineSmoke PRODUCT_NAME "Frust Engine Smoke")
 set_target_properties(FrustEngineSmoke PROPERTIES OUTPUT_NAME "frust_engine_smoke")
@@ -205,6 +278,22 @@ set_target_properties(CircuitSolverTests PROPERTIES
     OUTPUT_NAME "circuit_solver_tests"
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/bin")
 add_test(NAME CircuitSolverTests COMMAND CircuitSolverTests)
+
+juce_add_console_app(AudioDspTests PRODUCT_NAME "Audio Dsp Tests")
+set_target_properties(AudioDspTests PROPERTIES 
+    OUTPUT_NAME "audio_dsp_tests_3"
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/bin")
+target_sources(AudioDspTests PRIVATE 
+    tools/audio_dsp_tests/AudioDspTests.cpp
+    Source/CircuitSolver.cpp
+    Source/AudioDsp.cpp
+    Source/FrustEngine.cpp
+)
+target_include_directories(AudioDspTests PRIVATE Source)
+target_compile_definitions(AudioDspTests PRIVATE JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0)
+target_link_libraries(AudioDspTests PRIVATE frust_plugin_host juce::juce_core)
+juce_generate_juce_header(AudioDspTests)
+add_test(NAME AudioDspTests COMMAND AudioDspTests)
 
 # Headless layout/routing preview: renders reference circuits to PNG and
 # prints readability metrics, without opening the app.

@@ -1,3 +1,4 @@
+#include "SpiceLibrary.h"
 #include "PartCatalog.h"
 
 #include "CircuitSolver.h"
@@ -160,7 +161,7 @@ std::map<juce::String, std::vector<ParamSpec>> buildCatalog()
 
 const std::map<juce::String, std::vector<ParamSpec>>& catalog()
 {
-    static const auto c = buildCatalog();
+    spice_library::initialize(); static std::map<juce::String, std::vector<ParamSpec>> c = buildCatalog();
     return c;
 }
 }
@@ -288,5 +289,8 @@ bool validate(const ParamSpec& spec, const juce::String& value, juce::String& er
     return true;
 }
 }
+
+
+
 
 

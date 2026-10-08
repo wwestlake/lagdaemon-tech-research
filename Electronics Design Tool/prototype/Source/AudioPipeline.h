@@ -37,6 +37,7 @@ public:
 
 private:
     juce::AudioDeviceManager deviceManager;
+    juce::CriticalSection callbackLock;
     ProcessCallback processCallback;
     juce::AudioFormatManager formatManager;
     std::unique_ptr<juce::AudioFormatReader> reader;
@@ -44,5 +45,7 @@ private:
     juce::int64 currentReadPosition = 0;
     bool useHardwareIn = true;
     bool useHardwareOut = true;
+    std::vector<float> fileInputBuffer;
+    std::vector<float> tempOutBuffer;
 };
 

@@ -28,6 +28,7 @@
 
 #include <string>
 #include <vector>
+#include <unordered_map>
 
 namespace audio_dsp
 {
@@ -62,6 +63,18 @@ struct Device
     bool railPlusPort = false, railMinusPort = false; // op amp: rails are ports
 };
 
+// A live parameter port extracted from the linear circuit
+struct LivePort
+{
+    enum class Kind { Switch, VariableResistor };
+    Kind kind = Kind::VariableResistor;
+    int element = -1;
+    int port = 0; // The port index within the LIVE ports block
+    std::string paramId; // e.g., "SW1_state", "POT1_wiper"
+    double baseResistance = 1000.0; // For potentiometers, total resistance
+    bool isWiperToPin2 = false; // For POTs
+};
+
 class Model
 {
 public:
@@ -73,6 +86,7 @@ public:
     int stateCount = 0;     // capacitors + inductors
     int inputCount = 1;     // audio + timed sources
     int portCount = 0;      // nonlinear ports (0: linear circuit)
+    int livePortCount = 0;  // dynamic linear ports (potentiometers, switches)
     bool isNonlinear() const { return portCount > 0; }
 
     // Workspace (a flat array of doubles the generated code reads and writes):
@@ -85,6 +99,7 @@ public:
     int timedBase = 0, portBase = 0, diagBase = 0, scratchBase = 0;
     std::vector<double> initialWorkspace; // reactive history and ports at the DC operating point
     std::vector<TimedSource> timedSources;
+    std::vector<LivePort> livePorts;
 
     double sampleRate = 48000.0;
     double inputVolts = 1.0;
@@ -93,10 +108,10 @@ public:
 
     // Reference evaluator: one sample, returns the output in volts with the DC
     // level removed. `ws` is a workspace laid out as above.
-    double step(std::vector<double>& ws, double audioInVolts) const;
+    double step(std::vector<double>& ws, const double* coeffs, double audioInVolts) const;
 
     // Frust source defining
-    //   pub fn process_sample(audio_in: f64, ws: Array<f64, workspaceSize>) -> f64
+    //   pub fn process_sample(audio_in: f64, ws: Array<f64, workspaceSize>, coeffs: Array<f64, coeffSize>) -> f64
     // where audio_in is the input in volts and the result is the output in volts
     // with its DC level removed. Compile it with a manifest declaring the host
     // functions in requiredHostFunctions().
@@ -107,13 +122,26 @@ public:
 
     // ---- data (public so the generator and tests can read it) --------------
     std::vector<Device> devices;
-    // Dense row-major matrices. Columns of the affine blocks: [const | inputs | states].
+    
+    // The reduced coefficients currently in use (used by `step` if `coeffs` is null)
     std::vector<double> portAffine;  // portCount x (1 + inputCount + stateCount)
     std::vector<double> portK;       // portCount x portCount
     std::vector<double> stateAffine; // stateCount x (1 + inputCount + stateCount)
     std::vector<double> stateQ;      // stateCount x portCount
     std::vector<double> outAffine;   // 1 x (1 + inputCount + stateCount)
     std::vector<double> outQ;        // 1 x portCount
+    
+    // The BASE matrices (including live ports)
+    // Ordered with Live Ports first, then Nonlinear Ports
+    std::vector<double> baseAffine;  // (livePortCount + portCount) x affineCols
+    std::vector<double> baseK;       // (livePortCount + portCount) x (livePortCount + portCount)
+    std::vector<double> baseStateQ;  // stateCount x (livePortCount + portCount)
+    std::vector<double> baseOutQ;    // 1 x (livePortCount + portCount)
+    
+    int coeffSize() const;
+    
+    // Generates a reduced coefficient array given a set of UI parameters
+    std::vector<double> computeLiveCoefficients(const std::unordered_map<std::string, double>& liveParams) const;
 
     // Newton settings.
     int maxIterations = 40;

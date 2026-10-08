@@ -52,6 +52,7 @@ void AudioPipeline::setRouting(const juce::String& inType, const juce::String& i
 
 void AudioPipeline::setProcessCallback(ProcessCallback callback)
 {
+    juce::ScopedLock lock(callbackLock);
     processCallback = std::move(callback);
 }
 
@@ -74,27 +75,33 @@ void AudioPipeline::audioDeviceIOCallbackWithContext(
         }
     }
 
+    juce::ScopedLock lock(callbackLock);
     if (processCallback)
     {
-        std::vector<float> fileInputBuffer;
         const float* input = nullptr;
-        
         if (!useHardwareIn && reader != nullptr) {
-            fileInputBuffer.resize(numSamples, 0.0f);
             float* dests[] = { fileInputBuffer.data() };
             juce::AudioBuffer<float> buf(dests, 1, numSamples);
-            reader->read(&buf, 0, numSamples, currentReadPosition, true, false);
-            currentReadPosition += numSamples;
+            int samplesRead = 0;
+            while (samplesRead < numSamples) {
+                if (reader->lengthInSamples <= 0) break;
+                int samplesToRead = (int)std::min((juce::int64)numSamples - samplesRead, reader->lengthInSamples - currentReadPosition);
+                if (samplesToRead <= 0) {
+                    currentReadPosition = 0;
+                    continue;
+                }
+                reader->read(&buf, samplesRead, samplesToRead, currentReadPosition, true, false);
+                currentReadPosition += samplesToRead;
+                samplesRead += samplesToRead;
+            }
             input = fileInputBuffer.data();
         } else {
             input = (numInputChannels > 0 && inputChannelData[0] != nullptr) ? inputChannelData[0] : nullptr;
         }
 
-        std::vector<float> tempOutBuffer;
         float* output = nullptr;
         
         if (!useHardwareOut && writer != nullptr) {
-            tempOutBuffer.resize(numSamples, 0.0f);
             output = tempOutBuffer.data();
         } else {
             output = (numOutputChannels > 0 && outputChannelData[0] != nullptr) ? outputChannelData[0] : nullptr;
@@ -103,7 +110,6 @@ void AudioPipeline::audioDeviceIOCallbackWithContext(
         if (output != nullptr || (!useHardwareOut && writer != nullptr))
         {
             if (output == nullptr) {
-                tempOutBuffer.resize(numSamples, 0.0f);
                 output = tempOutBuffer.data();
             }
 
@@ -113,8 +119,8 @@ void AudioPipeline::audioDeviceIOCallbackWithContext(
             }
             else
             {
-                std::vector<float> silence(numSamples, 0.0f);
-                processCallback(silence.data(), output, numSamples);
+                juce::FloatVectorOperations::clear(tempOutBuffer.data(), numSamples);
+                processCallback(tempOutBuffer.data(), output, numSamples);
             }
             
             if (!useHardwareOut && writer != nullptr) {
@@ -153,9 +159,13 @@ void AudioPipeline::audioDeviceIOCallbackWithContext(
 void AudioPipeline::audioDeviceAboutToStart(juce::AudioIODevice* device)
 {
     juce::ignoreUnused(device);
+    fileInputBuffer.resize(device->getCurrentBufferSizeSamples(), 0.0f);
+    tempOutBuffer.resize(device->getCurrentBufferSizeSamples(), 0.0f);
 }
 
 void AudioPipeline::audioDeviceStopped()
 {
+    fileInputBuffer.clear();
+    tempOutBuffer.clear();
 }
 

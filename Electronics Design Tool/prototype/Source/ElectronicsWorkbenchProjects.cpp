@@ -446,6 +446,33 @@ void ElectronicsWorkbench::showOpenDiagramMenu()
     });
 }
 
+void ElectronicsWorkbench::showOpenDiagramFileDialog()
+{
+    if (!project.isOpen())
+    {
+        appendLog("Open or create a project before opening a diagram.");
+        return;
+    }
+    
+    diagramChooser = std::make_unique<juce::FileChooser>("Select a Diagram to Open", project.folder.getChildFile("diagrams"), "*.diagram.json");
+    diagramChooser->launchAsync(juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectFiles,
+        [this](const juce::FileChooser& fc) {
+            auto result = fc.getResult();
+            if (result.existsAsFile())
+            {
+                juce::String name = result.getFileNameWithoutExtension().upToLastOccurrenceOf(".diagram", false, false);
+                if (project.find(name) == nullptr) {
+                    project.diagrams.push_back({name, "diagrams/" + result.getFileName()});
+                    juce::String manifestError;
+                    project_store::saveManifest(project, manifestError);
+                }
+                juce::String error;
+                if (!openDiagram(name, error))
+                    appendLog("Could not open diagram: " + error);
+            }
+        });
+}
+
 void ElectronicsWorkbench::handleProjectMenu(int menuItemID)
 {
     juce::String error;
@@ -475,6 +502,7 @@ void ElectronicsWorkbench::handleProjectMenu(int menuItemID)
         case newProject: showNewProjectDialog(); break;
         case openProject: showOpenProjectDialog(); break;
         case newDiagramItem: showNewDiagramDialog(); break;
+        case openDiagramFileItem: showOpenDiagramFileDialog(); break;
         case saveProject:
             if (!project.isOpen() || currentDiagram.isEmpty())
                 showNewDiagramDialog();
@@ -552,6 +580,7 @@ void ElectronicsWorkbench::addProjectMenuItems(juce::PopupMenu& menu)
     menu.addItem(renameProjectItem, "Rename Project...", project.isOpen());
     menu.addSeparator();
     menu.addItem(newDiagramItem, "New Diagram...", project.isOpen());
+    menu.addItem(openDiagramFileItem, "Open Diagram File...", project.isOpen());
     juce::PopupMenu diagramMenu;
     for (size_t i = 0; i < project.diagrams.size(); ++i)
         diagramMenu.addItem(diagramMenuBase + (int)i, project.diagrams[i].name, true, project.diagrams[i].name.equalsIgnoreCase(currentDiagram));

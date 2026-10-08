@@ -254,6 +254,14 @@ void npnCurrents(const BjtModel& m, double vbe, double vbc, double& ic, double& 
     ib = m.saturationCurrent / m.betaForward * ef + m.saturationCurrent / m.betaReverse * er;
 }
 
+double njfetDrainCurrent(const JfetModel& m, double vgs, double vds)
+{
+    if (vgs <= -m.pinchoff) return 0.0;
+    if (vds < vgs + m.pinchoff)
+        return m.idss * (2.0 * (1.0 + vgs / m.pinchoff) * (vds / m.pinchoff) - (vds / m.pinchoff) * (vds / m.pinchoff)) * (1.0 + m.lambda * vds);
+    return m.idss * (1.0 + vgs / m.pinchoff) * (1.0 + vgs / m.pinchoff) * (1.0 + m.lambda * vds);
+}
+
 double nmosDrainCurrent(const MosModel& m, double vgs, double vds)
 {
     // vds >= 0 here.
@@ -300,6 +308,29 @@ std::vector<double> deviceCurrents(const Element& e, const std::vector<double>& 
             id *= sign;
             return { id, 0.0, -id };
         }
+        case Element::Type::Njfet:
+        case Element::Type::Pjfet:
+        {
+            // nodes: drain, gate, source
+            const auto sign = e.type == Element::Type::Njfet ? 1.0 : -1.0;
+            auto vd = sign * v[0], vg = sign * v[1], vs = sign * v[2];
+            
+            double id_channel = 0.0;
+            if (vd >= vs)
+                id_channel = njfetDrainCurrent(e.jfet, vg - vs, vd - vs);
+            else
+                id_channel = -njfetDrainCurrent(e.jfet, vg - vd, vs - vd);
+                
+            double vt = e.jfet.n * 0.025852;
+            double igs = e.jfet.is * (std::exp((vg - vs) / vt) - 1.0);
+            double igd = e.jfet.is * (std::exp((vg - vd) / vt) - 1.0);
+            
+            double id = id_channel - igd;
+            double ig = igs + igd;
+            double is = -id_channel - igs;
+            
+            return { sign * id, sign * ig, sign * is };
+        }
         default:
             return {};
     }
@@ -325,7 +356,7 @@ Matrix<double> deviceJacobian(const Element& e, const std::vector<double>& v)
 bool isNonlinear(Element::Type t)
 {
     return t == Element::Type::Diode || t == Element::Type::Npn || t == Element::Type::Pnp
-        || t == Element::Type::Nmos || t == Element::Type::Pmos || t == Element::Type::OpAmp;
+        || t == Element::Type::Nmos || t == Element::Type::Pmos || t == Element::Type::Njfet || t == Element::Type::Pjfet || t == Element::Type::OpAmp;
 }
 
 bool needsBranch(Element::Type t)
@@ -541,6 +572,8 @@ System<double> assemble(const Circuit& c, const Layout& l, const Options& o, Mod
         switch (e.type)
         {
             case Element::Type::Resistor:
+            case Element::Type::VariableResistor:
+            case Element::Type::Switch:
                 s.conductance(e.nodes[0], e.nodes[1], 1.0 / std::max(e.value, 1e-9));
                 break;
             case Element::Type::Capacitor:
@@ -1030,6 +1063,8 @@ int Circuit::find(const std::string& name) const
 }
 
 int Circuit::addResistor(const std::string& n, Node a, Node b, double ohms) { Element e; e.type = Element::Type::Resistor; e.name = n; e.nodes = { a, b }; e.value = ohms; return add(e); }
+int Circuit::addVariableResistor(const std::string& n, Node a, Node b, double r, const std::string& pId, bool wiper2) { Element e; e.type = Element::Type::VariableResistor; e.name = n; e.nodes = { a, b }; e.value = r; e.paramId = pId; e.isWiperToPin2 = wiper2; return add(e); }
+int Circuit::addSwitch(const std::string& n, Node a, Node b, const std::string& pId) { Element e; e.type = Element::Type::Switch; e.name = n; e.nodes = { a, b }; e.paramId = pId; return add(e); }
 int Circuit::addCapacitor(const std::string& n, Node a, Node b, double f) { Element e; e.type = Element::Type::Capacitor; e.name = n; e.nodes = { a, b }; e.value = f; return add(e); }
 int Circuit::addInductor(const std::string& n, Node a, Node b, double h) { Element e; e.type = Element::Type::Inductor; e.name = n; e.nodes = { a, b }; e.value = h; return add(e); }
 int Circuit::addCoupling(const std::string& n, int la, int lb, double k) { Element e; e.type = Element::Type::Coupling; e.name = n; e.control = la; e.control2 = lb; e.value = k; return add(e); }
@@ -1042,6 +1077,7 @@ int Circuit::addCccs(const std::string& n, Node of, Node ot, int src, double g) 
 int Circuit::addDiode(const std::string& n, Node a, Node k, DiodeModel m) { Element e; e.type = Element::Type::Diode; e.name = n; e.nodes = { a, k }; e.diode = m; return add(e); }
 int Circuit::addBjt(const std::string& n, bool npn, Node c, Node b, Node em, BjtModel m) { Element e; e.type = npn ? Element::Type::Npn : Element::Type::Pnp; e.name = n; e.nodes = { c, b, em }; e.bjt = m; return add(e); }
 int Circuit::addMosfet(const std::string& n, bool nc, Node d, Node g, Node s, MosModel m) { Element e; e.type = nc ? Element::Type::Nmos : Element::Type::Pmos; e.name = n; e.nodes = { d, g, s }; e.mos = m; return add(e); }
+int Circuit::addJfet(const std::string& n, bool nc, Node d, Node g, Node s, JfetModel m) { Element e; e.type = nc ? Element::Type::Njfet : Element::Type::Pjfet; e.name = n; e.nodes = { d, g, s }; e.jfet = m; return add(e); }
 int Circuit::addOpAmp(const std::string& n, Node ip, Node im, Node out, Node rp, Node rm, OpAmpModel m) { Element e; e.type = Element::Type::OpAmp; e.name = n; e.nodes = { ip, im, out, rp, rm }; e.opamp = m; return add(e); }
 
 // ---- element parameters ---------------------------------------------------------
@@ -1051,13 +1087,16 @@ std::vector<std::string> parameterNames(Element::Type type)
     using T = Element::Type;
     switch (type)
     {
-        case T::Resistor: return { "value", "tc1", "tc2" };
+        case T::Resistor:
+          case T::VariableResistor:
+          case T::Switch: return { "value", "tc1", "tc2" };
         case T::Capacitor: case T::Inductor: case T::Coupling: return { "value" };
         case T::VoltageSource: case T::CurrentSource: return { "dc", "amplitude", "frequency", "ac" };
         case T::Vcvs: case T::Vccs: case T::Ccvs: case T::Cccs: return { "value" };
         case T::Diode: return { "is", "n", "bv", "tt" };
         case T::Npn: case T::Pnp: return { "beta", "is", "vaf", "tf" };
         case T::Nmos: case T::Pmos: return { "vth", "k", "lambda" };
+        case T::Njfet: case T::Pjfet: return { "vp", "idss", "lambda" };
         case T::OpAmp: return { "gain" };
     }
     return {};
@@ -1069,6 +1108,8 @@ bool getParameter(const Element& e, const std::string& name, double& out)
     switch (e.type)
     {
         case T::Resistor:
+          case T::VariableResistor:
+          case T::Switch:
             if (name == "tc1") { out = e.tc1; return true; }
             if (name == "tc2") { out = e.tc2; return true; }
             [[fallthrough]];
@@ -1099,6 +1140,11 @@ bool getParameter(const Element& e, const std::string& name, double& out)
             if (name == "k") { out = e.mos.transconductance; return true; }
             if (name == "lambda") { out = e.mos.lambda; return true; }
             return false;
+        case T::Njfet: case T::Pjfet:
+            if (name == "vp") { out = e.jfet.pinchoff; return true; }
+            if (name == "idss") { out = e.jfet.idss; return true; }
+            if (name == "lambda") { out = e.jfet.lambda; return true; }
+            return false;
         case T::OpAmp:
             if (name == "gain") { out = e.opamp.gain; return true; }
             return false;
@@ -1115,6 +1161,8 @@ bool setParameter(Element& e, const std::string& name, double value)
     switch (e.type)
     {
         case T::Resistor:
+          case T::VariableResistor:
+          case T::Switch:
             if (name == "tc1") { e.tc1 = value; return true; }
             if (name == "tc2") { e.tc2 = value; return true; }
             e.value = value;
@@ -1161,6 +1209,11 @@ bool setParameter(Element& e, const std::string& name, double value)
             if (name == "k") e.mos.transconductance = value;
             if (name == "lambda") e.mos.lambda = value;
             return true;
+        case T::Njfet: case T::Pjfet:
+            if (name == "vp") e.jfet.pinchoff = value;
+            if (name == "idss") e.jfet.idss = value;
+            if (name == "lambda") e.jfet.lambda = value;
+            return true;
         case T::OpAmp:
             e.opamp.gain = value;
             return true;
@@ -1182,6 +1235,8 @@ Circuit atTemperature(const Circuit& circuit, double celsius)
         switch (e.type)
         {
             case Element::Type::Resistor:
+            case Element::Type::VariableResistor:
+            case Element::Type::Switch:
                 e.value *= std::max(1e-6, 1.0 + e.tc1 * dt + e.tc2 * dt * dt);
                 break;
             case Element::Type::Diode:
@@ -1249,6 +1304,8 @@ std::vector<double> terminalCurrents(const Circuit& circuit, const OperatingPoin
     switch (e.type)
     {
         case T::Resistor:
+          case T::VariableResistor:
+          case T::Switch:
         {
             const auto i = (v(0) - v(1)) / std::max(e.value, 1e-9);
             return { i, -i };
@@ -1368,6 +1425,22 @@ DeviceInfo deviceInfo(const Circuit& circuit, const OperatingPoint& op, int elem
             add("gm", std::abs(j[0][1]), "S");
             add("gds", std::abs(j[0][0]), "S");
             info.region = vov <= 0.0 ? "cutoff" : sign * vds < vov ? "triode" : "saturation";
+            break;
+        }
+        case T::Njfet:
+        case T::Pjfet:
+        {
+            const auto sign = e.type == T::Njfet ? 1.0 : -1.0;
+            const auto i = deviceCurrents(e, volts);
+            const auto j = deviceJacobian(e, volts);
+            const auto vgs = volts[1] - volts[2], vds = volts[0] - volts[2];
+            add("Vgs", vgs, "V");
+            add("Vds", vds, "V");
+            add("Id", i[0], "A");
+            add("Ig", i[1], "A");
+            add("gm", std::abs(j[0][1]), "S");
+            add("gds", std::abs(j[0][0]), "S");
+            info.region = sign * vgs <= -e.jfet.pinchoff ? "cutoff" : sign * vds < sign * vgs + e.jfet.pinchoff ? "triode" : "saturation";
             break;
         }
         case T::OpAmp:
@@ -1663,6 +1736,8 @@ NoiseResult solveNoise(const Circuit& circuit, Node outPlus, Node outMinus, int 
         switch (e.type)
         {
             case Element::Type::Resistor:
+            case Element::Type::VariableResistor:
+            case Element::Type::Switch:
                 sources.push_back({ (int)ei, "thermal", e.nodes[0], e.nodes[1], 4.0 * kt / std::max(e.value, 1e-9) });
                 break;
             case Element::Type::Diode:
@@ -1678,6 +1753,8 @@ NoiseResult solveNoise(const Circuit& circuit, Node outPlus, Node outMinus, int 
             }
             case Element::Type::Nmos:
             case Element::Type::Pmos:
+            case Element::Type::Njfet:
+            case Element::Type::Pjfet:
             {
                 const auto gm = std::abs(deviceJacobian(e, volts)[0][1]);
                 sources.push_back({ (int)ei, "channel", e.nodes[0], e.nodes[2], 8.0 / 3.0 * kt * gm });
@@ -2185,3 +2262,4 @@ std::string formatValue(double value, const std::string& unit, int significant)
     return std::to_string(value) + " " + unit;
 }
 }
+

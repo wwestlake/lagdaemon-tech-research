@@ -1273,6 +1273,51 @@ analytics::Settings AnalyticsPanel::settingsFor(analytics::Analysis analysis) co
     return found != settings.end() ? found->second : analytics::Settings {};
 }
 
+juce::var AnalyticsPanel::settingsState() const
+{
+    auto* root = new juce::DynamicObject();
+    root->setProperty("schemaVersion", 1);
+    root->setProperty("activeAnalysis", analytics::infoFor(current).key);
+    auto* analyses = new juce::DynamicObject();
+    for (const auto& info : analytics::analyses())
+    {
+        auto* values = new juce::DynamicObject();
+        const auto found = settings.find(info.id);
+        const auto source = found != settings.end() ? found->second : analytics::Settings {};
+        for (const auto& [key, value] : source)
+            values->setProperty(juce::Identifier(key), value);
+        analyses->setProperty(juce::Identifier(info.key), juce::var(values));
+    }
+    root->setProperty("analyses", juce::var(analyses));
+    return juce::var(root);
+}
+
+void AnalyticsPanel::restoreSettingsState(const juce::var& state)
+{
+    const auto* root = state.getDynamicObject();
+    if (root == nullptr)
+        return;
+    if (const auto* analyses = root->getProperty("analyses").getDynamicObject())
+    {
+        for (const auto& info : analytics::analyses())
+        {
+            const auto* values = analyses->getProperty(info.key).getDynamicObject();
+            if (values == nullptr)
+                continue;
+            auto& target = settings[info.id];
+            target.clear();
+            for (const auto& property : values->getProperties())
+                target[property.name.toString()] = property.value.toString();
+        }
+    }
+    if (const auto* info = analytics::findAnalysis(root->getProperty("activeAnalysis").toString()))
+        current = info->id;
+    if (list != nullptr)
+        list->select(current);
+    refreshChoices();
+    saveSettings();
+}
+
 void AnalyticsPanel::refreshChoices()
 {
     if (getNetlist != nullptr)

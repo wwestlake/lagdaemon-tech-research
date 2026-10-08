@@ -81,6 +81,15 @@ struct MosModel
     double lambda = 0.01;
 };
 
+struct JfetModel
+{
+    double pinchoff = 2.0;         // magnitude |Vp|, volts
+    double idss = 10e-3;           // A
+    double lambda = 0.0;           // Channel-length modulation
+    double is = 1e-14;             // Gate junction saturation current
+    double n = 1.0;                // Gate junction emission coefficient
+};
+
 struct OpAmpModel
 {
     double gain = 1e5;
@@ -95,7 +104,8 @@ struct Element
         Resistor, Capacitor, Inductor, Coupling,
         VoltageSource, CurrentSource,
         Vcvs, Vccs, Ccvs, Cccs,
-        Diode, Npn, Pnp, Nmos, Pmos, OpAmp
+        Diode, Npn, Pnp, Nmos, Pmos, Njfet, Pjfet, OpAmp,
+        VariableResistor, Switch
     };
 
     Type type = Type::Resistor;
@@ -108,9 +118,12 @@ struct Element
     DiodeModel diode;
     BjtModel bjt;
     MosModel mos;
+    JfetModel jfet;
     OpAmpModel opamp;
     int control = -1;        // Ccvs/Cccs: index of the controlling voltage source; Coupling: first inductor
     int control2 = -1;       // Coupling: second inductor
+    std::string paramId;     // For live parameters
+    bool isWiperToPin2 = false; // For potentiometers
 };
 
 class Circuit
@@ -120,6 +133,8 @@ public:
     int nodeCount() const { return nodes; }
 
     int addResistor(const std::string& name, Node a, Node b, double ohms);
+    int addVariableResistor(const std::string& name, Node a, Node b, double totalResistance, const std::string& paramId, bool isWiperToPin2);
+    int addSwitch(const std::string& name, Node a, Node b, const std::string& paramId);
     int addCapacitor(const std::string& name, Node a, Node b, double farads);
     int addInductor(const std::string& name, Node a, Node b, double henries);
     int addCoupling(const std::string& name, int inductorA, int inductorB, double k);
@@ -134,6 +149,7 @@ public:
     int addDiode(const std::string& name, Node anode, Node cathode, DiodeModel model = {});
     int addBjt(const std::string& name, bool npn, Node collector, Node base, Node emitter, BjtModel model = {});
     int addMosfet(const std::string& name, bool nChannel, Node drain, Node gate, Node source, MosModel model = {});
+    int addJfet(const std::string& name, bool nChannel, Node drain, Node gate, Node source, JfetModel model = {});
     int addOpAmp(const std::string& name, Node inPlus, Node inMinus, Node out, Node railPlus, Node railMinus, OpAmpModel model = {});
 
     const std::vector<Element>& elements() const { return parts; }

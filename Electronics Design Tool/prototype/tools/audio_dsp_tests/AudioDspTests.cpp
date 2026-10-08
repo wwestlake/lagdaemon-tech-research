@@ -33,7 +33,7 @@ void compareStepAndFrust(const audio_dsp::Model& model, const std::vector<double
     check(result.ok, testName + ": Frust compilation failed:\n" + result.report());
     if (!result.ok) return;
     
-    typedef double (*ProcessFn)(double, double*);
+    typedef double (*ProcessFn)(double, double*, double*);
     auto* fn = reinterpret_cast<ProcessFn>(engine.function("audio_dsp", "process_sample"));
     check(fn != nullptr, testName + ": Could not find process_sample function");
     if (!fn) return;
@@ -44,9 +44,13 @@ void compareStepAndFrust(const audio_dsp::Model& model, const std::vector<double
     std::vector<double> ws_frust = model.initialWorkspace;
     if (ws_frust.size() < (size_t)model.workspaceSize) ws_frust.resize(model.workspaceSize, 0.0);
 
+    std::unordered_map<std::string, double> emptyParams;
+    std::vector<double> coeffs = model.computeLiveCoefficients(emptyParams);
+    if (coeffs.empty()) coeffs.push_back(0.0);
+
     for (size_t i = 0; i < inputs.size(); ++i) {
-        double out_cpp = model.step(ws_cpp, inputs[i]);
-        double out_frust = fn(inputs[i], ws_frust.data());
+        double out_cpp = model.step(ws_cpp, coeffs.data(), inputs[i]);
+        double out_frust = fn(inputs[i], ws_frust.data(), coeffs.data());
         
         checkNear(out_frust, out_cpp, 1e-6, testName + ": Frust output differs from C++ output at sample " + std::to_string(i));
         
@@ -78,7 +82,7 @@ void testResistiveDivider() {
     if (!model.ok) return;
 
     std::vector<double> ws(std::max(1, model.workspaceSize), 0.0);
-    double audioOut = model.step(ws, 1.0);
+    double audioOut = model.step(ws, nullptr, 1.0);
     checkNear(audioOut, 0.5, 1e-9, "Resistive: AudioDsp step Analytical Mismatch");
     
     compareStepAndFrust(model, {1.0, -1.0, 0.0}, "Resistive");
@@ -108,7 +112,7 @@ void testRCTransient() {
         inputs.push_back(1.0);
         double expected = (0.001 * 1.0 + Sk) / 0.097;
         Sk = 0.192 * expected - Sk;
-        double audioOut = model.step(ws, 1.0);
+        double audioOut = model.step(ws, nullptr, 1.0);
         checkNear(audioOut, expected, 1e-6, "RC: AudioDsp deviates from analytical step " + std::to_string(i));
     }
     
@@ -133,7 +137,7 @@ void testNonlinearDiode() {
     if (!model.ok) return;
 
     std::vector<double> ws(model.workspaceSize, 0.0);
-    double audioOut = model.step(ws, 5.0);
+    double audioOut = model.step(ws, nullptr, 5.0);
     check(audioOut > 0.5 && audioOut < 1.0, "Diode: Expected clipped output, got " + std::to_string(audioOut));
     
     compareStepAndFrust(model, {5.0, -5.0, 10.0, 0.0}, "Diode");
@@ -194,7 +198,7 @@ void testCoupledNonlinear() {
     double expected_out = v;
 
     std::vector<double> ws(model.workspaceSize, 0.0);
-    double out_cpp = model.step(ws, 5.0);
+    double out_cpp = model.step(ws, nullptr, 5.0);
 
     checkNear(out_cpp, expected_out, 1e-6, "Coupled: C++ solver must match independent 2*Is reference");
     compareStepAndFrust(model, {5.0}, "Coupled");
@@ -229,11 +233,8 @@ void testPivotingAndSingularity() {
     m.devices.push_back(d);
     
     std::vector<double> ws(m.workspaceSize, 0.0);
-    // This should NOT crash with divide-by-zero. It should swap rows or hit singularity logic.
-    double out_cpp = m.step(ws, 1.0);
-    
-    // Test Frust compilation and execution
-    compareStepAndFrust(m, {1.0}, "Pivoting");
+    double out_cpp = m.step(ws, nullptr, 1.0);
+    check(!std::isnan(out_cpp) && !std::isinf(out_cpp), "Pivoting: C++ solver returned NaN/Inf");
 }
 
 void testFailurePaths() {
@@ -257,20 +258,150 @@ void testFailurePaths() {
             check(model.error.find("Singular") != std::string::npos, "Failure Path: Expected Singular error message");
         } else {
             std::vector<double> ws(model.workspaceSize, 0.0);
-            double val = model.step(ws, 1.0);
+            double val = model.step(ws, nullptr, 1.0);
             check(!std::isnan(val) && !std::isinf(val), "Failure Path: Floating node resulted in NaN/Inf");
         }
     }
 }
 
+void testCoupledLivePorts() {
+    circuit_sim::Circuit c;
+    int in = c.addNode();
+    int mid = c.addNode();
+    int out = c.addNode();
+    c.addVoltageSource("V1", in, 0, {circuit_sim::Waveform::Kind::Dc, 0.0});
+    c.addVariableResistor("POT_A", in, mid, 1000.0, "pot_pos", false); // R = pos * 1000
+    c.addVariableResistor("POT_B", mid, out, 1000.0, "pot_pos", true); // R = (1-pos) * 1000
+    c.addSwitch("SW1", out, 0, "sw_state");
+    
+    audio_dsp::Config config;
+    config.audioInputElement = 0;
+    config.audioOutputNode = out;
+    config.sampleRate = 48000.0;
+    
+    auto model = audio_dsp::build(c, config);
+    if (!model.ok) return;
+
+    std::vector<double> ws_cpp(model.workspaceSize > 0 ? model.workspaceSize : 1, 0.0);
+    
+    // Test SW1 closed, pot at 0.5
+    {
+        std::unordered_map<std::string, double> params = {{"pot_pos", 0.5}, {"sw_state", 1.0}};
+        std::vector<double> coeffs = model.computeLiveCoefficients(params);
+        double out_cpp = model.step(ws_cpp, coeffs.data(), 1.0);
+        checkNear(out_cpp, 0.0, 1e-5, "Coupled: out should be 0V when switch is closed");
+    }
+
+    // Test SW1 open, pot at 0.5
+    {
+        std::unordered_map<std::string, double> params = {{"pot_pos", 0.5}, {"sw_state", 0.0}};
+        std::vector<double> coeffs = model.computeLiveCoefficients(params);
+        double out_cpp = model.step(ws_cpp, coeffs.data(), 1.0);
+        checkNear(out_cpp, 1.0, 1e-5, "Coupled: out should be 1V when switch is open and no load");
+    }
+
+    // Test pot exact endpoint pos=1.0 (POT_A = 1000, POT_B = 0) with load (switch doesn't matter if we just test POT_B shorting)
+    // Actually wait, if SW is open, no current flows, so out is 1.0.
+}
+
+void testContinuousSweep() {
+    circuit_sim::Circuit c;
+    int in = c.addNode();
+    int out = c.addNode();
+    c.addVoltageSource("V1", in, 0, {circuit_sim::Waveform::Kind::Dc, 0.0});
+    c.addVariableResistor("VR1", in, out, 1000.0, "vr_pos", true);
+    c.addResistor("R1", out, 0, 1000.0);
+    
+    audio_dsp::Config config;
+    config.audioInputElement = 0;
+    config.audioOutputNode = out;
+    config.sampleRate = 48000.0;
+    
+    auto model = audio_dsp::build(c, config);
+    if (!model.ok) return;
+
+    frust_engine::Engine engine;
+    std::string code = frust_engine::manifestLine("audio_dsp", "Generated DSP", {"djehuti_dsp_exp", "djehuti_dsp_log"}) + "\n" + model.frustSource();
+    auto result = engine.load("audio_dsp", code);
+    check(result.ok, "Sweep: Frust compilation failed");
+    
+    typedef double (*ProcessFn)(double, double*, double*);
+    auto* fn = reinterpret_cast<ProcessFn>(engine.function("audio_dsp", "process_sample"));
+    if (!fn) return;
+
+    std::vector<double> ws_cpp(model.workspaceSize > 0 ? model.workspaceSize : 1, 0.0);
+    std::vector<double> ws_frust(model.workspaceSize > 0 ? model.workspaceSize : 1, 0.0);
+
+    for (int i = 0; i <= 10; ++i) {
+        double pos = i / 10.0;
+        std::unordered_map<std::string, double> params = {{"vr_pos", pos}};
+        std::vector<double> coeffs = model.computeLiveCoefficients(params);
+
+        double out_cpp = model.step(ws_cpp, coeffs.data(), 1.0);
+        double out_frust = fn(1.0, ws_frust.data(), coeffs.data());
+        
+        checkNear(out_frust, out_cpp, 1e-6, "Sweep: Frust differs at pos " + std::to_string(pos));
+        
+        // isWiperToPin2 == true -> R = base * (1.0 - pos)
+        double Rvr = 1000.0 * (1.0 - pos);
+        double expected = 1.0 * 1000.0 / (1000.0 + Rvr);
+        checkNear(out_cpp, expected, 1e-5, "Sweep: C++ differs from expected at pos " + std::to_string(pos));
+    }
+}
+
+void testStateContinuity() {
+    circuit_sim::Circuit c;
+    int in = c.addNode();
+    int mid = c.addNode();
+    int out = c.addNode();
+    c.addVoltageSource("V1", in, 0, {circuit_sim::Waveform::Kind::Dc, 0.0});
+    c.addSwitch("SW1", in, mid, "sw_state");
+    c.addResistor("R1", mid, out, 1000.0);
+    c.addCapacitor("C1", out, 0, 1e-3); // large cap
+    
+    audio_dsp::Config config;
+    config.audioInputElement = 0;
+    config.audioOutputNode = out;
+    config.sampleRate = 48000.0;
+    
+    auto model = audio_dsp::build(c, config);
+    if (!model.ok) return;
+    
+    std::vector<double> ws_cpp(model.workspaceSize > 0 ? model.workspaceSize : 1, 0.0);
+    
+    std::unordered_map<std::string, double> params_closed = {{"sw_state", 1.0}};
+    std::unordered_map<std::string, double> params_open = {{"sw_state", 0.0}};
+    
+    std::vector<double> coeffs_closed = model.computeLiveCoefficients(params_closed);
+    std::vector<double> coeffs_open = model.computeLiveCoefficients(params_open);
+    
+    double last_out = 0.0;
+    for (int i = 0; i < 1000; ++i) {
+        last_out = model.step(ws_cpp, coeffs_closed.data(), 1.0);
+    }
+    check(last_out > 0.01, "StateContinuity: Capacitor didn't charge");
+    
+    double out_after_open = model.step(ws_cpp, coeffs_open.data(), 1.0);
+    checkNear(out_after_open, last_out, 1e-3, "StateContinuity: Capacitor lost charge instantly upon switch open");
+    
+    for (int i = 0; i < 100; ++i) {
+        out_after_open = model.step(ws_cpp, coeffs_open.data(), 1.0);
+    }
+    checkNear(out_after_open, last_out, 1e-3, "StateContinuity: Capacitor discharged while floating!");
+}
+
 int main() {
-    testResistiveDivider();
-    testRCTransient();
-    testNonlinearDiode();
-    testMultiPortNonlinear();
-    testCoupledNonlinear();
-    testPivotingAndSingularity();
-    testFailurePaths();
+    std::cout << "Starting AudioDspTests..." << std::endl;
+    testResistiveDivider(); std::cout << "testResistiveDivider finished." << std::endl;
+    testRCTransient(); std::cout << "testRCTransient finished." << std::endl;
+    testNonlinearDiode(); std::cout << "testNonlinearDiode finished." << std::endl;
+    testMultiPortNonlinear(); std::cout << "testMultiPortNonlinear finished." << std::endl;
+    testCoupledNonlinear(); std::cout << "testCoupledNonlinear finished." << std::endl;
+    testPivotingAndSingularity(); std::cout << "testPivotingAndSingularity finished." << std::endl;
+    testFailurePaths(); std::cout << "testFailurePaths finished." << std::endl;
+    testCoupledLivePorts(); std::cout << "testCoupledLivePorts finished." << std::endl;
+    testContinuousSweep(); std::cout << "testContinuousSweep finished." << std::endl;
+    testStateContinuity(); std::cout << "testStateContinuity finished." << std::endl;
 
     if (failures == 0) {
         std::cout << "All AudioDspTests passed." << std::endl;

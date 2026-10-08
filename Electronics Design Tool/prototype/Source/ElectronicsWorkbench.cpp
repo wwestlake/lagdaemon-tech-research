@@ -14,6 +14,7 @@
 #include "Preferences.h"
 #include "AudioPipeline.h"
 #include "AudioDsp.h"
+#include "SpiceLibrary.h"
 
 #include <ai_provider/AiConfig.h>
 
@@ -399,6 +400,21 @@ const SchematicToolSpec schematicToolSpecs[] = {
         R"({"type":"object","properties":{"refdes":{"type":"string"},"params":{"type":"object","description":"Property key to new value, such as {\"value\": \"4.7k\"} or {\"waveform\": \"Square\", \"frequency\": \"500\"}.","additionalProperties":{"type":"string"}}},"required":["refdes","params"],"additionalProperties":false})"
     },
     {
+        "simulation_parameter_expose",
+        "Expose a schematic property as a canonical simulation parameter. The definition is saved with the diagram and each backend reports whether it can consume it as Live, Prepared, Rerun, Rebuild, or Unsupported.",
+        R"({"type":"object","properties":{"id":{"type":"string","description":"Stable parameter id, such as tone_cutoff or drive_gain. Letters, digits, _ and - only."},"refdes":{"type":"string","description":"Reference designator of the component that owns the property."},"property":{"type":"string","description":"Property key returned by schematic_get_parameters, such as value, position, amplitude, frequency, beta."},"label":{"type":"string","description":"User-facing label."},"min":{"type":"string","description":"Optional minimum value with units/prefixes."},"max":{"type":"string","description":"Optional maximum value with units/prefixes."},"scaling":{"type":"string","description":"linear, log, discrete, or toggle."},"control":{"type":"string","description":"Preferred control such as knob, slider, switch, dropdown, or text."}},"required":["id","refdes","property"],"additionalProperties":false})"
+    },
+    {
+        "simulation_parameter_list",
+        "List canonical simulation parameters for the open schematic and their backend capability in a context: live_audio, spice, vst, or all.",
+        R"({"type":"object","properties":{"context":{"type":"string","description":"live_audio, spice, vst, or all. Defaults to all."}},"additionalProperties":false})"
+    },
+    {
+        "simulation_parameter_set",
+        "Set a canonical simulation parameter by id. This changes the owning schematic property; backends consume the changed value according to their capability, e.g. live coefficient publication or SPICE rerun.",
+        R"({"type":"object","properties":{"id":{"type":"string"},"value":{"type":"string"}},"required":["id","value"],"additionalProperties":false})"
+    },
+    {
         "schematic_rename_component",
         "Change a part's reference designator (letters, digits, underscore; must be unique).",
         R"({"type":"object","properties":{"refdes":{"type":"string"},"newRefdes":{"type":"string"}},"required":["refdes","newRefdes"],"additionalProperties":false})"
@@ -534,6 +550,115 @@ juce::String htmlEscape(const juce::String& text)
                .replace(">", "&gt;")
                .replace("\"", "&quot;");
 }
+
+struct LiveCoeffs
+{
+    std::vector<double> buffers[3];
+    std::atomic<int> published{0};
+    std::atomic<int> reading{0};
+    
+    LiveCoeffs(size_t size) {
+        for (int i = 0; i < 3; ++i)
+            buffers[i].resize(std::max<size_t>(1, size), 0.0);
+    }
+    
+    const double* acquireRead() {
+        int fresh = published.load(std::memory_order_acquire);
+        reading.store(fresh, std::memory_order_relaxed);
+        return buffers[fresh].data();
+    }
+    
+    void publish(const std::vector<double>& newCoeffs) {
+        int r = reading.load(std::memory_order_acquire);
+        int p = published.load(std::memory_order_relaxed);
+        int next = 0;
+        while (next == r || next == p) next++;
+        buffers[next] = newCoeffs;
+        published.store(next, std::memory_order_release);
+    }
+};
+
+class LiveParameterThread : public juce::Thread
+{
+public:
+    LiveParameterThread(std::shared_ptr<audio_dsp::Model> model, std::shared_ptr<LiveCoeffs> coeffs)
+        : juce::Thread("LiveParameterThread"), dspModel(std::move(model)), liveCoeffs(std::move(coeffs))
+    {
+        startThread();
+    }
+
+    ~LiveParameterThread() override
+    {
+        signalThreadShouldExit();
+        notify();
+        stopThread(2000);
+    }
+
+    void update(const std::unordered_map<std::string, double>& newParams)
+    {
+        const juce::ScopedLock lock(mutex);
+        params = newParams;
+        dirty = true;
+        notify();
+    }
+
+    void run() override
+    {
+        while (!threadShouldExit())
+        {
+            std::unordered_map<std::string, double> currentParams;
+            {
+                const juce::ScopedLock lock(mutex);
+                if (!dirty) {
+                    wait(500);
+                    continue;
+                }
+                currentParams = params;
+                dirty = false;
+            }
+
+            auto newCoeffs = dspModel->computeLiveCoefficients(currentParams);
+            if (!newCoeffs.empty()) {
+                liveCoeffs->publish(newCoeffs);
+            }
+        }
+    }
+
+private:
+    std::shared_ptr<audio_dsp::Model> dspModel;
+    std::shared_ptr<LiveCoeffs> liveCoeffs;
+    juce::CriticalSection mutex;
+    std::unordered_map<std::string, double> params;
+    bool dirty = false;
+};
+
+class LiveParameterPoller : public juce::Timer
+{
+public:
+    LiveParameterPoller(std::shared_ptr<audio_dsp::Model> m, std::shared_ptr<LiveCoeffs> c, std::function<std::unordered_map<std::string, double>()> g)
+        : dspModel(std::move(m)), liveCoeffs(std::move(c)), getLiveParams(std::move(g))
+    {
+        startTimer(50);
+        thread = std::make_unique<LiveParameterThread>(dspModel, liveCoeffs);
+    }
+    
+    void timerCallback() override
+    {
+        if (!getLiveParams) return;
+        auto newParams = getLiveParams();
+        if (newParams != lastParams) {
+            lastParams = newParams;
+            thread->update(newParams);
+        }
+    }
+    
+private:
+    std::shared_ptr<audio_dsp::Model> dspModel;
+    std::shared_ptr<LiveCoeffs> liveCoeffs;
+    std::unique_ptr<LiveParameterThread> thread;
+    std::function<std::unordered_map<std::string, double>()> getLiveParams;
+    std::unordered_map<std::string, double> lastParams;
+};
 
 juce::String htmlDecode(juce::String text)
 {
@@ -1432,8 +1557,8 @@ public:
     static schematic::routing::Style routingStyle()
     {
         schematic::routing::Style style;
-        style.segmentPenalty = prefs::get("layout.wire_style") == "Shortest wires" ? 5.0 : 50.0;
-        style.wireGapGrids = prefs::get("layout.wire_gap") == "2 grid steps" ? 2.0f : 1.0f;
+        style.segmentPenalty = prefs::get("layout.wire_style") == "Shortest wires" ? 12.0 : 85.0;
+        style.wireGapGrids = prefs::get("layout.wire_gap") == "2 grid steps" ? 2.25f : 1.25f;
         return style;
     }
 
@@ -1444,7 +1569,7 @@ public:
         options.supplyBlock = prefs::isOn("layout.supply_block");
         options.instrumentLabels = prefs::isOn("layout.instrument_labels");
         const auto spacing = prefs::get("layout.spacing");
-        options.spacing = spacing == "Compact" ? 0.7f : spacing == "Roomy" ? 1.5f : 1.0f;
+        options.spacing = spacing == "Compact" ? 0.85f : spacing == "Roomy" ? 1.75f : 1.2f;
         return options;
     }
 
@@ -1529,6 +1654,7 @@ public:
         std::vector<Wire> loadedWires;
         std::vector<Probe> loadedProbes;
         std::vector<Group> loadedGroups;
+        std::vector<SimulationParameter> loadedSimulationParameters;
 
         for (const auto& entry : *componentArray)
         {
@@ -1696,6 +1822,30 @@ public:
             }
         }
 
+        if (const auto* parameterArray = root->getProperty("simulationParameters").getArray())
+        {
+            for (const auto& entry : *parameterArray)
+            {
+                const auto* object = entry.getDynamicObject();
+                if (object == nullptr)
+                    continue;
+
+                SimulationParameter p;
+                p.id = stringProperty(*object, "id", {});
+                p.refdes = stringProperty(*object, "refdes", {});
+                p.property = stringProperty(*object, "property", {});
+                p.label = stringProperty(*object, "label", p.id);
+                p.unit = stringProperty(*object, "unit", {});
+                p.defaultValue = stringProperty(*object, "default", {});
+                p.minValue = stringProperty(*object, "min", {});
+                p.maxValue = stringProperty(*object, "max", {});
+                p.scaling = stringProperty(*object, "scaling", "linear");
+                p.control = stringProperty(*object, "control", "slider");
+                if (p.id.isNotEmpty() && p.refdes.isNotEmpty() && p.property.isNotEmpty())
+                    loadedSimulationParameters.push_back(std::move(p));
+            }
+        }
+
         const auto previousProbes = probes;
         instances = std::move(loadedInstances);
         junctions = std::move(loadedJunctions);
@@ -1704,6 +1854,7 @@ public:
         wires = std::move(loadedWires);
         probes = std::move(loadedProbes);
         groups = std::move(loadedGroups);
+        simulationParameters = std::move(loadedSimulationParameters);
         selectedInstance = instances.empty() ? -1 : 0;
         selectedInstances.clear();
         if (selectedInstance >= 0)
@@ -1834,6 +1985,24 @@ public:
             text << "    }";
         }
         text << "\n  ],\n";
+        text << "  \"simulationParameters\": [\n";
+        for (size_t i = 0; i < simulationParameters.size(); ++i)
+        {
+            const auto& p = simulationParameters[i];
+            if (i != 0) text << ",\n";
+            text << "    { \"id\": " << quote(p.id)
+                 << ", \"refdes\": " << quote(p.refdes)
+                 << ", \"property\": " << quote(p.property)
+                 << ", \"label\": " << quote(p.label)
+                 << ", \"unit\": " << quote(p.unit)
+                 << ", \"default\": " << quote(p.defaultValue)
+                 << ", \"min\": " << quote(p.minValue)
+                 << ", \"max\": " << quote(p.maxValue)
+                 << ", \"scaling\": " << quote(p.scaling)
+                 << ", \"control\": " << quote(p.control)
+                 << " }";
+        }
+        text << "\n  ],\n";
         text << "  \"probes\": [\n";
         for (size_t i = 0; i < probes.size(); ++i)
         {
@@ -1851,6 +2020,50 @@ public:
         return text;
     }
 
+    void runHierarchicalTest()
+    {
+        instances.clear();
+        wires.clear();
+        groups.clear();
+        junctions.clear();
+        currentSheet = "Main";
+
+        Instance v1; v1.symbolId = "voltage_source"; v1.refdes = "V1"; v1.sheet = "Main"; instances.push_back(v1);
+
+        Instance b1; b1.symbolId = "sub_block"; b1.refdes = "A1"; b1.sheet = "Main"; b1.childSheet = "S1"; 
+        b1.ports.push_back({"IN", false}); b1.ports.push_back({"OUT", true}); instances.push_back(b1);
+
+        Instance b2; b2.symbolId = "sub_block"; b2.refdes = "A2"; b2.sheet = "Main"; b2.childSheet = "S2"; 
+        b2.ports.push_back({"IN", false}); b2.ports.push_back({"OUT", true}); instances.push_back(b2);
+
+        Instance p1_in; p1_in.symbolId = "block_port"; p1_in.sheet = "S1"; p1_in.busName = "IN"; instances.push_back(p1_in);
+        Instance p1_out; p1_out.symbolId = "block_port"; p1_out.sheet = "S1"; p1_out.busName = "OUT"; instances.push_back(p1_out);
+        Instance r1; r1.symbolId = "resistor"; r1.refdes = "R1"; r1.sheet = "S1"; instances.push_back(r1);
+
+        Instance p2_in; p2_in.symbolId = "block_port"; p2_in.sheet = "S2"; p2_in.busName = "IN"; instances.push_back(p2_in);
+        Instance p2_out; p2_out.symbolId = "block_port"; p2_out.sheet = "S2"; p2_out.busName = "OUT"; instances.push_back(p2_out);
+        Instance r2; r2.symbolId = "resistor"; r2.refdes = "R1"; r2.sheet = "S2"; instances.push_back(r2); 
+
+        wires.push_back({ WireNode::forPin({0, 0}), WireNode::forPin({1, 0}) }); 
+        wires.push_back({ WireNode::forPin({1, 1}), WireNode::forPin({2, 0}) }); 
+        wires.push_back({ WireNode::forPin({2, 1}), WireNode::forPin({0, 1}) }); 
+        
+        wires.push_back({ WireNode::forPin({3, 0}), WireNode::forPin({5, 0}) }); 
+        wires.push_back({ WireNode::forPin({5, 1}), WireNode::forPin({4, 0}) }); 
+
+        wires.push_back({ WireNode::forPin({6, 0}), WireNode::forPin({8, 0}) }); 
+        wires.push_back({ WireNode::forPin({8, 1}), WireNode::forPin({7, 0}) }); 
+
+        auto sim = buildSimNetlist();
+        juce::String xyce = buildXyceNetlist();
+        
+        juce::File logFile("C:/Users/wwestlake/Documents/hierarchy_test_output.txt");
+        logFile.replaceWithText("XYCE NETLIST:\n" + xyce + "\n\nSIM NETLIST PARTS:\n");
+        for (const auto& [refdes, id] : sim.elementOfPart)
+            logFile.appendText(refdes + " -> " + juce::String(id) + "\n");
+        juce::MessageManager::getInstance()->stopDispatchLoop();
+    }
+
     juce::String buildXyceNetlist() const
     {
         const auto netNames = computeNetNames();
@@ -1860,6 +2073,7 @@ public:
 
         bool hasGround = false;
         bool hasProbe = false;
+        std::set<juce::String> modelLines;
 
         for (size_t i = 0; i < instances.size(); ++i)
         {
@@ -1885,6 +2099,11 @@ public:
             if (instance.symbolId == "power_port" || instance.symbolId == "net_label"
                 || instance.symbolId == "sub_block" || instance.symbolId == "block_port")
                 continue;
+
+            const auto* def = spice_library::findModel(partValue(instance, "value"));
+            if (def != nullptr)
+                modelLines.insert(def->rawText);
+
             if (instance.symbolId == "resistor")
             {
                 netlist << instance.refdes << " " << pinNet("1") << " " << pinNet("2") << " " << instance.value << "\n";
@@ -1898,11 +2117,35 @@ public:
             {
                 netlist << instance.refdes << " " << pinNet("1") << " " << pinNet("2") << " " << instance.value << "\n";
             }
-            else if (instance.symbolId == "diode")
+            else if (instance.symbolId == "diode" || instance.symbolId == "schottky_diode" || instance.symbolId == "zener_diode" || instance.symbolId == "led")
             {
-                netlist << instance.refdes << " " << pinNet("A") << " " << pinNet("K") << " " << instance.value << "\n";
-                netlist << ".MODEL " << instance.value << " D\n";
+                juce::String name = def ? def->name : instance.value;
+                netlist << "D" << instance.refdes << " " << pinNet("A") << " " << pinNet("K") << " " << name << "\n";
+                if (!def) modelLines.insert(".MODEL " + name + " D");
                 hasProbe = true;
+            }
+            else if (instance.symbolId == "npn" || instance.symbolId == "pnp")
+            {
+                juce::String name = def ? def->name : instance.value;
+                netlist << "Q" << instance.refdes << " " << pinNet("C") << " " << pinNet("B") << " " << pinNet("E") << " " << name << "\n";
+                if (!def) modelLines.insert(".MODEL " + name + " " + (instance.symbolId == "npn" ? "NPN" : "PNP"));
+            }
+            else if (instance.symbolId == "njfet" || instance.symbolId == "pjfet")
+            {
+                juce::String name = def ? def->name : instance.value;
+                netlist << "J" << instance.refdes << " " << pinNet("D") << " " << pinNet("G") << " " << pinNet("S") << " " << name << "\n";
+                if (!def) modelLines.insert(".MODEL " + name + " " + (instance.symbolId == "njfet" ? "NJF" : "PJF"));
+            }
+            else if (instance.symbolId == "nmos" || instance.symbolId == "pmos")
+            {
+                juce::String name = def ? def->name : instance.value;
+                netlist << "M" << instance.refdes << " " << pinNet("D") << " " << pinNet("G") << " " << pinNet("S") << " " << pinNet("S") << " " << name << "\n";
+                if (!def) modelLines.insert(".MODEL " + name + " " + (instance.symbolId == "nmos" ? "NMOS" : "PMOS"));
+            }
+            else if (instance.symbolId == "opamp_741")
+            {
+                juce::String name = def ? def->name : instance.value;
+                netlist << "X" << instance.refdes << " " << pinNet("IN+") << " " << pinNet("IN-") << " " << pinNet("V+") << " " << pinNet("V-") << " " << pinNet("OUT") << " " << name << "\n";
             }
             else if (instance.symbolId == "voltage_source")
             {
@@ -1930,6 +2173,13 @@ public:
             {
                 netlist << "* " << instance.refdes << " (" << instance.symbolId << ") not lowered to Xyce yet\n";
             }
+        }
+
+        if (!modelLines.empty())
+        {
+            netlist << "\n* SPICE Models\n";
+            for (const auto& line : modelLines)
+                netlist << line << "\n";
         }
 
         netlist << "\n.OP\n";
@@ -1991,7 +2241,7 @@ public:
         };
 
         auto unsupportedForXyce = [](const juce::String& symbolId) {
-            return symbolId == "opamp_741" || symbolId == "npn" || symbolId == "pnp" || symbolId == "logic_not";
+            return symbolId.startsWith("logic_");
         };
 
         if (instances.empty())
@@ -2130,6 +2380,7 @@ public:
         drawInstances(g);
         drawPendingWire(g);
         drawSelectionBox(g);
+        drawErcAnnotations(g);
         g.restoreState();
         drawBreadcrumb(g);
 
@@ -2147,6 +2398,43 @@ public:
 
         if (dragHover)
             g.drawText(dragMessage, getLocalBounds().reduced(12).removeFromBottom(24), juce::Justification::centredRight);
+    }
+
+    void drawErcAnnotations(juce::Graphics& g)
+    {
+        const auto totalPins = pinCount();
+        const auto totalNodes = totalPins + (int)junctions.size();
+        std::vector<int> nodeDegree((size_t)std::max(0, totalNodes), 0);
+        for (const auto& wire : wires)
+        {
+            const auto a = nodeOrdinal(wire.a);
+            const auto b = nodeOrdinal(wire.b);
+            if (a >= 0 && a < totalNodes) ++nodeDegree[(size_t)a];
+            if (b >= 0 && b < totalNodes) ++nodeDegree[(size_t)b];
+        }
+
+        g.setColour(juce::Colour(0xffff4040).withAlpha(0.8f));
+        g.setFont(juce::Font(20.0f, juce::Font::bold));
+
+        for (int i = 0; i < (int)instances.size(); ++i)
+        {
+            if (!nodeOnSheet(WireNode::forPin({ i, 0 }))) continue;
+            const auto& instance = instances[(size_t)i];
+            const auto symbol = symbolForInstance(instance);
+            if (symbol.id == "sub_block" || symbol.id == "block_port" || symbol.id == "annotation_text")
+                continue;
+            
+            for (int p = 0; p < (int)symbol.pins.size(); ++p)
+            {
+                const auto ord = nodeOrdinal(WireNode::forPin({ i, p }));
+                if (ord >= 0 && ord < totalNodes && nodeDegree[(size_t)ord] == 0)
+                {
+                    const auto pt = instance.position + schematic::rotateOffset(symbol.pins[(size_t)p].offset, instance.rotation);
+                    g.drawEllipse(pt.x - 6.0f, pt.y - 6.0f, 12.0f, 12.0f, 2.0f);
+                    g.drawText("!", pt.x - 10.0f, pt.y - 28.0f, 20.0f, 20.0f, juce::Justification::centred);
+                }
+            }
+        }
     }
 
     void mouseDown(const juce::MouseEvent& event) override
@@ -2279,6 +2567,18 @@ public:
     }
 
     void resized() override {}
+
+    void mouseMove(const juce::MouseEvent& event) override
+    {
+        const auto modelPosition = viewToCanvas(event.position);
+
+        if (hitTestPin(modelPosition).instanceIndex >= 0 || hitTestRailBus(modelPosition) >= 0 || hitTestJunction(modelPosition) >= 0 || hitTestWire(modelPosition) >= 0)
+            setMouseCursor(juce::MouseCursor::CrosshairCursor);
+        else if (hitTestInstance(modelPosition) >= 0 || hitTestGroup(modelPosition) >= 0)
+            setMouseCursor(juce::MouseCursor::PointingHandCursor);
+        else
+            setMouseCursor(juce::MouseCursor::NormalCursor);
+    }
 
     void mouseDrag(const juce::MouseEvent& event) override
     {
@@ -2944,6 +3244,14 @@ public:
                 part.pinnedColumn = output ? 1 : -1;
                 part.fixedRotation = output ? 180 : 0;
             }
+            else if (instance.symbolId == "audio_in")
+            {
+                part.pinnedColumn = -1;
+            }
+            else if (instance.symbolId == "audio_out")
+            {
+                part.pinnedColumn = 1;
+            }
             for (int p = 0; p < (int)part.symbol.pins.size(); ++p)
             {
                 const auto found = layoutNets.indexOf.find(netFor({ i, p }, netNames));
@@ -3247,7 +3555,8 @@ public:
             const auto symbol = symbolForInstance(instance);
             schematic::routing::Obstacle obstacle;
             obstacle.bounds = schematic::rotateBounds(schematic::extentBounds(symbol), instance.rotation)
-                                  .translated(instance.position.x, instance.position.y);
+                                  .translated(instance.position.x, instance.position.y)
+                                  .expanded(schematic::gridSize * 0.60f);
             for (int p = 0; p < (int)symbol.pins.size(); ++p)
                 obstacle.pins.push_back({ pinPosition({ i, p }),
                                           rotateOffset(schematic::pinLeadDirection(symbol, p), instance.rotation) });
@@ -3335,6 +3644,27 @@ public:
         return result;
     }
 
+    std::unordered_map<std::string, double> getLiveParams() const
+    {
+        std::unordered_map<std::string, double> params;
+        for (const auto& inst : instances)
+        {
+            if (inst.symbolId == "potentiometer")
+            {
+                params[inst.refdes.toStdString() + "_position"] = juce::jlimit(0.0, 1.0, partValue(inst, "position").getDoubleValue());
+            }
+            else if (inst.symbolId == "switch_spst" || inst.symbolId == "relay_spst")
+            {
+                params[inst.refdes.toStdString() + "_state"] = (partValue(inst, "state") == "Closed" ? 1.0 : 0.0);
+            }
+            else if (inst.symbolId == "switch_spdt")
+            {
+                params[inst.refdes.toStdString() + "_state"] = (partValue(inst, "state") == "B" ? 1.0 : 0.0);
+            }
+        }
+        return params;
+    }
+
 private:
     using PinDef = schematic::PinDef;
     using SymbolDef = schematic::SymbolDef;
@@ -3412,6 +3742,20 @@ private:
         juce::Colour colour { 0xff78dcca };
     };
 
+    struct SimulationParameter
+    {
+        juce::String id;
+        juce::String refdes;
+        juce::String property;
+        juce::String label;
+        juce::String unit;
+        juce::String defaultValue;
+        juce::String minValue;
+        juce::String maxValue;
+        juce::String scaling { "linear" };
+        juce::String control { "slider" };
+    };
+
     struct DisjointSet
     {
         std::vector<int> parent;
@@ -3446,6 +3790,7 @@ private:
     juce::String currentSheet;                      // sheet shown in the canvas
     std::vector<Probe> probes;
     std::vector<Group> groups;
+    std::vector<SimulationParameter> simulationParameters;
     WireNode wireDragStart;
     int selectedInstance = -1;
     juce::Array<int> selectedInstances;
@@ -3624,6 +3969,7 @@ private:
         currentSheet = {};
         probes.clear();
         groups.clear();
+        simulationParameters.clear();
         selectedInstance = -1;
         selectedInstances.clear();
         selectedGroup = -1;
@@ -5832,10 +6178,24 @@ private:
         };
         auto number = [&](const Instance& inst, const juce::String& key, double fallback) {
             bool ok = true;
-            const auto v = parseQuantity(partValue(inst, key), fallback, &ok);
-            if (!ok)
-                sim.warnings.add(inst.refdes + ": \"" + partValue(inst, key) + "\" is not a valid " + key + "; using " + juce::String(fallback));
-            return v;
+            juce::String val = partValue(inst, key);
+            double v = parseQuantity(val, fallback, &ok);
+            if (ok) return v;
+
+            juce::String modelName = partValue(inst, "value");
+            if (const auto* def = spice_library::findModel(modelName))
+            {
+                auto it = def->parameters.find(key.toUpperCase());
+                if (it != def->parameters.end())
+                {
+                    bool ok2 = true;
+                    double v2 = parseQuantity(it->second, fallback, &ok2);
+                    if (ok2) return v2;
+                }
+            }
+
+            sim.warnings.add(inst.refdes + ": \"" + val + "\" is not a valid " + key + " (and not found in model " + modelName + "); using " + juce::String(fallback));
+            return fallback;
         };
         auto waveform = [&](const Instance& inst) {
             circuit_sim::Waveform w;
@@ -5891,9 +6251,9 @@ private:
             else if (id == "potentiometer")
             {
                 const auto total = number(inst, "value", 10e3);
-                const auto pos = juce::jlimit(0.0, 1.0, partValue(inst, "position").getDoubleValue());
-                c.addResistor(name + "_a", node(i, "1"), node(i, "W"), std::max(1e-3, total * pos));
-                element = c.addResistor(name + "_b", node(i, "W"), node(i, "2"), std::max(1e-3, total * (1.0 - pos)));
+                // The DSP engine parameter is the position. We pass the instance ID + "_position" as param ID
+                c.addVariableResistor(name + "_a", node(i, "1"), node(i, "W"), total, name + "_position", false);
+                element = c.addVariableResistor(name + "_b", node(i, "W"), node(i, "2"), total, name + "_position", true);
             }
             else if (id == "capacitor" || id == "variable_capacitor")
                 element = c.addCapacitor(name, node(i, "1"), node(i, "2"), number(inst, "value", 1e-6));
@@ -5947,7 +6307,8 @@ private:
             }
             else if (id == "battery" || id == "voltage_source" || id == "audio_in")
             {
-                element = c.addVoltageSource(name, node(i, "+"), node(i, "-"), dcWave(measuringOhms ? 0.0 : number(inst, "value", 5.0)));
+                double dcVal = (id == "audio_in") ? 0.0 : number(inst, "value", 5.0);
+                element = c.addVoltageSource(name, node(i, "+"), node(i, "-"), dcWave(measuringOhms ? 0.0 : dcVal));
                 if (id == "audio_in") sim.audioInputBranch = element;
             }
             else if (id == "current_source")
@@ -6030,16 +6391,15 @@ private:
             {
                 const auto idss = number(inst, "idss", 10e-3);
                 const auto vp = std::max(0.05, std::abs(number(inst, "pinchoff", 2.0)));
-                circuit_sim::MosModel m;
-                m.threshold = -vp;
-                m.transconductance = 2.0 * idss / (vp * vp);
+                circuit_sim::JfetModel m;
+                m.pinchoff = vp;
+                m.idss = idss;
                 m.lambda = 0.0;
-                element = c.addMosfet(name, id == "njfet", node(i, "D"), node(i, "G"), node(i, "S"), m);
+                element = c.addJfet(name, id == "njfet", node(i, "D"), node(i, "G"), node(i, "S"), m);
             }
             else if (id == "switch_spst")
             {
-                if (partValue(inst, "state") == "Closed")
-                    element = c.addResistor(name, node(i, "1"), node(i, "2"), 1e-3);
+                element = c.addSwitch(name, node(i, "1"), node(i, "2"), name + "_state");
             }
             else if (id == "switch_spdt")
                 element = c.addResistor(name, node(i, "C"), node(i, partValue(inst, "state") == "B" ? "B" : "A"), 1e-3);
@@ -6653,6 +7013,175 @@ public:
              + ", \"sheet\": " + quote(sheetName(instance.sheet)) + ", \"parameters\": " + list + " }";
     }
 
+    const SimulationParameter* simulationParameterForId(const juce::String& id) const
+    {
+        for (const auto& p : simulationParameters)
+            if (p.id == id)
+                return &p;
+        return nullptr;
+    }
+
+    juce::String backendCapability(const SimulationParameter& p, const juce::String& context) const
+    {
+        const auto index = instanceIndexForRefdesAnySheet(p.refdes);
+        if (index < 0)
+            return "Unsupported";
+        const auto& instance = instances[(size_t)index];
+        const auto id = instance.symbolId;
+        const auto key = p.property;
+        const auto ctx = context.toLowerCase();
+
+        if (ctx == "spice")
+        {
+            if (isNetMarker(id) || id == "annotation_text" || schematic::isInstrumentSymbol(id))
+                return "Unsupported";
+            return "Rerun";
+        }
+
+        if (ctx == "live_audio")
+        {
+            if (id == "potentiometer" && key == "position")
+                return "Prepared";
+            if ((id == "switch_spst" || id == "switch_spdt") && key == "state")
+                return "Prepared";
+            if (id == "audio_in" || id == "audio_out")
+                return "Rebuild";
+            if (isNetMarker(id) || schematic::isInstrumentSymbol(id) || id == "annotation_text")
+                return "Unsupported";
+            return "Rebuild";
+        }
+
+        if (ctx == "vst")
+        {
+            const auto live = backendCapability(p, "live_audio");
+            return live == "Unsupported" ? "Unsupported" : live;
+        }
+
+        return "Unknown";
+    }
+
+    juce::String simulationParameterJson(const SimulationParameter& p, const juce::String& context) const
+    {
+        const auto index = instanceIndexForRefdesAnySheet(p.refdes);
+        const auto current = index >= 0 ? partValue(instances[(size_t)index], p.property) : juce::String();
+        auto text = juce::String("{ \"id\": ") + quote(p.id)
+                  + ", \"refdes\": " + quote(p.refdes)
+                  + ", \"property\": " + quote(p.property)
+                  + ", \"label\": " + quote(p.label)
+                  + ", \"unit\": " + quote(p.unit)
+                  + ", \"value\": " + quote(current)
+                  + ", \"default\": " + quote(p.defaultValue)
+                  + ", \"min\": " + quote(p.minValue)
+                  + ", \"max\": " + quote(p.maxValue)
+                  + ", \"scaling\": " + quote(p.scaling)
+                  + ", \"control\": " + quote(p.control);
+        if (context.isNotEmpty() && context != "all")
+            text << ", \"capability\": " << quote(backendCapability(p, context));
+        else
+        {
+            text << ", \"capabilities\": { \"live_audio\": " << quote(backendCapability(p, "live_audio"))
+                 << ", \"spice\": " << quote(backendCapability(p, "spice"))
+                 << ", \"vst\": " << quote(backendCapability(p, "vst")) << " }";
+        }
+        text << " }";
+        return text;
+    }
+
+    juce::String simulationParametersJson(juce::String context) const
+    {
+        context = context.trim().toLowerCase();
+        if (context.isEmpty()) context = "all";
+        if (context != "all" && context != "live_audio" && context != "spice" && context != "vst")
+            return toolFailure("simulation_parameter_list", "context must be live_audio, spice, vst, or all.");
+
+        juce::String list = "[";
+        bool first = true;
+        for (const auto& p : simulationParameters)
+        {
+            const auto capability = context == "all" ? juce::String() : backendCapability(p, context);
+            if (context != "all" && capability == "Unsupported")
+                continue;
+            list << (first ? "" : ", ") << simulationParameterJson(p, context);
+            first = false;
+        }
+        list << "]";
+        return "{ \"ok\": true, \"tool\": \"simulation_parameter_list\", \"context\": " + quote(context) + ", \"parameters\": " + list + " }";
+    }
+
+    bool exposeSimulationParameter(const juce::String& id,
+                                   const juce::String& refdes,
+                                   const juce::String& property,
+                                   const juce::String& label,
+                                   const juce::String& minValue,
+                                   const juce::String& maxValue,
+                                   const juce::String& scaling,
+                                   const juce::String& control,
+                                   juce::String& error)
+    {
+        const auto cleanId = id.trim();
+        if (cleanId.isEmpty() || !cleanId.containsOnly("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_-"))
+        {
+            error = "Simulation parameter ids use letters, digits, _ and - only.";
+            return false;
+        }
+        const auto index = instanceIndexForRefdesAnySheet(refdes.trim());
+        if (index < 0)
+        {
+            error = "No part " + refdes + ".";
+            return false;
+        }
+        const auto& instance = instances[(size_t)index];
+        const auto key = property.trim();
+        const auto* spec = parts::findParam(instance.symbolId, key);
+        if (spec == nullptr && instance.params.count(key) == 0)
+        {
+            juce::StringArray keys;
+            for (const auto& s : parts::paramsFor(instance.symbolId)) keys.add(s.key);
+            error = instance.refdes + " has no property " + key
+                  + (keys.isEmpty() ? juce::String(".") : ". Available: " + keys.joinIntoString(", ") + ".");
+            return false;
+        }
+
+        SimulationParameter p;
+        p.id = cleanId;
+        p.refdes = instance.refdes;
+        p.property = key;
+        p.label = label.trim().isNotEmpty() ? label.trim() : instance.refdes + " " + (spec != nullptr ? spec->label : key);
+        p.unit = spec != nullptr ? spec->unit : juce::String();
+        p.defaultValue = partValue(instance, key);
+        p.minValue = minValue.trim();
+        p.maxValue = maxValue.trim();
+        p.scaling = scaling.trim().isNotEmpty() ? scaling.trim().toLowerCase() : juce::String("linear");
+        p.control = control.trim().isNotEmpty() ? control.trim().toLowerCase()
+                  : spec != nullptr && spec->kind == parts::Kind::Choice ? juce::String("dropdown")
+                  : spec != nullptr && spec->kind == parts::Kind::Toggle ? juce::String("switch")
+                  : spec != nullptr && spec->kind == parts::Kind::Fraction ? juce::String("knob")
+                  : juce::String("slider");
+
+        pushUndoSnapshot();
+        for (auto& existing : simulationParameters)
+            if (existing.id == cleanId)
+            {
+                existing = p;
+                forceDeferredRepaint();
+                return true;
+            }
+        simulationParameters.push_back(std::move(p));
+        forceDeferredRepaint();
+        return true;
+    }
+
+    bool setSimulationParameter(const juce::String& id, const juce::String& value, juce::String& error)
+    {
+        const auto* p = simulationParameterForId(id.trim());
+        if (p == nullptr)
+        {
+            error = "No simulation parameter " + id + ".";
+            return false;
+        }
+        return setPartParameter(p->refdes, p->property, value, error);
+    }
+
     juce::String blockName(const juce::String& refdes) const
     {
         const auto block = blockIndexFor(refdes);
@@ -7131,6 +7660,25 @@ public:
                     return toolFailure(name, error);
             }
             return parametersJson(refdes).replace("\"schematic_get_parameters\"", "\"schematic_set_parameters\"");
+        }
+        if (name == "simulation_parameter_expose")
+        {
+            juce::String error;
+            if (!exposeSimulationParameter(arg("id"), arg("refdes"), arg("property"), arg("label"),
+                                           arg("min"), arg("max"), arg("scaling"), arg("control"), error))
+                return toolFailure(name, error);
+            return "{ \"ok\": true, \"tool\": " + quote(name) + ", \"parameter\": "
+                 + simulationParameterJson(*simulationParameterForId(arg("id")), "all") + " }";
+        }
+        if (name == "simulation_parameter_list")
+            return simulationParametersJson(arg("context"));
+        if (name == "simulation_parameter_set")
+        {
+            juce::String error;
+            if (!setSimulationParameter(arg("id"), arg("value"), error))
+                return toolFailure(name, error);
+            return "{ \"ok\": true, \"tool\": " + quote(name) + ", \"parameter\": "
+                 + simulationParameterJson(*simulationParameterForId(arg("id")), "all") + " }";
         }
         if (name == "schematic_rename_component")
         {
@@ -7896,7 +8444,7 @@ private:
         const auto instanceIndex = (int)(&instance - instances.data());
         if (instanceIndex >= 0 && instanceIndex < (int)instances.size() && isInstanceSelected(instanceIndex))
         {
-            g.setColour(juce::Colour(0xffffc857));
+            g.setColour(juce::Colours::dodgerblue);
             const auto r = selectionBounds;
             const auto s = 8.0f;
             g.drawLine(r.getX(), r.getY(), r.getX() + s, r.getY(), 1.5f);
@@ -7913,7 +8461,7 @@ private:
                 g.setColour(juce::Colour(0xff0e141a));
                 g.fillRoundedRectangle(railHandleBounds(instance, true), 3.0f);
                 g.fillRoundedRectangle(railHandleBounds(instance, false), 3.0f);
-                g.setColour(juce::Colour(0xffffc857));
+                g.setColour(juce::Colours::dodgerblue);
                 g.drawRoundedRectangle(railHandleBounds(instance, true), 3.0f, 1.5f);
                 g.drawRoundedRectangle(railHandleBounds(instance, false), 3.0f, 1.5f);
             }
@@ -9020,22 +9568,153 @@ private:
     juce::TextEditor console;
 };
 
-class LogPanel final : public juce::Component
+struct LogEntry {
+    juce::Time time;
+    juce::String reason;
+    juce::String code;
+    juce::String details;
+};
+
+class LogPanel final : public juce::Component, public juce::TableListBoxModel
 {
 public:
-    LogPanel(juce::TextEditor*& externalLog)
+    LogPanel()
     {
-        styleTextEditor(logText, true);
-        logText.setReadOnly(true);
-        externalLog = &logText;
-        addAndMakeVisible(logText);
+        table.setModel(this);
+        table.getHeader().addColumn("Time", 1, 120);
+        table.getHeader().addColumn("Reason", 2, 120);
+        table.getHeader().addColumn("Code", 3, 100);
+        table.getHeader().addColumn("Details", 4, 400);
+        table.setColour(juce::ListBox::backgroundColourId, juce::Colour(0xff10161d));
+        table.setColour(juce::ListBox::outlineColourId, juce::Colour(0xff33424d));
+        table.setHeaderHeight(24);
+        table.setRowHeight(22);
+        table.setMultipleSelectionEnabled(true);
+        addAndMakeVisible(table);
+    }
+    
+    void addEntry(const juce::String& reason, const juce::String& code, const juce::String& details)
+    {
+        LogEntry e;
+        e.time = juce::Time::getCurrentTime();
+        e.reason = reason;
+        e.code = code;
+        e.details = details;
+        juce::MessageManager::callAsync([this, e]() {
+            entries.push_back(e);
+            table.updateContent();
+            table.scrollToEnsureRowIsOnscreen((int)entries.size() - 1);
+        });
+    }
+    
+    int getNumRows() override { return (int)entries.size(); }
+    void paintRowBackground(juce::Graphics& g, int rowNumber, int width, int height, bool rowIsSelected) override
+    {
+        if (rowIsSelected) g.fillAll(juce::Colour(0xff2a3f54));
+        else if (rowNumber % 2 == 0) g.fillAll(juce::Colour(0xff151a20));
+        else g.fillAll(juce::Colour(0xff10161d));
+    }
+    void paintCell(juce::Graphics& g, int rowNumber, int columnId, int width, int height, bool rowIsSelected) override
+    {
+        if (rowNumber < 0 || rowNumber >= entries.size()) return;
+        auto& e = entries[(size_t)rowNumber];
+        g.setColour(juce::Colour(0xffdce9ee));
+        g.setFont(14.0f);
+        juce::String text;
+        if (columnId == 1) text = e.time.formatted("%H:%M:%S") + juce::String::formatted(".%03d", (int)(e.time.toMilliseconds() % 1000));
+        else if (columnId == 2) text = e.reason;
+        else if (columnId == 3) text = e.code;
+        else if (columnId == 4) text = e.details;
+        
+        g.drawText(text, 6, 0, width - 12, height, juce::Justification::centredLeft, true);
     }
 
+    void cellClicked(int rowNumber, int, const juce::MouseEvent& event) override
+    {
+        if (event.mods.isPopupMenu())
+            showPopup(rowNumber);
+    }
+
+    void cellDoubleClicked(int rowNumber, int, const juce::MouseEvent&) override
+    {
+        showDetails(rowNumber);
+    }
+    
     void paint(juce::Graphics& g) override { g.fillAll(juce::Colour(0xff10161d)); }
-    void resized() override { logText.setBounds(getLocalBounds().reduced(6)); }
+    void resized() override { table.setBounds(getLocalBounds().reduced(2)); }
 
 private:
-    juce::TextEditor logText;
+    static juce::String entryTime(const LogEntry& e)
+    {
+        return e.time.formatted("%Y-%m-%d %H:%M:%S") + juce::String::formatted(".%03d", (int)(e.time.toMilliseconds() % 1000));
+    }
+
+    static juce::var entryVar(const LogEntry& e)
+    {
+        auto* object = new juce::DynamicObject();
+        object->setProperty("time", entryTime(e));
+        object->setProperty("reason", e.reason);
+        object->setProperty("code", e.code);
+        object->setProperty("details", e.details);
+        return object;
+    }
+
+    juce::Array<juce::var> selectedEntryVars() const
+    {
+        juce::Array<juce::var> rows;
+        for (int i = 0; i < (int)entries.size(); ++i)
+            if (table.isRowSelected(i))
+                rows.add(entryVar(entries[(size_t)i]));
+        return rows;
+    }
+
+    juce::String entriesJson(bool selectedOnly) const
+    {
+        juce::Array<juce::var> rows;
+        if (selectedOnly)
+            rows = selectedEntryVars();
+        else
+            for (const auto& e : entries)
+                rows.add(entryVar(e));
+        return juce::JSON::toString(juce::var(rows), true);
+    }
+
+    void copyJson(bool selectedOnly)
+    {
+        juce::SystemClipboard::copyTextToClipboard(entriesJson(selectedOnly));
+    }
+
+    void showDetails(int rowNumber)
+    {
+        if (rowNumber < 0 || rowNumber >= (int)entries.size())
+            return;
+
+        const auto json = juce::JSON::toString(entryVar(entries[(size_t)rowNumber]), true);
+        auto* dialog = new juce::AlertWindow("Log Entry Details", json, juce::AlertWindow::NoIcon);
+        dialog->addButton("Copy JSON", 1);
+        dialog->addButton("Close", 0);
+        dialog->enterModalState(true, juce::ModalCallbackFunction::create([json](int result) {
+            if (result == 1)
+                juce::SystemClipboard::copyTextToClipboard(json);
+        }), true);
+    }
+
+    void showPopup(int rowNumber)
+    {
+        juce::PopupMenu menu;
+        if (rowNumber >= 0 && rowNumber < (int)entries.size())
+            menu.addItem(1, "Open entry details");
+        menu.addItem(2, "Copy selected as JSON", table.getNumSelectedRows() > 0);
+        menu.addItem(3, "Copy whole log as JSON", !entries.empty());
+        menu.showMenuAsync(juce::PopupMenu::Options(), [this, rowNumber](int result) {
+            if (result == 1) showDetails(rowNumber);
+            else if (result == 2) copyJson(true);
+            else if (result == 3) copyJson(false);
+        });
+    }
+
+    juce::TableListBox table;
+    std::vector<LogEntry> entries;
 };
 
 // Properties for the selected part, with controls chosen from the part
@@ -9065,7 +9744,6 @@ public:
             refreshValues();
             return;
         }
-        commitPending();
         current = refdes;
         rebuild();
     }
@@ -9139,7 +9817,15 @@ private:
     // Wires a text row: Enter applies it, edits light up Save.
     void wireTextRow(juce::TextEditor* editor, size_t rowIndex, bool validate)
     {
-        editor->onReturnKey = [this, rowIndex] { commitField(rowIndex); updateSaveButton(); };
+        editor->onReturnKey = [this, rowIndex] { 
+            for (size_t i = rowIndex + 1; i < rows.size(); ++i) {
+                if (auto* nextEditor = dynamic_cast<juce::TextEditor*>(rows[i].control.get())) {
+                    nextEditor->grabKeyboardFocus();
+                    return;
+                }
+            }
+            saveButton.grabKeyboardFocus();
+        };
         editor->onTextChange = [this, rowIndex, validate] {
             auto& r = rows[rowIndex];
             const auto text = dynamic_cast<juce::TextEditor*>(r.control.get())->getText();
@@ -9191,7 +9877,7 @@ private:
         row.hint->setText(text, juce::dontSendNotification);
         row.hint->setColour(juce::Label::textColourId, error ? juce::Colour(0xffff8a65) : juce::Colour(0xff71808c));
         if (auto* editor = dynamic_cast<juce::TextEditor*>(row.control.get()))
-            editor->setColour(juce::TextEditor::outlineColourId, error ? juce::Colour(0xffff8a65) : juce::Colour(0xff33424d));
+            editor->setColour(juce::TextEditor::outlineColourId, error ? juce::Colour(0xffff8a65) : (row.dirty ? juce::Colour(0xffe74c3c) : juce::Colour(0xff33424d)));
     }
 
     juce::String describe(const parts::ParamSpec& spec, const juce::String& value) const
@@ -9212,8 +9898,36 @@ private:
         return "= " + shown + (spec.help.isNotEmpty() ? "   " + spec.help : juce::String());
     }
 
-    void addParamRow(const parts::ParamSpec& spec)
+    void addParamRow(const parts::ParamSpec& originalSpec)
     {
+        parts::ParamSpec spec = originalSpec;
+        if (spec.key == "value" && spec.label == "Model")
+        {
+            juce::String kind;
+            if (view.symbolId == "njfet") kind = "NJF";
+            else if (view.symbolId == "pjfet") kind = "PJF";
+            else if (view.symbolId == "npn") kind = "NPN";
+            else if (view.symbolId == "pnp") kind = "PNP";
+            else if (view.symbolId == "nmos") kind = "NMOS";
+            else if (view.symbolId == "pmos") kind = "PMOS";
+            else if (view.symbolId == "diode") kind = "D";
+            else if (view.symbolId == "opamp_741") kind = "SUBCKT";
+
+            if (kind.isNotEmpty())
+            {
+                auto models = spice_library::availableModelsFor(kind);
+                if (!models.empty())
+                {
+                    spec.kind = parts::Kind::Choice;
+                    spec.options.clear();
+                    spec.options.add(originalSpec.defaultValue);
+                    for (const auto& m : models)
+                        if (m != originalSpec.defaultValue)
+                            spec.options.add(m);
+                }
+            }
+        }
+
         Row row;
         row.key = spec.key;
         row.spec = spec;
@@ -9528,7 +10242,6 @@ private:
         const auto selected = canvas->selectedRefdes();
         if (selected != current)
         {
-            commitPending();
             current = selected;
             rebuild();
             return;
@@ -10735,6 +11448,7 @@ public:
 
 ElectronicsWorkbench::ElectronicsWorkbench()
 {
+    spice_library::initialize();
     audioPipeline = std::make_unique<AudioPipeline>();
 
     menuBar = std::make_unique<juce::MenuBarComponent>(this);
@@ -10847,11 +11561,17 @@ ElectronicsWorkbench::ElectronicsWorkbench()
         auto sim = panel->buildSimNetlist();
         return std::make_tuple(sim.circuit, sim.audioInputBranch, sim.audioOutputNode);
     };
+    getLiveParams = [panel = schematic.get()] {
+        return panel->getLiveParams();
+    };
     getCircuitJson = [this, panel = schematic.get()] {
         auto json = panel->buildCircuitJson().trimEnd();
         if (pcbPanel != nullptr && json.endsWithChar('}'))
             json = json.dropLastCharacters(1).trimEnd() + ",\n  \"pcb\": " + juce::JSON::toString(pcbPanel->design().toVar(), true)
                  + ",\n  \"pcb_layout\": " + juce::JSON::toString(pcbPanel->layoutState().toVar(), true) + "\n}";
+        if (analyticsPanel != nullptr && json.endsWithChar('}'))
+            json = json.dropLastCharacters(1).trimEnd() + ",\n  \"analyticsSetup\": "
+                 + juce::JSON::toString(analyticsPanel->settingsState(), true) + "\n}";
         return json;
     };
     getXyceNetlist = [panel = schematic.get()] { return panel->buildXyceNetlist(); };
@@ -10864,6 +11584,11 @@ ElectronicsWorkbench::ElectronicsWorkbench()
             const auto parsed = juce::JSON::parse(json);
             pcbPanel->setDesign(pcb::BoardDesign::fromVar(parsed.getProperty("pcb", {})), true);
             pcbPanel->setLayout(pcb::Layout::fromVar(parsed.getProperty("pcb_layout", {})), true);
+        }
+        if (analyticsPanel != nullptr)
+        {
+            const auto parsed = juce::JSON::parse(json);
+            analyticsPanel->restoreSettingsState(parsed.getProperty("analyticsSetup", {}));
         }
         return true;
     };
@@ -11040,7 +11765,7 @@ ElectronicsWorkbench::ElectronicsWorkbench()
     frustPanel = frustOwner.get();
     dockManager->registerPanel("frust", "Frust", std::move(frustOwner), CreationDock::DockTargetZone::Bottom);
     dockManager->registerPanel("console", "Console", std::make_unique<ConsolePanel>(logConsole), CreationDock::DockTargetZone::Bottom);
-    dockManager->registerPanel("log", "Log", std::make_unique<LogPanel>(logWindow), CreationDock::DockTargetZone::Bottom);
+    auto lp = std::make_unique<LogPanel>(); logPanel = lp.get(); dockManager->registerPanel("log", "Log", std::move(lp), CreationDock::DockTargetZone::Bottom);
     dockManager->registerPanel("agent", "BYOK Agent", std::move(agent), CreationDock::DockTargetZone::Right);
     dockManager->registerPanel("properties", "Properties", std::move(properties), CreationDock::DockTargetZone::Right);
     dockManager->registerPanel("ingestion", "Spec Ingestion", std::make_unique<SpecIngestionPanel>(), CreationDock::DockTargetZone::Right);
@@ -11169,6 +11894,7 @@ juce::PopupMenu ElectronicsWorkbench::getMenuForIndex(int, const juce::String& m
         menu.addItem(runErc, "Run ERC");
         menu.addSeparator();
         menu.addItem(startAudioSimItem, isAudioSimRunning ? "Stop Audio Pipeline Test" : "Start Audio Pipeline Test");
+        menu.addItem(loadAudioSourceItem, "Load Audio File Source...");
     }
     else if (menuName == "Analytics")
     {
@@ -11220,6 +11946,7 @@ void ElectronicsWorkbench::menuItemSelected(int menuItemID, int)
         case saveDiagramAsItem:
         case renameProjectItem:
         case newDiagramItem:
+        case openDiagramFileItem:
         case renameDiagramItem:
         case duplicateDiagramItem:
         case deleteDiagramItem:
@@ -11242,6 +11969,7 @@ void ElectronicsWorkbench::menuItemSelected(int menuItemID, int)
         case runErc: runElectricalRuleCheck(); break;
         case openAnalyticsItem: showAnalytics(); break;
         case runCompiledPreview: exportFrustRealtimePreview(); break;
+        case loadAudioSourceItem: chooseAudioSourceFile(); break;
         case startAudioSimItem:
         {
             if (isAudioSimRunning)
@@ -11283,6 +12011,9 @@ void ElectronicsWorkbench::menuItemSelected(int menuItemID, int)
             auto manifest = frust_engine::manifestLine("audio_dsp", "Generated DSP processing function.", audio_dsp::Model::requiredHostFunctions());
             source = juce::String(manifest) + "\n" + source;
 
+            // Log the generated source to debug
+            appendLog("Generated DSP:\n" + source);
+
             // Load into our engine
             auto result = audioEngine.load("audio_dsp", source.toStdString());
             if (!result.ok)
@@ -11292,8 +12023,8 @@ void ElectronicsWorkbench::menuItemSelected(int menuItemID, int)
             }
 
             // Get the function pointer.
-            // In Frust, our signature is `pub fn process_sample(audio_in: f64, ws: Array<f64, size>) -> f64`
-            typedef double (*ProcessFn)(double, double*);
+            // In Frust, our signature is `pub fn process_sample(audio_in: f64, ws: Array<f64, size>, coeffs: Array<f64, c_size>) -> f64`
+            typedef double (*ProcessFn)(double, double*, const double*);
             auto* fn = reinterpret_cast<ProcessFn>(audioEngine.function("audio_dsp", "process_sample"));
             
             if (fn != nullptr)
@@ -11303,9 +12034,16 @@ void ElectronicsWorkbench::menuItemSelected(int menuItemID, int)
                 if (workspace->size() < (size_t)model.workspaceSize)
                     workspace->resize(model.workspaceSize, 0.0);
 
-                audioPipeline->setProcessCallback([fn, workspace](const float* in, float* out, int samples) {
+                auto dspModel = std::make_shared<audio_dsp::Model>(model);
+                auto liveCoeffs = std::make_shared<LiveCoeffs>(model.coeffSize());
+                liveCoeffs->publish(dspModel->computeLiveCoefficients({}));
+
+                auto poller = std::make_shared<LiveParameterPoller>(dspModel, liveCoeffs, getLiveParams);
+
+                audioPipeline->setProcessCallback([fn, workspace, liveCoeffs, poller](const float* in, float* out, int samples) {
+                    const double* coeffs = liveCoeffs->acquireRead();
                     for (int i = 0; i < samples; ++i) {
-                        out[i] = static_cast<float>(fn(static_cast<double>(in[i]), workspace->data()));
+                        out[i] = static_cast<float>(fn(static_cast<double>(in[i]), workspace->data(), coeffs));
                     }
                 });
                 isAudioSimRunning = true;
@@ -11343,11 +12081,15 @@ juce::File ElectronicsWorkbench::generatedRunDirectory() const
         .getChildFile("scratch_outputs");
 }
 
+void ElectronicsWorkbench::appendLog(const juce::String& reason, const juce::String& code, const juce::String& details)
+{
+    if (auto* lp = dynamic_cast<LogPanel*>(logPanel))
+        lp->addEntry(reason, code, details);
+}
+
 void ElectronicsWorkbench::appendLog(const juce::String& text)
 {
-    
-    if (logWindow != nullptr)
-        logWindow->insertTextAtCaret("\n// " + text + "\n> ");
+    appendLog("System", "0x00", text);
 }
 
 void ElectronicsWorkbench::closeFloatingInstrumentWindows()
@@ -13203,6 +13945,19 @@ void ElectronicsWorkbench::exportFrustRealtimePreview()
               + " live parameter(s).");
 }
 
+void ElectronicsWorkbench::chooseAudioSourceFile()
+{
+    audioSourceChooser = std::make_unique<juce::FileChooser>("Select Audio File", juce::File(), "*.wav;*.mp3;*.mp4;*.ogg;*.flac");
+    audioSourceChooser->launchAsync(juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectFiles,
+        [this](const juce::FileChooser& chooser) {
+            auto result = chooser.getResult();
+            if (result.existsAsFile()) {
+                audioPipeline->setRouting("File", result.getFullPathName(), "Hardware", "");
+                appendLog("System", "0x00", "Audio input routed to looping file: " + result.getFullPathName());
+            }
+        });
+}
+
 // Analytics is a main window of its own: the dock panel floats out into a large
 // resizable window (it can still be docked back as a tab by dragging).
 void ElectronicsWorkbench::showAnalytics()
@@ -13246,6 +14001,29 @@ juce::String ElectronicsWorkbench::analyticsTool(const juce::String& name, const
                 s[p.name.toString()] = p.value.toString();
         return s;
     };
+    auto translateCanonicalParameters = [&](analytics::Settings s) {
+        std::map<juce::String, juce::String> targets;
+        if (getCircuitJson != nullptr)
+        {
+            const auto parsed = juce::JSON::parse(getCircuitJson());
+            if (const auto* root = parsed.getDynamicObject())
+                if (const auto* params = root->getProperty("simulationParameters").getArray())
+                    for (const auto& item : *params)
+                        if (const auto* p = item.getDynamicObject())
+                        {
+                            const auto id = p->getProperty("id").toString();
+                            const auto refdes = p->getProperty("refdes").toString();
+                            const auto property = p->getProperty("property").toString();
+                            if (id.isNotEmpty() && refdes.isNotEmpty() && property.isNotEmpty())
+                                targets["param:" + id] = refdes + "." + property;
+                        }
+        }
+        for (auto& [key, value] : s)
+            if (value.startsWithIgnoreCase("param:"))
+                if (const auto found = targets.find(value); found != targets.end())
+                    value = found->second;
+        return s;
+    };
 
     if (name == "analytics_list")
     {
@@ -13277,6 +14055,7 @@ juce::String ElectronicsWorkbench::analyticsTool(const juce::String& name, const
             list.add(juce::var(o));
         }
         root->setProperty("analyses", list);
+        root->setProperty("activeSetup", analyticsPanel->settingsState());
         juce::Array<juce::var> nets;
         for (const auto& n : netlist.nets)
         {
@@ -13288,6 +14067,41 @@ juce::String ElectronicsWorkbench::analyticsTool(const juce::String& name, const
         root->setProperty("nets", nets);
         root->setProperty("sources", juce::var(analytics::sourceChoices(netlist)));
         root->setProperty("sweepTargets", juce::var(analytics::targetChoices(netlist, true)));
+        if (getCircuitJson != nullptr)
+        {
+            juce::Array<juce::var> canonical;
+            const auto parsed = juce::JSON::parse(getCircuitJson());
+            if (const auto* circuit = parsed.getDynamicObject())
+            {
+                std::map<juce::String, juce::String> symbols;
+                if (const auto* components = circuit->getProperty("components").getArray())
+                    for (const auto& item : *components)
+                        if (const auto* c = item.getDynamicObject())
+                            symbols[c->getProperty("id").toString()] = c->getProperty("symbol").toString();
+                if (const auto* params = circuit->getProperty("simulationParameters").getArray())
+                    for (const auto& item : *params)
+                    {
+                        const auto* p = item.getDynamicObject();
+                        if (p == nullptr)
+                            continue;
+                        const auto refdes = p->getProperty("refdes").toString();
+                        const auto symbol = symbols[refdes];
+                        if (schematic::isInstrumentSymbol(symbol) || symbol == "annotation_text" || symbol == "ground"
+                            || symbol == "power_port" || symbol == "net_label" || symbol == "power_bus" || symbol == "ground_bus")
+                            continue;
+                        auto* o = new juce::DynamicObject();
+                        o->setProperty("target", "param:" + p->getProperty("id").toString());
+                        o->setProperty("id", p->getProperty("id").toString());
+                        o->setProperty("refdes", refdes);
+                        o->setProperty("property", p->getProperty("property").toString());
+                        o->setProperty("label", p->getProperty("label").toString());
+                        o->setProperty("unit", p->getProperty("unit").toString());
+                        o->setProperty("capability", "Rerun");
+                        canonical.add(juce::var(o));
+                    }
+            }
+            root->setProperty("simulationParameters", canonical);
+        }
         root->setProperty("warnings", juce::var(netlist.warnings));
         return juce::JSON::toString(juce::var(root), true);
     }
@@ -13305,7 +14119,7 @@ juce::String ElectronicsWorkbench::analyticsTool(const juce::String& name, const
         const auto* info = analytics::findAnalysis(args.getProperty("analysis", {}).toString());
         if (info == nullptr) return fail("Unknown analysis. Use one of the keys from analytics_list.");
         analyticsPanel->selectAnalysis(info->id);
-        analyticsPanel->setSettings(info->id, settingsFrom(args.getProperty("settings", {})));
+        analyticsPanel->setSettings(info->id, translateCanonicalParameters(settingsFrom(args.getProperty("settings", {}))));
         showAnalytics();
         return "{ \"ok\": true, \"tool\": " + quoteJson(name) + ", \"analysis\": " + quoteJson(info->key) + " }";
     }
@@ -13349,7 +14163,7 @@ juce::String ElectronicsWorkbench::analyticsTool(const juce::String& name, const
     const auto* info = analytics::findAnalysis(name.fromFirstOccurrenceOf("analytics_", false, false));
     if (info == nullptr)
         return fail("Unknown analytics tool.");
-    const auto& run = analyticsPanel->runNow(info->id, settingsFrom(args));
+    const auto& run = analyticsPanel->runNow(info->id, translateCanonicalParameters(settingsFrom(args)));
     return analytics::toJson(run.result, run.files);
 }
 
@@ -13943,6 +14757,7 @@ juce::String ElectronicsWorkbench::pcbLayoutTool(const juce::String& name, const
     }
     return reply(false, "Unknown PCB tool " + name + ".", false, nullptr);
 }
+
 
 
 

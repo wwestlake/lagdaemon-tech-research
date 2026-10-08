@@ -100,6 +100,35 @@ Model build(const circuit_sim::Circuit& circuit, const Config& config)
     }
     m.inputCount = inputCount;
     
+    int livePortCount = 0;
+    for (size_t i = 0; i < circuit.elements().size(); ++i)
+    {
+        const auto& e = circuit.elements()[i];
+        if (e.type == circuit_sim::Element::Type::VariableResistor)
+        {
+            LivePort p;
+            p.kind = LivePort::Kind::VariableResistor;
+            p.element = (int)i;
+            p.port = livePortCount;
+            p.paramId = e.paramId;
+            p.baseResistance = e.value;
+            p.isWiperToPin2 = e.isWiperToPin2;
+            m.livePorts.push_back(p);
+            livePortCount++;
+        }
+        else if (e.type == circuit_sim::Element::Type::Switch)
+        {
+            LivePort p;
+            p.kind = LivePort::Kind::Switch;
+            p.element = (int)i;
+            p.port = livePortCount;
+            p.paramId = e.paramId;
+            m.livePorts.push_back(p);
+            livePortCount++;
+        }
+    }
+    m.livePortCount = livePortCount;
+
     int portCount = 0;
     for (size_t i = 0; i < circuit.elements().size(); ++i)
     {
@@ -109,7 +138,7 @@ Model build(const circuit_sim::Circuit& circuit, const Config& config)
             Device d;
             d.kind = Device::Kind::Diode;
             d.element = (int)i;
-            d.port = portCount;
+            d.port = portCount; // this is the index WITHIN the nonlinear ports block
             d.ports = 1;
             d.parameters = e;
             m.devices.push_back(d);
@@ -119,6 +148,8 @@ Model build(const circuit_sim::Circuit& circuit, const Config& config)
     }
     m.portCount = portCount;
     
+    int totalPortCount = livePortCount + portCount;
+    
     // Constant RHS vector
     std::vector<double> b_const(size, 0.0);
     auto addB = [&](int r, double v) { if (r >= 0) b_const[r] += v; };
@@ -126,7 +157,7 @@ Model build(const circuit_sim::Circuit& circuit, const Config& config)
     struct RhsDef { int r; double v; };
     std::vector<std::vector<RhsDef>> b_input(inputCount);
     std::vector<std::vector<RhsDef>> b_state;
-    std::vector<std::vector<RhsDef>> b_port(portCount);
+    std::vector<std::vector<RhsDef>> b_port(totalPortCount);
     
     for (size_t i = 0; i < circuit.elements().size(); ++i)
     {
@@ -185,13 +216,21 @@ Model build(const circuit_sim::Circuit& circuit, const Config& config)
     m.stateCount = stateCount;
     
     // Fill b_port
+    for (const auto& lp : m.livePorts)
+    {
+        const auto& e = circuit.elements()[lp.element];
+        int p = idx(e.nodes[0]), n = idx(e.nodes[1]);
+        b_port[lp.port].push_back(RhsDef{p, -1.0});
+        b_port[lp.port].push_back(RhsDef{n, 1.0});
+    }
+    
     for (const auto& d : m.devices)
     {
         if (d.kind == Device::Kind::Diode)
         {
             int p = idx(d.parameters.nodes[0]), n = idx(d.parameters.nodes[1]);
-            b_port[d.port].push_back(RhsDef{p, -1.0});
-            b_port[d.port].push_back(RhsDef{n, 1.0});
+            b_port[livePortCount + d.port].push_back(RhsDef{p, -1.0});
+            b_port[livePortCount + d.port].push_back(RhsDef{n, 1.0});
         }
     }
     
@@ -216,9 +255,14 @@ Model build(const circuit_sim::Circuit& circuit, const Config& config)
     auto X_state = solveCols(b_state);
     if (stateCount > 0 && X_state.empty()) { m.ok = false; m.error = "Singular circuit matrix."; return m; }
     auto Q_port = solveCols(b_port);
-    if (portCount > 0 && Q_port.empty()) { m.ok = false; m.error = "Singular circuit matrix."; return m; }
+    if (totalPortCount > 0 && Q_port.empty()) { m.ok = false; m.error = "Singular circuit matrix."; return m; }
     
     int affineCols = 1 + inputCount + stateCount;
+    m.baseAffine.assign(totalPortCount * affineCols, 0.0);
+    m.baseK.assign(totalPortCount * totalPortCount, 0.0);
+    m.baseStateQ.assign(stateCount * totalPortCount, 0.0);
+    m.baseOutQ.assign(1 * totalPortCount, 0.0);
+    
     m.portAffine.assign(portCount * affineCols, 0.0);
     m.portK.assign(portCount * portCount, 0.0);
     m.stateAffine.assign(stateCount * affineCols, 0.0);
@@ -235,17 +279,25 @@ Model build(const circuit_sim::Circuit& circuit, const Config& config)
         return row;
     };
     
+    auto fillPortRow = [&](int p_idx, int p, int n) {
+        auto rowP = getAffine(p), rowN = getAffine(n);
+        for (int c = 0; c < affineCols; ++c) m.baseAffine[p_idx * affineCols + c] = rowP[c] - rowN[c];
+        for (int j = 0; j < totalPortCount; ++j) {
+            m.baseK[p_idx * totalPortCount + j] = getVal(Q_port[j], p) - getVal(Q_port[j], n);
+        }
+    };
+    
+    for (const auto& lp : m.livePorts)
+    {
+        const auto& e = circuit.elements()[lp.element];
+        fillPortRow(lp.port, idx(e.nodes[0]), idx(e.nodes[1]));
+    }
+
     for (const auto& d : m.devices)
     {
         if (d.kind == Device::Kind::Diode)
         {
-            int p = idx(d.parameters.nodes[0]), n = idx(d.parameters.nodes[1]);
-            auto rowP = getAffine(p), rowN = getAffine(n);
-            for (int c = 0; c < affineCols; ++c) m.portAffine[d.port * affineCols + c] = rowP[c] - rowN[c];
-            
-            for (int j = 0; j < portCount; ++j) {
-                m.portK[d.port * portCount + j] = getVal(Q_port[j], p) - getVal(Q_port[j], n);
-            }
+            fillPortRow(livePortCount + d.port, idx(d.parameters.nodes[0]), idx(d.parameters.nodes[1]));
         }
     }
     
@@ -264,8 +316,8 @@ Model build(const circuit_sim::Circuit& circuit, const Config& config)
                     m.stateAffine[s * affineCols + c] = 2.0 * g * (rowP[c] - rowN[c]);
                 m.stateAffine[s * affineCols + 1 + inputCount + s] -= 1.0;
                 
-                for (int j = 0; j < portCount; ++j)
-                    m.stateQ[s * portCount + j] = 2.0 * g * (getVal(Q_port[j], p) - getVal(Q_port[j], n));
+                for (int j = 0; j < totalPortCount; ++j)
+                    m.baseStateQ[s * totalPortCount + j] = 2.0 * g * (getVal(Q_port[j], p) - getVal(Q_port[j], n));
             }
             else if (e.type == circuit_sim::Element::Type::Inductor)
             {
@@ -276,8 +328,8 @@ Model build(const circuit_sim::Circuit& circuit, const Config& config)
                     m.stateAffine[s * affineCols + c] = -2.0 * req * rowBr[c];
                 m.stateAffine[s * affineCols + 1 + inputCount + s] -= 1.0;
                 
-                for (int j = 0; j < portCount; ++j)
-                    m.stateQ[s * portCount + j] = -2.0 * req * getVal(Q_port[j], br);
+                for (int j = 0; j < totalPortCount; ++j)
+                    m.baseStateQ[s * totalPortCount + j] = -2.0 * req * getVal(Q_port[j], br);
             }
         }
     }
@@ -285,7 +337,20 @@ Model build(const circuit_sim::Circuit& circuit, const Config& config)
     int outN = idx(config.audioOutputNode);
     auto rowOut = getAffine(outN);
     for (int c = 0; c < affineCols; ++c) m.outAffine[c] = rowOut[c];
-    for (int j = 0; j < portCount; ++j) m.outQ[j] = getVal(Q_port[j], outN);
+    for (int j = 0; j < totalPortCount; ++j) m.baseOutQ[j] = getVal(Q_port[j], outN);
+    
+    // Initialize reduced matrices with default params
+    std::unordered_map<std::string, double> defaultParams;
+    std::vector<double> defaultCoeffs = m.computeLiveCoefficients(defaultParams);
+    if (!defaultCoeffs.empty() && m.coeffSize() == defaultCoeffs.size()) {
+        const double* ptr = defaultCoeffs.data();
+        std::copy(ptr, ptr + portCount * affineCols, m.portAffine.begin()); ptr += portCount * affineCols;
+        std::copy(ptr, ptr + portCount * portCount, m.portK.begin()); ptr += portCount * portCount;
+        std::copy(ptr, ptr + stateCount * affineCols, m.stateAffine.begin()); ptr += stateCount * affineCols;
+        std::copy(ptr, ptr + stateCount * portCount, m.stateQ.begin()); ptr += stateCount * portCount;
+        std::copy(ptr, ptr + m.outAffine.size(), m.outAffine.begin()); ptr += m.outAffine.size();
+        std::copy(ptr, ptr + m.outQ.size(), m.outQ.begin());
+    }
     
     m.workspaceSize = stateCount + portCount + 10;
     m.initialWorkspace.assign(m.workspaceSize, 0.0);
@@ -293,10 +358,18 @@ Model build(const circuit_sim::Circuit& circuit, const Config& config)
     return m;
 }
 
-double Model::step(std::vector<double>& ws, double audioInVolts) const 
+double Model::step(std::vector<double>& ws, const double* coeffs, double audioInVolts) const 
 { 
     if (ws.size() < (size_t)workspaceSize) return 0.0;
     int affineCols = 1 + inputCount + stateCount;
+    
+    const double* pAff = coeffs ? coeffs : portAffine.data();
+    const double* pK   = coeffs ? coeffs + portCount * affineCols : portK.data();
+    const double* sAff = coeffs ? coeffs + portCount * affineCols + portCount * portCount : stateAffine.data();
+    const double* sQ   = coeffs ? coeffs + portCount * affineCols + portCount * portCount + stateCount * affineCols : stateQ.data();
+    const double* oAff = coeffs ? coeffs + portCount * affineCols + portCount * portCount + stateCount * affineCols + stateCount * portCount : outAffine.data();
+    const double* oQ   = coeffs ? coeffs + portCount * affineCols + portCount * portCount + stateCount * affineCols + stateCount * portCount + outAffine.size() : outQ.data();
+    
     std::vector<double> u_s(affineCols, 0.0);
     u_s[0] = 1.0;
     u_s[1] = audioInVolts;
@@ -305,7 +378,7 @@ double Model::step(std::vector<double>& ws, double audioInVolts) const
     std::vector<double> p0(portCount, 0.0);
     for (int p = 0; p < portCount; ++p)
         for (int c = 0; c < affineCols; ++c)
-            p0[p] += portAffine[p * affineCols + c] * u_s[c];
+            p0[p] += pAff[p * affineCols + c] * u_s[c];
             
     std::vector<double> p_v = p0;
     std::vector<double> p_i(portCount, 0.0);
@@ -341,7 +414,7 @@ double Model::step(std::vector<double>& ws, double audioInVolts) const
             {
                 double k_i = 0.0;
                 for (int q = 0; q < portCount; ++q)
-                    k_i += portK[p * portCount + q] * current[q];
+                    k_i += pK[p * portCount + q] * current[q];
                 F[p] = p_v[p] - p0[p] - k_i;
                 max_abs_F = std::max(max_abs_F, std::abs(F[p]));
             }
@@ -352,7 +425,7 @@ double Model::step(std::vector<double>& ws, double audioInVolts) const
             {
                 for (int q = 0; q < portCount; ++q)
                 {
-                    J[p * portCount + q] = (p == q ? 1.0 : 0.0) - portK[p * portCount + q] * deriv[q];
+                    J[p * portCount + q] = (p == q ? 1.0 : 0.0) - pK[p * portCount + q] * deriv[q];
                 }
             }
             
@@ -422,15 +495,15 @@ double Model::step(std::vector<double>& ws, double audioInVolts) const
     {
         double s_new = 0.0;
         for (int c = 0; c < affineCols; ++c)
-            s_new += stateAffine[s * affineCols + c] * u_s[c];
+            s_new += sAff[s * affineCols + c] * u_s[c];
         for (int p = 0; p < portCount; ++p)
-            s_new += stateQ[s * portCount + p] * p_i[p];
+            s_new += sQ[s * portCount + p] * p_i[p];
         ws[s] = s_new;
     }
     
     double y = 0.0;
-    for (int c = 0; c < affineCols; ++c) y += outAffine[c] * u_s[c];
-    for (int p = 0; p < portCount; ++p) y += outQ[p] * p_i[p];
+    for (int c = 0; c < affineCols; ++c) y += oAff[c] * u_s[c];
+    for (int p = 0; p < portCount; ++p) y += oQ[p] * p_i[p];
     
     return y;
 }
@@ -439,27 +512,25 @@ std::string Model::frustSource() const
 {
     std::ostringstream ss;
     int ws_size = workspaceSize > 0 ? workspaceSize : 1;
+    int c_size = coeffSize() > 0 ? coeffSize() : 1;
     ss << "extern fn djehuti_dsp_exp(x: f64) -> f64;\n";
     ss << "extern fn djehuti_dsp_log(x: f64) -> f64;\n";
-    ss << "pub fn process_sample(audio_in: f64, ws: Array<f64, " << ws_size << ">) -> f64 = {\n";
+    ss << "pub fn process_sample(audio_in: f64, ws: Array<f64, " << ws_size << ">, coeffs: Array<f64, " << c_size << ">) -> f64 = {\n";
     
     int affineCols = 1 + inputCount + stateCount;
     
     ss << "    // 1. Affine basis\n";
+    int coeff_idx = 0;
     for (int p = 0; p < portCount; ++p)
     {
         ss << "    let mut p0_" << p << " = 0.0;\n";
         for (int c = 0; c < affineCols; ++c)
         {
-            double coeff = portAffine[p * affineCols + c];
-            if (std::abs(coeff) > 1e-12)
-            {
-                std::string term;
-                if (c == 0) term = "1.0";
-                else if (c == 1) term = "audio_in";
-                else term = "ws[" + std::to_string(c - 1 - inputCount) + "]";
-                ss << "    p0_" << p << " = p0_" << p << " + " << std::fixed << std::setprecision(17) << coeff << " * " << term << ";\n";
-            }
+            std::string term;
+            if (c == 0) term = "1.0";
+            else if (c == 1) term = "audio_in";
+            else term = "ws[" + std::to_string(c - 1 - inputCount) + "]";
+            ss << "    p0_" << p << " = p0_" << p << " + coeffs[" << coeff_idx++ << "] * " << term << ";\n";
         }
     }
     
@@ -505,18 +576,18 @@ std::string Model::frustSource() const
         {
             ss << "        F_" << p << " = p_v_" << p << " - p0_" << p << ";\n";
             for (int q = 0; q < portCount; ++q)
-                ss << "        F_" << p << " = F_" << p << " - " << std::fixed << std::setprecision(17) << portK[p * portCount + q] << " * current_" << q << ";\n";
+                ss << "        F_" << p << " = F_" << p << " - coeffs[" << coeff_idx + p * portCount + q << "] * current_" << q << ";\n";
         }
         
         for (int p = 0; p < portCount; ++p)
         {
             for (int q = 0; q < portCount; ++q)
             {
-                double kp = portK[p * portCount + q];
-                if (p == q) ss << "        J_" << p << "_" << q << " = 1.0 - " << std::fixed << std::setprecision(17) << kp << " * deriv_" << q << ";\n";
-                else        ss << "        J_" << p << "_" << q << " = 0.0 - " << std::fixed << std::setprecision(17) << kp << " * deriv_" << q << ";\n";
+                if (p == q) ss << "        J_" << p << "_" << q << " = 1.0 - coeffs[" << coeff_idx + p * portCount + q << "] * deriv_" << q << ";\n";
+                else        ss << "        J_" << p << "_" << q << " = 0.0 - coeffs[" << coeff_idx + p * portCount + q << "] * deriv_" << q << ";\n";
             }
         }
+        coeff_idx += portCount * portCount;
         
         for (int c = 0; c < portCount; ++c)
         {
@@ -593,49 +664,38 @@ std::string Model::frustSource() const
     }
     
     ss << "\n";
-    ss << "    let mut y = 0.0;\n";
-    for (int c = 0; c < affineCols; ++c)
-    {
-        double coeff = outAffine[c];
-        if (std::abs(coeff) > 1e-12)
-        {
-            std::string term;
-            if (c == 0) term = "1.0";
-            else if (c == 1) term = "audio_in";
-            else term = "ws[" + std::to_string(c - 1 - inputCount) + "]";
-            ss << "    y = y + " << std::fixed << std::setprecision(17) << coeff << " * " << term << ";\n";
-        }
-    }
-    for (int p = 0; p < portCount; ++p)
-    {
-        double coeff = outQ[p];
-        if (std::abs(coeff) > 1e-12)
-            ss << "    y = y + " << std::fixed << std::setprecision(17) << coeff << " * p_i_" << p << ";\n";
-    }
-
-    ss << "\n";
     for (int s = 0; s < stateCount; ++s)
     {
         ss << "    let mut s_new_" << s << " = 0.0;\n";
         for (int c = 0; c < affineCols; ++c)
         {
-            double coeff = stateAffine[s * affineCols + c];
-            if (std::abs(coeff) > 1e-12)
-            {
-                std::string term;
-                if (c == 0) term = "1.0";
-                else if (c == 1) term = "audio_in";
-                else term = "ws[" + std::to_string(c - 1 - inputCount) + "]";
-                ss << "    s_new_" << s << " = s_new_" << s << " + " << std::fixed << std::setprecision(17) << coeff << " * " << term << ";\n";
-            }
+            std::string term;
+            if (c == 0) term = "1.0";
+            else if (c == 1) term = "audio_in";
+            else term = "ws[" + std::to_string(c - 1 - inputCount) + "]";
+            ss << "    s_new_" << s << " = s_new_" << s << " + coeffs[" << coeff_idx++ << "] * " << term << ";\n";
         }
         for (int p = 0; p < portCount; ++p)
         {
-            double coeff = stateQ[s * portCount + p];
-            if (std::abs(coeff) > 1e-12)
-                ss << "    s_new_" << s << " = s_new_" << s << " + " << std::fixed << std::setprecision(17) << coeff << " * p_i_" << p << ";\n";
+            ss << "    s_new_" << s << " = s_new_" << s << " + coeffs[" << coeff_idx++ << "] * p_i_" << p << ";\n";
         }
     }
+    
+    ss << "\n";
+    ss << "    let mut y = 0.0;\n";
+    for (int c = 0; c < affineCols; ++c)
+    {
+        std::string term;
+        if (c == 0) term = "1.0";
+        else if (c == 1) term = "audio_in";
+        else term = "ws[" + std::to_string(c - 1 - inputCount) + "]";
+        ss << "    y = y + coeffs[" << coeff_idx++ << "] * " << term << ";\n";
+    }
+    for (int p = 0; p < portCount; ++p)
+    {
+        ss << "    y = y + coeffs[" << coeff_idx++ << "] * p_i_" << p << ";\n";
+    }
+
     for (int s = 0; s < stateCount; ++s)
         ss << "    ws[" << s << "] = s_new_" << s << ";\n";
         
@@ -648,5 +708,149 @@ std::string Model::frustSource() const
 std::vector<std::string> Model::requiredHostFunctions() { return { "djehuti_dsp_exp", "djehuti_dsp_log" }; }
 std::string Model::describe() const { return "Audio DSP Pipeline"; }
 std::string frustNumber(double value) { std::ostringstream oss; oss << value; return oss.str(); }
+
+int Model::coeffSize() const
+{
+    int affineCols = 1 + inputCount + stateCount;
+    return portCount * affineCols + portCount * portCount + 
+           stateCount * affineCols + stateCount * portCount + 
+           outAffine.size() + outQ.size();
+}
+
+std::vector<double> Model::computeLiveCoefficients(const std::unordered_map<std::string, double>& liveParams) const
+{
+    std::vector<double> out(coeffSize(), 0.0);
+    int L = livePortCount;
+    int N = portCount;
+    int totalP = L + N;
+    int affCols = 1 + inputCount + stateCount;
+    
+    if (L == 0) {
+        auto ptr = out.begin();
+        std::copy(baseAffine.begin(), baseAffine.begin() + N * affCols, ptr); ptr += N * affCols;
+        std::copy(baseK.begin(), baseK.begin() + N * N, ptr); ptr += N * N;
+        std::copy(stateAffine.begin(), stateAffine.end(), ptr); ptr += stateCount * affCols;
+        std::copy(baseStateQ.begin(), baseStateQ.begin() + stateCount * N, ptr); ptr += stateCount * N;
+        std::copy(outAffine.begin(), outAffine.end(), ptr); ptr += affCols;
+        std::copy(baseOutQ.begin(), baseOutQ.begin() + N, ptr);
+        return out;
+    }
+    
+    std::vector<double> CV(L, 0.0), CI(L, 0.0);
+    for (int j = 0; j < L; ++j) {
+        const auto& lp = livePorts[j];
+        double val = 0.5;
+        auto it = liveParams.find(lp.paramId);
+        if (it != liveParams.end()) val = it->second;
+        
+        if (lp.kind == LivePort::Kind::Switch) {
+            if (val > 0.5) { CV[j] = 1.0; CI[j] = 0.0; } // Closed: V = 0
+            else           { CV[j] = 0.0; CI[j] = 1.0; } // Open: I = 0
+        } else {
+            double pos = std::max(0.0, std::min(1.0, val));
+            double R = lp.baseResistance * (lp.isWiperToPin2 ? (1.0 - pos) : pos);
+            if (R < 1e-9) { 
+                CV[j] = 1.0; CI[j] = 0.0; // Short circuit: V = 0
+            } else {
+                CV[j] = 1.0; CI[j] = -R;  // Resistor: V - R*I = 0
+            }
+        }
+    }
+    
+    std::vector<std::vector<double>> H(L, std::vector<double>(L, 0.0));
+    for (int r = 0; r < L; ++r) {
+        for (int c = 0; c < L; ++c) {
+            H[r][c] = CV[r] * baseK[r * totalP + c] + (r == c ? CI[r] : 0.0);
+        }
+    }
+    
+    std::vector<std::vector<double>> M(L, std::vector<double>(L, 0.0));
+    for (int col = 0; col < L; ++col) {
+        std::vector<double> rhs(L, 0.0);
+        rhs[col] = -CV[col];
+        std::vector<double> x;
+        if (solveLinear(H, rhs, x)) {
+            for (int r = 0; r < L; ++r) M[r][col] = x[r];
+        } else {
+            // Singular! Should not happen with our regularization. 
+            // Just return zeroes or base if we somehow hit this.
+        }
+    }
+    
+    // Now compute the reduced matrices!
+    // K'_{NN} = K_{NN} + K_{NL} * M * K_{LN}
+    // P'_{0N} = P_{0N} + K_{NL} * M * P_{0L}
+    auto get_M_KLN = [&](int r, int c) {
+        double sum = 0.0;
+        for (int k = 0; k < L; ++k) sum += M[r][k] * baseK[k * totalP + (L + c)];
+        return sum;
+    };
+    auto get_M_P0L = [&](int r, int c) {
+        double sum = 0.0;
+        for (int k = 0; k < L; ++k) sum += M[r][k] * baseAffine[k * affCols + c];
+        return sum;
+    };
+    
+    std::vector<std::vector<double>> M_KLN(L, std::vector<double>(N, 0.0));
+    std::vector<std::vector<double>> M_P0L(L, std::vector<double>(affCols, 0.0));
+    for (int r = 0; r < L; ++r) {
+        for (int c = 0; c < N; ++c) M_KLN[r][c] = get_M_KLN(r, c);
+        for (int c = 0; c < affCols; ++c) M_P0L[r][c] = get_M_P0L(r, c);
+    }
+    
+    auto ptr = out.begin();
+    
+    // 1. portAffine (P'_{0N})
+    for (int r = 0; r < N; ++r) {
+        for (int c = 0; c < affCols; ++c) {
+            double sum = baseAffine[(L + r) * affCols + c];
+            for (int k = 0; k < L; ++k) sum += baseK[(L + r) * totalP + k] * M_P0L[k][c];
+            *ptr++ = sum;
+        }
+    }
+    
+    // 2. portK (K'_{NN})
+    for (int r = 0; r < N; ++r) {
+        for (int c = 0; c < N; ++c) {
+            double sum = baseK[(L + r) * totalP + (L + c)];
+            for (int k = 0; k < L; ++k) sum += baseK[(L + r) * totalP + k] * M_KLN[k][c];
+            *ptr++ = sum;
+        }
+    }
+    
+    // 3. stateAffine (A'_{S})
+    for (int r = 0; r < stateCount; ++r) {
+        for (int c = 0; c < affCols; ++c) {
+            double sum = stateAffine[r * affCols + c];
+            for (int k = 0; k < L; ++k) sum += baseStateQ[r * totalP + k] * M_P0L[k][c];
+            *ptr++ = sum;
+        }
+    }
+    
+    // 4. stateQ (Q'_{SN})
+    for (int r = 0; r < stateCount; ++r) {
+        for (int c = 0; c < N; ++c) {
+            double sum = baseStateQ[r * totalP + (L + c)];
+            for (int k = 0; k < L; ++k) sum += baseStateQ[r * totalP + k] * M_KLN[k][c];
+            *ptr++ = sum;
+        }
+    }
+    
+    // 5. outAffine (A'_{Y})
+    for (int c = 0; c < affCols; ++c) {
+        double sum = outAffine[c];
+        for (int k = 0; k < L; ++k) sum += baseOutQ[k] * M_P0L[k][c];
+        *ptr++ = sum;
+    }
+    
+    // 6. outQ (Q'_{YN})
+    for (int c = 0; c < N; ++c) {
+        double sum = baseOutQ[L + c];
+        for (int k = 0; k < L; ++k) sum += baseOutQ[k] * M_KLN[k][c];
+        *ptr++ = sum;
+    }
+    
+    return out;
+}
 
 }
