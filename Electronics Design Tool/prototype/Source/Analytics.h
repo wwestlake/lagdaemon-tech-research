@@ -136,6 +136,7 @@ Result run(Analysis analysis, const Settings& settings, const Netlist& netlist);
 const Trace* findTrace(const Result& result, const juce::String& name, int* plotIndex = nullptr);
 juce::StringArray traceNames(const Result& result);
 signal_measure::Result measure(const Result& result, const juce::String& traceName, const signal_measure::Request& request);
+void addTraceStatsTable(Result& result, const std::vector<Trace>& traces, bool withFrequency);
 
 juce::String toCsv(const Plot& plot);
 juce::String toCsv(const Table& table);

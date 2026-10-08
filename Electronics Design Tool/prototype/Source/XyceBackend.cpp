@@ -735,6 +735,8 @@ analytics::Result resultFromPrn(analytics::Analysis analysis, const analytics::S
         }
         plot.traces.push_back(std::move(trace));
     }
+    if (!plot.traces.empty())
+        analytics::addTraceStatsTable(r, plot.traces, analysis == analytics::Analysis::Transient);
     r.plots.push_back(std::move(plot));
     r.summary = "Xyce " + analytics::infoFor(analysis).title + " completed; " + juce::String(rows.size() - 1) + " sample(s).";
     juce::ignoreUnused(n);

@@ -448,7 +448,7 @@ juce::String measured(signal_measure::Kind kind, const Trace& t, const juce::Str
     return m.ok ? formatNumber(m.value, unit) : juce::String(juce::CharPointer_UTF8("\xe2\x80\x94"));
 }
 
-void addTraceStatsTable(Result& r, const std::vector<Trace>& traces, bool withFrequency)
+void addTraceStatsTableInternal(Result& r, const std::vector<Trace>& traces, bool withFrequency)
 {
     Table t;
     t.title = "Trace statistics";
@@ -781,7 +781,7 @@ bool runTransient(const Netlist& n, const Settings& s, Result& r)
         }
     }
     addLinePlots(r, "Transient", "Time", "s", false, traces);
-    addTraceStatsTable(r, traces, true);
+    addTraceStatsTableInternal(r, traces, true);
     r.summary = "Transient to " + formatNumber(ts.stop, "s") + " in steps of " + formatNumber(ts.step, "s")
               + " (trapezoidal, source corners hit exactly)" + (ts.start > 0.0 ? ", stored from " + formatNumber(ts.start, "s") : juce::String()) + ".";
     return true;
@@ -1292,6 +1292,11 @@ Field temperatureField() { return field("temperature", "Temperature", FieldKind:
 }
 
 // ---- public -----------------------------------------------------------------------------
+
+void addTraceStatsTable(Result& result, const std::vector<Trace>& traces, bool withFrequency)
+{
+    addTraceStatsTableInternal(result, traces, withFrequency);
+}
 
 const std::vector<AnalysisInfo>& analyses()
 {
