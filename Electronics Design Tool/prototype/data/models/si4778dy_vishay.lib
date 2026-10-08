@@ -1,0 +1,41 @@
+* Vishay / Siliconix Si4778DY power MOSFET SPICE model.
+* Source: https://www.vishay.com/docs/69878/si4778dy.zip
+* Package file: si4778dy_ps.lib
+* Manufacturer model date: Nov 05, 2012; ECN S12-2642, Rev. B
+* Interface: .SUBCKT Si4778DY D G S
+
+*Nov 05, 2012
+*ECN S12-2642, Rev. B
+*File Name: Si4778DY_PS.txt and Si4778DY_PS.lib
+*This document is intended as a SPICE modeling guideline and does not
+*constitute a commercial product datasheet.  Designers should refer to the
+*appropriate datasheet of the same number for guaranteed specification
+*limits.
+.SUBCKT Si4778DY D G S
+M1  3  GX S S NMOS W=991975u L=0.25u
+M2  S  GX S D PMOS W=991975u L=0.30u
+RG  G  GX     2.5
+R1  D  3      RTEMP 8E-3
+CGS GX S      480E-12
+DBD S  D      DBD
+****************************************************************
+.MODEL  NMOS        NMOS ( LEVEL  = 3           TOX    = 4E-8
++ RS     = 9.5E-3          RD     = 0           NSUB   = 2.7E17
++ kp     = 1.8E-5          UO     = 650
++ VMAX   = 0               XJ     = 5E-7        KAPPA  = 6E-2
++ ETA    = 1E-4            TPG    = 1
++ IS     = 0               LD     = 0
++ CGSO   = 0               CGDO   = 0           CGBO   = 0
++ NFS    = 0.8E12          DELTA  = 0.1)
+****************************************************************
+.MODEL  PMOS        PMOS ( LEVEL  = 3           TOX    = 4E-8
++NSUB    = 2.3E16          IS     = 0           TPG    = -1)
+****************************************************************
+.MODEL DBD D (CJO=230E-12 VJ=0.38 M=0.28
++FC=0.5 TT=1.07e-08 T_MEASURED=25 BV=26
++RS=8.200e-03 N=1.268 IS=2.087e-10 IKF=1000
++EG=1.203 XTI=9.875e-01 TRS1=3.165e-03 )
+****************************************************************
+.MODEL RTEMP RES (TC1=8E-3 TC2=5.5E-6)
+****************************************************************
+.ENDS

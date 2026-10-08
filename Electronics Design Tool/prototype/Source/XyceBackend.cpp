@@ -284,7 +284,7 @@ const std::vector<ModelBinding>& modelBindingRegistry()
             "nmos",
             "generic_model",
             "generic_nmos",
-            "NMOS",
+            "NMOS|SUBCKT",
             { "generic_nmos" },
             { { "D", "D", 0 }, { "G", "G", 1 }, { "S", "S", 2 }, { "B", "B", 2 } },
             true,
@@ -337,6 +337,19 @@ const ModelBinding* modelBindingForElement(const analytics::Netlist& n, size_t e
     return nullptr;
 }
 
+bool modelKindMatches(const juce::String& allowedKinds, const juce::String& actualKind)
+{
+    for (const auto& kind : juce::StringArray::fromTokens(allowedKinds, "|", ""))
+        if (actualKind.equalsIgnoreCase(kind.trim()))
+            return true;
+    return false;
+}
+
+bool isVerifiedNmosSubckt(const spice_library::ModelDef& model)
+{
+    return model.name.equalsIgnoreCase("Si4778DY") && model.kind.equalsIgnoreCase("SUBCKT");
+}
+
 const spice_library::ModelDef* resolveBoundModel(const ModelBinding& binding, juce::String& error)
 {
     static const bool initialized = [] {
@@ -349,7 +362,7 @@ const spice_library::ModelDef* resolveBoundModel(const ModelBinding& binding, ju
     for (const auto& name : binding.lookupNames)
         if (const auto* def = spice_library::findModel(name); def != nullptr)
         {
-            if (def->kind.equalsIgnoreCase(binding.modelKind))
+            if (modelKindMatches(binding.modelKind, def->kind))
                 return def;
             if (wrongKind == nullptr)
                 wrongKind = def;
@@ -555,6 +568,24 @@ bool appendElement(const analytics::Netlist& n, juce::String& netlist, std::map<
                 const auto* model = resolveBoundModel(*binding, e, error);
                 if (model == nullptr)
                     return false;
+                if (e.type == ElementType::Nmos && isVerifiedNmosSubckt(*model))
+                {
+                    subcircuits.insert(model->rawText);
+                    netlist << elementName(e, index, "X");
+                    for (const auto& pinName : { "D", "G", "S" })
+                    {
+                        const auto found = std::find_if(binding->pinsInModelOrder.begin(), binding->pinsInModelOrder.end(),
+                            [pinName](const ModelPinBinding& pin) { return pin.appPin == pinName; });
+                        if (found == binding->pinsInModelOrder.end() || found->elementNode < 0 || found->elementNode >= (int)e.nodes.size())
+                        {
+                            error = binding->symbolId + " model pin mapping is incompatible with " + juce::String(e.name) + ".";
+                            return false;
+                        }
+                        netlist << " " << nodeName(n, e.nodes[(size_t)found->elementNode]);
+                    }
+                    netlist << " " << model->name << "\n";
+                    return true;
+                }
                 if ((e.type == ElementType::Nmos && !model->kind.equalsIgnoreCase("NMOS"))
                     || (e.type == ElementType::Pmos && !model->kind.equalsIgnoreCase("PMOS")))
                 {

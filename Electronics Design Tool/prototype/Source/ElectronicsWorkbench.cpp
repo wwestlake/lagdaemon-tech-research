@@ -4285,9 +4285,13 @@ private:
                 return true;
             }();
             juce::ignoreUnused(initialized);
-            if (const auto* def = spice_library::findModel(selected);
-                def != nullptr && def->kind.equalsIgnoreCase(expectedKind))
-                return "vendor_model";
+            if (const auto* def = spice_library::findModel(selected); def != nullptr)
+            {
+                if (def->kind.equalsIgnoreCase(expectedKind))
+                    return "vendor_model";
+                if (instance.symbolId == "nmos" && selected.equalsIgnoreCase("Si4778DY") && def->kind.equalsIgnoreCase("SUBCKT"))
+                    return "vendor_model";
+            }
             return "unsupported";
         }
         return parts::simulationFidelity(instance.symbolId);
@@ -10167,6 +10171,8 @@ private:
                     for (const auto& m : models)
                         if (m != originalSpec.defaultValue)
                             spec.options.add(m);
+                    if (view.symbolId == "nmos" && spice_library::findModel("Si4778DY") != nullptr)
+                        spec.options.addIfNotAlreadyThere("Si4778DY");
                 }
             }
         }
