@@ -44,6 +44,9 @@ const ParamSpec* findParam(const juce::String& symbolId, const juce::String& key
 // Human name of a part type ("Resistor", "NPN Transistor").
 juce::String displayName(const juce::String& symbolId);
 
+// Honest simulation fidelity label shown in UI/API.
+juce::String simulationFidelity(const juce::String& symbolId);
+
 // Checks a value against its spec; on failure `error` explains why.
 bool validate(const ParamSpec& spec, const juce::String& value, juce::String& error);
 }

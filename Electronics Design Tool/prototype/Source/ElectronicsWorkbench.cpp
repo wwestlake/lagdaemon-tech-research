@@ -4248,6 +4248,11 @@ private:
         return "{}";
     }
 
+    juce::String simulationFidelityFor(const Instance& instance) const
+    {
+        return parts::simulationFidelity(instance.symbolId);
+    }
+
     int pinOrdinal(const PinRef& pin) const
     {
         int ordinal = 0;
@@ -6988,8 +6993,12 @@ public:
         if (index < 0)
             return toolFailure("schematic_get_parameters", "No part " + refdes + ".");
         const auto& instance = instances[(size_t)index];
+        const auto fidelity = simulationFidelityFor(instance);
         juce::String list = "[";
         bool first = true;
+        list << "{ \"key\": \"simulation_fidelity\", \"label\": \"Simulation fidelity\", \"value\": "
+             << quote(fidelity) << ", \"readOnly\": true }";
+        first = false;
         if (instance.symbolId == "sub_block")
         {
             for (const auto& [key, target] : instance.params)
@@ -7026,7 +7035,7 @@ public:
         list << "]";
         return "{ \"ok\": true, \"tool\": \"schematic_get_parameters\", \"refdes\": " + quote(instance.refdes)
              + ", \"type\": " + quote(parts::displayName(instance.symbolId)) + ", \"rotation\": " + juce::String(schematic::normalizedRotation(instance.rotation))
-             + ", \"sheet\": " + quote(sheetName(instance.sheet)) + ", \"parameters\": " + list + " }";
+             + ", \"sheet\": " + quote(sheetName(instance.sheet)) + ", \"simulationFidelity\": " + quote(fidelity) + ", \"parameters\": " + list + " }";
     }
 
     const SimulationParameter* simulationParameterForId(const juce::String& id) const
@@ -9887,6 +9896,20 @@ private:
         return editor;
     }
 
+    void addReadOnlyRow(const juce::String& label, const juce::String& value, const juce::String& hint)
+    {
+        Row row;
+        row.key = "#readonly:" + label;
+        row.label.reset(makeLabel(label, 12.5f, juce::Colour(0xff93a7b0)));
+        row.control.reset(makeLabel(value, 13.5f, juce::Colour(0xffdce9ee)));
+        row.hint.reset(makeLabel(hint, 11.0f, juce::Colour(0xff71808c)));
+        row.height = 64;
+        content.addAndMakeVisible(*row.label);
+        content.addAndMakeVisible(*row.control);
+        content.addAndMakeVisible(*row.hint);
+        rows.push_back(std::move(row));
+    }
+
     void setHint(Row& row, const juce::String& text, bool error)
     {
         if (row.hint == nullptr) return;
@@ -10137,6 +10160,8 @@ private:
         }
 
         const auto& specs = parts::paramsFor(view.symbolId);
+        addReadOnlyRow("Simulation fidelity", parts::simulationFidelity(view.symbolId),
+                       "primitive, generic_model, vendor_model, ideal, or unsupported");
         if (view.symbolId == "sub_block")
         {
             addHeading("Sub-diagram");

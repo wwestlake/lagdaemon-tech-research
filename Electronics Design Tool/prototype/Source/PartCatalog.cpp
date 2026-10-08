@@ -217,6 +217,21 @@ juce::String displayName(const juce::String& id)
     return found != names.end() ? found->second : id;
 }
 
+juce::String simulationFidelity(const juce::String& id)
+{
+    if (id == "opamp_741")
+        return "vendor_model";
+    if (id == "diode" || id == "zener_diode" || id == "schottky_diode" || id == "led"
+        || id == "npn" || id == "pnp" || id == "nmos" || id == "pmos" || id == "njfet" || id == "pjfet")
+        return "generic_model";
+    if (id == "switch_spst" || id == "switch_spdt" || id.startsWith("logic_") || id == "fuse")
+        return "ideal";
+    if (id == "relay_spst" || id == "oscilloscope_2ch" || id == "digital_multimeter" || id == "bode_analyzer"
+        || id == "audio_out" || id == "sub_block" || id == "block_port" || id == "annotation_text")
+        return "unsupported";
+    return "primitive";
+}
+
 bool validate(const ParamSpec& spec, const juce::String& value, juce::String& error)
 {
     switch (spec.kind)
