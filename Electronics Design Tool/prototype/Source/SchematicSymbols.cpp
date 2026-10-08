@@ -292,7 +292,8 @@ const juce::StringArray& supportedSymbolIds()
         "resistor", "potentiometer", "capacitor", "capacitor_polarized", "variable_capacitor",
         "inductor", "coupled_inductor", "transformer", "diode", "zener_diode", "led",
         "schottky_diode", "power_bus", "ground_bus", "power_port", "net_label", "sub_block", "block_port", "battery", "voltage_source", "audio_in", "audio_out",
-        "ac_voltage_source", "current_source", "ac_current_source", "vcvs", "vccs",
+        "ac_voltage_source", "current_source", "ac_current_source", "behavioral_voltage_source",
+        "behavioral_current_source", "vcvs", "vccs",
         "ccvs", "cccs", "signal_source", "ground", "opamp_741", "npn", "pnp",
         "nmos", "pmos", "njfet", "pjfet", "switch_spst", "switch_spdt", "relay_spst",
         "fuse", "connector_2", "connector_3", "test_point", "logic_not", "logic_and",
@@ -337,6 +338,10 @@ SymbolDef symbolFor(const juce::String& id)
     if (id == "ac_voltage_source")   return make(id, "AC", { -24, -24, 48, 48 }, { { "+", { 0, -48 } }, { "-", { 0, 48 } } });
     if (id == "current_source")      return make(id, "I", { -24, -24, 48, 48 }, { { "+", { 0, -48 } }, { "-", { 0, 48 } } });
     if (id == "ac_current_source")   return make(id, "IAC", { -24, -24, 48, 48 }, { { "+", { 0, -48 } }, { "-", { 0, 48 } } });
+    if (id == "behavioral_voltage_source")
+                                     return make(id, "BV", { -24, -24, 48, 48 }, { { "+", { 0, -48 } }, { "-", { 0, 48 } } });
+    if (id == "behavioral_current_source")
+                                     return make(id, "BI", { -24, -24, 48, 48 }, { { "+", { 0, -48 } }, { "-", { 0, 48 } } });
     if (id == "vcvs")                return make(id, "E", { -36, -30, 60, 60 }, { { "+", { 0, -48 } }, { "-", { 0, 48 } }, { "CP+", { -48, -24 } }, { "CP-", { -48, 24 } } }, true);
     if (id == "vccs")                return make(id, "G", { -36, -30, 60, 60 }, { { "+", { 0, -48 } }, { "-", { 0, 48 } }, { "CP+", { -48, -24 } }, { "CP-", { -48, 24 } } }, true);
     if (id == "ccvs")                return make(id, "H", { -36, -30, 60, 60 }, { { "+", { 0, -48 } }, { "-", { 0, 48 } }, { "S+", { -48, -24 } }, { "S-", { -48, 24 } } }, true);
@@ -380,6 +385,7 @@ juce::String refdesPrefixFor(const juce::String& id)
     if (id == "audio_in" || id == "audio_out") return "AUDIO";
     if (id == "voltage_source" || id == "ac_voltage_source" || id == "signal_source") return "V";
     if (id == "current_source" || id == "ac_current_source") return "I";
+    if (id == "behavioral_voltage_source" || id == "behavioral_current_source") return "B";
     if (id == "vcvs") return "E";
     if (id == "vccs") return "G";
     if (id == "ccvs") return "H";
@@ -770,6 +776,11 @@ void drawSymbolArt(juce::Graphics& g, const SymbolDef& symbol, const juce::Strin
             line(g, { 0, -14 }, { 0, 14 });
             arrowHead(g, { 0, -14 }, { 0, 16 });
         }
+    }
+    else if (id == "behavioral_voltage_source" || id == "behavioral_current_source")
+    {
+        circleSource(g);
+        text(g, id == "behavioral_voltage_source" ? "V=" : "I=", { -14, -8, 28, 16 });
     }
     else if (id == "vcvs" || id == "ccvs")
     {

@@ -103,6 +103,7 @@ struct Element
     {
         Resistor, Capacitor, Inductor, Coupling,
         VoltageSource, CurrentSource,
+        BehavioralVoltageSource, BehavioralCurrentSource,
         Vcvs, Vccs, Ccvs, Cccs,
         Diode, Npn, Pnp, Nmos, Pmos, Njfet, Pjfet, OpAmp,
         VariableResistor, Switch
@@ -112,6 +113,7 @@ struct Element
     std::string name;
     std::vector<Node> nodes; // see the add* helpers for terminal order
     double value = 0.0;      // R ohms, C farads, L henries, gain, coupling k
+    std::string expression;  // Xyce behavioral source expression
     double tc1 = 0.0, tc2 = 0.0; // resistor temperature coefficients (1/K, 1/K^2)
     bool noiseless = false;  // e.g. instrument input resistances
     Waveform wave;           // sources
@@ -142,6 +144,8 @@ public:
     int addVoltageSource(const std::string& name, Node plus, Node minus, Waveform wave);
     // Current flows from `from` through the source into `to`.
     int addCurrentSource(const std::string& name, Node from, Node to, Waveform wave);
+    int addBehavioralVoltageSource(const std::string& name, Node plus, Node minus, std::string expression);
+    int addBehavioralCurrentSource(const std::string& name, Node from, Node to, std::string expression);
     int addVcvs(const std::string& name, Node outPlus, Node outMinus, Node ctrlPlus, Node ctrlMinus, double gain);
     int addVccs(const std::string& name, Node outFrom, Node outTo, Node ctrlPlus, Node ctrlMinus, double gain);
     int addCcvs(const std::string& name, Node outPlus, Node outMinus, int controllingSource, double gain);

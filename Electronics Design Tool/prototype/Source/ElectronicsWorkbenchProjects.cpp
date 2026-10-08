@@ -12,6 +12,33 @@ juce::String quoteJson(const juce::String& text)
     return juce::JSON::toString(juce::var(text));
 }
 
+int countJsonArrayItems(const juce::String& json, const juce::String& propertyName)
+{
+    const auto parsed = juce::JSON::parse(json);
+    if (const auto* root = parsed.getDynamicObject())
+        if (const auto* array = root->getProperty(propertyName).getArray())
+            return array->size();
+    return 0;
+}
+
+bool looksLikeBlankCircuit(const juce::String& json)
+{
+    return countJsonArrayItems(json, "components") == 0
+        && countJsonArrayItems(json, "wires") == 0
+        && countJsonArrayItems(json, "junctions") == 0
+        && countJsonArrayItems(json, "groups") == 0
+        && countJsonArrayItems(json, "probes") == 0;
+}
+
+bool looksLikeNonBlankCircuit(const juce::String& json)
+{
+    return countJsonArrayItems(json, "components") > 0
+        || countJsonArrayItems(json, "wires") > 0
+        || countJsonArrayItems(json, "junctions") > 0
+        || countJsonArrayItems(json, "groups") > 0
+        || countJsonArrayItems(json, "probes") > 0;
+}
+
 // Name + storage location, with a folder picker.
 class NewProjectDialog final : public juce::Component
 {
@@ -141,6 +168,15 @@ void ElectronicsWorkbench::useProjectMemory()
 void ElectronicsWorkbench::autoSaveCurrentDiagram()
 {
     juce::String error;
+    if (getCircuitJson != nullptr && looksLikeNonBlankCircuit(lastSavedJson))
+    {
+        const auto currentJson = getCircuitJson();
+        if (currentJson != lastSavedJson && looksLikeBlankCircuit(currentJson))
+        {
+            appendLog("Skipped autosave for " + currentDiagram + ": refusing to replace a non-empty saved diagram with a blank canvas.");
+            return;
+        }
+    }
     if (hasUnsavedChanges() && !saveDiagram(error))
         appendLog("Could not save " + currentDiagram + ": " + error);
 }

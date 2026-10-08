@@ -105,6 +105,8 @@ std::map<juce::String, std::vector<ParamSpec>> buildCatalog()
     c["ac_voltage_source"] = waveformSource("V");
     c["signal_source"] = waveformSource("V");
     c["ac_current_source"] = waveformSource("A");
+    c["behavioral_voltage_source"] = { text("value", "Voltage expression", "V(CTRL)", Storage::Value, "Xyce expression for source voltage, e.g. 2*V(IN).") };
+    c["behavioral_current_source"] = { text("value", "Current expression", "V(CTRL)/1k", Storage::Value, "Xyce expression for source current, e.g. V(IN)/1k.") };
     c["vcvs"] = { quantity("value", "Voltage gain", "V/V", "10", Storage::Value) };
     c["vccs"] = { quantity("value", "Transconductance", "A/V", "1m", Storage::Value) };
     c["ccvs"] = { quantity("value", "Transresistance", "V/A", "1k", Storage::Value) };

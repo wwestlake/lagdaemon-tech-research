@@ -1070,6 +1070,8 @@ int Circuit::addInductor(const std::string& n, Node a, Node b, double h) { Eleme
 int Circuit::addCoupling(const std::string& n, int la, int lb, double k) { Element e; e.type = Element::Type::Coupling; e.name = n; e.control = la; e.control2 = lb; e.value = k; return add(e); }
 int Circuit::addVoltageSource(const std::string& n, Node p, Node m, Waveform w) { Element e; e.type = Element::Type::VoltageSource; e.name = n; e.nodes = { p, m }; e.wave = w; return add(e); }
 int Circuit::addCurrentSource(const std::string& n, Node f, Node t, Waveform w) { Element e; e.type = Element::Type::CurrentSource; e.name = n; e.nodes = { f, t }; e.wave = w; return add(e); }
+int Circuit::addBehavioralVoltageSource(const std::string& n, Node p, Node m, std::string x) { Element e; e.type = Element::Type::BehavioralVoltageSource; e.name = n; e.nodes = { p, m }; e.expression = std::move(x); return add(e); }
+int Circuit::addBehavioralCurrentSource(const std::string& n, Node f, Node t, std::string x) { Element e; e.type = Element::Type::BehavioralCurrentSource; e.name = n; e.nodes = { f, t }; e.expression = std::move(x); return add(e); }
 int Circuit::addVcvs(const std::string& n, Node op, Node om, Node cp, Node cm, double g) { Element e; e.type = Element::Type::Vcvs; e.name = n; e.nodes = { op, om, cp, cm }; e.value = g; return add(e); }
 int Circuit::addVccs(const std::string& n, Node of, Node ot, Node cp, Node cm, double g) { Element e; e.type = Element::Type::Vccs; e.name = n; e.nodes = { of, ot, cp, cm }; e.value = g; return add(e); }
 int Circuit::addCcvs(const std::string& n, Node op, Node om, int src, double g) { Element e; e.type = Element::Type::Ccvs; e.name = n; e.nodes = { op, om }; e.control = src; e.value = g; return add(e); }

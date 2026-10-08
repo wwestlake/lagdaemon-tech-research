@@ -1490,6 +1490,12 @@ Result run(Analysis analysis, const Settings& given, const Netlist& netlist)
         r.error = "The diagram has nothing to simulate.";
         return r;
     }
+    for (const auto& e : netlist.circuit.elements())
+        if (e.type == ElementType::BehavioralVoltageSource || e.type == ElementType::BehavioralCurrentSource)
+        {
+            r.error = juce::String(e.name) + " is a Xyce behavioral source. Select the Xyce engine; the internal solver does not support equation-driven sources.";
+            return r;
+        }
     const auto started = juce::Time::getMillisecondCounterHiRes();
     switch (analysis)
     {

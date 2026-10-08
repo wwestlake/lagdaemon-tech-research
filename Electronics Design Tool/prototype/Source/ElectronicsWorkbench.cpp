@@ -1494,6 +1494,8 @@ private:
         add({ "ac_voltage_source", "AC Voltage Source", "Source" });
         add({ "current_source", "DC Current Source", "Source" });
         add({ "ac_current_source", "AC Current Source", "Source" });
+        add({ "behavioral_voltage_source", "Behavioral Voltage Source", "Controlled Source" });
+        add({ "behavioral_current_source", "Behavioral Current Source", "Controlled Source" });
         add({ "vcvs", "Voltage-Controlled Voltage Source", "Controlled Source" });
         add({ "vccs", "Voltage-Controlled Current Source", "Controlled Source" });
         add({ "ccvs", "Current-Controlled Voltage Source", "Controlled Source" });
@@ -2260,7 +2262,13 @@ public:
                 || instance.symbolId == "voltage_source"
                 || instance.symbolId == "battery"
                 || instance.symbolId == "ac_voltage_source"
-                || instance.symbolId == "signal_source")
+                || instance.symbolId == "signal_source"
+                || instance.symbolId == "behavioral_voltage_source"
+                || instance.symbolId == "behavioral_current_source"
+                || instance.symbolId == "vcvs"
+                || instance.symbolId == "vccs"
+                || instance.symbolId == "ccvs"
+                || instance.symbolId == "cccs")
                 hasLoweredPrimitive = true;
         }
 
@@ -4095,6 +4103,8 @@ private:
         if (symbolId == "ac_voltage_source") return "1";
         if (symbolId == "current_source") return "1m";
         if (symbolId == "ac_current_source") return "1m";
+        if (symbolId == "behavioral_voltage_source") return "V(CTRL)";
+        if (symbolId == "behavioral_current_source") return "V(CTRL)/1k";
         if (symbolId == "vcvs" || symbolId == "vccs" || symbolId == "ccvs" || symbolId == "cccs") return "1";
         if (symbolId == "signal_source") return "1";
         if (symbolId == "opamp_741") return "uA741";
@@ -4132,6 +4142,8 @@ private:
         if (symbolId == "ac_voltage_source") return "source.ac_voltage";
         if (symbolId == "current_source") return "source.dc_current";
         if (symbolId == "ac_current_source") return "source.ac_current";
+        if (symbolId == "behavioral_voltage_source") return "source.behavioral_voltage";
+        if (symbolId == "behavioral_current_source") return "source.behavioral_current";
         if (symbolId == "vcvs") return "source.controlled.vcvs";
         if (symbolId == "vccs") return "source.controlled.vccs";
         if (symbolId == "ccvs") return "source.controlled.ccvs";
@@ -6327,6 +6339,10 @@ private:
                 if (!measuringOhms)
                     element = c.addCurrentSource(name, node(i, "+"), node(i, "-"), waveform(inst));
             }
+            else if (id == "behavioral_voltage_source")
+                element = c.addBehavioralVoltageSource(name, node(i, "+"), node(i, "-"), partValue(inst, "value").toStdString());
+            else if (id == "behavioral_current_source")
+                element = c.addBehavioralCurrentSource(name, node(i, "+"), node(i, "-"), partValue(inst, "value").toStdString());
             else if (id == "vcvs")
                 element = c.addVcvs(name, node(i, "+"), node(i, "-"), node(i, "CP+"), node(i, "CP-"), number(inst, "value", 10.0));
             else if (id == "vccs")

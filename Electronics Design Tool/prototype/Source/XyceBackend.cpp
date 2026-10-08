@@ -114,6 +114,14 @@ juce::String waveformSyntax(const circuit_sim::Waveform& w)
     return "DC 0";
 }
 
+juce::String behavioralExpression(const Element& e)
+{
+    auto expression = juce::String(e.expression).replaceCharacters("\r\n\t", "   ").trim();
+    if (expression.startsWithChar('{') && expression.endsWithChar('}'))
+        expression = expression.substring(1, expression.length() - 1).trim();
+    return expression;
+}
+
 juce::String modelNameFor(const Element& e)
 {
     switch (e.type)
@@ -235,6 +243,20 @@ bool appendElement(const analytics::Netlist& n, juce::String& netlist, std::map<
         case ElementType::CurrentSource:
             netlist << sourceName(e, index) << " " << nd(0) << " " << nd(1) << " " << waveformSyntax(e.wave) << "\n";
             return true;
+        case ElementType::BehavioralVoltageSource:
+        case ElementType::BehavioralCurrentSource:
+        {
+            const auto expression = behavioralExpression(e);
+            if (expression.isEmpty())
+            {
+                error = juce::String(e.name) + " has an empty behavioral source expression.";
+                return false;
+            }
+            netlist << elementName(e, index, "B") << " " << nd(0) << " " << nd(1)
+                    << " " << (e.type == ElementType::BehavioralVoltageSource ? "V" : "I")
+                    << "={" << expression << "}\n";
+            return true;
+        }
         case ElementType::Vcvs:
             netlist << elementName(e, index, "E") << " " << nd(0) << " " << nd(1) << " " << nd(2) << " " << nd(3) << " " << value(e.value) << "\n";
             return true;
