@@ -131,7 +131,7 @@ std::map<juce::String, std::vector<ParamSpec>> buildCatalog()
                   quantity("cgs", "Gate-source capacitance", "F", "20p"),
                   quantity("cgd", "Gate-drain capacitance", "F", "5p") };
     for (const auto* id : { "njfet", "pjfet" })
-        c[id] = { text("value", "Model", "generic_jfet", Storage::Value),
+        c[id] = { text("value", "Model", juce::String(id) == "njfet" ? "generic_njfet" : "generic_pjfet", Storage::Value),
                   quantity("idss", "Idss", "A", "10m"),
                   quantity("pinchoff", "Pinch-off |Vp|", "V", "2") };
     c["switch_spst"] = { toggle("state", "Contacts", "Open", "Closed", "Open") };

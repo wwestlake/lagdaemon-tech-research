@@ -9,7 +9,7 @@ namespace spice_library
     struct ModelDef
     {
         juce::String name;
-        juce::String kind; // "NPN", "PNP", "NJF", "PJF", "NMOS", "PMOS", "D", "SUBCKT"
+        juce::String kind; // "NPN", "PNP", "NJF", "PJF", "NMOS", "PMOS", "VDMOS", "D", "SUBCKT"
         juce::String rawText;
         std::map<juce::String, juce::String> parameters;
     };

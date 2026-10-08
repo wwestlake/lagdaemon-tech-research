@@ -1,0 +1,6 @@
+* Generic FET models for generic schematic symbols. These are not named real parts.
+
+.MODEL generic_nmos NMOS(VTO=2 KP=20m LAMBDA=0.01)
+.MODEL generic_pmos PMOS(VTO=-2 KP=20m LAMBDA=0.01)
+.MODEL generic_njfet NJF(BETA=1m VTO=-2 LAMBDA=0.01)
+.MODEL generic_pjfet PJF(BETA=1m VTO=2 LAMBDA=0.01)

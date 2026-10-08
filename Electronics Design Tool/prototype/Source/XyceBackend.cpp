@@ -280,6 +280,42 @@ const std::vector<ModelBinding>& modelBindingRegistry()
             { { "C", "C", 0 }, { "B", "B", 1 }, { "E", "E", 2 } },
             true,
         },
+        {
+            "nmos",
+            "generic_model",
+            "generic_nmos",
+            "NMOS",
+            { "generic_nmos" },
+            { { "D", "D", 0 }, { "G", "G", 1 }, { "S", "S", 2 }, { "B", "B", 2 } },
+            true,
+        },
+        {
+            "pmos",
+            "generic_model",
+            "generic_pmos",
+            "PMOS",
+            { "generic_pmos" },
+            { { "D", "D", 0 }, { "G", "G", 1 }, { "S", "S", 2 }, { "B", "B", 2 } },
+            true,
+        },
+        {
+            "njfet",
+            "generic_model",
+            "generic_njfet",
+            "NJF",
+            { "generic_njfet" },
+            { { "D", "D", 0 }, { "G", "G", 1 }, { "S", "S", 2 } },
+            true,
+        },
+        {
+            "pjfet",
+            "generic_model",
+            "generic_pjfet",
+            "PJF",
+            { "generic_pjfet" },
+            { { "D", "D", 0 }, { "G", "G", 1 }, { "S", "S", 2 } },
+            true,
+        },
     };
     return bindings;
 }
@@ -512,12 +548,70 @@ bool appendElement(const analytics::Netlist& n, juce::String& netlist, std::map<
         }
         case ElementType::Nmos:
         case ElementType::Pmos:
+        {
+            const auto* binding = modelBindingForElement(n, index);
+            if (binding != nullptr)
+            {
+                const auto* model = resolveBoundModel(*binding, e, error);
+                if (model == nullptr)
+                    return false;
+                if ((e.type == ElementType::Nmos && !model->kind.equalsIgnoreCase("NMOS"))
+                    || (e.type == ElementType::Pmos && !model->kind.equalsIgnoreCase("PMOS")))
+                {
+                    error = juce::String(e.name) + " selected " + model->name + " as " + model->kind
+                          + ", incompatible with " + (e.type == ElementType::Nmos ? "NMOS" : "PMOS") + " symbol.";
+                    return false;
+                }
+                subcircuits.insert(model->rawText);
+                netlist << elementName(e, index, "M");
+                for (const auto& pin : binding->pinsInModelOrder)
+                {
+                    if (pin.elementNode < 0 || pin.elementNode >= (int)e.nodes.size())
+                    {
+                        error = binding->symbolId + " model pin mapping is incompatible with " + juce::String(e.name) + ".";
+                        return false;
+                    }
+                    netlist << " " << nodeName(n, e.nodes[(size_t)pin.elementNode]);
+                }
+                netlist << " " << model->name << "\n";
+                return true;
+            }
             netlist << elementName(e, index, "M") << " " << nd(0) << " " << nd(1) << " " << nd(2) << " " << nd(2) << " " << modelNameFor(e) << "\n";
             return true;
+        }
         case ElementType::Njfet:
         case ElementType::Pjfet:
+        {
+            const auto* binding = modelBindingForElement(n, index);
+            if (binding != nullptr)
+            {
+                const auto* model = resolveBoundModel(*binding, e, error);
+                if (model == nullptr)
+                    return false;
+                if ((e.type == ElementType::Njfet && !model->kind.equalsIgnoreCase("NJF"))
+                    || (e.type == ElementType::Pjfet && !model->kind.equalsIgnoreCase("PJF")))
+                {
+                    error = juce::String(e.name) + " selected " + model->name + " as " + model->kind
+                          + ", incompatible with " + (e.type == ElementType::Njfet ? "NJF" : "PJF") + " symbol.";
+                    return false;
+                }
+                subcircuits.insert(model->rawText);
+                netlist << elementName(e, index, "J");
+                for (const auto& pin : binding->pinsInModelOrder)
+                {
+                    if (pin.elementNode < 0 || pin.elementNode >= (int)e.nodes.size())
+                    {
+                        error = binding->symbolId + " model pin mapping is incompatible with " + juce::String(e.name) + ".";
+                        return false;
+                    }
+                    netlist << " " << nodeName(n, e.nodes[(size_t)pin.elementNode]);
+                }
+                netlist << " " << model->name << "\n";
+                return true;
+            }
             netlist << elementName(e, index, "J") << " " << nd(0) << " " << nd(1) << " " << nd(2) << " " << modelNameFor(e) << "\n";
             return true;
+        }
         case ElementType::Coupling:
         {
             const auto a = elementName(n.circuit.elements()[(size_t)e.control], (size_t)e.control, "L");

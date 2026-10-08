@@ -4264,10 +4264,20 @@ private:
 
     juce::String simulationFidelityFor(const Instance& instance) const
     {
-        if (instance.symbolId == "npn" || instance.symbolId == "pnp")
+        if (instance.symbolId == "npn" || instance.symbolId == "pnp"
+            || instance.symbolId == "nmos" || instance.symbolId == "pmos"
+            || instance.symbolId == "njfet" || instance.symbolId == "pjfet")
         {
+            juce::String expectedKind;
+            if (instance.symbolId == "npn") expectedKind = "NPN";
+            else if (instance.symbolId == "pnp") expectedKind = "PNP";
+            else if (instance.symbolId == "nmos") expectedKind = "NMOS";
+            else if (instance.symbolId == "pmos") expectedKind = "PMOS";
+            else if (instance.symbolId == "njfet") expectedKind = "NJF";
+            else if (instance.symbolId == "pjfet") expectedKind = "PJF";
+
             const auto selected = partValue(instance, "value");
-            if (selected.equalsIgnoreCase(instance.symbolId == "npn" ? "generic_npn" : "generic_pnp"))
+            if (selected.equalsIgnoreCase(familyFor(instance.symbolId)))
                 return "generic_model";
 
             static const bool initialized = [] {
@@ -4276,7 +4286,7 @@ private:
             }();
             juce::ignoreUnused(initialized);
             if (const auto* def = spice_library::findModel(selected);
-                def != nullptr && def->kind.equalsIgnoreCase(instance.symbolId == "npn" ? "NPN" : "PNP"))
+                def != nullptr && def->kind.equalsIgnoreCase(expectedKind))
                 return "vendor_model";
             return "unsupported";
         }
@@ -6566,6 +6576,8 @@ private:
                 m.transconductance = number(inst, "k", 20e-3);
                 m.lambda = number(inst, "lambda", 0.01);
                 element = c.addMosfet(name, id == "nmos", node(i, "D"), node(i, "G"), node(i, "S"), m);
+                if (element >= 0)
+                    c.elements()[(size_t)element].modelName = partValue(inst, "value").toStdString();
                 if (const auto cgs = number(inst, "cgs", 0.0); cgs > 0.0)
                     c.addCapacitor(name + ".cgs", node(i, "G"), node(i, "S"), cgs);
                 if (const auto cgd = number(inst, "cgd", 0.0); cgd > 0.0)
@@ -6580,6 +6592,8 @@ private:
                 m.idss = idss;
                 m.lambda = 0.0;
                 element = c.addJfet(name, id == "njfet", node(i, "D"), node(i, "G"), node(i, "S"), m);
+                if (element >= 0)
+                    c.elements()[(size_t)element].modelName = partValue(inst, "value").toStdString();
             }
             else if (id == "switch_spst")
             {
@@ -6939,6 +6953,7 @@ public:
     {
         bool ok = false;
         juce::String refdes, symbolId, sheet;
+        juce::String simulationFidelity;
         juce::StringArray groups;
         int rotation = 0;
         std::vector<std::pair<juce::String, juce::String>> pinVoltages; // pin, DC voltage text
@@ -6955,6 +6970,7 @@ public:
         view.refdes = instance.refdes;
         view.symbolId = instance.symbolId;
         view.sheet = sheetName(instance.sheet);
+        view.simulationFidelity = simulationFidelityFor(instance);
         view.rotation = schematic::normalizedRotation(instance.rotation);
         for (const auto& group : groups)
             if (std::find(group.memberInstances.begin(), group.memberInstances.end(), index) != group.memberInstances.end())
@@ -10348,7 +10364,7 @@ private:
         }
 
         const auto& specs = parts::paramsFor(view.symbolId);
-        addReadOnlyRow("Simulation fidelity", parts::simulationFidelity(view.symbolId),
+        addReadOnlyRow("Simulation fidelity", view.simulationFidelity.isNotEmpty() ? view.simulationFidelity : parts::simulationFidelity(view.symbolId),
                        "primitive, generic_model, vendor_model, ideal, or unsupported");
         if (view.symbolId == "sub_block")
         {
