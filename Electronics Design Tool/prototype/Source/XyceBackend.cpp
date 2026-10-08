@@ -53,6 +53,20 @@ juce::String nodeName(const analytics::Netlist& n, circuit_sim::Node node)
     return "N" + juce::String(node);
 }
 
+int nodeForOutput(const analytics::Netlist& n, juce::String token, juce::String& error)
+{
+    token = token.trim();
+    if (token.startsWithIgnoreCase("V(") && token.endsWithChar(')'))
+        token = token.substring(2, token.length() - 1).trim();
+    if (token.equalsIgnoreCase("0") || token.equalsIgnoreCase("GND"))
+        return 0;
+    for (const auto& net : n.nets)
+        if (net.name.equalsIgnoreCase(token))
+            return net.node;
+    error = "No net named " + token + " for Xyce output selection.";
+    return -1;
+}
+
 juce::String sourceName(const Element& e, size_t index)
 {
     juce::String name = sanitize(e.name);
@@ -72,6 +86,22 @@ juce::String elementName(const Element& e, size_t index, const juce::String& pre
     if (name == prefix)
         name << (int)index + 1;
     return name;
+}
+
+juce::String elementPrintName(const Element& e, size_t index)
+{
+    switch (e.type)
+    {
+        case ElementType::VoltageSource: return sourceName(e, index);
+        case ElementType::CurrentSource: return sourceName(e, index);
+        case ElementType::Resistor:
+        case ElementType::VariableResistor:
+        case ElementType::Switch: return elementName(e, index, "R");
+        case ElementType::Capacitor: return elementName(e, index, "C");
+        case ElementType::Inductor: return elementName(e, index, "L");
+        case ElementType::Diode: return elementName(e, index, "D");
+        default: return elementName(e, index, "X");
+    }
 }
 
 juce::String waveformSyntax(const circuit_sim::Waveform& w)
@@ -493,6 +523,66 @@ juce::String printList(const analytics::Netlist& n, bool currents)
     return s;
 }
 
+juce::String selectedPrints(const analytics::Netlist& n, const analytics::Settings& s, bool ac, juce::String& error)
+{
+    juce::StringArray tokens;
+    const auto found = s.find("outputs");
+    if (found != s.end())
+        tokens = juce::StringArray::fromTokens(found->second, ",;", "");
+    tokens.trim();
+    tokens.removeEmptyStrings();
+    if (tokens.size() == 1 && tokens[0].containsChar(' '))
+    {
+        tokens = juce::StringArray::fromTokens(tokens[0], " ", "");
+        tokens.removeEmptyStrings();
+    }
+
+    juce::String out;
+    if (tokens.isEmpty())
+    {
+        int count = 0;
+        for (const auto& net : n.nets)
+            if (net.node != 0 && count++ < 16)
+                out << (ac ? " VM(" : " V(") << nodeName(n, net.node) << ")" << (ac ? " VP(" + nodeName(n, net.node) + ")" : "");
+        return out.isEmpty() ? juce::String(ac ? " VM(0) VP(0)" : " V(0)") : out;
+    }
+
+    for (const auto& token : tokens)
+    {
+        if (token.startsWithIgnoreCase("I(") && token.endsWithChar(')'))
+        {
+            if (ac)
+            {
+                error = "Xyce AC output selection currently supports voltage outputs only.";
+                return {};
+            }
+            const auto part = token.substring(2, token.length() - 1).trim();
+            bool foundPart = false;
+            for (const auto& p : n.parts)
+                if (p.refdes.equalsIgnoreCase(part) && p.element >= 0 && p.element < (int)n.circuit.elements().size())
+                {
+                    out << " I(" << elementPrintName(n.circuit.elements()[(size_t)p.element], (size_t)p.element) << ")";
+                    foundPart = true;
+                    break;
+                }
+            if (!foundPart)
+            {
+                error = "No part " + part + " for Xyce output selection.";
+                return {};
+            }
+            continue;
+        }
+
+        const auto node = nodeForOutput(n, token, error);
+        if (node < 0)
+            return {};
+        out << (ac ? " VM(" : " V(") << nodeName(n, (circuit_sim::Node)node) << ")";
+        if (ac)
+            out << " VP(" << nodeName(n, (circuit_sim::Node)node) << ")";
+    }
+    return out;
+}
+
 juce::String netlistFor(analytics::Analysis analysis, const analytics::Settings& s, const analytics::Netlist& n, juce::String& error)
 {
     juce::String out;
@@ -513,33 +603,26 @@ juce::String netlistFor(analytics::Analysis analysis, const analytics::Settings&
     appendModelLines(n, out);
     out << "\n" << body;
 
-    auto netPrints = [&] {
-        juce::String p;
-        for (const auto& net : n.nets)
-            if (net.node != 0)
-                p << " V(" << nodeName(n, net.node) << ")";
-        return p.isEmpty() ? juce::String(" V(0)") : p;
-    };
-
     if (analysis == analytics::Analysis::OperatingPoint)
     {
-        out << "\n.OP\n.PRINT DC" << netPrints();
+        out << "\n.OP\n.PRINT DC" << selectedPrints(n, s, false, error);
     }
     else if (analysis == analytics::Analysis::Transient)
     {
         const auto stop = s.count("stop") != 0 && !s.at("stop").equalsIgnoreCase("auto") ? s.at("stop") : "10m";
         const auto step = s.count("step") != 0 && !s.at("step").equalsIgnoreCase("auto") ? s.at("step") : "10u";
-        out << "\n.TRAN " << step << " " << stop << "\n.PRINT TRAN" << netPrints();
+        const auto prints = selectedPrints(n, s, false, error);
+        if (prints.isEmpty()) return {};
+        out << "\n.TRAN " << step << " " << stop << "\n.PRINT TRAN" << prints;
     }
     else if (analysis == analytics::Analysis::Ac)
     {
         const auto start = s.count("start") != 0 ? s.at("start") : "10";
         const auto stop = s.count("stop") != 0 ? s.at("stop") : "100k";
         const auto points = s.count("points") != 0 ? s.at("points") : "50";
-        out << "\n.AC DEC " << points << " " << start << " " << stop << "\n.PRINT AC";
-        for (const auto& net : n.nets)
-            if (net.node != 0)
-                out << " VM(" << nodeName(n, net.node) << ") VP(" << nodeName(n, net.node) << ")";
+        const auto prints = selectedPrints(n, s, true, error);
+        if (prints.isEmpty()) return {};
+        out << "\n.AC DEC " << points << " " << start << " " << stop << "\n.PRINT AC" << prints;
     }
     else
     {
