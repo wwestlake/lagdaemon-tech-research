@@ -583,6 +583,19 @@ juce::String selectedPrints(const analytics::Netlist& n, const analytics::Settin
     return out;
 }
 
+juce::String acColumnSignal(const juce::String& column, const juce::String& function)
+{
+    const auto prefix = function + "(";
+    if (!column.startsWithIgnoreCase(prefix) || !column.endsWithChar(')'))
+        return {};
+    return column.substring(prefix.length(), column.length() - 1);
+}
+
+juce::String acTraceLabel(const juce::String& signal)
+{
+    return "V(" + signal + ")";
+}
+
 juce::String netlistFor(analytics::Analysis analysis, const analytics::Settings& s, const analytics::Netlist& n, juce::String& error)
 {
     juce::String out;
@@ -721,6 +734,104 @@ analytics::Result resultFromPrn(analytics::Analysis analysis, const analytics::S
         && (header[1].equalsIgnoreCase("FREQ") || header[1].equalsIgnoreCase("TIME"));
     const int xColumn = hasDomainColumn ? 1 : 0;
     const int firstTraceColumn = hasDomainColumn ? 2 : 1;
+    if (analysis == analytics::Analysis::Ac)
+    {
+        struct AcColumns
+        {
+            juce::String signal;
+            int magnitude = -1;
+            int phase = -1;
+        };
+        std::vector<AcColumns> columns;
+        auto indexFor = [&](const juce::String& signal) -> int {
+            for (int i = 0; i < (int)columns.size(); ++i)
+                if (columns[(size_t)i].signal.equalsIgnoreCase(signal))
+                    return i;
+            columns.push_back({ signal, -1, -1 });
+            return (int)columns.size() - 1;
+        };
+        for (int c = firstTraceColumn; c < header.size(); ++c)
+        {
+            const auto magSignal = acColumnSignal(header[c], "VM");
+            if (magSignal.isNotEmpty())
+            {
+                columns[(size_t)indexFor(magSignal)].magnitude = c;
+                continue;
+            }
+            const auto phaseSignal = acColumnSignal(header[c], "VP");
+            if (phaseSignal.isNotEmpty())
+                columns[(size_t)indexFor(phaseSignal)].phase = c;
+        }
+
+        analytics::Plot mag, phase;
+        mag.kind = phase.kind = analytics::Plot::Kind::Lines;
+        mag.title = "Xyce AC magnitude";
+        mag.xLabel = phase.xLabel = "Frequency";
+        mag.xUnit = phase.xUnit = "Hz";
+        mag.yLabel = "Magnitude";
+        mag.yUnit = "dB";
+        mag.logX = true;
+        phase.title = "Xyce AC phase";
+        phase.yLabel = "Phase";
+        phase.yUnit = "deg";
+        phase.logX = true;
+
+        for (const auto& ac : columns)
+        {
+            if (ac.magnitude >= 0)
+            {
+                analytics::Trace t;
+                t.name = acTraceLabel(ac.signal);
+                t.unit = "dB";
+                for (int rix = 1; rix < rows.size(); ++rix)
+                {
+                    if (rows[rix].size() <= ac.magnitude)
+                        continue;
+                    t.x.push_back(rows[rix][xColumn].getDoubleValue());
+                    const auto magnitude = rows[rix][ac.magnitude].getDoubleValue();
+                    t.y.push_back(20.0 * std::log10(std::max(1e-30, std::abs(magnitude))));
+                }
+                t.partnerTrace = (int)phase.traces.size();
+                mag.traces.push_back(std::move(t));
+            }
+            if (ac.phase >= 0)
+            {
+                analytics::Trace t;
+                t.name = acTraceLabel(ac.signal);
+                t.unit = "deg";
+                for (int rix = 1; rix < rows.size(); ++rix)
+                {
+                    if (rows[rix].size() <= ac.phase)
+                        continue;
+                    t.x.push_back(rows[rix][xColumn].getDoubleValue());
+                    t.y.push_back(rows[rix][ac.phase].getDoubleValue());
+                }
+                t.partnerTrace = (int)mag.traces.size() - 1;
+                phase.traces.push_back(std::move(t));
+            }
+        }
+
+        if (!mag.traces.empty() && !phase.traces.empty())
+        {
+            const auto magIndex = (int)r.plots.size();
+            const auto phaseIndex = magIndex + 1;
+            for (auto& t : mag.traces)
+                t.partnerPlot = phaseIndex;
+            for (auto& t : phase.traces)
+                t.partnerPlot = magIndex;
+        }
+        std::vector<analytics::Trace> stats = mag.traces;
+        stats.insert(stats.end(), phase.traces.begin(), phase.traces.end());
+        if (!stats.empty())
+            analytics::addTraceStatsTable(r, stats, false);
+        if (!mag.traces.empty())
+            r.plots.push_back(std::move(mag));
+        if (!phase.traces.empty())
+            r.plots.push_back(std::move(phase));
+        r.summary = "Xyce " + analytics::infoFor(analysis).title + " completed; " + juce::String(rows.size() - 1) + " sample(s).";
+        juce::ignoreUnused(n);
+        return r;
+    }
     for (int c = firstTraceColumn; c < header.size(); ++c)
     {
         analytics::Trace trace;
