@@ -112,6 +112,7 @@ struct Element
     Type type = Type::Resistor;
     std::string name;
     std::vector<Node> nodes; // see the add* helpers for terminal order
+    std::string modelName;   // selected SPICE .MODEL/.SUBCKT name, when bound
     double value = 0.0;      // R ohms, C farads, L henries, gain, coupling k
     std::string expression;  // Xyce behavioral source expression
     double tc1 = 0.0, tc2 = 0.0; // resistor temperature coefficients (1/K, 1/K^2)

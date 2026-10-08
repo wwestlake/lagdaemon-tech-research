@@ -124,6 +124,8 @@ juce::String behavioralExpression(const Element& e)
 
 juce::String modelNameFor(const Element& e)
 {
+    if (!e.modelName.empty())
+        return juce::String(e.modelName);
     switch (e.type)
     {
         case ElementType::Diode: return "DGEN";
@@ -174,6 +176,7 @@ struct ModelBinding
     juce::String modelKind;
     std::vector<juce::String> lookupNames;
     std::vector<ModelPinBinding> pinsInModelOrder;
+    bool modelNameFromElement = false;
 };
 
 const std::vector<ModelBinding>& modelBindingRegistry()
@@ -192,6 +195,42 @@ const std::vector<ModelBinding>& modelBindingRegistry()
                 { "V-",  "4", 4 },
                 { "OUT", "5", -1 },
             },
+        },
+        {
+            "diode",
+            "vendor_model",
+            "1N4148",
+            "D",
+            { "1N4148" },
+            { { "A", "A", 0 }, { "K", "K", 1 } },
+            true,
+        },
+        {
+            "zener_diode",
+            "generic_model",
+            "ZENER_5V1",
+            "D",
+            { "ZENER_5V1" },
+            { { "A", "A", 0 }, { "K", "K", 1 } },
+            true,
+        },
+        {
+            "schottky_diode",
+            "vendor_model",
+            "BAT54",
+            "D",
+            { "BAT54" },
+            { { "A", "A", 0 }, { "K", "K", 1 } },
+            true,
+        },
+        {
+            "led",
+            "generic_model",
+            "LED_RED",
+            "D",
+            { "LED_RED" },
+            { { "A", "A", 0 }, { "K", "K", 1 } },
+            true,
         },
     };
     return bindings;
@@ -242,6 +281,20 @@ const spice_library::ModelDef* resolveBoundModel(const ModelBinding& binding, ju
               + binding.modelKind + " named " + binding.requiredModelName + ".";
 
     return nullptr;
+}
+
+const spice_library::ModelDef* resolveBoundModel(const ModelBinding& binding, const Element& e, juce::String& error)
+{
+    if (!binding.modelNameFromElement)
+        return resolveBoundModel(binding, error);
+    auto resolved = binding;
+    const auto selected = modelNameFor(e).trim();
+    if (selected.isNotEmpty())
+    {
+        resolved.requiredModelName = selected;
+        resolved.lookupNames = { selected };
+    }
+    return resolveBoundModel(resolved, error);
 }
 
 bool isPrimaryUa741(const analytics::Netlist& n, size_t elementIndex)
@@ -352,8 +405,30 @@ bool appendElement(const analytics::Netlist& n, juce::String& netlist, std::map<
             return true;
         }
         case ElementType::Diode:
+        {
+            const auto* binding = modelBindingForElement(n, index);
+            if (binding != nullptr)
+            {
+                const auto* model = resolveBoundModel(*binding, e, error);
+                if (model == nullptr)
+                    return false;
+                subcircuits.insert(model->rawText);
+                netlist << elementName(e, index, "D");
+                for (const auto& pin : binding->pinsInModelOrder)
+                {
+                    if (pin.elementNode < 0 || pin.elementNode >= (int)e.nodes.size())
+                    {
+                        error = binding->symbolId + " model pin mapping is incompatible with " + juce::String(e.name) + ".";
+                        return false;
+                    }
+                    netlist << " " << nodeName(n, e.nodes[(size_t)pin.elementNode]);
+                }
+                netlist << " " << model->name << "\n";
+                return true;
+            }
             netlist << elementName(e, index, "D") << " " << nd(0) << " " << nd(1) << " DGEN\n";
             return true;
+        }
         case ElementType::Npn:
         case ElementType::Pnp:
             netlist << elementName(e, index, "Q") << " " << nd(0) << " " << nd(1) << " " << nd(2) << " " << modelNameFor(e) << "\n";
@@ -382,7 +457,7 @@ bool appendElement(const analytics::Netlist& n, juce::String& netlist, std::map<
                 return false;
             }
 
-            const auto* model = resolveBoundModel(*binding, error);
+            const auto* model = resolveBoundModel(*binding, e, error);
             if (model == nullptr)
                 return false;
 
@@ -431,7 +506,7 @@ juce::String netlistFor(analytics::Analysis analysis, const analytics::Settings&
             return {};
     if (!subcircuits.empty())
     {
-        out << "\n* SPICE subcircuit models\n";
+        out << "\n* SPICE model bindings\n";
         for (const auto& subcircuit : subcircuits)
             out << subcircuit.trim() << "\n";
     }

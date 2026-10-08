@@ -1,0 +1,13 @@
+* Focused diode-family models used by Xyce model binding.
+* BAT54 parameters are a compact Schottky approximation for Workbench smoke/QA.
+.MODEL BAT54 D(IS=2.0e-8 RS=2.0 N=1.08 CJO=10p VJ=0.35 M=0.35 EG=0.69 XTI=2 BV=30 IBV=10u)
+
+* Generic voltage-coded zener used when the UI value is 5V1 instead of a part number.
+.MODEL ZENER_5V1 D(IS=1n RS=2 N=1.5 CJO=100p BV=5.1 IBV=1m)
+
+* Generic LED colour models. Named real LEDs should get their own vendor .MODEL later.
+.MODEL LED_RED D(IS=1.0e-18 RS=8 N=2.0 CJO=5p)
+.MODEL LED_GREEN D(IS=3.0e-20 RS=8 N=2.0 CJO=5p)
+.MODEL LED_YELLOW D(IS=2.0e-19 RS=8 N=2.0 CJO=5p)
+.MODEL LED_BLUE D(IS=2.0e-25 RS=8 N=2.0 CJO=5p)
+.MODEL LED_WHITE D(IS=2.0e-25 RS=8 N=2.0 CJO=5p)

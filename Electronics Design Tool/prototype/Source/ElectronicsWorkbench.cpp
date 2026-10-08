@@ -6305,6 +6305,13 @@ private:
                 if (id == "zener_diode")
                     m.breakdownVoltage = number(inst, "value", 5.1);
                 element = c.addDiode(name, node(i, "A"), node(i, "K"), m);
+                if (element >= 0)
+                {
+                    auto selected = partValue(inst, "value").trim();
+                    if (id == "zener_diode" && (selected.equalsIgnoreCase("5V1") || selected == "5.1"))
+                        selected = "ZENER_5V1";
+                    c.elements()[(size_t)element].modelName = selected.toStdString();
+                }
                 if (const auto cj = number(inst, "cj0", 0.0); cj > 0.0)
                     c.addCapacitor(name + ".cj", node(i, "A"), node(i, "K"), cj);
             }
@@ -6317,6 +6324,8 @@ private:
                 m.emission = 2.0;
                 m.saturationCurrent = 0.01 / std::exp(vf / (m.emission * 0.025852));
                 element = c.addDiode(name, node(i, "A"), node(i, "K"), m);
+                if (element >= 0)
+                    c.elements()[(size_t)element].modelName = ("LED_" + colour.toUpperCase()).toStdString();
             }
             else if (id == "audio_out")
             {
