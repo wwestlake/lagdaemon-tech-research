@@ -1373,6 +1373,10 @@ std::vector<Field> fieldsFor(Analysis analysis)
             f.push_back(field("max_points", "Max stored points", FieldKind::Integer, "4000", "Setup"));
             f.push_back(temperatureField());
             f.push_back(outputs);
+            f.push_back(field("compare_abs_tol", "Abs tolerance", FieldKind::Quantity, "1m", "Comparison",
+                              {}, "Internal-vs-Xyce transient comparison tolerance in the trace unit."));
+            f.push_back(field("compare_rel_tol", "Rel tolerance", FieldKind::Quantity, "0.01", "Comparison",
+                              {}, "Internal-vs-Xyce relative tolerance. 0.01 means 1%; 1% is also accepted."));
             addStepFields(f);
             break;
         case Analysis::Fourier:

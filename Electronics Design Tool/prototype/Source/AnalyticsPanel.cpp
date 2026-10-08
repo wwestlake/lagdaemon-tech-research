@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cmath>
 #include <limits>
+#include <set>
 
 namespace
 {
@@ -88,6 +89,195 @@ juce::File settingsFile()
 {
     return juce::File::getSpecialLocation(juce::File::userApplicationDataDirectory)
         .getChildFile("DjehutiElectronicsLab").getChildFile("analytics_settings.json");
+}
+
+double settingNumber(const analytics::Settings& settings, const juce::String& key, const juce::String& fallback)
+{
+    auto text = fallback;
+    if (const auto found = settings.find(key); found != settings.end() && found->second.trim().isNotEmpty())
+        text = found->second.trim();
+    if (text.endsWithChar('%'))
+        return text.dropLastCharacters(1).getDoubleValue() / 100.0;
+    double value = 0.0;
+    return circuit_sim::parseValue(text.toStdString(), value) ? value : fallback.getDoubleValue();
+}
+
+juce::String traceIdentity(juce::String name)
+{
+    name = name.trim();
+    if ((name.startsWithIgnoreCase("V(") || name.startsWithIgnoreCase("VM(") || name.startsWithIgnoreCase("VP("))
+        && name.endsWithChar(')'))
+        name = name.fromFirstOccurrenceOf("(", false, false).dropLastCharacters(1);
+    return name.trim().toUpperCase();
+}
+
+const analytics::Trace* findByIdentity(const analytics::Result& result, const juce::String& identity, std::set<juce::String>& seen)
+{
+    for (const auto& plot : result.plots)
+        for (const auto& trace : plot.traces)
+            if (traceIdentity(trace.name) == identity)
+            {
+                seen.insert(identity);
+                return &trace;
+            }
+    return nullptr;
+}
+
+analytics::Result comparisonFailure(const juce::String& error, analytics::Analysis analysis, const analytics::Settings& settings, double seconds)
+{
+    analytics::Result result;
+    result.ok = false;
+    result.analysis = analysis;
+    result.settings = settings;
+    result.title = "Internal Solver vs Xyce";
+    result.error = error;
+    result.when = juce::Time::getCurrentTime();
+    result.seconds = seconds;
+    return result;
+}
+
+analytics::Result compareTransientSolvers(const analytics::Settings& settings, const analytics::Netlist& netlist, const juce::File& outputRoot)
+{
+    const auto started = juce::Time::getMillisecondCounterHiRes();
+    if (netlist.circuit.elements().empty())
+        return comparisonFailure("The diagram has nothing to simulate.", analytics::Analysis::Transient, settings, 0.0);
+
+    auto internal = analytics::run(analytics::Analysis::Transient, settings, netlist);
+    if (!internal.ok)
+        return comparisonFailure("Internal solver failed: " + internal.error, analytics::Analysis::Transient, settings,
+                                 (juce::Time::getMillisecondCounterHiRes() - started) / 1000.0);
+
+    auto xyce = xyce_backend::run(analytics::Analysis::Transient, settings, netlist, outputRoot);
+    if (!xyce.ok)
+        return comparisonFailure("Xyce failed: " + xyce.error, analytics::Analysis::Transient, settings,
+                                 (juce::Time::getMillisecondCounterHiRes() - started) / 1000.0);
+
+    const auto absTol = settingNumber(settings, "compare_abs_tol", "1m");
+    const auto relTol = settingNumber(settings, "compare_rel_tol", "0.01");
+
+    analytics::Result result;
+    result.ok = true;
+    result.analysis = analytics::Analysis::Transient;
+    result.settings = internal.settings;
+    result.title = "Transient Comparison - Internal vs Xyce";
+    result.when = juce::Time::getCurrentTime();
+    result.seconds = (juce::Time::getMillisecondCounterHiRes() - started) / 1000.0;
+    result.warnings.addArray(internal.warnings);
+    result.warnings.addArray(xyce.warnings);
+
+    analytics::Plot overlay;
+    overlay.kind = analytics::Plot::Kind::Lines;
+    overlay.title = "Internal vs Xyce";
+    overlay.xLabel = "Time";
+    overlay.xUnit = "s";
+    overlay.yLabel = "Signal";
+    overlay.yUnit = "";
+
+    analytics::Table table;
+    table.title = "Solver comparison";
+    table.columns = { "Signal", "Status", "Max abs error", "RMS error", "Max relative error", "Abs tolerance", "Rel tolerance", "Samples" };
+
+    std::set<juce::String> seenXyce;
+    int compared = 0, passed = 0, failed = 0, missing = 0, incompatible = 0;
+    for (const auto& plot : internal.plots)
+        for (const auto& reference : plot.traces)
+    {
+        const auto id = traceIdentity(reference.name);
+        if (id.isEmpty())
+            continue;
+        const auto* candidate = findByIdentity(xyce, id, seenXyce);
+        if (candidate == nullptr)
+        {
+            table.rows.push_back({ reference.name, "MISSING_XYCE", "-", "-", "-", eng(absTol, reference.unit), juce::String(relTol, 6), "0" });
+            result.warnings.add("Xyce result is missing trace " + reference.name + ".");
+            ++missing;
+            continue;
+        }
+        if (reference.x.empty() || reference.y.size() != reference.x.size() || candidate->x.empty() || candidate->y.size() != candidate->x.size())
+        {
+            table.rows.push_back({ reference.name, "INCOMPATIBLE", "-", "-", "-", eng(absTol, reference.unit), juce::String(relTol, 6), "0" });
+            ++incompatible;
+            continue;
+        }
+
+        const auto start = std::max(std::min(reference.x.front(), reference.x.back()), std::min(candidate->x.front(), candidate->x.back()));
+        const auto stop = std::min(std::max(reference.x.front(), reference.x.back()), std::max(candidate->x.front(), candidate->x.back()));
+        std::vector<double> sampleX;
+        if (stop > start)
+        {
+            sampleX.push_back(start);
+            sampleX.push_back(stop);
+            for (auto x : reference.x) if (x > start && x < stop) sampleX.push_back(x);
+            for (auto x : candidate->x) if (x > start && x < stop) sampleX.push_back(x);
+            std::sort(sampleX.begin(), sampleX.end());
+            sampleX.erase(std::unique(sampleX.begin(), sampleX.end(), [](double a, double b) { return std::abs(a - b) <= 1e-15; }), sampleX.end());
+        }
+        if (sampleX.empty())
+        {
+            table.rows.push_back({ reference.name, "INCOMPATIBLE", "-", "-", "-", eng(absTol, reference.unit), juce::String(relTol, 6), "0" });
+            result.warnings.add("No common time range for " + reference.name + ".");
+            ++incompatible;
+            continue;
+        }
+
+        double maxAbs = 0.0, sumSq = 0.0, maxRel = 0.0;
+        int samples = 0;
+        for (auto x : sampleX)
+        {
+            const auto a = interpolateAt(reference, x);
+            const auto b = interpolateAt(*candidate, x);
+            if (!std::isfinite(a) || !std::isfinite(b))
+                continue;
+            const auto err = std::abs(a - b);
+            const auto scale = std::max({ std::abs(a), std::abs(b), 1e-30 });
+            maxAbs = std::max(maxAbs, err);
+            sumSq += err * err;
+            maxRel = std::max(maxRel, err / scale);
+            ++samples;
+        }
+        if (samples == 0)
+        {
+            table.rows.push_back({ reference.name, "INCOMPATIBLE", "-", "-", "-", eng(absTol, reference.unit), juce::String(relTol, 6), "0" });
+            ++incompatible;
+            continue;
+        }
+
+        const auto ok = maxAbs <= absTol || maxRel <= relTol;
+        compared++;
+        ok ? ++passed : ++failed;
+        table.rows.push_back({ reference.name, ok ? "PASS" : "FAIL", eng(maxAbs, reference.unit), eng(std::sqrt(sumSq / samples), reference.unit),
+                               juce::String(maxRel, 6), eng(absTol, reference.unit), juce::String(relTol, 6), juce::String(samples) });
+
+        auto internalTrace = reference;
+        internalTrace.name = reference.name + " internal";
+        auto xyceTrace = *candidate;
+        xyceTrace.name = reference.name + " Xyce";
+        overlay.traces.push_back(std::move(internalTrace));
+        overlay.traces.push_back(std::move(xyceTrace));
+    }
+
+    for (const auto& plot : xyce.plots)
+        for (const auto& trace : plot.traces)
+    {
+        const auto id = traceIdentity(trace.name);
+        if (!id.isEmpty() && seenXyce.count(id) == 0)
+        {
+            table.rows.push_back({ trace.name, "MISSING_INTERNAL", "-", "-", "-", eng(absTol, trace.unit), juce::String(relTol, 6), "0" });
+            ++missing;
+        }
+    }
+
+    if (!overlay.traces.empty())
+        result.plots.push_back(std::move(overlay));
+    result.tables.push_back(std::move(table));
+    const auto allPassed = failed == 0 && missing == 0 && incompatible == 0 && compared > 0;
+    result.summary = juce::String(allPassed ? "PASS" : "FAIL") + ": " + juce::String(passed) + "/" + juce::String(compared)
+                   + " signal(s) within tolerance";
+    if (failed > 0) result.summary << ", " << failed << " failed";
+    if (missing > 0) result.summary << ", " << missing << " missing";
+    if (incompatible > 0) result.summary << ", " << incompatible << " incompatible";
+    result.summary << ".";
+    return result;
 }
 }
 
@@ -1104,8 +1294,9 @@ AnalyticsPanel::AnalyticsPanel()
     styleCombo(engineBox);
     engineBox.addItem("Xyce", 1);
     engineBox.addItem("Internal Solver", 2);
+    engineBox.addItem("Compare Internal vs Xyce", 3);
     engineBox.setSelectedId(1, juce::dontSendNotification);
-    engineBox.setTooltip("SPICE engine. Xyce is the default external reference engine; Internal Solver is explicit.");
+    engineBox.setTooltip("SPICE engine. Compare runs transient through both Internal Solver and Xyce.");
     addAndMakeVisible(engineBox);
     styleCombo(historyBox);
     historyBox.setTextWhenNothingSelected("Run history");
@@ -1349,14 +1540,19 @@ void AnalyticsPanel::runSelected()
     const auto analysis = current;
     const auto values = settings[current];
     const auto requestedEngine = values.find("engine");
+    const auto compare = engineBox.getSelectedId() == 3
+        || (requestedEngine != values.end() && requestedEngine->second.containsIgnoreCase("compare"));
     const auto engine = (engineBox.getSelectedId() == 2
                          || (requestedEngine != values.end() && requestedEngine->second.containsIgnoreCase("internal")))
         ? xyce_backend::Engine::InternalSolver : xyce_backend::Engine::Xyce;
     const auto outRoot = outputFolder != nullptr ? outputFolder() : juce::File {};
     std::weak_ptr<bool> weak = alive;
-    pool.addJob([this, analysis, values, netlist, weak, engine, outRoot] {
-        auto result = engine == xyce_backend::Engine::Xyce ? xyce_backend::run(analysis, values, netlist, outRoot)
-                                                           : analytics::run(analysis, values, netlist);
+    pool.addJob([this, analysis, values, netlist, weak, engine, compare, outRoot] {
+        auto result = compare ? (analysis == analytics::Analysis::Transient
+                                     ? compareTransientSolvers(values, netlist, outRoot)
+                                     : comparisonFailure("Solver comparison is available for transient analysis only.", analysis, values, 0.0))
+                              : engine == xyce_backend::Engine::Xyce ? xyce_backend::run(analysis, values, netlist, outRoot)
+                                                                      : analytics::run(analysis, values, netlist);
         juce::MessageManager::callAsync([this, weak, result]() mutable {
             if (weak.expired()) return;
             deliver(std::move(result));
@@ -1378,11 +1574,17 @@ const AnalyticsPanel::Run& AnalyticsPanel::runNow(analytics::Analysis analysis, 
     // Exactly what was asked for, on top of the defaults (not what an earlier run left behind).
     const auto netlist = getNetlist != nullptr ? getNetlist() : analytics::Netlist {};
     const auto requestedEngine = values.find("engine");
+    const auto compare = engineBox.getSelectedId() == 3
+        || (requestedEngine != values.end() && requestedEngine->second.containsIgnoreCase("compare"));
     const auto engine = (engineBox.getSelectedId() == 2
                          || (requestedEngine != values.end() && requestedEngine->second.containsIgnoreCase("internal")))
         ? xyce_backend::Engine::InternalSolver : xyce_backend::Engine::Xyce;
-    auto result = engine == xyce_backend::Engine::Xyce ? xyce_backend::run(analysis, values, netlist, outputFolder != nullptr ? outputFolder() : juce::File {})
-                                                       : analytics::run(analysis, values, netlist);
+    const auto outRoot = outputFolder != nullptr ? outputFolder() : juce::File {};
+    auto result = compare ? (analysis == analytics::Analysis::Transient
+                                 ? compareTransientSolvers(values, netlist, outRoot)
+                                 : comparisonFailure("Solver comparison is available for transient analysis only.", analysis, values, 0.0))
+                          : engine == xyce_backend::Engine::Xyce ? xyce_backend::run(analysis, values, netlist, outRoot)
+                                                                  : analytics::run(analysis, values, netlist);
     settings[analysis] = result.settings;
     saveSettings();
     if (analysis != current)
