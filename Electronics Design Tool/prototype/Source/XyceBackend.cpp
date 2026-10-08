@@ -159,7 +159,62 @@ void appendModelLines(const analytics::Netlist& n, juce::String& netlist)
     if (needed.count("PJFGEN")) netlist << ".MODEL PJFGEN PJF\n";
 }
 
-const spice_library::ModelDef* findUa741Model()
+struct ModelPinBinding
+{
+    juce::String appPin;
+    juce::String modelPin;
+    int elementNode = -1;
+};
+
+struct ModelBinding
+{
+    juce::String symbolId;
+    juce::String fidelity;
+    juce::String requiredModelName;
+    juce::String modelKind;
+    std::vector<juce::String> lookupNames;
+    std::vector<ModelPinBinding> pinsInModelOrder;
+};
+
+const std::vector<ModelBinding>& modelBindingRegistry()
+{
+    static const std::vector<ModelBinding> bindings {
+        {
+            "opamp_741",
+            "vendor_model",
+            "UA741",
+            "SUBCKT",
+            { "UA741", "uA741", "LM741" },
+            {
+                { "IN+", "1", 0 },
+                { "IN-", "2", 1 },
+                { "V+",  "3", 3 },
+                { "V-",  "4", 4 },
+                { "OUT", "5", -1 },
+            },
+        },
+    };
+    return bindings;
+}
+
+const ModelBinding* modelBindingFor(const juce::String& symbolId)
+{
+    for (const auto& binding : modelBindingRegistry())
+        if (binding.symbolId == symbolId)
+            return &binding;
+    return nullptr;
+}
+
+const ModelBinding* modelBindingForElement(const analytics::Netlist& n, size_t elementIndex)
+{
+    for (const auto& part : n.parts)
+        if (part.element == (int)elementIndex)
+            if (const auto* binding = modelBindingFor(part.symbolId))
+                return binding;
+    return nullptr;
+}
+
+const spice_library::ModelDef* resolveBoundModel(const ModelBinding& binding, juce::String& error)
 {
     static const bool initialized = [] {
         spice_library::initialize();
@@ -167,19 +222,32 @@ const spice_library::ModelDef* findUa741Model()
     }();
     juce::ignoreUnused(initialized);
 
-    for (const auto& name : { "UA741", "uA741", "LM741" })
-        if (const auto* def = spice_library::findModel(name); def != nullptr && def->kind.equalsIgnoreCase("SUBCKT"))
-            return def;
+    const spice_library::ModelDef* wrongKind = nullptr;
+    for (const auto& name : binding.lookupNames)
+        if (const auto* def = spice_library::findModel(name); def != nullptr)
+        {
+            if (def->kind.equalsIgnoreCase(binding.modelKind))
+                return def;
+            if (wrongKind == nullptr)
+                wrongKind = def;
+        }
+
+    if (wrongKind != nullptr)
+        error = binding.symbolId + " requires " + binding.requiredModelName + " as " + binding.modelKind
+              + ", but found " + wrongKind->name + " as " + wrongKind->kind + ".";
+    else if (binding.symbolId == "opamp_741")
+        error = "UA741 model is missing from the SPICE model library. Expected a SUBCKT named UA741.";
+    else
+        error = binding.requiredModelName + " model is missing from the SPICE model library. Expected a "
+              + binding.modelKind + " named " + binding.requiredModelName + ".";
 
     return nullptr;
 }
 
 bool isPrimaryUa741(const analytics::Netlist& n, size_t elementIndex)
 {
-    for (const auto& part : n.parts)
-        if (part.element == (int)elementIndex && part.symbolId == "opamp_741")
-            return true;
-    return false;
+    const auto* binding = modelBindingForElement(n, elementIndex);
+    return binding != nullptr && binding->symbolId == "opamp_741";
 }
 
 bool hasPrimaryUa741Named(const analytics::Netlist& n, const juce::String& name)
@@ -211,6 +279,13 @@ circuit_sim::Node ua741OutputNode(const analytics::Netlist& n, const Element& e)
         if (candidate.type == ElementType::OpAmp && juce::String(candidate.name) == outputStageName && candidate.nodes.size() >= 3)
             return candidate.nodes[2];
     return e.nodes[2];
+}
+
+circuit_sim::Node nodeForBoundPin(const analytics::Netlist& n, const Element& e, const ModelPinBinding& pin)
+{
+    if (pin.appPin == "OUT")
+        return ua741OutputNode(n, e);
+    return e.nodes[(size_t)pin.elementNode];
 }
 
 bool appendElement(const analytics::Netlist& n, juce::String& netlist, std::map<int, juce::String>& voltageSourceNames,
@@ -300,28 +375,29 @@ bool appendElement(const analytics::Netlist& n, juce::String& netlist, std::map<
         }
         case ElementType::OpAmp:
         {
-            if (!isPrimaryUa741(n, index))
+            const auto* binding = modelBindingForElement(n, index);
+            if (binding == nullptr)
             {
                 error = juce::String(e.name) + " is an op amp with no Xyce model binding. Use opamp_741 or add an explicit model mapping.";
                 return false;
             }
 
-            const auto* model = findUa741Model();
+            const auto* model = resolveBoundModel(*binding, error);
             if (model == nullptr)
-            {
-                error = "UA741 model is missing from the SPICE model library. Expected a SUBCKT named UA741.";
                 return false;
-            }
 
             subcircuits.insert(model->rawText);
-            // UA741 subckt pins: 1=IN+, 2=IN-, 3=V+, 4=V-, 5=OUT.
-            netlist << elementName(e, index, "X") << " "
-                    << nd(0) << " "
-                    << nd(1) << " "
-                    << nd(3) << " "
-                    << nd(4) << " "
-                    << nodeName(n, ua741OutputNode(n, e)) << " "
-                    << model->name << "\n";
+            netlist << elementName(e, index, "X");
+            for (const auto& pin : binding->pinsInModelOrder)
+            {
+                if (pin.elementNode >= 0 && pin.elementNode >= (int)e.nodes.size())
+                {
+                    error = binding->symbolId + " model pin mapping is incompatible with " + juce::String(e.name) + ".";
+                    return false;
+                }
+                netlist << " " << nodeName(n, nodeForBoundPin(n, e, pin));
+            }
+            netlist << " " << model->name << "\n";
             return true;
         }
     }
