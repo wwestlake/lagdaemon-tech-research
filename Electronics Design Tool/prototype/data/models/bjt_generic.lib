@@ -1,0 +1,4 @@
+* Generic BJT models for generic_npn/generic_pnp schematic symbols.
+* These are intentionally generic Workbench models, not named real parts.
+.MODEL generic_npn NPN(IS=1e-14 BF=100 VAF=100 CJE=4.5p CJC=3.5p TF=300p)
+.MODEL generic_pnp PNP(IS=1e-14 BF=100 VAF=100 CJE=4.5p CJC=3.5p TF=300p)

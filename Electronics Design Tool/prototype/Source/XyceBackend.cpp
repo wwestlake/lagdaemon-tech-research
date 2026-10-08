@@ -262,6 +262,24 @@ const std::vector<ModelBinding>& modelBindingRegistry()
             { { "A", "A", 0 }, { "K", "K", 1 } },
             true,
         },
+        {
+            "npn",
+            "generic_model",
+            "generic_npn",
+            "NPN",
+            { "generic_npn" },
+            { { "C", "C", 0 }, { "B", "B", 1 }, { "E", "E", 2 } },
+            true,
+        },
+        {
+            "pnp",
+            "generic_model",
+            "generic_pnp",
+            "PNP",
+            { "generic_pnp" },
+            { { "C", "C", 0 }, { "B", "B", 1 }, { "E", "E", 2 } },
+            true,
+        },
     };
     return bindings;
 }
@@ -461,8 +479,37 @@ bool appendElement(const analytics::Netlist& n, juce::String& netlist, std::map<
         }
         case ElementType::Npn:
         case ElementType::Pnp:
+        {
+            const auto* binding = modelBindingForElement(n, index);
+            if (binding != nullptr)
+            {
+                const auto* model = resolveBoundModel(*binding, e, error);
+                if (model == nullptr)
+                    return false;
+                if ((e.type == ElementType::Npn && !model->kind.equalsIgnoreCase("NPN"))
+                    || (e.type == ElementType::Pnp && !model->kind.equalsIgnoreCase("PNP")))
+                {
+                    error = juce::String(e.name) + " selected " + model->name + " as " + model->kind
+                          + ", incompatible with " + (e.type == ElementType::Npn ? "NPN" : "PNP") + " symbol.";
+                    return false;
+                }
+                subcircuits.insert(model->rawText);
+                netlist << elementName(e, index, "Q");
+                for (const auto& pin : binding->pinsInModelOrder)
+                {
+                    if (pin.elementNode < 0 || pin.elementNode >= (int)e.nodes.size())
+                    {
+                        error = binding->symbolId + " model pin mapping is incompatible with " + juce::String(e.name) + ".";
+                        return false;
+                    }
+                    netlist << " " << nodeName(n, e.nodes[(size_t)pin.elementNode]);
+                }
+                netlist << " " << model->name << "\n";
+                return true;
+            }
             netlist << elementName(e, index, "Q") << " " << nd(0) << " " << nd(1) << " " << nd(2) << " " << modelNameFor(e) << "\n";
             return true;
+        }
         case ElementType::Nmos:
         case ElementType::Pmos:
             netlist << elementName(e, index, "M") << " " << nd(0) << " " << nd(1) << " " << nd(2) << " " << nd(2) << " " << modelNameFor(e) << "\n";

@@ -4264,6 +4264,22 @@ private:
 
     juce::String simulationFidelityFor(const Instance& instance) const
     {
+        if (instance.symbolId == "npn" || instance.symbolId == "pnp")
+        {
+            const auto selected = partValue(instance, "value");
+            if (selected.equalsIgnoreCase(instance.symbolId == "npn" ? "generic_npn" : "generic_pnp"))
+                return "generic_model";
+
+            static const bool initialized = [] {
+                spice_library::initialize();
+                return true;
+            }();
+            juce::ignoreUnused(initialized);
+            if (const auto* def = spice_library::findModel(selected);
+                def != nullptr && def->kind.equalsIgnoreCase(instance.symbolId == "npn" ? "NPN" : "PNP"))
+                return "vendor_model";
+            return "unsupported";
+        }
         return parts::simulationFidelity(instance.symbolId);
     }
 
@@ -6536,6 +6552,8 @@ private:
                 m.earlyVoltage = number(inst, "early_voltage", 0.0);
                 m.transitTime = number(inst, "transit_time", 0.0);
                 element = c.addBjt(name, id == "npn", node(i, "C"), node(i, "B"), node(i, "E"), m);
+                if (element >= 0)
+                    c.elements()[(size_t)element].modelName = partValue(inst, "value").toStdString();
                 if (const auto cje = number(inst, "cje", 0.0); cje > 0.0)
                     c.addCapacitor(name + ".cje", node(i, "B"), node(i, "E"), cje);
                 if (const auto cjc = number(inst, "cjc", 0.0); cjc > 0.0)
