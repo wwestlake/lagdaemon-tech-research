@@ -83,7 +83,9 @@ std::vector<Polyline> routeConnections(const Problem& problem, float gridSize,
 
 // Checks used by routeConnections, exposed for tests.
 bool visitsInOrder(const Polyline& route, const std::vector<juce::Point<float>>& points);
-bool crossesBody(const Polyline& route, const std::vector<Obstacle>& obstacles);
+// startObstacle/endObstacle: the parts the wire starts and ends on (-1 for a
+// junction or free point); its first/last segment may cross only those.
+bool crossesBody(const Polyline& route, const std::vector<Obstacle>& obstacles, int startObstacle = -1, int endObstacle = -1);
 // True when the two routes run along the same line for more than a point.
 bool routesOverlap(const Polyline& a, const Polyline& b);
 

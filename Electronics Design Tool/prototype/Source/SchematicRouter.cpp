@@ -557,13 +557,19 @@ bool visitsInOrder(const Polyline& route, const std::vector<juce::Point<float>>&
     return true;
 }
 
-bool crossesBody(const Polyline& route, const std::vector<Obstacle>& obstacles)
+bool crossesBody(const Polyline& route, const std::vector<Obstacle>& obstacles, int startObstacle, int endObstacle)
 {
-    // Pins sit on the body edge, so only the interior counts.
+    // A wire's first segment leaves its own part and its last enters its own
+    // part (pins can sit inside the padded obstacle); those are the only body
+    // contacts allowed. Edges don't count, only the interior.
     for (size_t s = 0; s + 1 < route.size(); ++s)
-        for (const auto& o : obstacles)
-            if (segmentHitsRect(route[s], route[s + 1], o.bounds.reduced(1.0f)))
+        for (int o = 0; o < (int)obstacles.size(); ++o)
+        {
+            if ((s == 0 && o == startObstacle) || (s + 2 == route.size() && o == endObstacle))
+                continue;
+            if (segmentHitsRect(route[s], route[s + 1], obstacles[(size_t)o].bounds.reduced(1.0f)))
                 return true;
+        }
     return false;
 }
 
@@ -622,7 +628,7 @@ std::vector<Polyline> routeConnections(const Problem& problem, float gridSize, s
             simplify(joined);
             if (!visitsInOrder(joined, problem.connections[i].waypoints))
                 failure[i] = "route could not pass through its pinned points in order";
-            else if (crossesBody(joined, problem.obstacles))
+            else if (crossesBody(joined, problem.obstacles, problem.connections[i].a.obstacle, problem.connections[i].b.obstacle))
                 failure[i] = "only path found passes through a component";
         }
         if (failure[i].isEmpty())

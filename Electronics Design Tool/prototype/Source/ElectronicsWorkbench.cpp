@@ -5211,7 +5211,8 @@ private:
             const bool unaffected = haveOld && forcedReroutes.count((int)i) == 0
                 && old->second.front().getDistanceFrom(nodePosition(wires[i].a)) < 0.5f
                 && old->second.back().getDistanceFrom(nodePosition(wires[i].b)) < 0.5f
-                && !schematic::routing::crossesBody(old->second, problem.obstacles);
+                && !schematic::routing::crossesBody(old->second, problem.obstacles,
+                                                    problem.connections[c].a.obstacle, problem.connections[c].b.obstacle);
             next[i] = unaffected ? old->second : routes[c];
             kept[i] = unaffected;
         }

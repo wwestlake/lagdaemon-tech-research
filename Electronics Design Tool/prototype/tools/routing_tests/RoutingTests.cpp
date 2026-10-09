@@ -124,6 +124,23 @@ int main()
         }
     }
 
+    std::printf("-- app-shaped obstacles: padded 0.6 grid, pins inside the obstacle --\n");
+    {
+        auto padded = [](routing::Obstacle o) { o.bounds = o.bounds.expanded(24.0f * 0.60f); return o; };
+        routing::Problem p;
+        p.obstacles = { padded(resistor(96, 96)), padded(resistor(480, 96)), padded(block()) };
+        p.connections = { connect(0, 1, 1, 0, 0), connect(0, 1, 1, 0, 1, below) };
+        p.connections[1].a = routing::Endpoint::forPin(0, 0); // second wire leaves R1's other end
+        p.connections[1].b = routing::Endpoint::forPin(1, 1);
+        std::vector<juce::String> why;
+        const auto routes = routing::routeConnections(p, grid, nullptr, {}, &why);
+        checkTrue("plain wire routes with pins inside padded obstacles", why[0].isEmpty() && routes[0].size() >= 2, why[0] + " " + describe(routes[0]));
+        checkTrue("pinned wire routes with pins inside padded obstacles", why[1].isEmpty() && routes[1].size() >= 2, why[1] + " " + describe(routes[1]));
+        checkTrue("pinned wire visits its points in order", routing::visitsInOrder(routes[1], below), describe(routes[1]));
+        checkTrue("plain wire leaves/enters only its own parts", !routing::crossesBody(routes[0], p.obstacles, 0, 1), describe(routes[0]));
+        checkTrue("pinned wire leaves/enters only its own parts", !routing::crossesBody(routes[1], p.obstacles, 0, 1), describe(routes[1]));
+    }
+
     std::printf("\n%s: %d failure(s)\n", failures == 0 ? "ALL PASSED" : "FAILED", failures);
     return failures == 0 ? 0 : 1;
 }
