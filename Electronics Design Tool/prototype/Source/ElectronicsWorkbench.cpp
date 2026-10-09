@@ -8728,7 +8728,10 @@ public:
                        { "start", juce::String(r.start, 12) }, { "max_points", juce::String(keep) } };
         r.xyce = partValue(inst, "engine") == "Xyce";
         if (r.xyce)
+        {
             r.outputRoot = outputDirectory != nullptr ? outputDirectory() : juce::File::getSpecialLocation(juce::File::tempDirectory);
+            r.outputRoot.createDirectory(); // the Xyce backend falls back to the working directory when it is missing
+        }
 
         juce::String key;
         key << buildXyceNetlist() << "|" << plot_instrument::modeName(r.mode) << "|" << specs.joinIntoString(";") << "|";
