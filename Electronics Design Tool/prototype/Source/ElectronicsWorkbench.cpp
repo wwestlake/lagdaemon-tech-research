@@ -4,6 +4,7 @@
 #include "SchematicSymbols.h"
 #include "SchematicLayout.h"
 #include "SchematicRouter.h"
+#include "RouteEditing.h"
 #include "PartCatalog.h"
 #include "CircuitSolver.h"
 #include "Analytics.h"
@@ -472,6 +473,11 @@ const SchematicToolSpec schematicToolSpecs[] = {
         "schematic_wire_set_points",
         "Set a wire's routing points (replaces them; empty list clears). Pinned points are fixed absolute waypoints the route must pass through in order and are never moved automatically; points snap to the grid. Geometry only - connectivity never changes. If the wire cannot be routed legally through them, nothing changes and the reason is returned.",
         R"({"type":"object","properties":{"a":{"type":"string"},"b":{"type":"string"},"points":{"type":"array","items":{"type":"object","properties":{"x":{"type":"number"},"y":{"type":"number"},"pinned":{"type":"boolean"}},"required":["x","y"]}}},"required":["a","b","points"],"additionalProperties":false})"
+    },
+    {
+        "schematic_wire_move_segment",
+        "Move one segment of a wire's drawn route sideways (perpendicular to it, whole grid steps), like dragging it on the canvas. The moved corners become pinned routing points; connectivity never changes. Get segment indexes from schematic_wire_get's route (segment k runs from point k to k+1). An illegal result is refused and nothing changes. One undo step.",
+        R"({"type":"object","properties":{"a":{"type":"string"},"b":{"type":"string"},"segment":{"type":"integer"},"dx":{"type":"number"},"dy":{"type":"number"}},"required":["a","b","segment"],"additionalProperties":false})"
     },
     {
         "schematic_reroute_wires",
@@ -1984,7 +1990,15 @@ public:
         groups = std::move(loadedGroups);
         simulationParameters = std::move(loadedSimulationParameters);
         circuitParameters = std::move(loadedCircuitParameters);
-        routeKeys.clear(); // a different diagram: no route survives from the last one
+        if (!restoringSnapshot)
+        {
+            routeKeys.clear(); // a different diagram: no route survives from the last one
+            routeMemory.clear();
+        }
+        selectedWire = -1;
+        activeHandle = -1;
+        wireEdit = WireEdit::None;
+        pendingWire = -1;
         measurements = std::move(loadedMeasurements);
         parameterSweeps = std::move(loadedParameterSweeps);
         selectedInstance = instances.empty() ? -1 : 0;
@@ -2606,6 +2620,7 @@ public:
         { drag_profile::Scope p("paint.instances"); drawInstances(g); }
         drawPendingWire(g);
         drawSelectionBox(g);
+        drawSelectedWire(g);
         { drag_profile::Scope p("paint.ercAnnotations"); drawErcAnnotations(g); }
         g.restoreState();
         drawBreadcrumb(g);
@@ -2688,6 +2703,40 @@ public:
             return;
         }
 
+        // Selected wire: its handles, then its segments, are geometric edits.
+        // Pins keep priority so connecting from a pin is unchanged.
+        const auto wireWasSelected = selectedWire;
+        selectedWire = -1;
+        activeHandle = -1;
+        if (wireSelectable(wireWasSelected) && hitTestPin(modelPosition).instanceIndex < 0)
+        {
+            if (const auto h = handleAt(wireWasSelected, modelPosition); h >= 0)
+            {
+                beginWireEdit(WireEdit::Handle, wireWasSelected, h, modelPosition);
+                return;
+            }
+            const auto segment = schematic::route_edit::segmentAt(currentRoute(wireWasSelected), modelPosition, hitDistance(8.0f));
+            if (segment >= 0)
+            {
+                if (event.getNumberOfClicks() >= 2)
+                {
+                    // Double-click: insert a pinned routing point here.
+                    selectedWire = wireWasSelected;
+                    const auto route = currentRoute(wireWasSelected);
+                    const auto at = snapPoint(modelPosition);
+                    const auto onRoute = schematic::route_edit::segmentAt(route, at, 0.5f) >= 0 ? at : modelPosition;
+                    commitRoutePoints(wireWasSelected,
+                                      fromEditPoints(schematic::route_edit::withInsertedPoint(route, toEditPoints(wires[(size_t)wireWasSelected].routePoints), onRoute)),
+                                      "Added a pinned routing point. Drag it to reshape the wire; right-click it to unpin or delete.");
+                    activeHandle = handleAt(wireWasSelected, onRoute);
+                    ignoreNextMouseUp = true;
+                    return;
+                }
+                beginWireEdit(WireEdit::Segment, wireWasSelected, segment, modelPosition);
+                return;
+            }
+        }
+
         if (beginRailResize(modelPosition))
         {
             repaint();
@@ -2720,9 +2769,11 @@ public:
 
         if (auto wireIndex = hitTestWire(modelPosition); wireIndex >= 0)
         {
-            pushUndoSnapshot();
-            beginWireDrag(createJunctionOnWire(wireIndex, p), modelPosition);
-            repaint();
+            // Decided on release/move: a click selects the wire for routing
+            // edits; dragging branches a new connection as before.
+            pendingWire = wireIndex;
+            pendingWirePoint = p;
+            pendingWireMouse = modelPosition;
             return;
         }
 
@@ -2824,6 +2875,26 @@ public:
             return;
         }
 
+        if (wireEdit != WireEdit::None)
+        {
+            updateWireEdit(modelPosition);
+            return;
+        }
+
+        if (pendingWire >= 0)
+        {
+            if (modelPosition.getDistanceFrom(pendingWireMouse) < hitDistance(4.0f))
+                return;
+            // Moved off an unselected wire: the existing branch-a-connection gesture.
+            const auto wireIndex = pendingWire;
+            pendingWire = -1;
+            pushUndoSnapshot();
+            beginWireDrag(createJunctionOnWire(wireIndex, pendingWirePoint), pendingWireMouse);
+            wireDragPosition = modelPosition;
+            repaint();
+            return;
+        }
+
         if (wireDragging)
         {
             wireDragPosition = modelPosition;
@@ -2867,6 +2938,30 @@ public:
         drag_profile::flush(selectingBox ? "box select" : draggingInstance ? "part drag (" + juce::String((int)std::max<size_t>(1, selectedInstances.size())) + " parts, "
                                                                                + juce::String((int)instances.size()) + " in diagram)"
                                                                            : "other");
+        if (ignoreNextMouseUp)
+        {
+            ignoreNextMouseUp = false;
+            return;
+        }
+        if (wireEdit != WireEdit::None)
+        {
+            finishWireEdit();
+            return;
+        }
+        if (pendingWire >= 0)
+        {
+            selectedWire = pendingWire;
+            activeHandle = -1;
+            pendingWire = -1;
+            selectedInstance = -1;
+            selectedInstances.clear();
+            notifySelection();
+            if (onStatus)
+                onStatus("Wire " + nodeLabel(wires[(size_t)selectedWire].a) + " - " + nodeLabel(wires[(size_t)selectedWire].b)
+                         + " selected: drag a segment or handle to reshape it, double-click to add a pinned point, right-click for pin/delete. Esc cancels a drag.");
+            repaint();
+            return;
+        }
         const auto modelPosition = viewToCanvas(event.position);
         if (wireDragging)
         {
@@ -2916,6 +3011,19 @@ public:
         menu.addItem(16, "Expose Block Parameter...", blockUnderMouse >= 0);
         menu.addItem(12, "Up One Level", currentSheet.isNotEmpty());
         menu.addItem(17, "Reroute Wires of Selected Parts", !selectedInstances.isEmpty() || selectedInstance >= 0);
+        const auto menuWire = wireSelectable(selectedWire) ? selectedWire : -1;
+        const auto menuHandle = handleAt(menuWire, modelPosition);
+        const auto onMenuWire = menuWire >= 0 && schematic::route_edit::segmentAt(currentRoute(menuWire), modelPosition, hitDistance(8.0f)) >= 0;
+        if (menuWire >= 0)
+        {
+            juce::PopupMenu routing;
+            routing.addItem(18, "Insert Pinned Routing Point Here", onMenuWire && menuHandle < 0);
+            routing.addItem(19, menuHandle >= 0 && !wires[(size_t)menuWire].routePoints[(size_t)menuHandle].pinned ? "Pin Routing Point (P)" : "Unpin Routing Point (P)", menuHandle >= 0);
+            routing.addItem(20, "Delete Routing Point (Del)", menuHandle >= 0);
+            routing.addItem(21, "Clear Manual Routing of This Wire", !wires[(size_t)menuWire].routePoints.empty());
+            routing.addItem(22, "Reroute This Wire", true);
+            menu.addSubMenu("Wire Routing", routing);
+        }
         const auto libraryBlocks = userBlocks();
         if (!libraryBlocks.empty())
         {
@@ -2956,8 +3064,46 @@ public:
         menu.addItem(3, "Disconnect Here");
 
         const auto supplyRefdes = supplyUnderMouse >= 0 ? instances[(size_t)supplyUnderMouse].refdes : juce::String();
-        menu.showMenuAsync(juce::PopupMenu::Options(), [this, modelPosition, blockUnderMouse, supplyRefdes, libraryBlocks](int result) {
+        menu.showMenuAsync(juce::PopupMenu::Options(), [this, modelPosition, blockUnderMouse, supplyRefdes, libraryBlocks, menuWire, menuHandle](int result) {
             const auto blockRefdes = blockUnderMouse >= 0 ? instances[(size_t)blockUnderMouse].refdes : juce::String();
+            if (result >= 18 && result <= 22 && wireSelectable(menuWire))
+            {
+                selectedWire = menuWire;
+                auto points = wires[(size_t)menuWire].routePoints;
+                const bool validHandle = menuHandle >= 0 && menuHandle < (int)points.size();
+                if (result == 18)
+                {
+                    const auto route = currentRoute(menuWire);
+                    const auto at = snapPoint(modelPosition);
+                    const auto onRoute = schematic::route_edit::segmentAt(route, at, 0.5f) >= 0 ? at : modelPosition;
+                    if (commitRoutePoints(menuWire, fromEditPoints(schematic::route_edit::withInsertedPoint(route, toEditPoints(points), onRoute)),
+                                          "Added a pinned routing point."))
+                        activeHandle = handleAt(menuWire, onRoute);
+                }
+                else if (result == 19 && validHandle)
+                {
+                    points[(size_t)menuHandle].pinned = !points[(size_t)menuHandle].pinned;
+                    activeHandle = menuHandle;
+                    commitRoutePoints(menuWire, points, points[(size_t)menuHandle].pinned ? "Routing point pinned." : "Routing point unpinned (free).");
+                }
+                else if (result == 20 && validHandle)
+                {
+                    points.erase(points.begin() + menuHandle);
+                    activeHandle = -1;
+                    commitRoutePoints(menuWire, points, "Deleted the routing point; the wire is unchanged electrically.");
+                }
+                else if (result == 21)
+                {
+                    activeHandle = -1;
+                    commitRoutePoints(menuWire, {}, "Cleared this wire's manual routing.");
+                }
+                else if (result == 22)
+                {
+                    const auto failures = rerouteWires({ menuWire });
+                    if (onStatus) onStatus(failures.isEmpty() ? "Rerouted this wire; other wires unchanged." : "Kept the previous path: " + failures.joinIntoString("; "));
+                }
+                return;
+            }
             if (result >= 1000 && result < 1000 + (int)libraryBlocks.size())
             {
                 juce::String error;
@@ -3050,9 +3196,36 @@ public:
         }
         if (key == juce::KeyPress::escapeKey)
         {
+            if (wireEdit != WireEdit::None || pendingWire >= 0)
+                cancelWireEdit();
+            else if (selectedWire >= 0)
+            {
+                selectedWire = -1;
+                activeHandle = -1;
+            }
             wireDragging = false;
             repaint();
             return true;
+        }
+        // On a selected routing point, Delete removes the point (never the
+        // wire) and P toggles pinned/free.
+        if (wireSelectable(selectedWire) && activeHandle >= 0 && activeHandle < (int)wires[(size_t)selectedWire].routePoints.size())
+        {
+            if (key == juce::KeyPress::deleteKey)
+            {
+                auto points = wires[(size_t)selectedWire].routePoints;
+                points.erase(points.begin() + activeHandle);
+                activeHandle = -1;
+                commitRoutePoints(selectedWire, points, "Deleted the routing point; the wire is unchanged electrically.");
+                return true;
+            }
+            if (key.getTextCharacter() == 'p' || key.getTextCharacter() == 'P')
+            {
+                auto points = wires[(size_t)selectedWire].routePoints;
+                points[(size_t)activeHandle].pinned = !points[(size_t)activeHandle].pinned;
+                commitRoutePoints(selectedWire, points, points[(size_t)activeHandle].pinned ? "Routing point pinned." : "Routing point unpinned (free).");
+                return true;
+            }
         }
         if (key == juce::KeyPress::deleteKey || key == juce::KeyPress::backspaceKey)
         {
@@ -4179,6 +4352,7 @@ private:
     bool restoreSnapshot(const juce::String& snapshot)
     {
         juce::String error;
+        const juce::ScopedValueSetter<bool> keepRoutes(restoringSnapshot, true);
         if (!loadCircuitJson(snapshot, error))
         {
             if (onStatus) onStatus("Could not restore schematic: " + error);
@@ -5184,10 +5358,14 @@ private:
         // affected (an end moved, its pinned points changed, its old path now
         // runs through a body, or it was asked to reroute). A wire the router
         // cannot route legally keeps its previous route and is reported.
-        std::map<juce::String, std::vector<juce::Point<float>>> previous;
+        // Route memory outlives one generation so undo/redo (which reload the
+        // diagram JSON) get back the exact geometry each constraint set had.
+        if (routeMemory.size() > 4096)
+            routeMemory.clear();
         for (size_t i = 0; i < routeCache.size() && i < routeKeys.size(); ++i)
             if (routeCache[i].size() >= 2)
-                previous[routeKeys[i]] = routeCache[i];
+                routeMemory[routeKeys[i]] = routeCache[i];
+        const auto& previous = routeMemory;
 
         std::vector<std::vector<juce::Point<float>>> next(wires.size());
         std::vector<juce::String> nextKeys(wires.size());
@@ -5244,6 +5422,204 @@ private:
         }
     }
 
+    // ---- Manual route editing (editor interaction layer) -------------------
+    // The editor only proposes routing points; the router computes and
+    // validates the geometry at commit; connectivity is never touched.
+    enum class WireEdit { None, Segment, Handle };
+    WireEdit wireEdit = WireEdit::None;
+    int selectedWire = -1;            // wire showing its routing handles
+    int activeHandle = -1;            // routing point index on selectedWire
+    int pendingWire = -1;             // pressed an unselected wire: click selects, drag branches
+    int editSegment = -1;
+    bool editMoved = false;
+    bool ignoreNextMouseUp = false;   // Escape cancelled the gesture in progress
+    juce::Point<float> pendingWirePoint, pendingWireMouse, editStartMouse;
+    std::vector<juce::Point<float>> editRoute, editPreview;
+    std::vector<RoutePoint> editPoints;
+    juce::String lastRouteEditError;
+
+    bool wireSelectable(int w) const { return w >= 0 && w < (int)wires.size() && wireOnSheet(wires[(size_t)w]); }
+
+    std::vector<juce::Point<float>> currentRoute(int w) const
+    {
+        ensureRoutes();
+        if ((size_t)w < routeCache.size() && routeCache[(size_t)w].size() >= 2)
+            return routeCache[(size_t)w];
+        return routedWirePoints(wires[(size_t)w].a, wires[(size_t)w].b);
+    }
+
+    static std::vector<schematic::route_edit::EditPoint> toEditPoints(const std::vector<RoutePoint>& points)
+    {
+        std::vector<schematic::route_edit::EditPoint> out;
+        for (const auto& p : points) out.push_back({ p.position, p.pinned });
+        return out;
+    }
+
+    static std::vector<RoutePoint> fromEditPoints(const std::vector<schematic::route_edit::EditPoint>& points)
+    {
+        std::vector<RoutePoint> out;
+        for (const auto& p : points) out.push_back({ p.position, p.pinned });
+        return out;
+    }
+
+    int handleAt(int w, juce::Point<float> p) const
+    {
+        if (!wireSelectable(w)) return -1;
+        const auto& points = wires[(size_t)w].routePoints;
+        for (int h = (int)points.size() - 1; h >= 0; --h)
+            if (points[(size_t)h].position.getDistanceFrom(p) <= hitDistance(7.0f))
+                return h;
+        return -1;
+    }
+
+    void beginWireEdit(WireEdit kind, int w, int index, juce::Point<float> mouse)
+    {
+        wireEdit = kind;
+        selectedWire = w;
+        activeHandle = kind == WireEdit::Handle ? index : -1;
+        editSegment = kind == WireEdit::Segment ? index : -1;
+        editStartMouse = mouse;
+        editRoute = currentRoute(w);
+        editPreview.clear();
+        editPoints = wires[(size_t)w].routePoints;
+        editMoved = false;
+        repaint();
+    }
+
+    // Preview only: no routing, no model change, nothing serialised.
+    void updateWireEdit(juce::Point<float> mouse)
+    {
+        const auto drag = mouse - editStartMouse;
+        const auto& wire = wires[(size_t)selectedWire];
+        if (wireEdit == WireEdit::Segment)
+        {
+            const auto offset = schematic::route_edit::segmentOffset(editRoute, editSegment, drag, schematic::gridSize);
+            editMoved = offset != juce::Point<float>();
+            editPreview = editMoved ? schematic::route_edit::shiftedSegment(editRoute, editSegment, offset) : std::vector<juce::Point<float>> {};
+            editPoints = fromEditPoints(schematic::route_edit::pointsForSegmentDrag(editRoute, toEditPoints(wire.routePoints),
+                                                                                  editSegment, offset, schematic::gridSize));
+        }
+        else if (wireEdit == WireEdit::Handle)
+        {
+            editPoints = wire.routePoints;
+            auto& moved = editPoints[(size_t)activeHandle];
+            const auto raw = wire.routePoints[(size_t)activeHandle].position + drag;
+            const auto target = juce::Point<float>(std::round(raw.x / schematic::gridSize) * schematic::gridSize,
+                                                   std::round(raw.y / schematic::gridSize) * schematic::gridSize);
+            editMoved = target != moved.position;
+            moved.position = target;
+            moved.pinned = true; // a manually placed point is pinned
+            std::vector<juce::Point<float>> chain { nodePosition(wire.a) };
+            for (const auto& p : editPoints) chain.push_back(p.position);
+            chain.push_back(nodePosition(wire.b));
+            editPreview = editMoved ? schematic::route_edit::orthogonalChain(chain) : std::vector<juce::Point<float>> {};
+        }
+        repaint();
+    }
+
+    void finishWireEdit()
+    {
+        const auto w = selectedWire;
+        const auto kind = wireEdit;
+        wireEdit = WireEdit::None;
+        editPreview.clear();
+        if (editMoved && wireSelectable(w))
+            commitRoutePoints(w, editPoints, kind == WireEdit::Segment ? "Moved the wire segment." : "Moved the routing point.");
+        repaint();
+    }
+
+    void cancelWireEdit()
+    {
+        const bool active = wireEdit != WireEdit::None || pendingWire >= 0;
+        wireEdit = WireEdit::None;
+        pendingWire = -1;
+        editPreview.clear();
+        ignoreNextMouseUp = active;
+        if (active && onStatus) onStatus("Routing edit cancelled; nothing changed.");
+        repaint();
+    }
+
+    // Validate + commit as one undo step, or reject and restore exactly.
+    bool commitRoutePoints(int w, const std::vector<RoutePoint>& points, const juce::String& done)
+    {
+        const auto before = wires[(size_t)w].routePoints;
+        const auto snapshot = buildCircuitJson();
+        wires[(size_t)w].routePoints = points;
+        const auto failures = rerouteWires({ w });
+        if (!failures.isEmpty())
+        {
+            wires[(size_t)w].routePoints = before;
+            routeSignature.clear(); // the previous route comes back from route memory
+            ensureRoutes();
+            if (activeHandle >= (int)before.size()) activeHandle = -1;
+            lastRouteEditError = failures.joinIntoString("; ");
+            if (onStatus) onStatus("Edit rejected, wire unchanged: " + lastRouteEditError);
+            repaint();
+            return false;
+        }
+        if (undoStack.isEmpty() || undoStack[undoStack.size() - 1] != snapshot)
+        {
+            undoStack.add(snapshot);
+            while (undoStack.size() > 80)
+                undoStack.remove(0);
+        }
+        redoStack.clear();
+        if (activeHandle >= (int)points.size()) activeHandle = -1;
+        if (onStatus) onStatus(done);
+        repaint();
+        return true;
+    }
+
+    void drawSelectedWire(juce::Graphics& g)
+    {
+        if (!wireSelectable(selectedWire))
+        {
+            selectedWire = -1;
+            return;
+        }
+        const auto route = currentRoute(selectedWire);
+        juce::Path path;
+        for (size_t i = 0; i < route.size(); ++i)
+            i == 0 ? path.startNewSubPath(route[i]) : path.lineTo(route[i]);
+        g.setColour(juce::Colour(0xff4fc3f7).withAlpha(0.55f));
+        g.strokePath(path, juce::PathStrokeType(5.0f));
+
+        if (!editPreview.empty())
+        {
+            juce::Path preview;
+            for (size_t i = 0; i < editPreview.size(); ++i)
+                i == 0 ? preview.startNewSubPath(editPreview[i]) : preview.lineTo(editPreview[i]);
+            juce::Path dashed;
+            const float dashes[] = { 6.0f, 4.0f };
+            juce::PathStrokeType(2.0f).createDashedStroke(dashed, preview, dashes, 2);
+            g.setColour(juce::Colour(0xffffd54f));
+            g.fillPath(dashed);
+        }
+
+        const auto& points = wireEdit != WireEdit::None && editMoved ? editPoints : wires[(size_t)selectedWire].routePoints;
+        for (int h = 0; h < (int)points.size(); ++h)
+        {
+            const auto c = points[(size_t)h].position;
+            const auto size = h == activeHandle ? 11.0f : 8.0f;
+            const auto box = juce::Rectangle<float>(size, size).withCentre(c);
+            if (points[(size_t)h].pinned)
+            {
+                g.setColour(juce::Colour(0xffffb300)); // pinned: solid square
+                g.fillRect(box);
+            }
+            else
+            {
+                g.setColour(juce::Colour(0xffb0bec5)); // free: hollow circle
+                g.drawEllipse(box, 1.6f);
+            }
+            if (h == activeHandle)
+            {
+                g.setColour(juce::Colours::white);
+                g.drawRect(box.expanded(2.0f), 1.2f);
+            }
+        }
+    }
+
     // Wire identity for keeping routes across edits: its two ends plus its
     // routing points (a changed point means a changed route).
     juce::String routeKeyFor(const Wire& wire) const
@@ -5255,6 +5631,8 @@ private:
     }
 
     mutable std::vector<juce::String> routeKeys;  // parallel to routeCache
+    mutable std::map<juce::String, std::vector<juce::Point<float>>> routeMemory; // key -> last legal route
+    bool restoringSnapshot = false;               // undo/redo: keep route memory across the reload
     mutable juce::StringArray routeFailures;      // last routing failures, "a - b: reason"
     std::set<int> forcedReroutes;                 // wires Reroute Selected must route afresh
 
@@ -8599,7 +8977,8 @@ public:
                 quoted.add(quote(refdes));
             return "{ \"ok\": true, \"tool\": " + quote(name) + ", \"deleted\": [" + quoted.joinIntoString(", ") + "] }";
         }
-        if (name == "schematic_wire_get" || name == "schematic_wire_set_points" || name == "schematic_reroute_wires")
+        if (name == "schematic_wire_get" || name == "schematic_wire_set_points" || name == "schematic_reroute_wires"
+            || name == "schematic_wire_move_segment")
         {
             auto findWire = [&](const juce::String& a, const juce::String& b, juce::String& error) {
                 WireNode first, second;
@@ -8645,18 +9024,29 @@ public:
                     for (const auto& item : *list)
                         points.push_back({ snapPoint({ (float)(double)item.getProperty("x", 0.0), (float)(double)item.getProperty("y", 0.0) }),
                                            (bool)item.getProperty("pinned", true) });
-                pushUndoSnapshot();
-                const auto before = wires[(size_t)w].routePoints;
-                wires[(size_t)w].routePoints = points;
-                const auto failures = rerouteWires({ w });
-                if (!failures.isEmpty())
-                {
-                    // An unreachable constraint is refused, not stored.
-                    wires[(size_t)w].routePoints = before;
-                    rerouteWires({ w });
-                    return toolFailure(name, failures.joinIntoString("; ") + " The wire's previous points and route are unchanged.");
-                }
+                // An unreachable constraint is refused, not stored.
+                if (!commitRoutePoints(w, points, "Set the wire's routing points."))
+                    return toolFailure(name, lastRouteEditError + " The wire's previous points and route are unchanged.");
                 forceDeferredRepaint();
+                return "{ \"ok\": true, \"tool\": " + quote(name) + ", \"wire\": " + wireJson(w) + " }";
+            }
+            if (name == "schematic_wire_move_segment")
+            {
+                // Same path as dragging a segment on the canvas.
+                juce::String error;
+                const auto w = findWire(arg("a"), arg("b"), error);
+                if (w < 0) return toolFailure(name, error);
+                const auto route = currentRoute(w);
+                const auto segment = arg("segment").getIntValue();
+                const auto offset = schematic::route_edit::segmentOffset(route, segment,
+                    { (float)(double)args.getProperty("dx", 0.0), (float)(double)args.getProperty("dy", 0.0) }, schematic::gridSize);
+                if (offset == juce::Point<float>())
+                    return toolFailure(name, "Segment " + juce::String(segment) + " can't move that way (a move is perpendicular to the segment, in whole grid steps; the route has "
+                                       + juce::String((int)route.size() - 1) + " segments).");
+                const auto points = fromEditPoints(schematic::route_edit::pointsForSegmentDrag(route, toEditPoints(wires[(size_t)w].routePoints),
+                                                                                             segment, offset, schematic::gridSize));
+                if (!commitRoutePoints(w, points, "Moved the wire segment."))
+                    return toolFailure(name, lastRouteEditError + " The wire is unchanged.");
                 return "{ \"ok\": true, \"tool\": " + quote(name) + ", \"wire\": " + wireJson(w) + " }";
             }
             // schematic_reroute_wires
