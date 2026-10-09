@@ -130,6 +130,10 @@ target_sources(DjehutiElectronicsLab PRIVATE
     Source/SignalMeasure.cpp
     Source/Analytics.h
     Source/Analytics.cpp
+    Source/PlotInstrument.h
+    Source/PlotInstrument.cpp
+    Source/PlotInstrumentView.h
+    Source/PlotInstrumentView.cpp
     Source/AnalyticsPanel.h
     Source/AnalyticsPanel.cpp
     Source/CircuitHierarchy.cpp
@@ -346,6 +350,30 @@ target_link_libraries(SchematicRoutingTests PRIVATE
 )
 juce_generate_juce_header(SchematicRoutingTests)
 add_test(NAME SchematicRoutingTests COMMAND SchematicRoutingTests)
+
+# 2D/3D plotting instrument: probes, synchronised acquisition, display thinning.
+juce_add_console_app(PlotInstrumentTests PRODUCT_NAME "Plot Instrument Tests")
+set_target_properties(PlotInstrumentTests PROPERTIES
+    OUTPUT_NAME "plot_instrument_tests"
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/bin")
+target_sources(PlotInstrumentTests PRIVATE
+    tools/plot_tests/PlotTests.cpp
+    Source/PlotInstrument.cpp
+    Source/Analytics.cpp
+    Source/CircuitSolver.cpp
+    Source/SignalMeasure.cpp
+)
+target_compile_definitions(PlotInstrumentTests PRIVATE
+    JUCE_WEB_BROWSER=0
+    JUCE_USE_CURL=0
+)
+target_link_libraries(PlotInstrumentTests PRIVATE
+    juce::juce_core
+    juce::juce_events
+    juce::juce_graphics
+)
+juce_generate_juce_header(PlotInstrumentTests)
+add_test(NAME PlotInstrumentTests COMMAND PlotInstrumentTests)
 
 find_program(POWERSHELL_EXECUTABLE
     NAMES pwsh powershell
