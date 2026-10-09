@@ -12808,8 +12808,20 @@ private:
         const auto html = markdownToHtmlDocument("BYOK Electronics Agent", transcriptMarkdown)
                               .replace("</body>", transcriptScrollScript() + "</body>");
         if (file.replaceWithText(html))
+        {
             transcriptBrowser.goToURL(follow ? juce::URL(file).withParameter("follow", "1").toString(true)
                                              : juce::URL(file).toString(true));
+            return;
+        }
+        // The browser can still hold the previous page open; a dropped write
+        // would hide the newest message (often the final answer or the reason
+        // a request ended) until something else is posted. Try again shortly.
+        if (tools.log)
+            tools.log("Agent transcript busy (" + file.getFileName() + "); retrying the update.");
+        juce::Timer::callAfterDelay(250, [safe = juce::Component::SafePointer<AgentPanel>(this), follow] {
+            if (safe != nullptr)
+                safe->refreshTranscriptBrowser(follow);
+        });
     }
 
     juce::String systemPrompt() const
