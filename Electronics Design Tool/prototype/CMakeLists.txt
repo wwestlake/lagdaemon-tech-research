@@ -134,6 +134,8 @@ target_sources(DjehutiElectronicsLab PRIVATE
     Source/PlotInstrument.cpp
     Source/PlotInstrumentView.h
     Source/PlotInstrumentView.cpp
+    Source/CapabilityCatalog.h
+    Source/CapabilityCatalog.cpp
     Source/AnalyticsPanel.h
     Source/AnalyticsPanel.cpp
     Source/CircuitHierarchy.cpp
@@ -374,6 +376,37 @@ target_link_libraries(PlotInstrumentTests PRIVATE
 )
 juce_generate_juce_header(PlotInstrumentTests)
 add_test(NAME PlotInstrumentTests COMMAND PlotInstrumentTests)
+
+# LiteSemRAG retrieval on the real cards, the capability catalog, and the
+# reference-circuit values the cards document (simulated with both engines).
+juce_add_console_app(KnowledgeTests PRODUCT_NAME "Knowledge Tests")
+set_target_properties(KnowledgeTests PROPERTIES
+    OUTPUT_NAME "knowledge_tests"
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/bin")
+target_sources(KnowledgeTests PRIVATE
+    tools/knowledge_tests/KnowledgeTests.cpp
+    Source/ElectronicsKnowledge.cpp
+    Source/Analytics.cpp
+    Source/CircuitSolver.cpp
+    Source/SignalMeasure.cpp
+    Source/XyceBackend.cpp
+    Source/SpiceLibrary.cpp
+    Source/CapabilityCatalog.cpp
+    Source/PartCatalog.cpp
+    Source/SchematicSymbols.cpp
+)
+target_compile_definitions(KnowledgeTests PRIVATE
+    JUCE_WEB_BROWSER=0
+    JUCE_USE_CURL=0
+    ELECTRONICS_RESEARCH_ROOT="${CMAKE_CURRENT_SOURCE_DIR}/.."
+)
+target_link_libraries(KnowledgeTests PRIVATE
+    juce::juce_core
+    juce::juce_events
+    juce::juce_graphics
+)
+juce_generate_juce_header(KnowledgeTests)
+add_test(NAME KnowledgeTests COMMAND KnowledgeTests)
 
 find_program(POWERSHELL_EXECUTABLE
     NAMES pwsh powershell

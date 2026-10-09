@@ -1,6 +1,8 @@
 #include "ElectronicsKnowledge.h"
 
 #include <algorithm>
+#include <cctype>
+#include <cmath>
 #include <map>
 #include <set>
 
@@ -8,61 +10,164 @@ namespace electronics_knowledge
 {
 namespace
 {
+// ---- Retrieval: BM25F over whole words ------------------------------------
+// Cards and queries are cut into whole words (identifiers such as
+// opamp_generic are kept and also split into their parts), common words are
+// dropped, and a trailing plural "s" is folded so "capacitors" finds
+// "capacitor". Each card is scored with BM25F over its title, keywords, id
+// and text: a word found in few cards (chua, negative, impedance) weighs far
+// more than one found in many (current, project, design). Words that sit next
+// to each other in the request and in a card (a phrase such as "negative
+// impedance converter") earn a bonus.
+
+const std::set<std::string>& stopWords()
+{
+    static const std::set<std::string> words {
+        "a", "about", "above", "after", "again", "all", "also", "am", "an", "and", "any", "are", "as", "at", "be", "been",
+        "before", "being", "both", "but", "by", "can", "could", "did", "do", "does", "doing", "done", "each", "else", "etc",
+        "even", "every", "few", "for", "from", "further", "get", "give", "go", "had", "has", "have", "having", "he", "her",
+        "here", "him", "his", "how", "i", "if", "in", "into", "is", "it", "its", "just", "let", "like", "make", "many", "may",
+        "me", "might", "more", "most", "much", "must", "my", "need", "no", "nor", "not", "now", "of", "off", "on", "once",
+        "only", "or", "other", "our", "out", "over", "own", "please", "same", "she", "should", "so", "some", "such", "than",
+        "that", "the", "their", "them", "then", "there", "these", "they", "this", "those", "through", "to", "too", "under",
+        "until", "up", "us", "use", "using", "very", "want", "was", "we", "were", "what", "when", "where", "which", "while",
+        "who", "why", "will", "with", "would", "yes", "you", "your", "yours"
+    };
+    return words;
+}
+
+std::string fold(std::string w)
+{
+    const auto n = w.size();
+    if (n > 4 && w[n - 1] == 's' && w[n - 2] != 's' && w[n - 2] != 'u' && w[n - 2] != 'i')
+        w.pop_back();
+    return w;
+}
+
+// Words in order; an identifier with underscores is followed by its parts.
+// `gapBefore` marks words that did not directly follow the previous kept word
+// (a stop word or a field break sat between), so phrases never span them.
+struct WordStream
+{
+    std::vector<std::string> words;
+    std::vector<bool> gapBefore;
+};
+
+void addWords(WordStream& out, const juce::String& text)
+{
+    const auto lower = text.toLowerCase().toStdString();
+    bool gap = true;
+    std::string current;
+    auto flush = [&] {
+        if (current.empty())
+            return;
+        std::string word = current;
+        current.clear();
+        while (!word.empty() && word.front() == '_') word.erase(word.begin());
+        while (!word.empty() && word.back() == '_') word.pop_back();
+        if (word.size() <= 1 && !(word.size() == 1 && std::isdigit((unsigned char)word[0])))
+        {
+            gap = true;
+            return;
+        }
+        if (stopWords().count(word) != 0)
+        {
+            gap = true;
+            return;
+        }
+        const auto folded = fold(word);
+        out.words.push_back(folded);
+        out.gapBefore.push_back(gap);
+        gap = false;
+        if (word.find('_') != std::string::npos)
+        {
+            size_t start = 0;
+            while (start <= word.size())
+            {
+                const auto end = word.find('_', start);
+                const auto part = word.substr(start, end == std::string::npos ? std::string::npos : end - start);
+                if (part.size() > 1 && stopWords().count(part) == 0)
+                {
+                    out.words.push_back(fold(part));
+                    out.gapBefore.push_back(false);
+                }
+                if (end == std::string::npos) break;
+                start = end + 1;
+            }
+        }
+    };
+    for (char c : lower)
+    {
+        if (std::isalnum((unsigned char)c) || c == '_')
+            current.push_back(c);
+        else
+        {
+            flush();
+            if (c != ' ' && c != '-')
+                gap = true; // punctuation breaks a phrase; spaces and hyphens do not
+        }
+    }
+    flush();
+}
+
+WordStream wordsOf(const juce::String& text)
+{
+    WordStream s;
+    addWords(s, text);
+    return s;
+}
+
+// Query words, plus the same synonyms the old matcher added for common asks.
 juce::StringArray queryTokens(const juce::String& query)
 {
     const auto lowerQuery = query.toLowerCase();
-    juce::StringArray rawTokens;
-
-    if (lowerQuery.contains("erc") || lowerQuery.contains("electrical rule"))
-    {
-        rawTokens.add("erc");
-        rawTokens.add("electrical_rule_check");
-    }
-    if (lowerQuery.contains("scope") || lowerQuery.contains("oscilloscope"))
-    {
-        rawTokens.add("oscilloscope");
-        rawTokens.add("instrument");
-    }
-    if (lowerQuery.contains("meter") || lowerQuery.contains("multimeter"))
-    {
-        rawTokens.add("multimeter");
-        rawTokens.add("instrument");
-    }
-    if (lowerQuery.contains("spice") || lowerQuery.contains("xyce"))
-    {
-        rawTokens.add("xyce");
-        rawTokens.add("solver");
-    }
-
-    rawTokens.addTokens(lowerQuery, " \t\r\n.,!?;:()[]{}<>+-=*/\\|&^%\"'", "");
-    rawTokens.trim();
-    rawTokens.removeEmptyStrings();
-
-    static const std::set<std::string> stopWords {
-        "about", "after", "also", "and", "are", "can", "does", "for", "from",
-        "have", "how", "into", "like", "make", "need", "that", "the", "this",
-        "use", "want", "what", "when", "where", "with", "you"
-    };
-
     juce::StringArray tokens;
     std::set<std::string> seen;
-    for (auto& token : rawTokens)
-    {
-        token = token.retainCharacters("abcdefghijklmnopqrstuvwxyz0123456789_-.").trim();
-        if (token.length() <= 1)
-            continue;
-
-        const auto stdToken = token.toStdString();
-        if (stopWords.count(stdToken) != 0 || seen.count(stdToken) != 0)
-            continue;
-
-        seen.insert(stdToken);
-        tokens.add(token);
-        if (tokens.size() >= 16)
-            break;
-    }
-
+    auto add = [&](const std::string& w) {
+        if (seen.insert(w).second)
+            tokens.add(juce::String(w));
+    };
+    for (const auto& w : wordsOf(query).words)
+        add(w);
+    if (lowerQuery.contains("erc") || lowerQuery.contains("electrical rule"))
+        for (auto w : { "erc", "electrical_rule_check" }) add(w);
+    if (lowerQuery.contains("scope"))
+        for (auto w : { "oscilloscope", "instrument" }) add(w);
+    if (lowerQuery.contains("meter"))
+        for (auto w : { "multimeter", "instrument" }) add(w);
+    if (lowerQuery.contains("spice") || lowerQuery.contains("xyce"))
+        for (auto w : { "xyce", "solver" }) add(w);
     return tokens;
+}
+
+struct IndexedCard
+{
+    std::map<std::string, double> weightedTf; // field-weighted term frequency
+    std::set<std::pair<std::string, std::string>> pairs; // adjacent word pairs
+    double length = 0.0;
+};
+
+constexpr double titleWeight = 3.0, keywordWeight = 2.0, idWeight = 1.0, textWeight = 1.0;
+
+IndexedCard indexCard(const Card& card)
+{
+    IndexedCard ix;
+    auto field = [&](const juce::String& text, double weight) {
+        const auto s = wordsOf(text);
+        for (size_t i = 0; i < s.words.size(); ++i)
+        {
+            ix.weightedTf[s.words[i]] += weight;
+            ix.length += weight;
+            if (i > 0 && !s.gapBefore[i])
+                ix.pairs.insert({ s.words[i - 1], s.words[i] });
+        }
+    };
+    field(card.title, titleWeight);
+    for (const auto& keyword : card.tokens)
+        field(keyword, keywordWeight);
+    field(card.id.replaceCharacter('.', ' ').replaceCharacter('#', ' '), idWeight);
+    field(card.text, textWeight);
+    return ix;
 }
 
 juce::String trimForPrompt(juce::String text)
@@ -221,33 +326,6 @@ std::vector<Card> loadAllCards()
     return cards;
 }
 
-double scoreCard(const Card& card, const juce::StringArray& tokens)
-{
-    if (tokens.isEmpty())
-        return 0.0;
-
-    juce::String haystack;
-    haystack << card.id << " " << card.kind << " " << card.title << " " << card.text;
-    for (const auto& token : card.tokens)
-        haystack << " " << token;
-
-    const auto lower = haystack.toLowerCase();
-    double score = 0.0;
-    for (const auto& token : tokens)
-    {
-        const auto loweredToken = token.toLowerCase();
-        if (card.title.toLowerCase().contains(loweredToken))
-            score += 5.0;
-        if (card.tokens.contains(loweredToken, true))
-            score += 4.0;
-        if (lower.contains(loweredToken))
-            score += 1.0;
-    }
-
-    if (card.kind.containsIgnoreCase("process"))
-        score *= 1.1;
-    return score + static_cast<double>(card.priority) * 0.01;
-}
 }
 
 juce::File getKnowledgeRoot()
@@ -315,11 +393,56 @@ RetrievalResult retrieve(const juce::String& query, int maxCards)
     };
 
     std::vector<ScoredCard> scored;
-    for (const auto& card : loadAllCards())
+    const auto cards = loadAllCards();
+    std::vector<IndexedCard> index;
+    index.reserve(cards.size());
+    std::map<std::string, int> documentFrequency;
+    double totalLength = 0.0;
+    for (const auto& card : cards)
     {
-        const auto score = scoreCard(card, result.tokens);
-        if (score > 0.0)
-            scored.push_back({ card, score });
+        index.push_back(indexCard(card));
+        for (const auto& entry : index.back().weightedTf)
+            ++documentFrequency[entry.first];
+        totalLength += index.back().length;
+    }
+    const auto n = (double)std::max<size_t>(1, cards.size());
+    const auto averageLength = std::max(1.0, totalLength / n);
+    auto idf = [&](const std::string& word) {
+        const auto found = documentFrequency.find(word);
+        const auto df = found == documentFrequency.end() ? 0.0 : (double)found->second;
+        return std::log(1.0 + (n - df + 0.5) / (df + 0.5));
+    };
+
+    std::vector<std::string> queryWords;
+    for (const auto& token : result.tokens)
+        queryWords.push_back(token.toStdString());
+    std::set<std::pair<std::string, std::string>> queryPairs;
+    const auto stream = wordsOf(query);
+    for (size_t i = 1; i < stream.words.size(); ++i)
+        if (!stream.gapBefore[i] && stream.words[i - 1] != stream.words[i])
+            queryPairs.insert({ stream.words[i - 1], stream.words[i] });
+
+    constexpr double k1 = 1.2, b = 0.75;
+    for (size_t c = 0; c < cards.size(); ++c)
+    {
+        const auto& ix = index[c];
+        double score = 0.0;
+        for (const auto& word : queryWords)
+        {
+            const auto found = ix.weightedTf.find(word);
+            if (found == ix.weightedTf.end())
+                continue;
+            const auto tf = found->second;
+            score += idf(word) * tf * (k1 + 1.0) / (tf + k1 * (1.0 - b + b * ix.length / averageLength));
+        }
+        if (score <= 0.0)
+            continue;
+        for (const auto& pair : queryPairs)
+            if (ix.pairs.count(pair) != 0)
+                score += 0.5 * (idf(pair.first) + idf(pair.second));
+        if (cards[c].kind.containsIgnoreCase("process"))
+            score *= 1.1;
+        scored.push_back({ cards[c], score + cards[c].priority * 0.001 });
     }
 
     std::stable_sort(scored.begin(), scored.end(), [](const auto& left, const auto& right) {
@@ -327,6 +450,14 @@ RetrievalResult retrieve(const juce::String& query, int maxCards)
             return left.card.id < right.card.id;
         return left.score > right.score;
     });
+    // Leave out cards that match only incidentally (a common word or two)
+    // when much better matches exist.
+    if (!scored.empty())
+    {
+        const auto floor = scored.front().score * 0.3;
+        scored.erase(std::remove_if(scored.begin(), scored.end(), [floor](const auto& s) { return s.score < floor; }), scored.end());
+    }
+
 
     const auto limit = std::max(0, maxCards);
     for (int index = 0; index < limit && index < static_cast<int>(scored.size()); ++index)

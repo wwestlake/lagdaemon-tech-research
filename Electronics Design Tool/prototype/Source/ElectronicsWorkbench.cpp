@@ -19,6 +19,7 @@
 #include "CircuitHierarchyPanel.h"
 #include "PlotInstrument.h"
 #include "PlotInstrumentView.h"
+#include "CapabilityCatalog.h"
 #include "XyceBackend.h"
 #include <thread>
 
@@ -419,6 +420,11 @@ const SchematicToolSpec schematicToolSpecs[] = {
         R"({"type":"object","properties":{"source":{"type":"string","description":"Frust source defining pub fn run() -> String."}},"required":["source"],"additionalProperties":false})"
     },
     {
+        "workbench_capabilities",
+        "Discover what this Workbench actually has, from its live registries: component types (pins, parameters with units, choices, defaults and help, simulation fidelity), virtual instruments and their modes, analyses (analytics_* tools and their settings) and simulation engines. Use it before choosing parts, and look a part up by symbolId before setting its parameters. Anything not listed does not exist: never invent component types or model names.",
+        R"({"type":"object","properties":{"section":{"type":"string","description":"components, instruments, analyses or engines; omit for a summary of all."},"query":{"type":"string","description":"Optional words that every returned entry must contain, such as 'behavioral current', 'opamp', 'plot', 'initial'. Matches ids, names, pins and parameter text."},"symbolId":{"type":"string","description":"Optional component id for full detail, such as behavioral_current_source. Unknown ids are reported with close matches."}},"additionalProperties":false})"
+    },
+    {
         "instrument_read",
         "Read an instrument node exactly as its window shows it: oscilloscope channel Vpp/Vrms/mean/frequency at its time/div and trigger, multimeter reading in its function (DC V, AC V, DC A, Ohms), frequency analyzer peak gain and -3 dB points, or 2D/3D plotter acquisition (mode, axis signals with units and ranges, sample count, synchronisation, problems such as unwired probes). Change instrument settings with schematic_set_parameters (plotter: mode Time/XY/XYZ, x, y, z, traces, stop, step, start, engine, markers, projection, x_min..z_max, view). Plotter samples: instrument_plot_data.",
         R"({"type":"object","properties":{"refdes":{"type":"string","description":"Instrument reference designator, such as SCOPE1, DMM1, FRA1 or PLOT1."}},"required":["refdes"],"additionalProperties":false})"
@@ -599,6 +605,13 @@ const std::vector<ToolSpecText>& analyticsToolSpecs()
         return list;
     }();
     return specs;
+}
+
+// Tool text with live registry values filled in, so lists such as the
+// placeable component ids never drift from what the application supports.
+std::string liveToolText(const char* text)
+{
+    return juce::String(text).replace("{{SYMBOL_IDS}}", capability_catalog::componentIdList()).toStdString();
 }
 
 bool isSchematicTool(const juce::String& name)
@@ -9160,6 +9173,9 @@ public:
     {
         if (name == "instrument_read")
             return instrumentReadJson(args.getProperty("refdes", {}).toString());
+        if (name == "workbench_capabilities")
+            return capability_catalog::toJson({ args.getProperty("section", {}).toString(), args.getProperty("query", {}).toString(),
+                                                args.getProperty("symbolId", {}).toString() });
         if (name == "instrument_plot_data")
             return plotterDataJson(args.getProperty("refdes", {}).toString(), (int)args.getProperty("max_points", 400));
         auto arg = [&](const char* key) { return args.getProperty(key, {}).toString().trim(); };
@@ -12836,6 +12852,9 @@ private:
                "Use amplifier_design_push_pull when asked for a push-pull, class B, class AB, or complementary emitter-follower audio output stage. "
                "Use schematic_auto_layout after creating or editing a diagram so the result is readable and spaced. "
                "After placing or connecting a generated circuit, use circuit_inspect and circuit_run_erc before claiming the circuit exists or is ready. "
+               "Discover parts, instruments, analyses and engines with workbench_capabilities (the application's own registry) before designing; "
+               "look a part up by symbolId before setting its parameters. Use cookbook_lookup for engineering knowledge and reference designs. "
+               "Never invent component types, model names or parameters; if what you need does not exist, say so or record it with capability_gap_record. "
                "If a schematic_connect call fails, correct the pin labels using the available-labels error; do not continue as if it succeeded. "
                "When reporting component counts, wire counts, ERC counts, or artifact paths, copy them from tool results or circuit_inspect; never infer or invent them. "
                "Use cookbook_lookup when requirements imply topology selection, design equations, validation recipes, troubleshooting, "
@@ -12953,7 +12972,7 @@ private:
             {
                 "schematic_place_symbol",
                 "Place a schematic symbol or instrument node at a grid coordinate. Use deliberate layout spacing: keep symbols at least 144 px apart horizontally or 96 px vertically, arrange signal flow left-to-right, put sources on the left, outputs/load on the right, grounds below, instruments to the far right, and never reuse the same x/y for multiple parts.",
-                R"({"type":"object","properties":{"symbolId":{"type":"string","description":"Supported symbol id: resistor, potentiometer, capacitor, capacitor_polarized, variable_capacitor, inductor, coupled_inductor, transformer, diode, zener_diode, led, schottky_diode, power_bus, ground_bus, power_port, net_label, battery, voltage_source, ac_voltage_source, current_source, ac_current_source, vcvs, vccs, ccvs, cccs, signal_source, ground, opamp_generic, opamp_741, comparator_generic, comparator_lm311, regulator_fixed_generic, regulator_adjustable_generic, regulator_lm317, npn, pnp, nmos, pmos, njfet, pjfet, switch_spst, switch_spdt, voltage_controlled_switch, current_controlled_switch, relay_spst, fuse, connector_2, connector_3, test_point, logic_not, logic_and, logic_or, logic_nand, logic_nor, logic_xor, oscilloscope_2ch, digital_multimeter, bode_analyzer, xyz_plotter (2D/3D plotter: channels A/B/C with +/- pins), or annotation_text. Use annotation_text for free-form schematic notes. Use ground and power_port symbols at each pin that needs ground or a supply instead of long wires: power_port takes busName like +12V (drawn pointing up) or -12V (place with a leading minus; drawn pointing down); ports with the same busName are the same net. net_label takes busName as its label; labels with the same name are one net. After placing and connecting, call schematic_auto_layout once for a standards-conforming drawing. Unsupported symbols are rejected, not substituted."},"x":{"type":"number","description":"Grid x coordinate. Leave at least 144 px horizontal space from other symbols."},"y":{"type":"number","description":"Grid y coordinate. Leave at least 96 px vertical space from other symbols."},"value":{"type":"string"},"frequency":{"type":"string"},"busName":{"type":"string"}},"required":["symbolId","x","y"],"additionalProperties":false})"
+                R"({"type":"object","properties":{"symbolId":{"type":"string","description":"Supported symbol id, from the live registry: {{SYMBOL_IDS}}. workbench_capabilities gives each one's pins and parameters (xyz_plotter is the 2D/3D plotter, channels A/B/C with +/- pins; annotation_text is a free-form note). Use annotation_text for free-form schematic notes. Use ground and power_port symbols at each pin that needs ground or a supply instead of long wires: power_port takes busName like +12V (drawn pointing up) or -12V (place with a leading minus; drawn pointing down); ports with the same busName are the same net. net_label takes busName as its label; labels with the same name are one net. After placing and connecting, call schematic_auto_layout once for a standards-conforming drawing. Unsupported symbols are rejected, not substituted."},"x":{"type":"number","description":"Grid x coordinate. Leave at least 144 px horizontal space from other symbols."},"y":{"type":"number","description":"Grid y coordinate. Leave at least 96 px vertical space from other symbols."},"value":{"type":"string"},"frequency":{"type":"string"},"busName":{"type":"string"}},"required":["symbolId","x","y"],"additionalProperties":false})"
             },
             {
                 "schematic_connect",
@@ -12967,7 +12986,7 @@ private:
             }
         };
         for (const auto& spec : schematicToolSpecs)
-            definitions.push_back({ spec.name, spec.description, spec.schema });
+            definitions.push_back({ spec.name, liveToolText(spec.description), liveToolText(spec.schema) });
         for (const auto& spec : analyticsToolSpecs())
             definitions.push_back({ spec.name.toStdString(), spec.description.toStdString(), spec.schema.toStdString() });
         return definitions;
@@ -14392,7 +14411,7 @@ juce::String ElectronicsWorkbench::buildAssistantToolManifestJson() const
     text << "    }";
     std::vector<ToolSpecText> manifestSpecs;
     for (const auto& spec : schematicToolSpecs)
-        manifestSpecs.push_back({ spec.name, spec.description, spec.schema });
+        manifestSpecs.push_back({ spec.name, juce::String(liveToolText(spec.description)), juce::String(liveToolText(spec.schema)) });
     for (const auto& spec : analyticsToolSpecs())
         manifestSpecs.push_back(spec);
     for (const auto& spec : manifestSpecs)
