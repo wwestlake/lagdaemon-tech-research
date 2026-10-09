@@ -387,6 +387,7 @@ bool evaluateExpression(const std::string& expression, const std::map<std::strin
                         double& out, std::string& error);
 bool resolveParameters(const std::vector<std::pair<std::string, std::string>>& definitions,
                        std::map<std::string, double>& values, std::string& error);
+bool applyParameterValues(Circuit& circuit, const std::map<std::string, double>& values, std::string& error);
 // SPICE reads a capital M as milli; the default here reads it as mega.
 void setCapitalMIsMilli(bool milli);
 std::string formatValue(double value, const std::string& unit, int significant = 3);

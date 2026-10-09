@@ -2495,6 +2495,33 @@ bool resolveParameters(const std::vector<std::pair<std::string, std::string>>& d
     return true;
 }
 
+bool applyParameterValues(Circuit& circuit, const std::map<std::string, double>& values, std::string& error)
+{
+    for (auto& e : circuit.elements())
+    {
+        if (e.valueExpression.empty())
+            continue;
+        double v = 0.0;
+        if (!evaluateExpression(e.valueExpression, values, v, error))
+        {
+            error = e.name + ": " + error;
+            return false;
+        }
+        switch (e.type)
+        {
+            case Element::Type::VoltageSource:
+            case Element::Type::CurrentSource:
+                if (e.wave.kind == Waveform::Kind::Dc)
+                    e.wave.offset = v;
+                break;
+            default:
+                e.value = v;
+                break;
+        }
+    }
+    return true;
+}
+
 std::string formatValue(double value, const std::string& unit, int significant)
 {
     if (value == 0.0 || !std::isfinite(value))

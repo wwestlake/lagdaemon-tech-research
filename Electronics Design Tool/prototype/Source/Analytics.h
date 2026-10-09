@@ -101,6 +101,14 @@ struct Netlist
         juce::String edge2 { "rising" };
     };
     std::vector<Measurement> measurements;
+    struct ParameterSweep
+    {
+        juce::String parameter;
+        juce::String start;
+        juce::String stop;
+        juce::String step;
+    };
+    std::vector<ParameterSweep> sweeps;
 };
 
 // Choices for Net / Source / Target fields.

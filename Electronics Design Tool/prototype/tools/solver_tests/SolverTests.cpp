@@ -210,6 +210,23 @@ int main()
         checkTrue("resolve simple parameter", resolveParameters({ { "RBASE", "1000" } }, params, error) && std::abs(params["RBASE"] - 1000.0) < 1e-9, error);
         checkTrue("resolve derived parameter", resolveParameters({ { "SCALE", "2" }, { "RBASE", "1k" }, { "R2", "RBASE*SCALE" } }, params, error)
                   && std::abs(params["R2"] - 2000.0) < 1e-9, error);
+        {
+            Circuit c;
+            auto n = c.addNode();
+            c.addVoltageSource("V1", n, 0, dc(10.0));
+            const auto r = c.addResistor("RLOAD", n, 0, 1.0);
+            c.elements()[(size_t)r].valueExpression = "RBASE*SCALE";
+            for (const auto scale : { 1.0, 2.0, 5.0 })
+            {
+                const std::vector<std::pair<std::string, std::string>> defs = { { "RBASE", "1k" }, { "SCALE", std::to_string(scale) } };
+                checkTrue("resolve sweep point", resolveParameters(defs, params, error), error);
+                checkTrue("apply sweep point", applyParameterValues(c, params, error), error);
+                const auto op = solveOperatingPoint(c);
+                checkTrue("parameter sweep point solves", op.ok, op.error);
+                check("parameter sweep source current", op.sourceCurrents[0], -10.0 / (1000.0 * scale), 1e-9);
+            }
+            checkTrue("sweep keeps expression text", c.elements()[(size_t)r].valueExpression == "RBASE*SCALE");
+        }
         checkTrue("reject undefined parameter", !resolveParameters({ { "R1", "MISSING" } }, params, error), error);
         checkTrue("reject circular parameter", !resolveParameters({ { "A", "B" }, { "B", "A" } }, params, error), error);
         checkTrue("reject divide by zero", !resolveParameters({ { "BAD", "1/0" } }, params, error), error);

@@ -1396,6 +1396,86 @@ bool runMonteCarlo(const Netlist& n, const Settings& s, Result& r)
     return true;
 }
 
+bool runParameterSweep(Analysis analysis, const Settings& s, const Netlist& n, Result& r)
+{
+    if (n.sweeps.empty())
+        return false;
+    const auto sweep = n.sweeps.front();
+    auto definitionFor = [&](juce::String name) -> int {
+        for (int i = 0; i < (int)n.parameters.size(); ++i)
+            if (n.parameters[(size_t)i].first.equalsIgnoreCase(name.trim()))
+                return i;
+        return -1;
+    };
+    const auto paramIndex = definitionFor(sweep.parameter);
+    if (paramIndex < 0)
+    {
+        r.error = "Sweep parameter " + sweep.parameter + " is not defined.";
+        return true;
+    }
+    double start = 0.0, stop = 0.0, step = 0.0;
+    if (!circuit_sim::parseValue(sweep.start.toStdString(), start)
+        || !circuit_sim::parseValue(sweep.stop.toStdString(), stop)
+        || !circuit_sim::parseValue(sweep.step.toStdString(), step))
+    {
+        r.error = "Sweep start, stop and step must be numeric values.";
+        return true;
+    }
+    if (step == 0.0 || (stop > start && step < 0.0) || (stop < start && step > 0.0))
+    {
+        r.error = "Invalid sweep direction or zero step.";
+        return true;
+    }
+    const auto count = (int)std::floor((stop - start) / step + 1e-9) + 1;
+    if (count <= 0 || count > 1001)
+    {
+        r.error = "Sweep point count must be between 1 and 1001.";
+        return true;
+    }
+
+    Table table;
+    table.title = "Parameter sweep";
+    table.columns = { "Parameter", "Value", "Status", "Measurements" };
+    for (int i = 0; i < count; ++i)
+    {
+        const auto value = start + step * i;
+        auto point = n;
+        point.sweeps.clear();
+        point.parameters[(size_t)paramIndex].second = juce::String(value, 12);
+        std::vector<std::pair<std::string, std::string>> defs;
+        for (const auto& p : point.parameters)
+            defs.push_back({ p.first.toStdString(), p.second.toStdString() });
+        std::map<std::string, double> values;
+        std::string error;
+        juce::String status = "OK";
+        juce::String measurementsText;
+        if (!circuit_sim::resolveParameters(defs, values, error)
+            || !circuit_sim::applyParameterValues(point.circuit, values, error))
+        {
+            status = juce::String(error);
+        }
+        else
+        {
+            auto sub = run(analysis, s, point);
+            if (!sub.ok)
+                status = sub.error;
+            else
+                for (const auto& t : sub.tables)
+                    if (t.title == "Measurements")
+                        for (const auto& row : t.rows)
+                            if (row.size() >= 5 && row[4] == "OK")
+                                measurementsText << (measurementsText.isEmpty() ? "" : "; ") << row[0] << "=" << row[3];
+        }
+        table.rows.push_back({ sweep.parameter, formatNumber(value, "", 7), status, measurementsText });
+    }
+    r.ok = true;
+    r.analysis = analysis;
+    r.title = infoFor(analysis).title + " parameter sweep";
+    r.tables.push_back(std::move(table));
+    r.summary = "Swept " + sweep.parameter + " over " + juce::String(count) + " point(s).";
+    return true;
+}
+
 // ---- field tables ---------------------------------------------------------------------
 
 Field field(juce::String key, juce::String label, FieldKind kind, juce::String def, juce::String group,
@@ -1630,6 +1710,15 @@ Result run(Analysis analysis, const Settings& given, const Netlist& netlist)
         r.error = "The diagram has nothing to simulate.";
         return r;
     }
+    const auto started = juce::Time::getMillisecondCounterHiRes();
+    if (!netlist.sweeps.empty() && runParameterSweep(analysis, s, netlist, r))
+    {
+        r.seconds = (juce::Time::getMillisecondCounterHiRes() - started) / 1000.0;
+        r.when = juce::Time::getCurrentTime();
+        if (!r.ok && r.error.isEmpty())
+            r.error = "The parameter sweep failed.";
+        return r;
+    }
     for (const auto& e : netlist.circuit.elements())
         if (e.type == ElementType::BehavioralVoltageSource || e.type == ElementType::BehavioralCurrentSource)
         {
@@ -1647,7 +1736,6 @@ Result run(Analysis analysis, const Settings& given, const Netlist& netlist)
         r.error = "Explicit node-voltage initial conditions require the Xyce engine; the internal solver supports capacitor voltage and inductor current initial conditions only.";
         return r;
     }
-    const auto started = juce::Time::getMillisecondCounterHiRes();
     switch (analysis)
     {
         case Analysis::OperatingPoint: r.ok = runOperatingPoint(netlist, s, r); break;

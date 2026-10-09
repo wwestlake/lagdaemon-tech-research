@@ -1666,6 +1666,7 @@ public:
         std::vector<SimulationParameter> loadedSimulationParameters;
         std::vector<CircuitParameter> loadedCircuitParameters;
         std::vector<analytics::Netlist::Measurement> loadedMeasurements;
+        std::vector<analytics::Netlist::ParameterSweep> loadedParameterSweeps;
 
         for (const auto& entry : *componentArray)
         {
@@ -1895,6 +1896,22 @@ public:
                     loadedMeasurements.push_back(std::move(m));
             }
         }
+        if (const auto* sweepArray = root->getProperty("parameterSweeps").getArray())
+        {
+            for (const auto& entry : *sweepArray)
+            {
+                const auto* object = entry.getDynamicObject();
+                if (object == nullptr)
+                    continue;
+                analytics::Netlist::ParameterSweep sweep;
+                sweep.parameter = stringProperty(*object, "parameter", {});
+                sweep.start = stringProperty(*object, "start", {});
+                sweep.stop = stringProperty(*object, "stop", {});
+                sweep.step = stringProperty(*object, "step", {});
+                if (sweep.parameter.isNotEmpty())
+                    loadedParameterSweeps.push_back(std::move(sweep));
+            }
+        }
 
         const auto previousProbes = probes;
         instances = std::move(loadedInstances);
@@ -1907,6 +1924,7 @@ public:
         simulationParameters = std::move(loadedSimulationParameters);
         circuitParameters = std::move(loadedCircuitParameters);
         measurements = std::move(loadedMeasurements);
+        parameterSweeps = std::move(loadedParameterSweeps);
         selectedInstance = instances.empty() ? -1 : 0;
         selectedInstances.clear();
         if (selectedInstance >= 0)
@@ -2083,6 +2101,18 @@ public:
                  << ", \"nth2\": " << m.nth2
                  << ", \"edge\": " << quote(m.edge)
                  << ", \"edge2\": " << quote(m.edge2)
+                 << " }";
+        }
+        text << "\n  ],\n";
+        text << "  \"parameterSweeps\": [\n";
+        for (size_t i = 0; i < parameterSweeps.size(); ++i)
+        {
+            const auto& sweep = parameterSweeps[i];
+            if (i != 0) text << ",\n";
+            text << "    { \"parameter\": " << quote(sweep.parameter)
+                 << ", \"start\": " << quote(sweep.start)
+                 << ", \"stop\": " << quote(sweep.stop)
+                 << ", \"step\": " << quote(sweep.step)
                  << " }";
         }
         text << "\n  ],\n";
@@ -3930,6 +3960,7 @@ private:
     std::vector<SimulationParameter> simulationParameters;
     std::vector<CircuitParameter> circuitParameters;
     std::vector<analytics::Netlist::Measurement> measurements;
+    std::vector<analytics::Netlist::ParameterSweep> parameterSweeps;
     std::unique_ptr<juce::FileChooser> partsListChooser;
     WireNode wireDragStart;
     int selectedInstance = -1;
@@ -4112,6 +4143,7 @@ private:
         simulationParameters.clear();
         circuitParameters.clear();
         measurements.clear();
+        parameterSweeps.clear();
         selectedInstance = -1;
         selectedInstances.clear();
         selectedGroup = -1;
@@ -6940,6 +6972,7 @@ public:
             if (!progressed) break;
         }
         n.measurements = measurements;
+        n.sweeps = parameterSweeps;
         const auto netNames = computeNetNames();
         std::set<juce::String> used;
         for (const auto& [net, node] : sim.nodeOfNet)

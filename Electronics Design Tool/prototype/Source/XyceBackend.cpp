@@ -1039,6 +1039,32 @@ juce::String netlistFor(analytics::Analysis analysis, const analytics::Settings&
     }
     appendModelLines(n, out);
     out << "\n" << body;
+    if (!n.sweeps.empty())
+    {
+        if (n.sweeps.size() != 1)
+        {
+            error = "Xyce parameter stepping supports one sweep parameter at a time.";
+            return {};
+        }
+        const auto& sweep = n.sweeps.front();
+        bool known = false;
+        for (const auto& [name, expr] : n.parameters)
+            if (name.equalsIgnoreCase(sweep.parameter.trim()))
+                known = true;
+        double startValue = 0.0, stopValue = 0.0, stepValue = 0.0;
+        if (!known
+            || !circuit_sim::parseValue(sweep.start.toStdString(), startValue)
+            || !circuit_sim::parseValue(sweep.stop.toStdString(), stopValue)
+            || !circuit_sim::parseValue(sweep.step.toStdString(), stepValue)
+            || stepValue == 0.0
+            || (stopValue > startValue && stepValue < 0.0)
+            || (stopValue < startValue && stepValue > 0.0))
+        {
+            error = "Invalid Xyce parameter sweep configuration.";
+            return {};
+        }
+        out << "\n.STEP PARAM " << sweep.parameter << " " << sweep.start << " " << sweep.stop << " " << sweep.step << "\n";
+    }
 
     if (analysis == analytics::Analysis::OperatingPoint)
     {
