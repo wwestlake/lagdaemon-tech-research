@@ -3181,12 +3181,16 @@ public:
 
     bool keyPressed(const juce::KeyPress& key) override
     {
-        if (key.getModifiers().isCommandDown() && !key.getModifiers().isShiftDown()
-            && (key.getTextCharacter() == 'z' || key.getTextCharacter() == 'Z'))
+        // With Ctrl held, Windows reports a control character as the text
+        // character, so match the key code too.
+        auto isKey = [&](juce_wchar letter) {
+            return key.getKeyCode() == (int)letter || key.getTextCharacter() == letter
+                || key.getTextCharacter() == juce::CharacterFunctions::toLowerCase(letter);
+        };
+        if (key.getModifiers().isCommandDown() && !key.getModifiers().isShiftDown() && isKey('Z'))
             return undoEdit();
-        if ((key.getModifiers().isCommandDown() && (key.getTextCharacter() == 'y' || key.getTextCharacter() == 'Y'))
-            || (key.getModifiers().isCommandDown() && key.getModifiers().isShiftDown()
-                && (key.getTextCharacter() == 'z' || key.getTextCharacter() == 'Z')))
+        if ((key.getModifiers().isCommandDown() && isKey('Y'))
+            || (key.getModifiers().isCommandDown() && key.getModifiers().isShiftDown() && isKey('Z')))
             return redoEdit();
         if (key == juce::KeyPress::backspaceKey && currentSheet.isNotEmpty())
         {
