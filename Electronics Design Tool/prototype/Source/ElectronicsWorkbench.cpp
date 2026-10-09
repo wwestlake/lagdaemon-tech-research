@@ -5010,6 +5010,33 @@ private:
         return routedWirePoints(a, nodePosition(b), nodeLeadDirection(b));
     }
 
+    // Everything the simulated circuit depends on, and nothing it doesn't
+    // (positions): parts and their values/params, wiring, junctions, rails and
+    // circuit parameters.
+    juce::String electricalSignature() const
+    {
+        juce::String sig;
+        sig.preallocateBytes(instances.size() * 64 + wires.size() * 16);
+        for (const auto& instance : instances)
+        {
+            sig << instance.symbolId << '\x1f' << instance.refdes << '\x1f' << instance.value << '\x1f' << instance.frequency
+                << '\x1f' << instance.busName << '\x1f' << instance.family << '\x1f' << instance.manufacturerPart << '\x1f'
+                << instance.sheet << '\x1f' << instance.childSheet << '\x1f' << (int)instance.busLength << '\x1f' << (int)instance.ports.size();
+            for (const auto& [key, value] : instance.params)
+                sig << '\x1f' << key << '=' << value;
+            sig << '\x1e';
+        }
+        sig << '|';
+        for (const auto& wire : wires)
+            sig << wire.a.pin.instanceIndex << '.' << wire.a.pin.pinIndex << '.' << wire.a.junctionIndex << ' '
+                << wire.b.pin.instanceIndex << '.' << wire.b.pin.pinIndex << '.' << wire.b.junctionIndex << ';';
+        sig << '|' << (int)junctions.size() << '|';
+        for (const auto& p : circuitParameters)
+            sig << p.name << '=' << p.expression << ';';
+        sig << '|' << prefs::get("units.capital_m");
+        return sig;
+    }
+
     // Whole-diagram routing, recomputed only when geometry or wiring changes.
     mutable juce::String routeSignature;
     mutable std::vector<std::vector<juce::Point<float>>> routeCache;
@@ -6651,6 +6678,14 @@ private:
         int audioOutputNode = -1;
     };
 
+private:
+    // Last pin-voltage solve for the Properties panel, keyed by electricalSignature().
+    mutable juce::String pinVoltageSignature;
+    mutable SimNetlist pinVoltageSim;
+    mutable circuit_sim::OperatingPoint pinVoltageOp;
+
+public:
+
     // `ohmmeter` >= 0 builds the resistance-measurement circuit for that
     // multimeter: independent sources off, a 1 mA test current into HI.
     SimNetlist buildSimNetlist(int ohmmeter = -1) const
@@ -7422,9 +7457,19 @@ public:
 
         if (!isNetMarker(instance.symbolId) && instance.symbolId != "sub_block" && instance.symbolId != "block_port")
         {
-            drag_profile::Scope profile("properties.pinVoltages");
-            auto sim = buildSimNetlist();
-            const auto op = sim.error.isEmpty() ? circuit_sim::solveOperatingPoint(sim.circuit) : circuit_sim::OperatingPoint {};
+            // The operating point depends only on the circuit, never on where
+            // parts sit, so moving parts (and re-showing the same part) reuses
+            // the last solve. Re-solving on every drag step cost seconds each.
+            auto signature = electricalSignature();
+            if (signature != pinVoltageSignature)
+            {
+                drag_profile::Scope profile("properties.pinVoltages");
+                pinVoltageSim = buildSimNetlist();
+                pinVoltageOp = pinVoltageSim.error.isEmpty() ? circuit_sim::solveOperatingPoint(pinVoltageSim.circuit) : circuit_sim::OperatingPoint {};
+                pinVoltageSignature = std::move(signature);
+            }
+            const auto& sim = pinVoltageSim;
+            const auto& op = pinVoltageOp;
             const auto symbol = symbolForInstance(instance);
             for (const auto& pin : symbol.pins)
             {
@@ -9369,11 +9414,36 @@ private:
 
     void drawWires(juce::Graphics& g)
     {
-        for (const auto& wire : wires)
+        // While parts are being dragged, re-routing every frame (libavoid) is
+        // what made dragging sticky. Wires on moving parts get a cheap
+        // orthogonal preview; the rest keep their cached routes. The full
+        // route runs once on the first paint after release.
+        const bool liveDrag = draggingInstance && dragSnapshotTaken;
+        if (!liveDrag)
+            ensureRoutes();
+        auto moving = [&](const WireNode& n) {
+            if (n.isJunction() || n.pin.instanceIndex < 0)
+                return false;
+            return n.pin.instanceIndex == selectedInstance || selectedInstances.contains(n.pin.instanceIndex);
+        };
+        const bool cacheUsable = routeCache.size() == wires.size();
+        for (size_t i = 0; i < wires.size(); ++i)
         {
+            const auto& wire = wires[i];
             if (isInternalRailTapWire(wire) || !wireOnSheet(wire))
                 continue;
 
+            if (cacheUsable && routeCache[i].size() >= 2 && !(liveDrag && (moving(wire.a) || moving(wire.b))))
+            {
+                drawRoutedWire(g, routeCache[i], schematicWireColour(wire), 2.2f);
+                continue;
+            }
+            if (liveDrag)
+            {
+                const auto a = nodePosition(wire.a), b = nodePosition(wire.b);
+                drawRoutedWire(g, { a, { b.x, a.y }, b }, schematicWireColour(wire), 2.2f);
+                continue;
+            }
             drawRoutedWire(g, routedWirePoints(wire.a, wire.b), schematicWireColour(wire), 2.2f);
         }
 
