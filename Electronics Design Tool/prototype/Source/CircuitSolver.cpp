@@ -2303,6 +2303,198 @@ bool parseValue(const std::string& rawText, double& out)
     return std::isfinite(out);
 }
 
+class ExpressionParser
+{
+public:
+    ExpressionParser(std::string textIn, const std::map<std::string, double>& paramsIn)
+        : text(std::move(textIn)), params(paramsIn) {}
+
+    bool parse(double& out, std::string& error)
+    {
+        trimBraces();
+        pos = 0;
+        if (text.empty())
+        {
+            error = "empty expression";
+            return false;
+        }
+        out = expression(error);
+        skip();
+        if (error.empty() && pos != text.size())
+            error = "invalid syntax near '" + text.substr(pos) + "'";
+        if (error.empty() && !std::isfinite(out))
+            error = "expression did not produce a finite value";
+        return error.empty();
+    }
+
+private:
+    void trimBraces()
+    {
+        while (!text.empty() && std::isspace((unsigned char)text.front())) text.erase(text.begin());
+        while (!text.empty() && std::isspace((unsigned char)text.back())) text.pop_back();
+        if (text.size() >= 2 && text.front() == '{' && text.back() == '}')
+            text = text.substr(1, text.size() - 2);
+    }
+
+    void skip()
+    {
+        while (pos < text.size() && std::isspace((unsigned char)text[pos])) ++pos;
+    }
+
+    bool consume(char ch)
+    {
+        skip();
+        if (pos < text.size() && text[pos] == ch)
+        {
+            ++pos;
+            return true;
+        }
+        return false;
+    }
+
+    double expression(std::string& error)
+    {
+        auto v = term(error);
+        while (error.empty())
+        {
+            if (consume('+')) v += term(error);
+            else if (consume('-')) v -= term(error);
+            else break;
+        }
+        return v;
+    }
+
+    double term(std::string& error)
+    {
+        auto v = factor(error);
+        while (error.empty())
+        {
+            if (consume('*')) v *= factor(error);
+            else if (consume('/'))
+            {
+                const auto d = factor(error);
+                if (error.empty() && std::abs(d) < 1e-300) error = "division by zero";
+                else v /= d;
+            }
+            else break;
+        }
+        return v;
+    }
+
+    double factor(std::string& error)
+    {
+        skip();
+        if (consume('+')) return factor(error);
+        if (consume('-')) return -factor(error);
+        if (consume('('))
+        {
+            const auto v = expression(error);
+            if (error.empty() && !consume(')')) error = "missing ')'";
+            return v;
+        }
+        if (pos >= text.size())
+        {
+            error = "unexpected end of expression";
+            return 0.0;
+        }
+        if (std::isalpha((unsigned char)text[pos]) || text[pos] == '_')
+        {
+            const auto start = pos++;
+            while (pos < text.size() && (std::isalnum((unsigned char)text[pos]) || text[pos] == '_')) ++pos;
+            const auto name = text.substr(start, pos - start);
+            skip();
+            if (pos < text.size() && text[pos] == '(')
+            {
+                error = "unsupported function '" + name + "'";
+                return 0.0;
+            }
+            const auto found = params.find(name);
+            if (found == params.end()) error = "undefined parameter '" + name + "'";
+            return found != params.end() ? found->second : 0.0;
+        }
+        const auto start = pos;
+        while (pos < text.size() && !std::isspace((unsigned char)text[pos]) && std::string("+-*/()").find(text[pos]) == std::string::npos) ++pos;
+        double v = 0.0;
+        if (!parseValue(text.substr(start, pos - start), v))
+            error = "invalid numeric value '" + text.substr(start, pos - start) + "'";
+        return v;
+    }
+
+    std::string text;
+    const std::map<std::string, double>& params;
+    size_t pos = 0;
+};
+
+bool evaluateExpression(const std::string& expression, const std::map<std::string, double>& parameters,
+                        double& out, std::string& error)
+{
+    return ExpressionParser(expression, parameters).parse(out, error);
+}
+
+bool resolveParameters(const std::vector<std::pair<std::string, std::string>>& definitions,
+                       std::map<std::string, double>& values, std::string& error)
+{
+    values.clear();
+    std::map<std::string, std::string> pending;
+    for (const auto& [name, expr] : definitions)
+    {
+        if (name.empty())
+        {
+            error = "parameter name is empty";
+            return false;
+        }
+        if (!(std::isalpha((unsigned char)name[0]) || name[0] == '_')
+            || !std::all_of(name.begin(), name.end(), [](unsigned char ch) { return std::isalnum(ch) || ch == '_'; }))
+        {
+            error = "invalid parameter name '" + name + "'";
+            return false;
+        }
+        if (pending.count(name) != 0)
+        {
+            error = "duplicate parameter '" + name + "'";
+            return false;
+        }
+        pending[name] = expr;
+    }
+    while (!pending.empty())
+    {
+        bool progressed = false;
+        for (auto it = pending.begin(); it != pending.end(); )
+        {
+            double value = 0.0;
+            std::string e;
+            if (evaluateExpression(it->second, values, value, e))
+            {
+                values[it->first] = value;
+                it = pending.erase(it);
+                progressed = true;
+            }
+            else
+            {
+                ++it;
+            }
+        }
+        if (!progressed)
+        {
+            const auto& [name, expr] = *pending.begin();
+            std::string e;
+            double unused = 0.0;
+            evaluateExpression(expr, values, unused, e);
+            auto circular = e.find("undefined parameter '");
+            if (circular != std::string::npos)
+            {
+                const auto start = circular + 21;
+                const auto end = e.find("'", start);
+                if (end != std::string::npos && pending.count(e.substr(start, end - start)) != 0)
+                    e = "circular dependency";
+            }
+            error = "could not resolve parameter '" + name + "': " + (e.empty() ? "circular dependency" : e);
+            return false;
+        }
+    }
+    return true;
+}
+
 std::string formatValue(double value, const std::string& unit, int significant)
 {
     if (value == 0.0 || !std::isfinite(value))

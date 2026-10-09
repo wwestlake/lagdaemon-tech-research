@@ -277,6 +277,8 @@ bool validate(const ParamSpec& spec, const juce::String& value, juce::String& er
             auto textValue = value.trim();
             if (textValue.isEmpty() && spec.defaultValue.trim().isEmpty())
                 return true;
+            if (textValue.startsWithChar('{') && textValue.endsWithChar('}'))
+                return true;
             // European voltage notation 5V1 = 5.1 V.
             if (spec.unit == "V" && textValue.containsChar('V') && textValue.upToFirstOccurrenceOf("V", false, false).containsOnly("0123456789")
                 && textValue.fromFirstOccurrenceOf("V", false, false).containsOnly("0123456789") && textValue.fromFirstOccurrenceOf("V", false, false).isNotEmpty())

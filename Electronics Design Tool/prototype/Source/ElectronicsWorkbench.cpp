@@ -1664,6 +1664,7 @@ public:
         std::vector<Probe> loadedProbes;
         std::vector<Group> loadedGroups;
         std::vector<SimulationParameter> loadedSimulationParameters;
+        std::vector<CircuitParameter> loadedCircuitParameters;
 
         for (const auto& entry : *componentArray)
         {
@@ -1854,6 +1855,20 @@ public:
                     loadedSimulationParameters.push_back(std::move(p));
             }
         }
+        if (const auto* parameterArray = root->getProperty("circuitParameters").getArray())
+        {
+            for (const auto& entry : *parameterArray)
+            {
+                const auto* object = entry.getDynamicObject();
+                if (object == nullptr)
+                    continue;
+                CircuitParameter p;
+                p.name = stringProperty(*object, "name", {});
+                p.expression = stringProperty(*object, "expression", {});
+                if (p.name.isNotEmpty())
+                    loadedCircuitParameters.push_back(std::move(p));
+            }
+        }
 
         const auto previousProbes = probes;
         instances = std::move(loadedInstances);
@@ -1864,6 +1879,7 @@ public:
         probes = std::move(loadedProbes);
         groups = std::move(loadedGroups);
         simulationParameters = std::move(loadedSimulationParameters);
+        circuitParameters = std::move(loadedCircuitParameters);
         selectedInstance = instances.empty() ? -1 : 0;
         selectedInstances.clear();
         if (selectedInstance >= 0)
@@ -1992,6 +2008,16 @@ public:
             }
             text << "]\n";
             text << "    }";
+        }
+        text << "\n  ],\n";
+        text << "  \"circuitParameters\": [\n";
+        for (size_t i = 0; i < circuitParameters.size(); ++i)
+        {
+            const auto& p = circuitParameters[i];
+            if (i != 0) text << ",\n";
+            text << "    { \"name\": " << quote(p.name)
+                 << ", \"expression\": " << quote(p.expression)
+                 << " }";
         }
         text << "\n  ],\n";
         text << "  \"simulationParameters\": [\n";
@@ -3813,6 +3839,12 @@ private:
         juce::String control { "slider" };
     };
 
+    struct CircuitParameter
+    {
+        juce::String name;
+        juce::String expression;
+    };
+
     struct DisjointSet
     {
         std::vector<int> parent;
@@ -3848,6 +3880,7 @@ private:
     std::vector<Probe> probes;
     std::vector<Group> groups;
     std::vector<SimulationParameter> simulationParameters;
+    std::vector<CircuitParameter> circuitParameters;
     std::unique_ptr<juce::FileChooser> partsListChooser;
     WireNode wireDragStart;
     int selectedInstance = -1;
@@ -4028,6 +4061,7 @@ private:
         probes.clear();
         groups.clear();
         simulationParameters.clear();
+        circuitParameters.clear();
         selectedInstance = -1;
         selectedInstances.clear();
         selectedGroup = -1;
@@ -6414,6 +6448,7 @@ private:
         std::map<juce::String, circuit_sim::Node> nodeOfNet;
         std::map<juce::String, int> elementOfPart; // refdes -> element (ammeter source, source)
         juce::StringArray warnings;
+        juce::String error;
         int audioInputBranch = -1;
         int audioOutputNode = -1;
     };
@@ -6424,6 +6459,13 @@ private:
     {
         SimNetlist sim;
         const auto netNames = computeNetNames();
+        std::vector<std::pair<std::string, std::string>> paramDefs;
+        for (const auto& p : circuitParameters)
+            paramDefs.push_back({ p.name.toStdString(), p.expression.toStdString() });
+        std::map<std::string, double> paramValues;
+        std::string paramError;
+        if (!circuit_sim::resolveParameters(paramDefs, paramValues, paramError))
+            sim.error = "Parameter error: " + juce::String(paramError);
         auto node = [&](int instanceIndex, const juce::String& pinName) -> circuit_sim::Node {
             const auto symbol = symbolForInstance(instances[(size_t)instanceIndex]);
             for (int p = 0; p < (int)symbol.pins.size(); ++p)
@@ -6443,11 +6485,20 @@ private:
                 }
             return sim.circuit.addNode();
         };
+        auto cleanExpression = [](juce::String text) {
+            text = text.trim();
+            if (text.startsWithChar('{') && text.endsWithChar('}'))
+                text = text.substring(1, text.length() - 1).trim();
+            return text;
+        };
         auto number = [&](const Instance& inst, const juce::String& key, double fallback) {
             bool ok = true;
             juce::String val = partValue(inst, key);
             double v = parseQuantity(val, fallback, &ok);
             if (ok) return v;
+            std::string exprError;
+            if (circuit_sim::evaluateExpression(cleanExpression(val).toStdString(), paramValues, v, exprError))
+                return v;
 
             juce::String modelName = partValue(inst, "value");
             if (const auto* def = spice_library::findModel(modelName))
@@ -6461,8 +6512,16 @@ private:
                 }
             }
 
-            sim.warnings.add(inst.refdes + ": \"" + val + "\" is not a valid " + key + " (and not found in model " + modelName + "); using " + juce::String(fallback));
+            if (sim.error.isEmpty())
+                sim.error = inst.refdes + ": invalid " + key + " expression \"" + val + "\": " + juce::String(exprError);
             return fallback;
+        };
+        auto maybeExpression = [&](const Instance& inst, const juce::String& key) {
+            const auto text = partValue(inst, key).trim();
+            double unused = 0.0;
+            bool ok = true;
+            parseQuantity(text, 0.0, &ok);
+            return ok ? std::string() : cleanExpression(text).toStdString();
         };
         auto waveform = [&](const Instance& inst) {
             circuit_sim::Waveform w;
@@ -6513,6 +6572,7 @@ private:
             if (id == "resistor")
             {
                 element = c.addResistor(name, node(i, "1"), node(i, "2"), number(inst, "value", 10e3));
+                c.elements()[(size_t)element].valueExpression = maybeExpression(inst, "value");
                 c.elements()[(size_t)element].tc1 = number(inst, "tempco", 0.0) * 1e-6;
             }
             else if (id == "potentiometer")
@@ -6525,6 +6585,7 @@ private:
             else if (id == "capacitor" || id == "variable_capacitor")
             {
                 element = c.addCapacitor(name, node(i, "1"), node(i, "2"), number(inst, "value", 1e-6));
+                c.elements()[(size_t)element].valueExpression = maybeExpression(inst, "value");
                 if (double ic = 0.0; id == "capacitor" && element >= 0 && parseOptionalQuantity(partValue(inst, "initial_voltage"), ic))
                 {
                     c.elements()[(size_t)element].hasInitialCondition = true;
@@ -6534,6 +6595,7 @@ private:
             else if (id == "capacitor_polarized")
             {
                 element = c.addCapacitor(name, node(i, "+"), node(i, "-"), number(inst, "value", 10e-6));
+                c.elements()[(size_t)element].valueExpression = maybeExpression(inst, "value");
                 if (double ic = 0.0; element >= 0 && parseOptionalQuantity(partValue(inst, "initial_voltage"), ic))
                 {
                     c.elements()[(size_t)element].hasInitialCondition = true;
@@ -6543,6 +6605,7 @@ private:
             else if (id == "inductor")
             {
                 element = c.addInductor(name, node(i, "1"), node(i, "2"), number(inst, "value", 10e-3));
+                c.elements()[(size_t)element].valueExpression = maybeExpression(inst, "value");
                 if (double ic = 0.0; element >= 0 && parseOptionalQuantity(partValue(inst, "initial_current"), ic))
                 {
                     c.elements()[(size_t)element].hasInitialCondition = true;
@@ -6606,12 +6669,18 @@ private:
             {
                 double dcVal = (id == "audio_in") ? 0.0 : number(inst, "value", 5.0);
                 element = c.addVoltageSource(name, node(i, "+"), node(i, "-"), dcWave(measuringOhms ? 0.0 : dcVal));
+                if (element >= 0 && !measuringOhms)
+                    c.elements()[(size_t)element].valueExpression = maybeExpression(inst, "value");
                 if (id == "audio_in") sim.audioInputBranch = element;
             }
             else if (id == "current_source")
             {
                 if (!measuringOhms)
+                {
                     element = c.addCurrentSource(name, node(i, "+"), node(i, "-"), dcWave(number(inst, "value", 1e-3)));
+                    if (element >= 0)
+                        c.elements()[(size_t)element].valueExpression = maybeExpression(inst, "value");
+                }
             }
             else if (id == "ac_voltage_source" || id == "signal_source")
             {
@@ -6799,6 +6868,27 @@ public:
         analytics::Netlist n;
         n.circuit = sim.circuit;
         n.warnings = sim.warnings;
+        n.error = sim.error;
+        std::map<std::string, double> emitted;
+        std::vector<bool> done(circuitParameters.size(), false);
+        for (size_t pass = 0; pass < circuitParameters.size(); ++pass)
+        {
+            bool progressed = false;
+            for (size_t i = 0; i < circuitParameters.size(); ++i)
+            {
+                if (done[i]) continue;
+                double v = 0.0;
+                std::string e;
+                if (circuit_sim::evaluateExpression(circuitParameters[i].expression.toStdString(), emitted, v, e))
+                {
+                    n.parameters.push_back({ circuitParameters[i].name, circuitParameters[i].expression });
+                    emitted[circuitParameters[i].name.toStdString()] = v;
+                    done[i] = true;
+                    progressed = true;
+                }
+            }
+            if (!progressed) break;
+        }
         const auto netNames = computeNetNames();
         std::set<juce::String> used;
         for (const auto& [net, node] : sim.nodeOfNet)

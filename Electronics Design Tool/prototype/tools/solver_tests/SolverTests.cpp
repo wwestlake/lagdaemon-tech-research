@@ -8,6 +8,7 @@
 #include <crtdbg.h>
 #include <cstdlib>
 #include <cstdio>
+#include <map>
 #include <string>
 #include <vector>
 
@@ -204,6 +205,15 @@ int main()
         checkTrue("parse 12V", parseValue("12V", v) && std::abs(v - 12.0) < 1e-12);
         checkTrue("reject abc", !parseValue("abc", v));
         checkTrue("reject 1x2", !parseValue("1x2", v));
+        std::map<std::string, double> params;
+        std::string error;
+        checkTrue("resolve simple parameter", resolveParameters({ { "RBASE", "1000" } }, params, error) && std::abs(params["RBASE"] - 1000.0) < 1e-9, error);
+        checkTrue("resolve derived parameter", resolveParameters({ { "SCALE", "2" }, { "RBASE", "1k" }, { "R2", "RBASE*SCALE" } }, params, error)
+                  && std::abs(params["R2"] - 2000.0) < 1e-9, error);
+        checkTrue("reject undefined parameter", !resolveParameters({ { "R1", "MISSING" } }, params, error), error);
+        checkTrue("reject circular parameter", !resolveParameters({ { "A", "B" }, { "B", "A" } }, params, error), error);
+        checkTrue("reject divide by zero", !resolveParameters({ { "BAD", "1/0" } }, params, error), error);
+        checkTrue("reject unsupported function", !resolveParameters({ { "BAD", "sin(1)" } }, params, error), error);
         checkTrue("format 4700 ohm", formatValue(4700.0, "ohm") == "4.7 kohm", "(" + formatValue(4700.0, "ohm") + ")");
     }
 

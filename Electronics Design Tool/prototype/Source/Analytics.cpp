@@ -1483,6 +1483,11 @@ Result run(Analysis analysis, const Settings& given, const Netlist& netlist)
     r.title = infoFor(analysis).title;
     r.when = juce::Time::getCurrentTime();
     r.warnings = netlist.warnings;
+    if (netlist.error.isNotEmpty())
+    {
+        r.error = netlist.error;
+        return r;
+    }
     Settings s = given;
     for (const auto& f : fieldsFor(analysis))
         if (s.find(f.key) == s.end() || s[f.key].trim().isEmpty())

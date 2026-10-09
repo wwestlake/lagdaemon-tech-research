@@ -82,6 +82,8 @@ struct Netlist
     std::vector<NetInfo> nets;
     std::vector<PartInfo> parts;
     juce::StringArray warnings;
+    juce::String error;
+    std::vector<std::pair<juce::String, juce::String>> parameters;
 };
 
 // Choices for Net / Source / Target fields.

@@ -115,6 +115,7 @@ struct Element
     std::vector<Node> nodes; // see the add* helpers for terminal order
     std::string modelName;   // selected SPICE .MODEL/.SUBCKT name, when bound
     double value = 0.0;      // R ohms, C farads, L henries, gain, coupling k
+    std::string valueExpression; // original parameterized expression for Xyce where applicable
     double offResistance = 1e9; // controlled switch Roff
     double threshold = 0.0;  // controlled switch Vt/It
     double hysteresis = 0.0; // controlled switch Vh/Ih
@@ -382,6 +383,10 @@ FourierResult fourier(const std::vector<double>& time, const std::vector<double>
 // Parses engineering values: 4.7k, 10u, 2.2n, 100p, 1meg, 3M (mega), 5m (milli),
 // optional trailing unit letters (4.7kohm, 10uF, 12V). Returns false if unparseable.
 bool parseValue(const std::string& text, double& out);
+bool evaluateExpression(const std::string& expression, const std::map<std::string, double>& parameters,
+                        double& out, std::string& error);
+bool resolveParameters(const std::vector<std::pair<std::string, std::string>>& definitions,
+                       std::map<std::string, double>& values, std::string& error);
 // SPICE reads a capital M as milli; the default here reads it as mega.
 void setCapitalMIsMilli(bool milli);
 std::string formatValue(double value, const std::string& unit, int significant = 3);

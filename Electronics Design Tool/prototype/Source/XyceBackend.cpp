@@ -43,6 +43,11 @@ juce::String value(double v)
     return juce::String(v, 12);
 }
 
+juce::String elementValue(const Element& e)
+{
+    return e.valueExpression.empty() ? value(e.value) : "{" + juce::String(e.valueExpression) + "}";
+}
+
 juce::String nodeName(const analytics::Netlist& n, circuit_sim::Node node)
 {
     if (node == 0)
@@ -144,6 +149,13 @@ juce::String waveformSyntax(const circuit_sim::Waveform& w)
                 + value(w.tau1) + " " + value(w.delay2) + " " + value(w.tau2) + ")";
     }
     return "DC 0";
+}
+
+juce::String waveformSyntax(const Element& e)
+{
+    if (e.wave.kind == circuit_sim::Waveform::Kind::Dc && !e.valueExpression.empty())
+        return "DC {" + juce::String(e.valueExpression) + "} AC " + value(e.wave.acMagnitude != 0.0 ? e.wave.acMagnitude : 0.0) + " " + value(e.wave.acPhaseDegrees);
+    return waveformSyntax(e.wave);
 }
 
 juce::String behavioralExpression(const Element& e)
@@ -555,7 +567,7 @@ bool appendElement(const analytics::Netlist& n, juce::String& netlist, std::map<
         case ElementType::Resistor:
         case ElementType::VariableResistor:
         case ElementType::Switch:
-            netlist << elementName(e, index, "R") << " " << nd(0) << " " << nd(1) << " " << value(std::max(e.value, 1e-9)) << "\n";
+            netlist << elementName(e, index, "R") << " " << nd(0) << " " << nd(1) << " " << elementValue(e) << "\n";
             return true;
         case ElementType::VoltageControlledSwitch:
         {
@@ -586,13 +598,13 @@ bool appendElement(const analytics::Netlist& n, juce::String& netlist, std::map<
             return true;
         }
         case ElementType::Capacitor:
-            netlist << elementName(e, index, "C") << " " << nd(0) << " " << nd(1) << " " << value(e.value);
+            netlist << elementName(e, index, "C") << " " << nd(0) << " " << nd(1) << " " << elementValue(e);
             if (e.hasInitialCondition)
                 netlist << " IC=" << value(e.initialCondition);
             netlist << "\n";
             return true;
         case ElementType::Inductor:
-            netlist << elementName(e, index, "L") << " " << nd(0) << " " << nd(1) << " " << value(e.value);
+            netlist << elementName(e, index, "L") << " " << nd(0) << " " << nd(1) << " " << elementValue(e);
             if (e.hasInitialCondition)
                 netlist << " IC=" << value(e.initialCondition);
             netlist << "\n";
@@ -601,11 +613,11 @@ bool appendElement(const analytics::Netlist& n, juce::String& netlist, std::map<
         {
             const auto name = sourceName(e, index);
             voltageSourceNames[(int)index] = name;
-            netlist << name << " " << nd(0) << " " << nd(1) << " " << waveformSyntax(e.wave) << "\n";
+            netlist << name << " " << nd(0) << " " << nd(1) << " " << waveformSyntax(e) << "\n";
             return true;
         }
         case ElementType::CurrentSource:
-            netlist << sourceName(e, index) << " " << nd(0) << " " << nd(1) << " " << waveformSyntax(e.wave) << "\n";
+            netlist << sourceName(e, index) << " " << nd(0) << " " << nd(1) << " " << waveformSyntax(e) << "\n";
             return true;
         case ElementType::BehavioralVoltageSource:
         case ElementType::BehavioralCurrentSource:
@@ -918,9 +930,20 @@ bool hasDeviceInitialConditions(const circuit_sim::Circuit& circuit)
 
 juce::String netlistFor(analytics::Analysis analysis, const analytics::Settings& s, const analytics::Netlist& n, juce::String& error)
 {
+    if (n.error.isNotEmpty())
+    {
+        error = n.error;
+        return {};
+    }
     juce::String out;
     out << "* Djehuti Workbench Xyce backend netlist\n";
     out << "* Generated from canonical Workbench Analytics netlist\n\n";
+    if (!n.parameters.empty())
+    {
+        for (const auto& [name, expr] : n.parameters)
+            out << ".PARAM " << name << "={" << expr << "}\n";
+        out << "\n";
+    }
     std::map<int, juce::String> voltageSourceNames;
     std::set<juce::String> subcircuits;
     juce::String body;
