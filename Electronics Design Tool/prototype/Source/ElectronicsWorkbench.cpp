@@ -12370,7 +12370,7 @@ public:
 
         refreshProfileList();
         startLocalApi();
-        refreshTranscriptBrowser();
+        refreshTranscriptBrowser(true);
     }
 
     ~AgentPanel() override
@@ -12523,7 +12523,7 @@ public:
         {
             history.clear();
             transcriptMarkdown = "BYOK assistant ready.\n";
-            refreshTranscriptBrowser();
+            refreshTranscriptBrowser(true);
         }
         return true;
     }
@@ -12764,7 +12764,32 @@ private:
             transcriptMarkdown << "```json\n" << text.trim() << "\n```\n";
         else
             transcriptMarkdown << text.trim() << "\n";
-        refreshTranscriptBrowser();
+        refreshTranscriptBrowser(speaker == "user"); // sending a message always returns to the newest
+    }
+
+    // The transcript page is reloaded for every message (this WebView has no
+    // script bridge), and a reloaded page starts at the top. So the page keeps
+    // its own scroll state across reloads: whether the reader is following the
+    // bottom, and where they were if not. It follows while the reader is at or
+    // near the bottom, keeps their place once they scroll up, and resumes when
+    // they scroll back down. It positions again after the math has rendered,
+    // since that changes the page height. ?follow=1 forces following.
+    static juce::String transcriptScrollScript()
+    {
+        return "<script>(function(){"
+               "var K='djehutiAgentTranscriptScroll',S=document.scrollingElement||document.documentElement;"
+               "try{history.scrollRestoration='manual';}catch(e){}"
+               "var st=null;try{st=JSON.parse(sessionStorage.getItem(K)||'null');}catch(e){}"
+               "if(!st||/[?&]follow=1/.test(location.search))st={follow:true,top:0};"
+               "function save(){try{sessionStorage.setItem(K,JSON.stringify(st));}catch(e){}}"
+               "function bottom(){S.scrollTop=S.scrollHeight;}"
+               "function place(){if(st.follow)bottom();else S.scrollTop=st.top;}"
+               "place();save();"
+               "window.addEventListener('scroll',function(){"
+               "st={follow:S.scrollHeight-S.clientHeight-S.scrollTop<48,top:S.scrollTop};save();},{passive:true});"
+               "window.addEventListener('load',function(){setTimeout(place,0);});"
+               "window.addEventListener('resize',function(){if(st.follow)bottom();});"
+               "})();</script>";
     }
 
     juce::File transcriptHtmlFile() const
@@ -12774,15 +12799,17 @@ private:
             .getChildFile("agent-transcript.html");
     }
 
-    void refreshTranscriptBrowser()
+    void refreshTranscriptBrowser(bool follow = false)
     {
         const auto file = transcriptHtmlFile();
         if (!file.getParentDirectory().createDirectory().wasOk())
             return;
 
-        const auto html = markdownToHtmlDocument("BYOK Electronics Agent", transcriptMarkdown);
+        const auto html = markdownToHtmlDocument("BYOK Electronics Agent", transcriptMarkdown)
+                              .replace("</body>", transcriptScrollScript() + "</body>");
         if (file.replaceWithText(html))
-            transcriptBrowser.goToURL(juce::URL(file).toString(true));
+            transcriptBrowser.goToURL(follow ? juce::URL(file).withParameter("follow", "1").toString(true)
+                                             : juce::URL(file).toString(true));
     }
 
     juce::String systemPrompt() const
