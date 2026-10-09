@@ -301,7 +301,7 @@ const juce::StringArray& supportedSymbolIds()
         "voltage_controlled_switch", "current_controlled_switch", "relay_spst",
         "fuse", "connector_2", "connector_3", "test_point", "logic_not", "logic_and",
         "logic_or", "logic_nand", "logic_nor", "logic_xor", "oscilloscope_2ch",
-        "digital_multimeter", "bode_analyzer", "annotation_text"
+        "digital_multimeter", "bode_analyzer", "xyz_plotter", "annotation_text"
     };
     return ids;
 }
@@ -384,6 +384,8 @@ SymbolDef symbolFor(const juce::String& id)
     if (id == "oscilloscope_2ch")    return make(id, "SCOPE", { -60, -48, 120, 96 }, { { "CH1", { -72, -24 } }, { "CH2", { -72, 24 } }, { "REF", { 0, 72 } } }, true);
     if (id == "bode_analyzer")       return make(id, "BODE", { -60, -48, 120, 96 }, { { "IN", { -72, -24 } }, { "OUT", { -72, 24 } }, { "REF", { 0, 72 } } }, true);
     if (id == "digital_multimeter")  return make(id, "DMM", { -48, -36, 96, 72 }, { { "HI", { -72, -24 } }, { "LO", { -72, 24 } } }, true);
+    if (id == "xyz_plotter")         return make(id, "PLOT XYZ", { -60, -72, 120, 144 }, { { "A+", { -72, -60 } }, { "A-", { -72, -36 } }, { "B+", { -72, -12 } },
+                                                                                         { "B-", { -72, 12 } }, { "C+", { -72, 36 } }, { "C-", { -72, 60 } } }, true);
     if (id == "annotation_text")     return make(id, "NOTE", { -96, -42, 192, 84 }, {});
     return {};
 }
@@ -422,6 +424,7 @@ juce::String refdesPrefixFor(const juce::String& id)
     if (id == "oscilloscope_2ch") return "SCOPE";
     if (id == "digital_multimeter") return "DMM";
     if (id == "bode_analyzer") return "FRA";
+    if (id == "xyz_plotter") return "PLOT";
     if (id == "annotation_text") return "NOTE";
     return "U";
 }
@@ -433,7 +436,7 @@ bool isPowerSymbol(const juce::String& id)
 
 bool isInstrumentSymbol(const juce::String& id)
 {
-    return id == "oscilloscope_2ch" || id == "digital_multimeter" || id == "bode_analyzer";
+    return id == "oscilloscope_2ch" || id == "digital_multimeter" || id == "bode_analyzer" || id == "xyz_plotter";
 }
 
 bool isRailBus(const juce::String& id)

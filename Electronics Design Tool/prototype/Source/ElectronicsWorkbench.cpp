@@ -17,6 +17,10 @@
 #include "AudioDsp.h"
 #include "SpiceLibrary.h"
 #include "CircuitHierarchyPanel.h"
+#include "PlotInstrument.h"
+#include "PlotInstrumentView.h"
+#include "XyceBackend.h"
+#include <thread>
 
 // Interaction profiler: set DJEHUTI_DRAG_PROFILE=1 and each mouse-up appends
 // per-section call counts and avg/max milliseconds for the gesture to
@@ -416,8 +420,13 @@ const SchematicToolSpec schematicToolSpecs[] = {
     },
     {
         "instrument_read",
-        "Read an instrument node exactly as its window shows it: oscilloscope channel Vpp/Vrms/mean/frequency at its time/div and trigger, multimeter reading in its function (DC V, AC V, DC A, Ohms), or frequency analyzer peak gain and -3 dB points. Change instrument settings with schematic_set_parameters.",
-        R"({"type":"object","properties":{"refdes":{"type":"string","description":"Instrument reference designator, such as SCOPE1, DMM1, or FRA1."}},"required":["refdes"],"additionalProperties":false})"
+        "Read an instrument node exactly as its window shows it: oscilloscope channel Vpp/Vrms/mean/frequency at its time/div and trigger, multimeter reading in its function (DC V, AC V, DC A, Ohms), frequency analyzer peak gain and -3 dB points, or 2D/3D plotter acquisition (mode, axis signals with units and ranges, sample count, synchronisation, problems such as unwired probes). Change instrument settings with schematic_set_parameters (plotter: mode Time/XY/XYZ, x, y, z, traces, stop, step, start, engine, markers, projection, x_min..z_max, view). Plotter samples: instrument_plot_data.",
+        R"({"type":"object","properties":{"refdes":{"type":"string","description":"Instrument reference designator, such as SCOPE1, DMM1, FRA1 or PLOT1."}},"required":["refdes"],"additionalProperties":false})"
+    },
+    {
+        "instrument_plot_data",
+        "Acquire a 2D/3D plotter (xyz_plotter) and return its synchronised samples as the window plots them: time plus one column per axis signal (X, Y, Z, or each time trace), thinned deterministically to at most max_points while keeping each signal's extremes. Same acquisition as the window; never changes the circuit.",
+        R"({"type":"object","properties":{"refdes":{"type":"string","description":"Plotter reference designator, such as PLOT1."},"max_points":{"type":"integer","description":"Most samples to return (default 400, at most 20000)."}},"required":["refdes"],"additionalProperties":false})"
     },
     {
         "preferences_list",
@@ -1263,6 +1272,8 @@ public:
             add({ "net_label", "Net Label", "Power & Ground" });
         if (std::none_of(allSymbols.begin(), allSymbols.end(), [](const SymbolInfo& s) { return s.id == "bode_analyzer"; }))
             add({ "bode_analyzer", "Frequency Analyzer (Bode)", "Instrument" });
+        if (std::none_of(allSymbols.begin(), allSymbols.end(), [](const SymbolInfo& s) { return s.id == "xyz_plotter"; }))
+            add({ "xyz_plotter", "2D/3D Plotter (Time / XY / XYZ)", "Instrument" });
         content.rebuild();
 
         if (onSymbolSelected != nullptr)
@@ -1598,6 +1609,7 @@ private:
         add({ "oscilloscope_2ch", "2-Channel Oscilloscope", "Instrument" });
         add({ "digital_multimeter", "Digital Multimeter", "Instrument" });
         add({ "bode_analyzer", "Frequency Analyzer (Bode)", "Instrument" });
+        add({ "xyz_plotter", "2D/3D Plotter (Time / XY / XYZ)", "Instrument" });
         add({ "annotation_text", "Text Note", "Annotation" });
     }
 
@@ -2534,7 +2546,7 @@ public:
             for (int p = 0; p < (int)symbol.pins.size(); ++p)
             {
                 const auto ordinal = pinOrdinal({ i, p });
-                if (ordinal >= 0 && ordinal < (int)nodeDegree.size() && nodeDegree[(size_t)ordinal] == 0)
+                if (ordinal >= 0 && ordinal < (int)nodeDegree.size() && nodeDegree[(size_t)ordinal] == 0 && instance.symbolId != "xyz_plotter")
                     addFinding("WARN", instance.refdes + "." + symbol.pins[(size_t)p].name + " is not wired.");
             }
 
@@ -4659,6 +4671,7 @@ private:
         if (symbolId == "logic_xor") return "digital.logic.xor";
         if (symbolId == "oscilloscope_2ch") return "instrument.oscilloscope";
         if (symbolId == "digital_multimeter") return "instrument.multimeter";
+        if (symbolId == "xyz_plotter") return "instrument.plotter";
         if (symbolId == "annotation_text") return "documentation.annotation";
         return "unknown";
     }
@@ -4737,6 +4750,8 @@ private:
             return "{ \"waveform\": \"sine\", \"amplitude\": { \"value\": " + quote(instance.value) + ", \"unit\": \"V\" }, \"frequency\": { \"value\": " + quote(instance.frequency) + ", \"unit\": \"Hz\" } }";
         if (symbolId == "oscilloscope_2ch")
             return "{ \"instrumentType\": \"digital_oscilloscope\", \"channels\": [\"CH1\", \"CH2\"], \"reference\": \"REF\", \"windowMode\": \"floating_preferred\" }";
+        if (symbolId == "xyz_plotter")
+            return "{ \"instrumentType\": \"xyz_plotter\", \"channels\": [\"A+\", \"A-\", \"B+\", \"B-\", \"C+\", \"C-\"], \"modes\": [\"Time\", \"XY\", \"XYZ\"], \"windowMode\": \"floating_preferred\" }";
         if (symbolId == "digital_multimeter")
             return "{ \"instrumentType\": \"digital_multimeter\", \"function\": " + quote(instance.value) + ", \"connections\": [\"HI\", \"LO\"], \"windowMode\": \"floating_preferred\" }";
         return "{}";
@@ -8609,6 +8624,268 @@ public:
         return cap;
     }
 
+    // ---- 2D/3D plotter: what to acquire, built here; the run itself touches no canvas state.
+    struct PlotterRequest
+    {
+        juce::String error;
+        plot_instrument::Mode mode = plot_instrument::Mode::XY;
+        plot_instrument::Plan plan;
+        analytics::Netlist netlist;
+        analytics::Settings settings;
+        double start = 0.0;
+        bool xyce = false;
+        juce::File outputRoot;
+        juce::StringArray notes;
+        juce::String key; // changes only when the acquisition would; view settings are not part of it
+    };
+
+    // Signal specs separated by commas or semicolons, keeping V(a,b) whole.
+    static juce::StringArray splitSignalSpecs(const juce::String& text)
+    {
+        juce::StringArray out;
+        juce::String current;
+        int depth = 0;
+        for (auto c : text)
+        {
+            if (c == '(') ++depth;
+            if (c == ')') depth = std::max(0, depth - 1);
+            if ((c == ',' || c == ';') && depth == 0)
+            {
+                out.add(current.trim());
+                current.clear();
+                continue;
+            }
+            current << juce::String::charToString(c);
+        }
+        out.add(current.trim());
+        out.removeEmptyStrings();
+        return out;
+    }
+
+    PlotterRequest plotterRequest(const juce::String& refdes) const
+    {
+        PlotterRequest r;
+        const auto index = instanceIndexForRefdesAnySheet(refdes);
+        if (index < 0 || instances[(size_t)index].symbolId != "xyz_plotter")
+        {
+            r.error = "No plotter " + refdes + ".";
+            return r;
+        }
+        const auto& inst = instances[(size_t)index];
+        r.mode = plot_instrument::parseMode(partValue(inst, "mode"));
+        r.netlist = analyticsNetlist();
+        if (r.netlist.error.isNotEmpty())
+        {
+            r.error = r.netlist.error;
+            return r;
+        }
+        // Probe hookups: the solver node of each channel pin's net. A wired pin
+        // whose net holds no circuit part gets a node the netlist does not have,
+        // so the plan reports it as outside the simulated circuit.
+        const auto sim = buildSimNetlist();
+        const auto symbol = symbolForInstance(inst);
+        auto pinNode = [&](const juce::String& pin) {
+            const auto node = simNodeOfPin(sim, index, pin);
+            if (node >= 0)
+                return node;
+            for (int p = 0; p < (int)symbol.pins.size(); ++p)
+                if (symbol.pins[(size_t)p].name == pin && wireCountAtPin({ index, p }) > 0)
+                    return 1 << 30;
+            return -1;
+        };
+        std::vector<plot_instrument::Channel> channels;
+        for (const juce::String name : { "A", "B", "C" })
+            channels.push_back({ name, pinNode(name + "+"), pinNode(name + "-") });
+
+        juce::StringArray specs;
+        if (r.mode == plot_instrument::Mode::Time)
+            specs = splitSignalSpecs(partValue(inst, "traces"));
+        else
+        {
+            specs.add(partValue(inst, "x"));
+            specs.add(partValue(inst, "y"));
+            if (r.mode == plot_instrument::Mode::XYZ)
+                specs.add(partValue(inst, "z"));
+        }
+        r.plan = plot_instrument::plan(r.netlist, channels, r.mode, specs);
+
+        const auto stop = plot_instrument::parseNumber(partValue(inst, "stop"), 10e-3);
+        const auto step = plot_instrument::parseNumber(partValue(inst, "step"), stop / 2000.0);
+        r.start = juce::jlimit(0.0, stop, plot_instrument::parseNumber(partValue(inst, "start"), 0.0));
+        if (!(stop > 0.0) || !(step > 0.0))
+        {
+            r.error = "Stop time and time step must be positive.";
+            return r;
+        }
+        // Keep every solver step unless that is more than the store holds;
+        // then say so rather than thinning silently.
+        const auto steps = (stop - r.start) / step;
+        const int keep = (int)std::min(200000.0, std::ceil(steps) + 16.0);
+        if (steps > 200000.0)
+            r.notes.add("The run has about " + juce::String((juce::int64)steps) + " steps; every "
+                        + juce::String((juce::int64)std::ceil(steps / 200000.0)) + "th is stored (200000 samples).");
+        r.settings = { { "outputs", r.plan.outputs }, { "stop", juce::String(stop, 12) }, { "step", juce::String(step, 12) },
+                       { "start", juce::String(r.start, 12) }, { "max_points", juce::String(keep) } };
+        r.xyce = partValue(inst, "engine") == "Xyce";
+        if (r.xyce)
+            r.outputRoot = outputDirectory != nullptr ? outputDirectory() : juce::File::getSpecialLocation(juce::File::tempDirectory);
+
+        juce::String key;
+        key << buildXyceNetlist() << "|" << plot_instrument::modeName(r.mode) << "|" << specs.joinIntoString(";") << "|";
+        for (const auto& c : channels)
+            key << c.plusNode << "," << c.minusNode << ";";
+        for (const auto& [k, v] : r.settings)
+            key << k << "=" << v << ";";
+        key << (r.xyce ? "xyce" : "internal");
+        r.key = juce::String(key.hashCode64());
+        return r;
+    }
+
+    // Runs the transient and synchronises the probes. Safe off the message thread.
+    static plot_instrument::Acquisition runPlotterRequest(const PlotterRequest& r)
+    {
+        plot_instrument::Acquisition a;
+        if (r.error.isNotEmpty())
+        {
+            a.error = r.error;
+            return a;
+        }
+        if (!r.plan.canRun())
+        {
+            a.error = r.plan.problems.joinIntoString("\n");
+            return a;
+        }
+        const auto result = r.xyce ? xyce_backend::run(analytics::Analysis::Transient, r.settings, r.netlist, r.outputRoot)
+                                   : analytics::run(analytics::Analysis::Transient, r.settings, r.netlist);
+        a = plot_instrument::acquire(result, r.plan);
+        if (a.ok && r.start > 0.0 && !a.time.empty() && a.time.front() < r.start)
+        {
+            // Xyce stores from t = 0; plot from the requested start like the internal solver.
+            const auto first = (size_t)(std::lower_bound(a.time.begin(), a.time.end(), r.start) - a.time.begin());
+            a.time.erase(a.time.begin(), a.time.begin() + (std::ptrdiff_t)first);
+            for (auto& v : a.values)
+                v.erase(v.begin(), v.begin() + (std::ptrdiff_t)first);
+            if (a.time.empty())
+            {
+                a.ok = false;
+                a.error = "No samples after the plot-from time.";
+            }
+        }
+        a.warnings.addArray(r.notes);
+        return a;
+    }
+
+    plot_instrument::Acquisition acquirePlotter(const juce::String& refdes) const
+    {
+        return runPlotterRequest(plotterRequest(refdes));
+    }
+
+    // Which acquired signals go on which axis, and the axis ranges (manual
+    // where set, otherwise automatic). Shared by the window and the tools.
+    static PlotSurface::Axes plotterAxes(const plot_instrument::Acquisition& a, plot_instrument::Mode mode,
+                                         const std::function<juce::String(const juce::String&)>& setting)
+    {
+        PlotSurface::Axes axes;
+        if (!a.ok)
+            return axes;
+        for (int k = 0; k < (int)a.values.size(); ++k)
+            axes.signals.push_back(k);
+        if (mode == plot_instrument::Mode::Time)
+        {
+            plot_instrument::Range time { a.time.front(), a.time.back(), true };
+            if (!(time.max > time.min))
+                time = plot_instrument::autoRange(a.time);
+            axes.ranges.push_back(plot_instrument::applyManual(time, setting("x_min"), setting("x_max")));
+            plot_instrument::Range values;
+            for (const auto& v : a.values)
+            {
+                const auto r = plot_instrument::autoRange(v);
+                if (!r.valid) continue;
+                values = values.valid ? plot_instrument::Range { std::min(values.min, r.min), std::max(values.max, r.max), true } : r;
+            }
+            if (!values.valid)
+                values = { -1.0, 1.0, true };
+            axes.ranges.push_back(plot_instrument::applyManual(values, setting("y_min"), setting("y_max")));
+            return axes;
+        }
+        static const char* keys[] { "x", "y", "z" };
+        for (size_t k = 0; k < a.values.size() && k < 3; ++k)
+        {
+            auto r = plot_instrument::autoRange(a.values[k]);
+            if (!r.valid)
+                r = { -1.0, 1.0, true };
+            axes.ranges.push_back(plot_instrument::applyManual(r, setting(juce::String(keys[k]) + "_min"), setting(juce::String(keys[k]) + "_max")));
+        }
+        return axes;
+    }
+
+    juce::String plotterSummaryJson(const juce::String& refdes, const plot_instrument::Acquisition& a) const
+    {
+        if (!a.ok)
+            return toolFailure("instrument_read", a.error);
+        const auto mode = plot_instrument::parseMode(instrumentSetting(refdes, "mode"));
+        const auto axes = plotterAxes(a, mode, [&](const juce::String& key) { return instrumentSetting(refdes, key); });
+        static const char* names[] { "X", "Y", "Z" };
+        juce::String signals = "[";
+        for (size_t k = 0; k < a.values.size(); ++k)
+        {
+            const auto r = plot_instrument::autoRange(a.values[k]);
+            const auto role = mode == plot_instrument::Mode::Time ? "trace" + juce::String((int)k + 1) : juce::String(names[k]);
+            const auto shown = mode == plot_instrument::Mode::Time ? axes.ranges[1] : axes.ranges[k];
+            double lo = 0.0, hi = 0.0;
+            bool any = false;
+            for (auto v : a.values[k])
+                if (std::isfinite(v)) { lo = any ? std::min(lo, v) : v; hi = any ? std::max(hi, v) : v; any = true; }
+            signals << (k == 0 ? "" : ", ") << "{ \"axis\": " << quote(role) << ", \"label\": " << quote(a.labels[k]) << ", \"unit\": " << quote(a.units[k])
+                    << ", \"min\": " << (any ? juce::String(lo, 9) : juce::String("null")) << ", \"max\": " << (any ? juce::String(hi, 9) : juce::String("null"))
+                    << ", \"axisRange\": [" << juce::String(shown.min, 9) << ", " << juce::String(shown.max, 9) << "] }";
+            juce::ignoreUnused(r);
+        }
+        signals << "]";
+        juce::StringArray warnings;
+        for (const auto& w : a.warnings)
+            warnings.add(quote(w));
+        return "{ \"ok\": true, \"tool\": \"instrument_read\", \"instrument\": \"plotter\", \"refdes\": " + quote(refdes)
+             + ", \"mode\": " + quote(plot_instrument::modeName(mode)) + ", \"samples\": " + juce::String((int)a.size())
+             + ", \"timeStart\": " + juce::String(a.time.front(), 12) + ", \"timeEnd\": " + juce::String(a.time.back(), 12)
+             + ", \"resampled\": " + (a.resampled ? "true" : "false") + ", \"gaps\": " + juce::String(a.gaps)
+             + ", \"displayedPoints\": " + juce::String((int)plot_instrument::displayIndices(a, axes.signals, PlotSurface::displayBudget).size())
+             + ", \"view\": " + quote(instrumentSetting(refdes, "view"))
+             + ", \"signals\": " + signals + ", \"warnings\": [" + warnings.joinIntoString(", ") + "] }";
+    }
+
+    juce::String plotterDataJson(const juce::String& refdes, int maxPoints) const
+    {
+        const auto index = instanceIndexForRefdesAnySheet(refdes);
+        if (index < 0 || instances[(size_t)index].symbolId != "xyz_plotter")
+            return toolFailure("instrument_plot_data", "No plotter " + refdes + ".");
+        const auto a = acquirePlotter(refdes);
+        if (!a.ok)
+            return toolFailure("instrument_plot_data", a.error);
+        std::vector<int> all;
+        for (int k = 0; k < (int)a.values.size(); ++k)
+            all.push_back(k);
+        const auto indices = plot_instrument::displayIndices(a, all, juce::jlimit(2, 20000, maxPoints));
+        auto number = [](double v) { return std::isfinite(v) ? juce::String(v, 9) : juce::String("null"); };
+        juce::String time = "[";
+        for (size_t n = 0; n < indices.size(); ++n)
+            time << (n == 0 ? "" : ",") << number(a.time[(size_t)indices[n]]);
+        time << "]";
+        juce::String columns = "[";
+        for (size_t k = 0; k < a.values.size(); ++k)
+        {
+            columns << (k == 0 ? "" : ", ") << "{ \"label\": " << quote(a.labels[k]) << ", \"unit\": " << quote(a.units[k]) << ", \"values\": [";
+            for (size_t n = 0; n < indices.size(); ++n)
+                columns << (n == 0 ? "" : ",") << number(a.values[k][(size_t)indices[n]]);
+            columns << "] }";
+        }
+        columns << "]";
+        return "{ \"ok\": true, \"tool\": \"instrument_plot_data\", \"refdes\": " + quote(refdes)
+             + ", \"mode\": " + quote(instrumentSetting(refdes, "mode")) + ", \"samples\": " + juce::String((int)a.size())
+             + ", \"returned\": " + juce::String((int)indices.size()) + ", \"resampled\": " + (a.resampled ? "true" : "false")
+             + ", \"time\": " + time + ", \"columns\": " + columns + " }";
+    }
+
     struct MeterReading
     {
         bool ok = false;
@@ -8782,6 +9059,11 @@ public:
                  + ", \"function\": " + quote(r.function) + ", \"display\": " + quote(r.display)
                  + ", \"value\": " + (std::isfinite(r.value) ? juce::String(r.value, 9) : juce::String("null")) + ", \"unit\": " + quote(r.unit) + " }";
         }
+        if (id == "xyz_plotter")
+        {
+            const auto acq = acquirePlotter(refdes);
+            return plotterSummaryJson(refdes, acq);
+        }
         if (id == "bode_analyzer")
         {
             const auto b = sweepBode(refdes);
@@ -8875,6 +9157,8 @@ public:
     {
         if (name == "instrument_read")
             return instrumentReadJson(args.getProperty("refdes", {}).toString());
+        if (name == "instrument_plot_data")
+            return plotterDataJson(args.getProperty("refdes", {}).toString(), (int)args.getProperty("max_points", 400));
         auto arg = [&](const char* key) { return args.getProperty(key, {}).toString().trim(); };
         if (name == "preferences_list")
         {
@@ -10708,6 +10992,228 @@ private:
 // Searchable preferences: categories on the left, settings on the right,
 // each with the control its kind calls for. Typing in the search box shows
 // matching settings from every category.
+// The 2D/3D plotter window. Acquisition runs in the background and only when
+// the circuit, the probes or the acquisition settings change; display
+// settings (axis ranges, markers, projection, the view) just redraw.
+class PlotterView final : public InstrumentView
+{
+public:
+    PlotterView(SchematicCanvasPanel* canvasPanel, juce::String plotterRef)
+        : InstrumentView(canvasPanel, std::move(plotterRef))
+    {
+        static const char* labelText[] { "Display", "X", "Y", "Z", "Traces", "Stop", "Max step", "From", "Simulator", "Projection",
+                                         "X / time range", "Y range", "Z range" };
+        for (int i = 0; i < 13; ++i)
+        {
+            styleSmallLabel(labels[(size_t)i], labelText[i]);
+            addAndMakeVisible(labels[(size_t)i]);
+        }
+        bindChoice(mode, "xyz_plotter", "mode");
+        bindField(x, "x");
+        bindField(y, "y");
+        bindField(z, "z");
+        bindField(traces, "traces");
+        bindField(stop, "stop");
+        bindField(step, "step");
+        bindField(start, "start");
+        bindChoice(engine, "xyz_plotter", "engine");
+        bindChoice(projection, "xyz_plotter", "projection");
+        bindField(xMin, "x_min");
+        bindField(xMax, "x_max");
+        bindField(yMin, "y_min");
+        bindField(yMax, "y_max");
+        bindField(zMin, "z_min");
+        bindField(zMax, "z_max");
+        markers.setClickingTogglesState(true);
+        markers.setToggleState(setting("markers") == "On", juce::dontSendNotification);
+        markers.onClick = [this] { setSetting("markers", markers.getToggleState() ? "On" : "Off"); };
+        resetView.onClick = [this] { surface.resetView(); };
+        rerun.onClick = [this] { lastKey.clear(); measure(); };
+        for (auto* b : { &markers, &resetView, &rerun })
+            addAndMakeVisible(*b);
+        surface.onViewCommitted = [this](const plot_instrument::Camera& camera) { setSetting("view", plot_instrument::toString(camera)); };
+        addAndMakeVisible(surface);
+        status.setColour(juce::Label::textColourId, juce::Colour(0xff9fb3bc));
+        status.setFont(juce::Font(12.0f));
+        status.setJustificationType(juce::Justification::topLeft);
+        addAndMakeVisible(status);
+        setSize(1000, 700);
+    }
+
+    ~PlotterView() override { *alive = false; }
+
+    void paint(juce::Graphics& g) override { g.fillAll(juce::Colour(0xff10161d)); }
+
+    void resized() override
+    {
+        const auto m = plot_instrument::parseMode(setting("mode"));
+        auto area = getLocalBounds().reduced(10);
+        auto row = [&](int h) { auto r = area.removeFromTop(h); area.removeFromTop(4); return r; };
+        auto place = [](juce::Rectangle<int>& r, juce::Label& label, juce::Component& c, int lw, int w) {
+            label.setBounds(r.removeFromLeft(lw));
+            c.setBounds(r.removeFromLeft(w).reduced(0, 1));
+            r.removeFromLeft(10);
+        };
+        auto r1 = row(26);
+        place(r1, labels[0], mode, 50, 80);
+        x.setVisible(m != plot_instrument::Mode::Time);
+        y.setVisible(m != plot_instrument::Mode::Time);
+        z.setVisible(m == plot_instrument::Mode::XYZ);
+        traces.setVisible(m == plot_instrument::Mode::Time);
+        labels[1].setVisible(x.isVisible());
+        labels[2].setVisible(y.isVisible());
+        labels[3].setVisible(z.isVisible());
+        labels[4].setVisible(traces.isVisible());
+        if (m == plot_instrument::Mode::Time)
+            place(r1, labels[4], traces, 46, 300);
+        else
+        {
+            place(r1, labels[1], x, 16, 120);
+            place(r1, labels[2], y, 16, 120);
+            if (m == plot_instrument::Mode::XYZ)
+                place(r1, labels[3], z, 16, 120);
+        }
+        place(r1, labels[8], engine, 60, 90);
+        projection.setVisible(m == plot_instrument::Mode::XYZ);
+        labels[9].setVisible(projection.isVisible());
+        if (projection.isVisible())
+            place(r1, labels[9], projection, 64, 110);
+
+        auto r2 = row(26);
+        place(r2, labels[5], stop, 36, 70);
+        place(r2, labels[6], step, 60, 70);
+        place(r2, labels[7], start, 36, 70);
+        auto range = [&](juce::Label& label, juce::TextEditor& lo, juce::TextEditor& hi, int lw) {
+            label.setBounds(r2.removeFromLeft(lw));
+            lo.setBounds(r2.removeFromLeft(62).reduced(0, 1));
+            r2.removeFromLeft(4);
+            hi.setBounds(r2.removeFromLeft(62).reduced(0, 1));
+            r2.removeFromLeft(10);
+        };
+        range(labels[10], xMin, xMax, 92);
+        range(labels[11], yMin, yMax, 52);
+        zMin.setVisible(m == plot_instrument::Mode::XYZ);
+        zMax.setVisible(zMin.isVisible());
+        labels[12].setVisible(zMin.isVisible());
+        if (zMin.isVisible())
+            range(labels[12], zMin, zMax, 52);
+
+        auto r3 = row(26);
+        markers.setBounds(r3.removeFromLeft(110).reduced(0, 1));
+        r3.removeFromLeft(8);
+        resetView.setBounds(r3.removeFromLeft(90).reduced(0, 1));
+        r3.removeFromLeft(8);
+        rerun.setBounds(r3.removeFromLeft(110).reduced(0, 1));
+
+        status.setBounds(area.removeFromBottom(54));
+        surface.setBounds(area);
+    }
+
+protected:
+    void measure() override
+    {
+        if (canvas == nullptr)
+            return;
+        refreshControls();
+        resized();
+        auto camera = plot_instrument::parseCamera(setting("view"));
+        camera.perspective = setting("projection") != "Orthographic";
+        surface.setCamera(camera);
+        surface.setMarkers(setting("markers") == "On");
+
+        auto request = canvas->plotterRequest(refdes);
+        if (request.key == lastKey && request.error.isEmpty())
+        {
+            show(); // display settings only
+            return;
+        }
+        if (busy)
+        {
+            pending = true;
+            return;
+        }
+        lastKey = request.key;
+        busy = true;
+        status.setText("Simulating...", juce::dontSendNotification);
+        const auto generation = ++runs;
+        std::thread([request = std::move(request), generation, safe = juce::Component::SafePointer<PlotterView>(this), alive = alive] {
+            auto acquired = std::make_shared<plot_instrument::Acquisition>(SchematicCanvasPanel::runPlotterRequest(request));
+            juce::MessageManager::callAsync([safe, alive, generation, acquired] {
+                if (!*alive || safe == nullptr)
+                    return;
+                safe->delivered(generation, acquired);
+            });
+        }).detach();
+    }
+
+private:
+    void delivered(int generation, std::shared_ptr<plot_instrument::Acquisition> acquired)
+    {
+        busy = false;
+        if (generation == runs)
+        {
+            acquisition = std::move(acquired);
+            show();
+        }
+        if (pending)
+        {
+            pending = false;
+            measure();
+        }
+    }
+
+    void show()
+    {
+        const auto m = plot_instrument::parseMode(setting("mode"));
+        if (acquisition == nullptr)
+            return;
+        if (!acquisition->ok)
+        {
+            surface.setAcquisition(nullptr, m, {});
+            surface.setMessage(acquisition->error);
+            status.setText(acquisition->error, juce::dontSendNotification);
+            return;
+        }
+        auto axes = SchematicCanvasPanel::plotterAxes(*acquisition, m, [this](const juce::String& key) { return setting(key); });
+        surface.setAcquisition(acquisition, m, std::move(axes));
+        juce::String text;
+        text << juce::String((int)acquisition->size()) << " synchronised samples, "
+             << analytics::formatNumber(acquisition->time.front(), "s", 4) << " to " << analytics::formatNumber(acquisition->time.back(), "s", 4)
+             << (acquisition->resampled ? ", resampled to a common time base" : ", one solver time base")
+             << "; " << juce::String(surface.displayedPoints()) << " drawn.";
+        for (const auto& w : acquisition->warnings)
+            text << "\n" << w;
+        status.setText(text, juce::dontSendNotification);
+    }
+
+    // Keeps the controls in step with settings changed elsewhere (properties pane, agent).
+    void refreshControls()
+    {
+        for (auto [editor, key] : std::initializer_list<std::pair<juce::TextEditor*, const char*>> {
+                 { &x, "x" }, { &y, "y" }, { &z, "z" }, { &traces, "traces" }, { &stop, "stop" }, { &step, "step" }, { &start, "start" },
+                 { &xMin, "x_min" }, { &xMax, "x_max" }, { &yMin, "y_min" }, { &yMax, "y_max" }, { &zMin, "z_min" }, { &zMax, "z_max" } })
+            if (!editor->hasKeyboardFocus(true) && editor->getText() != setting(key))
+                editor->setText(setting(key), false);
+        for (auto [box, key] : std::initializer_list<std::pair<juce::ComboBox*, const char*>> {
+                 { &mode, "mode" }, { &engine, "engine" }, { &projection, "projection" } })
+            if (box->getText() != setting(key))
+                box->setText(setting(key), juce::dontSendNotification);
+        markers.setToggleState(setting("markers") == "On", juce::dontSendNotification);
+    }
+
+    std::array<juce::Label, 13> labels;
+    juce::ComboBox mode, engine, projection;
+    juce::TextEditor x, y, z, traces, stop, step, start, xMin, xMax, yMin, yMax, zMin, zMax;
+    juce::TextButton markers { "Sample markers" }, resetView { "Reset view" }, rerun { "Run again" };
+    PlotSurface surface;
+    juce::Label status;
+    std::shared_ptr<plot_instrument::Acquisition> acquisition;
+    juce::String lastKey;
+    bool busy = false, pending = false;
+    int runs = 0;
+    std::shared_ptr<bool> alive = std::make_shared<bool>(true);
+};
+
 class PreferencesView final : public juce::Component
 {
 public:
@@ -13828,7 +14334,7 @@ juce::String ElectronicsWorkbench::buildAssistantToolManifestJson() const
     text << "    \"panelOpenRule\": \"user_double_clicks_placed_instrument_node\",\n";
     text << "    \"assistantPanelOpenPolicy\": \"only_after_explicit_user_request\",\n";
     text << "    \"dockableLater\": true,\n";
-    text << "    \"supportedNodes\": [\"oscilloscope_2ch\", \"digital_multimeter\"]\n";
+    text << "    \"supportedNodes\": [\"oscilloscope_2ch\", \"digital_multimeter\", \"bode_analyzer\", \"xyz_plotter\"]\n";
     text << "  }\n";
     text << "}\n";
     return text;
@@ -14708,6 +15214,7 @@ void ElectronicsWorkbench::openInstrumentWindow(juce::String refdes, juce::Strin
     if (symbolId == "oscilloscope_2ch") view = new ScopeView(canvas, refdes);
     else if (symbolId == "digital_multimeter") view = new MeterView(canvas, refdes);
     else if (symbolId == "bode_analyzer") view = new BodeView(canvas, refdes);
+    else if (symbolId == "xyz_plotter") view = new PlotterView(canvas, refdes);
     if (view == nullptr)
         return;
 

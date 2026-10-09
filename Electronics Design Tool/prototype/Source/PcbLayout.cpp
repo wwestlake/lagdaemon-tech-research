@@ -447,7 +447,7 @@ juce::String defaultFootprint(const juce::String& symbolId)
 
 juce::String notOnBoardReason(const juce::String& symbolId)
 {
-    if (symbolId == "oscilloscope_2ch" || symbolId == "bode_analyzer" || symbolId == "digital_multimeter")
+    if (symbolId == "oscilloscope_2ch" || symbolId == "bode_analyzer" || symbolId == "digital_multimeter" || symbolId == "xyz_plotter")
         return "test equipment, not a board part";
     if (symbolId == "vcvs" || symbolId == "vccs" || symbolId == "ccvs" || symbolId == "cccs")
         return "an ideal controlled source has no physical part";

@@ -33,6 +33,7 @@ struct ParamSpec
     Storage storage = Storage::Param;
     juce::String help;
     juce::String showWhen;   // "waveform=Pulse|Exp": shown only when that property has one of those values
+    bool hidden = false;     // saved and tool-settable, never shown in the properties pane
 };
 
 // True when `spec` applies given the part's other values (see showWhen).

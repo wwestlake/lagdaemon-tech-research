@@ -36,6 +36,13 @@ ParamSpec fraction(juce::String key, juce::String label, juce::String def, juce:
     return { key, label, Kind::Fraction, {}, {}, def, Storage::Param, help };
 }
 
+// Saved with the part and settable by tools, but not shown in the properties pane.
+ParamSpec hidden(ParamSpec spec)
+{
+    spec.hidden = true;
+    return spec;
+}
+
 ParamSpec when(ParamSpec spec, juce::String condition)
 {
     spec.showWhen = std::move(condition);
@@ -181,6 +188,22 @@ std::map<juce::String, std::vector<ParamSpec>> buildCatalog()
     c["bode_analyzer"] = { quantity("start_frequency", "Start frequency", "Hz", "10"),
                            quantity("stop_frequency", "Stop frequency", "Hz", "100k"),
                            quantity("points_per_decade", "Points per decade", "", "20") };
+    // Plotter channels A/B/C measure their + pin against their - pin (ground when unwired).
+    c["xyz_plotter"] = { choice("mode", "Display", { "Time", "XY", "XYZ" }, "XY", Storage::Param, "Time: traces against time. XY / XYZ: one signal per axis, plotted against each other."),
+                         when(text("x", "X signal", "A", Storage::Param, "A channel (A, B, C), V(net), V(net1,net2) or I(part)"), "mode=XY|XYZ"),
+                         when(text("y", "Y signal", "B", Storage::Param, "A channel (A, B, C), V(net), V(net1,net2) or I(part)"), "mode=XY|XYZ"),
+                         when(text("z", "Z signal", "C", Storage::Param, "A channel (A, B, C), V(net), V(net1,net2) or I(part)"), "mode=XYZ"),
+                         when(text("traces", "Traces", "A, B", Storage::Param, "Comma-separated channels, V(net), V(net1,net2) or I(part)"), "mode=Time"),
+                         quantity("stop", "Stop time", "s", "10m"),
+                         quantity("step", "Max time step", "s", "10u"),
+                         quantity("start", "Plot from", "s", "0", Storage::Param, "Samples before this time are not plotted (lets start-up transients settle)."),
+                         choice("engine", "Simulator", { "Internal", "Xyce" }, "Internal"),
+                         toggle("markers", "Sample markers", "Off", "On", "Off"),
+                         when(choice("projection", "Projection", { "Perspective", "Orthographic" }, "Perspective"), "mode=XYZ"),
+                         text("x_min", "X / time min", "auto"), text("x_max", "X / time max", "auto"),
+                         text("y_min", "Y min", "auto"), text("y_max", "Y max", "auto"),
+                         when(text("z_min", "Z min", "auto"), "mode=XYZ"), when(text("z_max", "Z max", "auto"), "mode=XYZ"),
+                         hidden(text("view", "View", "yaw=-35 pitch=25 zoom=1 panx=0 pany=0")) };
     c["annotation_text"] = { text("value", "Text", "Note", Storage::Value) };
     return c;
 }
@@ -201,6 +224,8 @@ const std::vector<ParamSpec>& paramsFor(const juce::String& symbolId)
 
 bool isShown(const ParamSpec& spec, const std::function<juce::String(const juce::String&)>& valueOf)
 {
+    if (spec.hidden)
+        return false;
     if (spec.showWhen.isEmpty())
         return true;
     const auto key = spec.showWhen.upToFirstOccurrenceOf("=", false, false).trim();
@@ -238,7 +263,7 @@ juce::String displayName(const juce::String& id)
         { "connector_2", "2-Pin Connector" }, { "connector_3", "3-Pin Connector" }, { "test_point", "Test Point" },
         { "ground", "Ground" }, { "power_port", "Supply Port" }, { "audio_in", "Audio Input" }, { "audio_out", "Audio Output" }, { "net_label", "Net Label" },
         { "power_bus", "Power Bus" }, { "ground_bus", "Ground Bus" },
-        { "oscilloscope_2ch", "Oscilloscope" }, { "digital_multimeter", "Digital Multimeter" }, { "bode_analyzer", "Frequency Analyzer" },
+        { "oscilloscope_2ch", "Oscilloscope" }, { "digital_multimeter", "Digital Multimeter" }, { "bode_analyzer", "Frequency Analyzer" }, { "xyz_plotter", "2D/3D Plotter" },
         { "sub_block", "Sub-diagram Block" }, { "block_port", "Sub-diagram Port" },
         { "annotation_text", "Text Note" },
         { "logic_not", "Inverter" }, { "logic_and", "AND Gate" }, { "logic_or", "OR Gate" },
@@ -261,7 +286,7 @@ juce::String simulationFidelity(const juce::String& id)
         return "generic_model";
     if (id == "switch_spst" || id == "switch_spdt" || id.startsWith("logic_") || id == "fuse")
         return "ideal";
-    if (id == "relay_spst" || id == "oscilloscope_2ch" || id == "digital_multimeter" || id == "bode_analyzer"
+    if (id == "relay_spst" || id == "oscilloscope_2ch" || id == "digital_multimeter" || id == "bode_analyzer" || id == "xyz_plotter"
         || id == "audio_out" || id == "sub_block" || id == "block_port" || id == "annotation_text")
         return "unsupported";
     return "primitive";
