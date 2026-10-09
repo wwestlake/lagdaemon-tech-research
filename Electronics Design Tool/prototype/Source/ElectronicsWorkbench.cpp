@@ -5297,7 +5297,16 @@ private:
         auto node = [&sig](const WireNode& n) {
             sig << n.pin.instanceIndex << '.' << n.pin.pinIndex << '.' << n.junctionIndex << ' ';
         };
-        for (const auto& wire : wires) { node(wire.a); node(wire.b); sig << ';'; }
+        for (const auto& wire : wires)
+        {
+            node(wire.a);
+            node(wire.b);
+            // Routing points change the route too (undo/redo restores them
+            // without any other change).
+            for (const auto& p : wire.routePoints)
+                sig << (int)p.position.x << ',' << (int)p.position.y << (p.pinned ? 'P' : 'F') << ' ';
+            sig << ';';
+        }
         sig << '|';
         for (const auto& j : junctions)
             sig << (int)j.x << ',' << (int)j.y << ';';
