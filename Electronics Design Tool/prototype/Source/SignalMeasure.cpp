@@ -20,13 +20,35 @@ double interpolate(double x0, double y0, double x1, double y1, double x)
 Window window(const Request& r, const std::vector<double>& x, const std::vector<double>& y, const std::vector<double>& phase)
 {
     Window w;
+    if (x.size() < 2 || y.size() < 2 || r.from > r.to)
+        return w;
+    auto addAt = [&](double xv) {
+        if (xv < x.front() || xv > x.back())
+            return;
+        for (size_t i = 1; i < x.size() && i < y.size(); ++i)
+            if (xv <= x[i])
+            {
+                w.x.push_back(xv);
+                w.y.push_back(interpolate(x[i - 1], y[i - 1], x[i], y[i], xv));
+                if (phase.size() == x.size())
+                    w.p.push_back(interpolate(x[i - 1], phase[i - 1], x[i], phase[i], xv));
+                return;
+            }
+    };
+    const auto from = std::max(r.from, x.front());
+    const auto to = std::min(r.to, x.back());
+    if (from > to)
+        return w;
+    addAt(from);
     for (size_t i = 0; i < x.size() && i < y.size(); ++i)
-        if (x[i] >= r.from && x[i] <= r.to)
+        if (x[i] > from && x[i] < to)
         {
             w.x.push_back(x[i]);
             w.y.push_back(y[i]);
             if (i < phase.size()) w.p.push_back(phase[i]);
         }
+    if (to > from)
+        addAt(to);
     return w;
 }
 

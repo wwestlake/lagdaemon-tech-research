@@ -1665,6 +1665,7 @@ public:
         std::vector<Group> loadedGroups;
         std::vector<SimulationParameter> loadedSimulationParameters;
         std::vector<CircuitParameter> loadedCircuitParameters;
+        std::vector<analytics::Netlist::Measurement> loadedMeasurements;
 
         for (const auto& entry : *componentArray)
         {
@@ -1869,6 +1870,31 @@ public:
                     loadedCircuitParameters.push_back(std::move(p));
             }
         }
+        if (const auto* measurementArray = root->getProperty("measurements").getArray())
+        {
+            for (const auto& entry : *measurementArray)
+            {
+                const auto* object = entry.getDynamicObject();
+                if (object == nullptr)
+                    continue;
+                analytics::Netlist::Measurement m;
+                m.name = stringProperty(*object, "name", {});
+                m.type = stringProperty(*object, "type", {});
+                m.target = stringProperty(*object, "target", {});
+                m.target2 = stringProperty(*object, "target2", {});
+                m.from = floatProperty(*object, "from", -1e300);
+                m.to = floatProperty(*object, "to", 1e300);
+                m.at = floatProperty(*object, "at", 0.0);
+                m.level = floatProperty(*object, "level", 0.0);
+                m.level2 = floatProperty(*object, "level2", 0.0);
+                m.nth = (int)floatProperty(*object, "nth", 1.0);
+                m.nth2 = (int)floatProperty(*object, "nth2", 1.0);
+                m.edge = stringProperty(*object, "edge", "rising");
+                m.edge2 = stringProperty(*object, "edge2", "rising");
+                if (m.type.isNotEmpty() && m.target.isNotEmpty())
+                    loadedMeasurements.push_back(std::move(m));
+            }
+        }
 
         const auto previousProbes = probes;
         instances = std::move(loadedInstances);
@@ -1880,6 +1906,7 @@ public:
         groups = std::move(loadedGroups);
         simulationParameters = std::move(loadedSimulationParameters);
         circuitParameters = std::move(loadedCircuitParameters);
+        measurements = std::move(loadedMeasurements);
         selectedInstance = instances.empty() ? -1 : 0;
         selectedInstances.clear();
         if (selectedInstance >= 0)
@@ -2035,6 +2062,27 @@ public:
                  << ", \"max\": " << quote(p.maxValue)
                  << ", \"scaling\": " << quote(p.scaling)
                  << ", \"control\": " << quote(p.control)
+                 << " }";
+        }
+        text << "\n  ],\n";
+        text << "  \"measurements\": [\n";
+        for (size_t i = 0; i < measurements.size(); ++i)
+        {
+            const auto& m = measurements[i];
+            if (i != 0) text << ",\n";
+            text << "    { \"name\": " << quote(m.name)
+                 << ", \"type\": " << quote(m.type)
+                 << ", \"target\": " << quote(m.target)
+                 << ", \"target2\": " << quote(m.target2)
+                 << ", \"from\": " << m.from
+                 << ", \"to\": " << m.to
+                 << ", \"at\": " << m.at
+                 << ", \"level\": " << m.level
+                 << ", \"level2\": " << m.level2
+                 << ", \"nth\": " << m.nth
+                 << ", \"nth2\": " << m.nth2
+                 << ", \"edge\": " << quote(m.edge)
+                 << ", \"edge2\": " << quote(m.edge2)
                  << " }";
         }
         text << "\n  ],\n";
@@ -3881,6 +3929,7 @@ private:
     std::vector<Group> groups;
     std::vector<SimulationParameter> simulationParameters;
     std::vector<CircuitParameter> circuitParameters;
+    std::vector<analytics::Netlist::Measurement> measurements;
     std::unique_ptr<juce::FileChooser> partsListChooser;
     WireNode wireDragStart;
     int selectedInstance = -1;
@@ -4062,6 +4111,7 @@ private:
         groups.clear();
         simulationParameters.clear();
         circuitParameters.clear();
+        measurements.clear();
         selectedInstance = -1;
         selectedInstances.clear();
         selectedGroup = -1;
@@ -6889,6 +6939,7 @@ public:
             }
             if (!progressed) break;
         }
+        n.measurements = measurements;
         const auto netNames = computeNetNames();
         std::set<juce::String> used;
         for (const auto& [net, node] : sim.nodeOfNet)

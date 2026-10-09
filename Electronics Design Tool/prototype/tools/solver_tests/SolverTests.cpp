@@ -537,6 +537,31 @@ int main()
         check("measure RMS of a 1 V sine (V)", signal_measure::measure(rq, t, sq).value, 0.707107, 1e-5);
         rq.kind = signal_measure::Kind::Frequency;
         check("measure frequency (Hz)", signal_measure::measure(rq, t, sq).value, 1000.0, 1e-3);
+        std::vector<double> unevenT { 0.0, 1.0, 3.0, 6.0 };
+        std::vector<double> constant { 5.0, 5.0, 5.0, 5.0 };
+        rq = {};
+        rq.kind = signal_measure::Kind::Maximum;
+        check("measure MAX constant (V)", signal_measure::measure(rq, unevenT, constant).value, 5.0, 1e-12);
+        rq.kind = signal_measure::Kind::Minimum;
+        check("measure MIN constant (V)", signal_measure::measure(rq, unevenT, constant).value, 5.0, 1e-12);
+        rq.kind = signal_measure::Kind::Average;
+        check("measure weighted AVG constant (V)", signal_measure::measure(rq, unevenT, constant).value, 5.0, 1e-12);
+        rq.kind = signal_measure::Kind::PeakToPeak;
+        check("measure PP constant (V)", signal_measure::measure(rq, unevenT, constant).value, 0.0, 1e-12);
+        std::vector<double> rampT { 0.0, 0.002, 0.007, 0.010 };
+        std::vector<double> rampY { 0.0, 2.0, 7.0, 10.0 };
+        rq.kind = signal_measure::Kind::ValueAt; rq.at = 0.005;
+        check("measure FIND ramp at 5 ms (V)", signal_measure::measure(rq, rampT, rampY).value, 5.0, 1e-12);
+        rq.kind = signal_measure::Kind::WhenCrosses; rq.level = 7.0; rq.edge = signal_measure::Edge::Rising; rq.nth = 1;
+        check("measure WHEN ramp crosses 7 V (s)", signal_measure::measure(rq, rampT, rampY).value, 0.007, 1e-12);
+        std::vector<double> multiT { 0, 1, 2, 3, 4, 5 };
+        std::vector<double> multiY { 0, 2, 0, 2, 0, 2 };
+        rq.level = 1.0; rq.nth = 2; rq.edge = signal_measure::Edge::Rising;
+        check("measure second rising crossing (s)", signal_measure::measure(rq, multiT, multiY).value, 2.5, 1e-12);
+        rq.edge = signal_measure::Edge::Falling;
+        check("measure second falling crossing (s)", signal_measure::measure(rq, multiT, multiY).value, 3.5, 1e-12);
+        rq.level = 3.0;
+        checkTrue("measure missing crossing fails", !signal_measure::measure(rq, multiT, multiY).ok);
     }
 
     // 20. Convergence (junction limiting, gmin stepping, transient step halving).

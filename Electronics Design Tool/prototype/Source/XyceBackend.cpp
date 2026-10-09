@@ -904,6 +904,87 @@ juce::String selectedPrints(const analytics::Netlist& n, const analytics::Settin
         if (ac)
             out << " VP(" << nodeName(n, (circuit_sim::Node)node) << ")";
     }
+    if (!ac)
+        for (const auto& measurement : n.measurements)
+            for (const auto& target : { measurement.target, measurement.target2 })
+            {
+                if (target.isEmpty())
+                    continue;
+                juce::StringArray ignoredWarnings;
+                auto parsed = analytics::Settings {};
+                juce::ignoreUnused(parsed);
+                if (target.startsWithIgnoreCase("I(") && target.endsWithChar(')'))
+                {
+                    const auto part = target.substring(2, target.length() - 1).trim();
+                    for (const auto& p : n.parts)
+                        if (p.refdes.equalsIgnoreCase(part) && p.element >= 0 && p.element < (int)n.circuit.elements().size())
+                        {
+                            const auto tokenText = " I(" + elementPrintName(n.circuit.elements()[(size_t)p.element], (size_t)p.element) + ")";
+                            if (!out.contains(tokenText)) out << tokenText;
+                            break;
+                        }
+                    continue;
+                }
+                juce::String nodeError;
+                const auto node = nodeForOutput(n, target, nodeError);
+                if (node >= 0)
+                {
+                    const auto tokenText = " V(" + nodeName(n, (circuit_sim::Node)node) + ")";
+                    if (!out.contains(tokenText)) out << tokenText;
+                }
+            }
+    return out;
+}
+
+juce::String measureSignal(const analytics::Netlist& n, const juce::String& target, juce::String& error)
+{
+    if (target.startsWithIgnoreCase("I(") && target.endsWithChar(')'))
+    {
+        const auto part = target.substring(2, target.length() - 1).trim();
+        for (const auto& p : n.parts)
+            if (p.refdes.equalsIgnoreCase(part) && p.element >= 0 && p.element < (int)n.circuit.elements().size())
+                return "I(" + elementPrintName(n.circuit.elements()[(size_t)p.element], (size_t)p.element) + ")";
+        error = "No part " + part + " for measurement " + target + ".";
+        return {};
+    }
+    const auto node = nodeForOutput(n, target, error);
+    return node >= 0 ? "V(" + nodeName(n, (circuit_sim::Node)node) + ")" : juce::String();
+}
+
+juce::String measureLines(const analytics::Netlist& n, juce::String& error)
+{
+    juce::String out;
+    for (const auto& m : n.measurements)
+    {
+        const auto type = m.type.trim().toUpperCase();
+        const auto name = sanitize(m.name.isNotEmpty() ? m.name : type + "_" + m.target);
+        const auto signal = measureSignal(n, m.target, error);
+        if (signal.isEmpty()) return {};
+        auto range = [&] {
+            juce::String r;
+            if (m.from > -1e290) r << " FROM=" << value(m.from);
+            if (m.to < 1e290) r << " TO=" << value(m.to);
+            return r;
+        };
+        if (type == "MAX" || type == "MIN" || type == "AVG" || type == "RMS")
+            out << ".MEASURE TRAN " << name << " " << type << " " << signal << range() << "\n";
+        else if (type == "PP")
+            out << ".MEASURE TRAN " << name << " PP " << signal << range() << "\n";
+        else if (type == "FIND")
+            out << ".MEASURE TRAN " << name << " FIND " << signal << " AT=" << value(m.at) << "\n";
+        else if (type == "WHEN" || type == "RISE" || type == "FALL")
+            out << ".MEASURE TRAN " << name << " WHEN " << signal << "=" << value(m.level)
+                << " " << (type == "FALL" ? "FALL" : "RISE") << "=" << juce::String(std::max(1, m.nth)) << "\n";
+        else if (type == "TRIG" || type == "TARG")
+        {
+            const auto signal2 = measureSignal(n, m.target2, error);
+            if (signal2.isEmpty()) return {};
+            out << ".MEASURE TRAN " << name << " TRIG " << signal << " VAL=" << value(m.level)
+                << " " << (m.edge.equalsIgnoreCase("falling") ? "FALL" : "RISE") << "=" << juce::String(std::max(1, m.nth))
+                << " TARG " << signal2 << " VAL=" << value(m.level2)
+                << " " << (m.edge2.equalsIgnoreCase("falling") ? "FALL" : "RISE") << "=" << juce::String(std::max(1, m.nth2)) << "\n";
+        }
+    }
     return out;
 }
 
@@ -977,6 +1058,8 @@ juce::String netlistFor(analytics::Analysis analysis, const analytics::Settings&
             out << "\n";
         }
         out << "\n.TRAN " << step << " " << stop << (hasDeviceInitialConditions(n.circuit) ? " UIC" : "") << "\n.PRINT TRAN" << prints;
+        out << "\n" << measureLines(n, error);
+        if (!error.isEmpty()) return {};
     }
     else if (analysis == analytics::Analysis::Ac)
     {
@@ -1040,6 +1123,79 @@ bool parseNumber(const juce::String& s, double& valueOut)
 {
     valueOut = s.getDoubleValue();
     return s.containsAnyOf("0123456789");
+}
+
+const analytics::Trace* traceByName(const std::vector<analytics::Trace>& traces, const juce::String& name)
+{
+    for (const auto& trace : traces)
+        if (trace.name.equalsIgnoreCase(name.trim()))
+            return &trace;
+    return nullptr;
+}
+
+signal_measure::Edge edgeFrom(const juce::String& text)
+{
+    return text.equalsIgnoreCase("falling") || text.equalsIgnoreCase("fall") ? signal_measure::Edge::Falling
+         : text.equalsIgnoreCase("either") ? signal_measure::Edge::Either
+         : signal_measure::Edge::Rising;
+}
+
+signal_measure::Request requestFor(const analytics::Netlist::Measurement& m)
+{
+    signal_measure::Request req;
+    req.from = m.from; req.to = m.to; req.at = m.at; req.level = m.level; req.nth = std::max(1, m.nth); req.edge = edgeFrom(m.edge);
+    const auto type = m.type.trim().toUpperCase();
+    if (type == "MIN") req.kind = signal_measure::Kind::Minimum;
+    else if (type == "AVG") req.kind = signal_measure::Kind::Average;
+    else if (type == "RMS") req.kind = signal_measure::Kind::Rms;
+    else if (type == "PP") req.kind = signal_measure::Kind::PeakToPeak;
+    else if (type == "FIND") req.kind = signal_measure::Kind::ValueAt;
+    else if (type == "WHEN" || type == "RISE" || type == "FALL") req.kind = signal_measure::Kind::WhenCrosses;
+    else req.kind = signal_measure::Kind::Maximum;
+    if (type == "FALL") req.edge = signal_measure::Edge::Falling;
+    if (type == "RISE") req.edge = signal_measure::Edge::Rising;
+    return req;
+}
+
+void addMeasurementTable(analytics::Result& r, const analytics::Netlist& n, const std::vector<analytics::Trace>& traces)
+{
+    if (n.measurements.empty()) return;
+    analytics::Table table;
+    table.title = "Measurements";
+    table.columns = { "Name", "Type", "Target", "Value", "Status" };
+    for (const auto& m : n.measurements)
+    {
+        const auto type = m.type.trim().toUpperCase();
+        const auto name = m.name.isNotEmpty() ? m.name : type + "_" + m.target;
+        const auto* trace = traceByName(traces, m.target);
+        if (trace == nullptr)
+        {
+            table.rows.push_back({ name, type, m.target, "-", "Missing signal" });
+            continue;
+        }
+        if (type == "TRIG" || type == "TARG")
+        {
+            const auto* trace2 = traceByName(traces, m.target2);
+            if (trace2 == nullptr)
+            {
+                table.rows.push_back({ name, type, m.target + " -> " + m.target2, "-", "Missing target signal" });
+                continue;
+            }
+            auto aReq = requestFor(m);
+            aReq.kind = signal_measure::Kind::WhenCrosses;
+            auto bReq = aReq;
+            bReq.level = m.level2;
+            bReq.nth = std::max(1, m.nth2);
+            bReq.edge = edgeFrom(m.edge2);
+            const auto a = signal_measure::measure(aReq, trace->x, trace->y);
+            const auto b = signal_measure::measure(bReq, trace2->x, trace2->y);
+            table.rows.push_back({ name, type, m.target + " -> " + m.target2, a.ok && b.ok ? analytics::formatNumber(b.value - a.value, "s", 7) : "-", a.ok && b.ok ? "OK" : juce::String(!a.ok ? a.error : b.error) });
+            continue;
+        }
+        const auto measured = signal_measure::measure(requestFor(m), trace->x, trace->y);
+        table.rows.push_back({ name, type, m.target, measured.ok ? analytics::formatNumber(measured.value, (type == "WHEN" || type == "RISE" || type == "FALL") ? "s" : trace->unit, 7) : "-", measured.ok ? "OK" : juce::String(measured.error) });
+    }
+    r.tables.push_back(std::move(table));
 }
 
 analytics::Result resultFromPrn(analytics::Analysis analysis, const analytics::Settings& settings, const juce::File& prn,
@@ -1198,6 +1354,8 @@ analytics::Result resultFromPrn(analytics::Analysis analysis, const analytics::S
     }
     if (!plot.traces.empty())
         analytics::addTraceStatsTable(r, plot.traces, analysis == analytics::Analysis::Transient);
+    if (analysis == analytics::Analysis::Transient)
+        addMeasurementTable(r, n, plot.traces);
     r.plots.push_back(std::move(plot));
     r.summary = "Xyce " + analytics::infoFor(analysis).title + " completed; " + juce::String(rows.size() - 1) + " sample(s).";
     juce::ignoreUnused(n);

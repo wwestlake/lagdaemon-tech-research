@@ -317,6 +317,34 @@ std::vector<Output> outputsOf(const Netlist& n, const juce::String& spec, juce::
     return outs;
 }
 
+void addOutputIfNeeded(std::vector<Output>& outs, const Output& out)
+{
+    for (const auto& existing : outs)
+        if (existing.label.equalsIgnoreCase(out.label))
+            return;
+    outs.push_back(out);
+}
+
+void includeMeasurementOutputs(const Netlist& n, std::vector<Output>& outs, juce::String& error)
+{
+    juce::StringArray ignored;
+    for (const auto& m : n.measurements)
+    {
+        if (m.target.isNotEmpty())
+        {
+            auto parsed = outputsOf(n, m.target, error, ignored);
+            if (!error.isEmpty()) return;
+            for (const auto& out : parsed) addOutputIfNeeded(outs, out);
+        }
+        if (m.target2.isNotEmpty())
+        {
+            auto parsed = outputsOf(n, m.target2, error, ignored);
+            if (!error.isEmpty()) return;
+            for (const auto& out : parsed) addOutputIfNeeded(outs, out);
+        }
+    }
+}
+
 double dcValue(const circuit_sim::Circuit& c, const circuit_sim::OperatingPoint& op, const Output& o)
 {
     if (!o.current)
@@ -463,6 +491,101 @@ void addTraceStatsTableInternal(Result& r, const std::vector<Trace>& traces, boo
         t.rows.push_back(row);
     }
     r.tables.push_back(std::move(t));
+}
+
+signal_measure::Edge edgeFrom(const juce::String& text)
+{
+    if (text.equalsIgnoreCase("falling") || text.equalsIgnoreCase("fall"))
+        return signal_measure::Edge::Falling;
+    if (text.equalsIgnoreCase("either"))
+        return signal_measure::Edge::Either;
+    return signal_measure::Edge::Rising;
+}
+
+const Trace* traceByName(const std::vector<Trace>& traces, const juce::String& name)
+{
+    for (const auto& trace : traces)
+        if (trace.name.equalsIgnoreCase(name.trim()))
+            return &trace;
+    return nullptr;
+}
+
+signal_measure::Request requestFor(const Netlist::Measurement& m)
+{
+    signal_measure::Request req;
+    req.from = m.from;
+    req.to = m.to;
+    req.at = m.at;
+    req.level = m.level;
+    req.nth = std::max(1, m.nth);
+    req.edge = edgeFrom(m.edge);
+    const auto type = m.type.trim().toUpperCase();
+    if (type == "MIN") req.kind = signal_measure::Kind::Minimum;
+    else if (type == "AVG") req.kind = signal_measure::Kind::Average;
+    else if (type == "RMS") req.kind = signal_measure::Kind::Rms;
+    else if (type == "PP") req.kind = signal_measure::Kind::PeakToPeak;
+    else if (type == "FIND") req.kind = signal_measure::Kind::ValueAt;
+    else if (type == "WHEN" || type == "RISE" || type == "FALL") req.kind = signal_measure::Kind::WhenCrosses;
+    else req.kind = signal_measure::Kind::Maximum;
+    if (type == "FALL") req.edge = signal_measure::Edge::Falling;
+    if (type == "RISE") req.edge = signal_measure::Edge::Rising;
+    return req;
+}
+
+juce::String measurementUnit(const Netlist::Measurement& m, const Trace& trace)
+{
+    const auto type = m.type.trim().toUpperCase();
+    if (type == "FIND" || type == "MAX" || type == "MIN" || type == "AVG" || type == "RMS" || type == "PP")
+        return trace.unit;
+    return "s";
+}
+
+void addMeasurementTable(Result& r, const Netlist& n, const std::vector<Trace>& traces)
+{
+    if (n.measurements.empty())
+        return;
+    Table table;
+    table.title = "Measurements";
+    table.columns = { "Name", "Type", "Target", "Value", "Status" };
+    for (const auto& m : n.measurements)
+    {
+        const auto name = m.name.isNotEmpty() ? m.name : m.type + "_" + m.target;
+        const auto type = m.type.trim().toUpperCase();
+        const auto* trace = traceByName(traces, m.target);
+        if (trace == nullptr)
+        {
+            table.rows.push_back({ name, type, m.target, "-", "Missing signal" });
+            continue;
+        }
+        if (type == "TRIG" || type == "TARG")
+        {
+            const auto* trace2 = traceByName(traces, m.target2);
+            if (trace2 == nullptr)
+            {
+                table.rows.push_back({ name, type, m.target + " -> " + m.target2, "-", "Missing target signal" });
+                continue;
+            }
+            auto trig = requestFor(m);
+            trig.kind = signal_measure::Kind::WhenCrosses;
+            auto targ = trig;
+            targ.level = m.level2;
+            targ.nth = std::max(1, m.nth2);
+            targ.edge = edgeFrom(m.edge2);
+            const auto a = signal_measure::measure(trig, trace->x, trace->y);
+            const auto b = signal_measure::measure(targ, trace2->x, trace2->y);
+            if (!a.ok || !b.ok)
+                table.rows.push_back({ name, type, m.target + " -> " + m.target2, "-", juce::String(!a.ok ? a.error : b.error) });
+            else
+                table.rows.push_back({ name, type, m.target + " -> " + m.target2, formatNumber(b.value - a.value, "s", 7), "OK" });
+            continue;
+        }
+        const auto measured = signal_measure::measure(requestFor(m), trace->x, trace->y);
+        if (!measured.ok)
+            table.rows.push_back({ name, type, m.target, "-", juce::String(measured.error) });
+        else
+            table.rows.push_back({ name, type, m.target, formatNumber(measured.value, measurementUnit(m, *trace), 7), "OK" });
+    }
+    r.tables.push_back(std::move(table));
 }
 
 // ---- analyses ---------------------------------------------------------------------------
@@ -755,8 +878,10 @@ double autoTransientStop(const circuit_sim::Circuit& c)
 
 bool runTransient(const Netlist& n, const Settings& s, Result& r)
 {
-    const auto outs = outputsOf(n, text(s, "outputs"), r.error, r.warnings);
+    auto outs = outputsOf(n, text(s, "outputs"), r.error, r.warnings);
     if (outs.empty()) { if (r.error.isEmpty()) r.error = "No outputs to plot."; return false; }
+    includeMeasurementOutputs(n, outs, r.error);
+    if (!r.error.isEmpty()) return false;
     const auto vars = variants(n, s, r.error);
     if (vars.empty()) return false;
     circuit_sim::TransientSettings ts;
@@ -782,6 +907,7 @@ bool runTransient(const Netlist& n, const Settings& s, Result& r)
     }
     addLinePlots(r, "Transient", "Time", "s", false, traces);
     addTraceStatsTableInternal(r, traces, true);
+    addMeasurementTable(r, n, traces);
     r.summary = "Transient to " + formatNumber(ts.stop, "s") + " in steps of " + formatNumber(ts.step, "s")
               + " (trapezoidal, source corners hit exactly)" + (ts.start > 0.0 ? ", stored from " + formatNumber(ts.start, "s") : juce::String()) + ".";
     return true;

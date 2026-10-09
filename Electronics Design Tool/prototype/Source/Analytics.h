@@ -84,6 +84,23 @@ struct Netlist
     juce::StringArray warnings;
     juce::String error;
     std::vector<std::pair<juce::String, juce::String>> parameters;
+    struct Measurement
+    {
+        juce::String name;
+        juce::String type;
+        juce::String target;
+        juce::String target2;
+        double from = -1e300;
+        double to = 1e300;
+        double at = 0.0;
+        double level = 0.0;
+        double level2 = 0.0;
+        int nth = 1;
+        int nth2 = 1;
+        juce::String edge { "rising" };
+        juce::String edge2 { "rising" };
+    };
+    std::vector<Measurement> measurements;
 };
 
 // Choices for Net / Source / Target fields.
