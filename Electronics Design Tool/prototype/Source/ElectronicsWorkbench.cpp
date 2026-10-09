@@ -9652,10 +9652,14 @@ private:
 
         if (wireIndex >= 0 && wireIndex < (int)wires.size())
         {
+            // Manual routing points go with the half they lie on; they are
+            // never dropped by a split.
+            const auto route = currentRoute(wireIndex);
             const auto existing = wires[(size_t)wireIndex];
+            const auto [before, after] = schematic::route_edit::splitPointsAt(route, toEditPoints(existing.routePoints), position);
             wires.erase(wires.begin() + wireIndex);
-            wires.push_back({ existing.a, junction });
-            wires.push_back({ junction, existing.b });
+            wires.push_back({ existing.a, junction, fromEditPoints(before) });
+            wires.push_back({ junction, existing.b, fromEditPoints(after) });
         }
 
         if (onStatus) onStatus("Added junction " + nodeLabel(junction) + ".");

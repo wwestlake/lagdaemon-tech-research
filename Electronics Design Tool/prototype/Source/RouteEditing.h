@@ -43,6 +43,11 @@ std::vector<EditPoint> pointsForSegmentDrag(const Polyline& route, const std::ve
 // Existing points plus a new pinned point at p, ordered along the route.
 std::vector<EditPoint> withInsertedPoint(const Polyline& route, const std::vector<EditPoint>& existing, P p);
 
+// A wire split at `at` (a new junction on it): its points before `at` along
+// the route go to the first half, the rest to the second. A point on the
+// split itself is satisfied by the junction and is not carried over.
+std::pair<std::vector<EditPoint>, std::vector<EditPoint>> splitPointsAt(const Polyline& route, const std::vector<EditPoint>& points, P at);
+
 // Orthogonal L-chain through the given points, for previews.
 Polyline orthogonalChain(const std::vector<P>& points);
 }

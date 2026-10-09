@@ -137,6 +137,19 @@ std::vector<EditPoint> withInsertedPoint(const Polyline& route, const std::vecto
     return ordered(std::move(list));
 }
 
+std::pair<std::vector<EditPoint>, std::vector<EditPoint>> splitPointsAt(const Polyline& route, const std::vector<EditPoint>& points, P at)
+{
+    std::pair<std::vector<EditPoint>, std::vector<EditPoint>> halves;
+    const auto split = travel(route, at);
+    for (const auto& point : points)
+    {
+        if (point.position.getDistanceFrom(at) < 0.5f)
+            continue;
+        (travel(route, point.position) < split ? halves.first : halves.second).push_back(point);
+    }
+    return halves;
+}
+
 Polyline orthogonalChain(const std::vector<P>& points)
 {
     Polyline out;

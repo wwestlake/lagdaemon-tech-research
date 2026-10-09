@@ -196,6 +196,15 @@ int main()
         const auto refused = routeWith(bad, why);
         checkTrue("point inside a body is refused", refused.empty() && why.contains("inside a component"), why);
 
+        // Branching splits a wire at a new junction: points stay with their half.
+        const auto [first, second] = edit::splitPointsAt(afterDrag, dragged, { 336, 312 });
+        checkTrue("split keeps the point before the junction on the first half",
+                  first.size() == 1 && first[0].position == P(240, 312) && first[0].pinned);
+        checkTrue("split keeps the point after the junction on the second half",
+                  second.size() == 1 && second[0].position == P(432, 312) && second[0].pinned);
+        const auto [onA, onB] = edit::splitPointsAt(afterDrag, dragged, { 240, 312 });
+        checkTrue("a point exactly at the junction is satisfied by it, the other kept", onA.empty() && onB.size() == 1);
+
         checkTrue("orthogonal chain turns at a corner", edit::orthogonalChain({ { 0, 0 }, { 48, 24 } }) == routing::Polyline({ { 0, 0 }, { 48, 0 }, { 48, 24 } }));
         checkTrue("segmentAt finds the bottom run", edit::segmentAt(original, { 330, 220 }, 8.0f) == 2);
     }
