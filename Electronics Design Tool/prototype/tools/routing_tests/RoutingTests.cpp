@@ -124,6 +124,19 @@ int main()
         }
     }
 
+    std::printf("-- out-and-back through a pinned point --\n");
+    {
+        // R1's right pin to R2's left pin via a point past R2: the route must go
+        // out to (720,72) and come back, and the point must survive joining.
+        routing::Problem p;
+        p.obstacles = { resistor(96, 96), resistor(480, 96) };
+        p.connections = { connect(0, 1, 1, 0, 0, { { 720.0f, 72.0f } }) };
+        std::vector<juce::String> why;
+        const auto routes = routing::routeConnections(p, grid, nullptr, {}, &why);
+        checkTrue("routes via a point beyond the target", why[0].isEmpty() && routes[0].size() >= 2, why[0] + " " + describe(routes[0]));
+        checkTrue("visits (720,72)", routing::visitsInOrder(routes[0], { { 720.0f, 72.0f } }), describe(routes[0]));
+    }
+
     std::printf("-- app-shaped obstacles: padded 0.6 grid, pins inside the obstacle --\n");
     {
         auto padded = [](routing::Obstacle o) { o.bounds = o.bounds.expanded(24.0f * 0.60f); return o; };

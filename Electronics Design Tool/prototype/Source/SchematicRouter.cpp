@@ -625,7 +625,9 @@ std::vector<Polyline> routeConnections(const Problem& problem, float gridSize, s
         }
         if (failure[i].isEmpty())
         {
-            simplify(joined);
+            // Pieces are already simplified. Simplifying the joined route
+            // would merge an out-and-back run through a pinned point and erase
+            // the point, so the joints are left as they are.
             if (!visitsInOrder(joined, problem.connections[i].waypoints))
                 failure[i] = "route could not pass through its pinned points in order";
             else if (crossesBody(joined, problem.obstacles, problem.connections[i].a.obstacle, problem.connections[i].b.obstacle))
