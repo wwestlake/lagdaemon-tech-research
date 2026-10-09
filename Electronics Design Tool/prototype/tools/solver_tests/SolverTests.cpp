@@ -211,6 +211,27 @@ int main()
         checkTrue("resolve derived parameter", resolveParameters({ { "SCALE", "2" }, { "RBASE", "1k" }, { "R2", "RBASE*SCALE" } }, params, error)
                   && std::abs(params["R2"] - 2000.0) < 1e-9, error);
         {
+            // Component value fields resolve through evaluateExpression once a
+            // plain number fails; labels must never fall back to a default.
+            std::map<std::string, double> circuitParams;
+            std::string valueError;
+            checkTrue("component params resolve", resolveParameters({ { "RLOAD", "2.2k" } }, circuitParams, valueError), valueError);
+            double cv = 0.0;
+            valueError.clear();
+            checkTrue("component value 4.7k", evaluateExpression("4.7k", circuitParams, cv, valueError) && std::abs(cv - 4700.0) < 1e-9, valueError);
+            valueError.clear();
+            checkTrue("component value {RLOAD}", evaluateExpression("{RLOAD}", circuitParams, cv, valueError) && std::abs(cv - 2200.0) < 1e-9, valueError);
+            valueError.clear();
+            checkTrue("component value RD rejected", !evaluateExpression("RD", circuitParams, cv, valueError)
+                      && valueError == "undefined parameter 'RD'", valueError);
+            valueError.clear();
+            checkTrue("component value {UNDEFINED} rejected", !evaluateExpression("{UNDEFINED}", circuitParams, cv, valueError)
+                      && valueError == "undefined parameter 'UNDEFINED'", valueError);
+            valueError.clear();
+            checkTrue("capacitor value CIN rejected", !evaluateExpression("CIN", circuitParams, cv, valueError)
+                      && valueError == "undefined parameter 'CIN'", valueError);
+        }
+        {
             Circuit c;
             auto n = c.addNode();
             c.addVoltageSource("V1", n, 0, dc(10.0));

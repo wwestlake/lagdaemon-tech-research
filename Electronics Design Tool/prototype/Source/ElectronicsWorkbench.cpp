@@ -2471,6 +2471,11 @@ public:
                 addFinding("ERROR", instance.refdes + " has OUT and REF on the same net.");
         }
 
+        // Values are resolved exactly as the simulator resolves them, so ERC
+        // and simulation agree on what is invalid.
+        for (const auto& valueError : buildSimNetlist().valueErrors)
+            addFinding("ERROR", valueError);
+
         for (const auto& wire : wires)
         {
             if (sameNode(wire.a, wire.b))
@@ -3029,6 +3034,16 @@ public:
         if (!schematic::isSupportedSymbol(requestedSymbol))
             return "{ \"ok\": false, \"error\": \"Unsupported symbolId; no substitute was placed.\", \"requestedSymbolId\": "
                 + quote(requestedSymbol) + " }";
+
+        for (const auto& spec : parts::paramsFor(requestedSymbol))
+        {
+            const auto& text = spec.storage == parts::Storage::Value ? value
+                             : spec.storage == parts::Storage::Frequency ? frequency
+                             : juce::String();
+            juce::String error;
+            if (text.trim().isNotEmpty() && !validatePartValue(spec, text, error))
+                return "{ \"ok\": false, \"error\": " + quote(requestedSymbol + " " + spec.key + ": " + error + " No part was placed.") + " }";
+        }
 
         const auto before = instances.size();
         placeSymbol(requestedSymbol, snapPoint({ x, y }));
@@ -6504,13 +6519,41 @@ private:
     static double parseQuantity(juce::String text, double fallback, bool* ok = nullptr)
     {
         text = text.trim();
-        if (text.containsChar('V') && text.upToFirstOccurrenceOf("V", false, false).containsOnly("0123456789")
+        if (text.containsChar('V') && text.upToFirstOccurrenceOf("V", false, false).isNotEmpty() // "V1" is a label, not 0.1
+            && text.upToFirstOccurrenceOf("V", false, false).containsOnly("0123456789")
             && text.fromFirstOccurrenceOf("V", false, false).containsOnly("0123456789") && text.fromFirstOccurrenceOf("V", false, false).isNotEmpty())
             text = text.replace("V", "."); // 5V1 = 5.1
         double value = 0.0;
         const auto parsed = circuit_sim::parseValue(text.toStdString(), value);
         if (ok != nullptr) *ok = parsed;
         return parsed ? value : fallback;
+    }
+
+    // Catalog validation, plus bare parameter expressions (RD, RBASE*2) that
+    // resolve against the circuit parameters defined right now. {NAME} passes
+    // the catalog as-is because its parameter may be defined later; ERC and
+    // the simulator reject it if it never is.
+    bool validatePartValue(const parts::ParamSpec& spec, const juce::String& value, juce::String& error) const
+    {
+        if (parts::validate(spec, value, error))
+            return true;
+        if (spec.kind != parts::Kind::Quantity)
+            return false;
+        std::vector<std::pair<std::string, std::string>> definitions;
+        for (const auto& p : circuitParameters)
+            definitions.push_back({ p.name.toStdString(), p.expression.toStdString() });
+        std::map<std::string, double> parameters;
+        std::string expressionError;
+        double unused = 0.0;
+        if (circuit_sim::resolveParameters(definitions, parameters, expressionError)
+            && circuit_sim::evaluateExpression(value.trim().toStdString(), parameters, unused, expressionError))
+        {
+            error.clear();
+            return true;
+        }
+        error << " It is not a defined circuit parameter either (" << juce::String(expressionError)
+              << "); define one and write {NAME}.";
+        return false;
     }
 
     static bool parseOptionalQuantity(juce::String text, double& value)
@@ -6530,7 +6573,8 @@ private:
         std::map<juce::String, circuit_sim::Node> nodeOfNet;
         std::map<juce::String, int> elementOfPart; // refdes -> element (ammeter source, source)
         juce::StringArray warnings;
-        juce::String error;
+        juce::String error;            // first value/parameter error; nothing may simulate
+        juce::StringArray valueErrors; // every value/parameter error, for ERC
         int audioInputBranch = -1;
         int audioOutputNode = -1;
     };
@@ -6547,7 +6591,10 @@ private:
         std::map<std::string, double> paramValues;
         std::string paramError;
         if (!circuit_sim::resolveParameters(paramDefs, paramValues, paramError))
+        {
             sim.error = "Parameter error: " + juce::String(paramError);
+            sim.valueErrors.add(sim.error);
+        }
         auto node = [&](int instanceIndex, const juce::String& pinName) -> circuit_sim::Node {
             const auto symbol = symbolForInstance(instances[(size_t)instanceIndex]);
             for (int p = 0; p < (int)symbol.pins.size(); ++p)
@@ -6594,8 +6641,11 @@ private:
                 }
             }
 
+            const auto message = inst.refdes + ": invalid " + key + " \"" + val + "\" (" + juce::String(exprError)
+                               + "). Enter a number such as 4.7k, or define a circuit parameter and write {NAME}.";
+            sim.valueErrors.add(message);
             if (sim.error.isEmpty())
-                sim.error = inst.refdes + ": invalid " + key + " expression \"" + val + "\": " + juce::String(exprError);
+                sim.error = message;
             return fallback;
         };
         auto maybeExpression = [&](const Instance& inst, const juce::String& key) {
@@ -7301,7 +7351,7 @@ public:
         if (!isNetMarker(instance.symbolId) && instance.symbolId != "sub_block" && instance.symbolId != "block_port")
         {
             auto sim = buildSimNetlist();
-            const auto op = circuit_sim::solveOperatingPoint(sim.circuit);
+            const auto op = sim.error.isEmpty() ? circuit_sim::solveOperatingPoint(sim.circuit) : circuit_sim::OperatingPoint {};
             const auto symbol = symbolForInstance(instance);
             for (const auto& pin : symbol.pins)
             {
@@ -7366,7 +7416,7 @@ public:
                   + (keys.isEmpty() ? juce::String(" It has no editable properties.") : " Properties: " + keys.joinIntoString(", ") + ".");
             return false;
         }
-        if (!parts::validate(*spec, value, error))
+        if (!validatePartValue(*spec, value, error))
             return false;
         setPartValue(instance, key, value.trim());
         notifySelection();
@@ -7818,6 +7868,11 @@ public:
         const auto window = 10.0 * cap.timePerDiv;
         auto sim = buildSimNetlist();
         cap.warnings = sim.warnings;
+        if (sim.error.isNotEmpty())
+        {
+            cap.error = sim.error;
+            return cap;
+        }
         const auto ref = simNodeOfPin(sim, index, "REF");
         const std::array<circuit_sim::Node, 2> nodes { simNodeOfPin(sim, index, "CH1"), simNodeOfPin(sim, index, "CH2") };
 
@@ -7898,6 +7953,7 @@ public:
         if (reading.function == "Ohms")
         {
             auto sim = buildSimNetlist(index);
+            if (sim.error.isNotEmpty()) { reading.error = sim.error; return reading; }
             const auto op = circuit_sim::solveOperatingPoint(sim.circuit);
             if (!op.ok) { reading.error = op.error; return reading; }
             const auto hi = simNodeOfPin(sim, index, "HI"), lo = simNodeOfPin(sim, index, "LO");
@@ -7908,6 +7964,7 @@ public:
         }
 
         auto sim = buildSimNetlist();
+        if (sim.error.isNotEmpty()) { reading.error = sim.error; return reading; }
         if (reading.function == "DC A")
         {
             const auto op = circuit_sim::solveOperatingPoint(sim.circuit);
@@ -7961,6 +8018,11 @@ public:
         }
         const auto& fra = instances[(size_t)index];
         auto sim = buildSimNetlist();
+        if (sim.error.isNotEmpty())
+        {
+            result.error = sim.error;
+            return result;
+        }
         const auto in = simNodeOfPin(sim, index, "IN"), out = simNodeOfPin(sim, index, "OUT"), ref = simNodeOfPin(sim, index, "REF");
         if (in < 0 || out < 0)
         {
@@ -12130,8 +12192,13 @@ ElectronicsWorkbench::ElectronicsWorkbench()
             pcbPanel->setLayout({}, true);
         }
     };
-    getSimCircuit = [panel = schematic.get()] {
+    getSimCircuit = [this, panel = schematic.get()] {
         auto sim = panel->buildSimNetlist();
+        if (sim.error.isNotEmpty())
+        {
+            appendLog(sim.error);
+            return std::make_tuple(circuit_sim::Circuit {}, -1, -1);
+        }
         return std::make_tuple(sim.circuit, sim.audioInputBranch, sim.audioOutputNode);
     };
     getLiveParams = [panel = schematic.get()] {
@@ -12562,10 +12629,10 @@ void ElectronicsWorkbench::menuItemSelected(int menuItemID, int)
             auto audioOut = std::get<2>(data);
             if (circuit.elements().empty())
             {
-                appendLog("Schematic is empty.");
+                appendLog("Nothing to run: the schematic is empty or has invalid values.");
                 break;
             }
-            
+
             audio_dsp::Config config;
             config.audioInputElement = audioIn;
             config.audioOutputNode = audioOut;
