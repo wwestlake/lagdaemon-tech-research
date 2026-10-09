@@ -1506,6 +1506,9 @@ private:
         add({ "opamp_741", "741 Op Amp", "Analog IC" });
         add({ "comparator_generic", "Generic Comparator", "Analog IC" });
         add({ "comparator_lm311", "LM311 Comparator", "Analog IC" });
+        add({ "regulator_fixed_generic", "Generic Fixed Regulator", "Analog IC" });
+        add({ "regulator_adjustable_generic", "Generic Adjustable Regulator", "Analog IC" });
+        add({ "regulator_lm317", "LM317 Adjustable Regulator", "Analog IC" });
         add({ "npn", "NPN Transistor - generic", "Discrete" });
         add({ "pnp", "PNP Transistor - generic", "Discrete" });
         add({ "nmos", "N-Channel MOSFET - generic", "Discrete" });
@@ -4128,6 +4131,9 @@ private:
         if (symbolId == "opamp_741") return "uA741";
         if (symbolId == "comparator_generic") return "generic_comparator";
         if (symbolId == "comparator_lm311") return "LM311";
+        if (symbolId == "regulator_fixed_generic") return "generic_regulator_5v";
+        if (symbolId == "regulator_adjustable_generic") return "generic_regulator_adjustable";
+        if (symbolId == "regulator_lm317") return "LM317_TRANS";
         if (symbolId == "npn") return "generic_npn";
         if (symbolId == "pnp") return "generic_pnp";
         if (symbolId == "nmos") return "generic_nmos";
@@ -4171,6 +4177,7 @@ private:
         if (symbolId == "signal_source") return "source.signal";
         if (symbolId == "opamp_generic" || symbolId == "opamp_741") return "analog.op_amp";
         if (symbolId == "comparator_generic" || symbolId == "comparator_lm311") return "analog.comparator";
+        if (symbolId == "regulator_fixed_generic" || symbolId == "regulator_adjustable_generic" || symbolId == "regulator_lm317") return "analog.regulator";
         if (symbolId == "npn") return "discrete.bjt.npn";
         if (symbolId == "pnp") return "discrete.bjt.pnp";
         if (symbolId == "nmos") return "discrete.fet.nmos";
@@ -4202,6 +4209,9 @@ private:
         if (symbolId == "opamp_741") return "741";
         if (symbolId == "comparator_generic") return "generic_comparator";
         if (symbolId == "comparator_lm311") return "LM311";
+        if (symbolId == "regulator_fixed_generic") return "generic_regulator_5v";
+        if (symbolId == "regulator_adjustable_generic") return "generic_regulator_adjustable";
+        if (symbolId == "regulator_lm317") return "LM317";
         if (symbolId == "npn") return "generic_npn";
         if (symbolId == "pnp") return "generic_pnp";
         if (symbolId == "nmos") return "generic_nmos";
@@ -4275,10 +4285,13 @@ private:
     juce::String simulationFidelityFor(const Instance& instance) const
     {
         if (instance.symbolId == "opamp_generic" || instance.symbolId == "opamp_741"
-            || instance.symbolId == "comparator_generic" || instance.symbolId == "comparator_lm311")
+            || instance.symbolId == "comparator_generic" || instance.symbolId == "comparator_lm311"
+            || instance.symbolId == "regulator_fixed_generic" || instance.symbolId == "regulator_adjustable_generic"
+            || instance.symbolId == "regulator_lm317")
         {
             const auto selected = partValue(instance, "value");
-            if (selected.equalsIgnoreCase("generic_opamp") || selected.equalsIgnoreCase("generic_comparator"))
+            if (selected.equalsIgnoreCase("generic_opamp") || selected.equalsIgnoreCase("generic_comparator")
+                || selected.equalsIgnoreCase("generic_regulator_5v") || selected.equalsIgnoreCase("generic_regulator_adjustable"))
                 return "generic_model";
 
             static const bool initialized = [] {
@@ -6589,6 +6602,20 @@ private:
                 }
                 else
                     element = c.addOpAmp(name, node(i, "IN+"), node(i, "IN-"), node(i, outPin), node(i, "V+"), node(i, "V-"), m);
+                if (element >= 0)
+                    c.elements()[(size_t)element].modelName = partValue(inst, "value").toStdString();
+            }
+            else if (id == "regulator_fixed_generic")
+            {
+                circuit_sim::OpAmpModel m;
+                element = c.addOpAmp(name, node(i, "IN"), node(i, "GND"), node(i, "OUT"), node(i, "IN"), node(i, "GND"), m);
+                if (element >= 0)
+                    c.elements()[(size_t)element].modelName = partValue(inst, "value").toStdString();
+            }
+            else if (id == "regulator_adjustable_generic" || id == "regulator_lm317")
+            {
+                circuit_sim::OpAmpModel m;
+                element = c.addOpAmp(name, node(i, "IN"), node(i, "ADJ"), node(i, "OUT"), node(i, "IN"), node(i, "ADJ"), m);
                 if (element >= 0)
                     c.elements()[(size_t)element].modelName = partValue(inst, "value").toStdString();
             }
@@ -10193,7 +10220,9 @@ private:
             else if (view.symbolId == "pmos") kind = "PMOS";
             else if (view.symbolId == "diode") kind = "D";
             else if (view.symbolId == "opamp_generic" || view.symbolId == "opamp_741"
-                     || view.symbolId == "comparator_generic" || view.symbolId == "comparator_lm311")
+                     || view.symbolId == "comparator_generic" || view.symbolId == "comparator_lm311"
+                     || view.symbolId == "regulator_fixed_generic" || view.symbolId == "regulator_adjustable_generic"
+                     || view.symbolId == "regulator_lm317")
                 kind = "SUBCKT";
 
             if (kind.isNotEmpty())
@@ -11247,7 +11276,7 @@ private:
             {
                 "schematic_place_symbol",
                 "Place a schematic symbol or instrument node at a grid coordinate. Use deliberate layout spacing: keep symbols at least 144 px apart horizontally or 96 px vertically, arrange signal flow left-to-right, put sources on the left, outputs/load on the right, grounds below, instruments to the far right, and never reuse the same x/y for multiple parts.",
-                R"({"type":"object","properties":{"symbolId":{"type":"string","description":"Supported symbol id: resistor, potentiometer, capacitor, capacitor_polarized, variable_capacitor, inductor, coupled_inductor, transformer, diode, zener_diode, led, schottky_diode, power_bus, ground_bus, power_port, net_label, battery, voltage_source, ac_voltage_source, current_source, ac_current_source, vcvs, vccs, ccvs, cccs, signal_source, ground, opamp_generic, opamp_741, comparator_generic, comparator_lm311, npn, pnp, nmos, pmos, njfet, pjfet, switch_spst, switch_spdt, relay_spst, fuse, connector_2, connector_3, test_point, logic_not, logic_and, logic_or, logic_nand, logic_nor, logic_xor, oscilloscope_2ch, digital_multimeter, bode_analyzer, or annotation_text. Use annotation_text for free-form schematic notes. Use ground and power_port symbols at each pin that needs ground or a supply instead of long wires: power_port takes busName like +12V (drawn pointing up) or -12V (place with a leading minus; drawn pointing down); ports with the same busName are the same net. net_label takes busName as its label; labels with the same name are one net. After placing and connecting, call schematic_auto_layout once for a standards-conforming drawing. Unsupported symbols are rejected, not substituted."},"x":{"type":"number","description":"Grid x coordinate. Leave at least 144 px horizontal space from other symbols."},"y":{"type":"number","description":"Grid y coordinate. Leave at least 96 px vertical space from other symbols."},"value":{"type":"string"},"frequency":{"type":"string"},"busName":{"type":"string"}},"required":["symbolId","x","y"],"additionalProperties":false})"
+                R"({"type":"object","properties":{"symbolId":{"type":"string","description":"Supported symbol id: resistor, potentiometer, capacitor, capacitor_polarized, variable_capacitor, inductor, coupled_inductor, transformer, diode, zener_diode, led, schottky_diode, power_bus, ground_bus, power_port, net_label, battery, voltage_source, ac_voltage_source, current_source, ac_current_source, vcvs, vccs, ccvs, cccs, signal_source, ground, opamp_generic, opamp_741, comparator_generic, comparator_lm311, regulator_fixed_generic, regulator_adjustable_generic, regulator_lm317, npn, pnp, nmos, pmos, njfet, pjfet, switch_spst, switch_spdt, relay_spst, fuse, connector_2, connector_3, test_point, logic_not, logic_and, logic_or, logic_nand, logic_nor, logic_xor, oscilloscope_2ch, digital_multimeter, bode_analyzer, or annotation_text. Use annotation_text for free-form schematic notes. Use ground and power_port symbols at each pin that needs ground or a supply instead of long wires: power_port takes busName like +12V (drawn pointing up) or -12V (place with a leading minus; drawn pointing down); ports with the same busName are the same net. net_label takes busName as its label; labels with the same name are one net. After placing and connecting, call schematic_auto_layout once for a standards-conforming drawing. Unsupported symbols are rejected, not substituted."},"x":{"type":"number","description":"Grid x coordinate. Leave at least 144 px horizontal space from other symbols."},"y":{"type":"number","description":"Grid y coordinate. Leave at least 96 px vertical space from other symbols."},"value":{"type":"string"},"frequency":{"type":"string"},"busName":{"type":"string"}},"required":["symbolId","x","y"],"additionalProperties":false})"
             },
             {
                 "schematic_connect",
@@ -13638,7 +13667,7 @@ juce::String ElectronicsWorkbench::exportFrustRealtimePreviewTool()
         return symbol == "resistor" || symbol == "potentiometer" || symbol == "capacitor"
             || symbol == "capacitor_polarized" || symbol == "variable_capacitor"
             || symbol == "diode" || symbol == "led" || symbol == "schottky_diode"
-            || symbol == "opamp_generic" || symbol == "opamp_741" || symbol == "comparator_generic" || symbol == "comparator_lm311" || symbol == "npn" || symbol == "pnp"
+            || symbol == "opamp_generic" || symbol == "opamp_741" || symbol == "comparator_generic" || symbol == "comparator_lm311" || symbol == "regulator_fixed_generic" || symbol == "regulator_adjustable_generic" || symbol == "regulator_lm317" || symbol == "npn" || symbol == "pnp"
             || symbol == "nmos" || symbol == "pmos" || symbol == "njfet" || symbol == "pjfet"
             || symbol == "signal_source" || symbol == "ac_voltage_source" || symbol == "voltage_source"
             || symbol == "sub_block" || symbol == "block_port" || symbol == "ground" || symbol == "power_port"

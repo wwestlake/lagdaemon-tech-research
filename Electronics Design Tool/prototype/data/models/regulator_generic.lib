@@ -1,0 +1,9 @@
+* Generic regulator models for explicitly generic symbols. These are not real part numbers.
+
+.SUBCKT generic_regulator_5v IN GND OUT
+VREG OUT GND 5
+.ENDS
+
+.SUBCKT generic_regulator_adjustable IN ADJ OUT
+VREG OUT ADJ 1.25
+.ENDS

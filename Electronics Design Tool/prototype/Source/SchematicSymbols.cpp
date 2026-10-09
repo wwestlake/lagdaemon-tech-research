@@ -295,7 +295,8 @@ const juce::StringArray& supportedSymbolIds()
         "ac_voltage_source", "current_source", "ac_current_source", "behavioral_voltage_source",
         "behavioral_current_source", "vcvs", "vccs",
         "ccvs", "cccs", "signal_source", "ground", "opamp_generic", "opamp_741",
-        "comparator_generic", "comparator_lm311", "npn", "pnp",
+        "comparator_generic", "comparator_lm311", "regulator_fixed_generic",
+        "regulator_adjustable_generic", "regulator_lm317", "npn", "pnp",
         "nmos", "pmos", "njfet", "pjfet", "switch_spst", "switch_spdt", "relay_spst",
         "fuse", "connector_2", "connector_3", "test_point", "logic_not", "logic_and",
         "logic_or", "logic_nand", "logic_nor", "logic_xor", "oscilloscope_2ch",
@@ -352,6 +353,10 @@ SymbolDef symbolFor(const juce::String& id)
     if (id == "opamp_741")           return make(id, "uA741", { -48, -48, 96, 96 }, { { "IN+", { -72, -24 } }, { "IN-", { -72, 24 } }, { "OUT", { 72, 0 } }, { "V+", { 0, -72 } }, { "V-", { 0, 72 } } });
     if (id == "comparator_generic")  return make(id, "CMP", { -48, -48, 96, 96 }, { { "IN+", { -72, -24 } }, { "IN-", { -72, 24 } }, { "OUT", { 72, 0 } }, { "V+", { 0, -72 } }, { "V-", { 0, 72 } } });
     if (id == "comparator_lm311")    return make(id, "LM311", { -48, -60, 96, 120 }, { { "IN+", { -72, -30 } }, { "IN-", { -72, 30 } }, { "COL_OUT", { 72, 0 } }, { "V+", { 0, -84 } }, { "V-", { 0, 84 } }, { "STROBE", { -72, 0 } }, { "EMIT_OUT", { 72, 48 } } }, true);
+    if (id == "regulator_fixed_generic")
+                                      return make(id, "REG", { -42, -36, 84, 72 }, { { "IN", { -66, -24 } }, { "GND", { 0, 60 } }, { "OUT", { 66, -24 } } }, true);
+    if (id == "regulator_adjustable_generic" || id == "regulator_lm317")
+                                      return make(id, id == "regulator_lm317" ? "LM317" : "ADJ REG", { -42, -36, 84, 72 }, { { "IN", { -66, -24 } }, { "ADJ", { 0, 60 } }, { "OUT", { 66, -24 } } }, true);
     if (id == "npn")                 return make(id, "NPN", { -24, -30, 60, 60 }, { { "B", { -48, 0 } }, { "C", { 24, -48 } }, { "E", { 24, 48 } } });
     if (id == "pnp")                 return make(id, "PNP", { -24, -30, 60, 60 }, { { "B", { -48, 0 } }, { "E", { 24, -48 } }, { "C", { 24, 48 } } });
     if (id == "nmos")                return make(id, "NMOS", { -24, -24, 54, 48 }, { { "G", { -48, 0 } }, { "D", { 24, -48 } }, { "S", { 24, 48 } } });
@@ -394,7 +399,8 @@ juce::String refdesPrefixFor(const juce::String& id)
     if (id == "vccs") return "G";
     if (id == "ccvs") return "H";
     if (id == "cccs") return "F";
-    if (id == "opamp_generic" || id == "opamp_741" || id == "comparator_generic" || id == "comparator_lm311" || id.startsWith("logic_")) return "U";
+    if (id == "opamp_generic" || id == "opamp_741" || id == "comparator_generic" || id == "comparator_lm311"
+        || id == "regulator_fixed_generic" || id == "regulator_adjustable_generic" || id == "regulator_lm317" || id.startsWith("logic_")) return "U";
     if (id == "npn" || id == "pnp" || id == "nmos" || id == "pmos" || id == "njfet" || id == "pjfet") return "Q";
     if (id.startsWith("switch_")) return "SW";
     if (id.startsWith("relay_")) return "K";

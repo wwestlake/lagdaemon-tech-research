@@ -124,6 +124,9 @@ std::map<juce::String, std::vector<ParamSpec>> buildCatalog()
     c["comparator_lm311"] = { text("value", "Model", "LM311", Storage::Value),
                               quantity("gain", "Internal preview gain", "V/V", "1meg"),
                               quantity("headroom", "Output headroom from rails", "V", "0.2") };
+    c["regulator_fixed_generic"] = { text("value", "Model", "generic_regulator_5v", Storage::Value) };
+    c["regulator_adjustable_generic"] = { text("value", "Model", "generic_regulator_adjustable", Storage::Value) };
+    c["regulator_lm317"] = { text("value", "Model", "LM317_TRANS", Storage::Value) };
     for (const auto* id : { "npn", "pnp" })
         c[id] = { text("value", "Model", juce::String(id) == "npn" ? "generic_npn" : "generic_pnp", Storage::Value),
                   quantity("beta", "Current gain (beta)", "", "100"),
@@ -213,6 +216,8 @@ juce::String displayName(const juce::String& id)
         { "ccvs", "Current-Controlled Voltage Source" }, { "cccs", "Current-Controlled Current Source" },
         { "opamp_generic", "Generic Op Amp" }, { "opamp_741", "741 Op Amp" },
         { "comparator_generic", "Generic Comparator" }, { "comparator_lm311", "LM311 Comparator" },
+        { "regulator_fixed_generic", "Generic Fixed Regulator" }, { "regulator_adjustable_generic", "Generic Adjustable Regulator" },
+        { "regulator_lm317", "LM317 Regulator" },
         { "npn", "NPN Transistor" }, { "pnp", "PNP Transistor" },
         { "nmos", "N-Channel MOSFET" }, { "pmos", "P-Channel MOSFET" }, { "njfet", "N-Channel JFET" }, { "pjfet", "P-Channel JFET" },
         { "switch_spst", "SPST Switch" }, { "switch_spdt", "SPDT Switch" }, { "relay_spst", "SPST Relay" }, { "fuse", "Fuse" },
@@ -230,9 +235,10 @@ juce::String displayName(const juce::String& id)
 
 juce::String simulationFidelity(const juce::String& id)
 {
-    if (id == "opamp_741" || id == "comparator_lm311")
+    if (id == "opamp_741" || id == "comparator_lm311" || id == "regulator_lm317")
         return "vendor_model";
-    if (id == "opamp_generic" || id == "comparator_generic")
+    if (id == "opamp_generic" || id == "comparator_generic"
+        || id == "regulator_fixed_generic" || id == "regulator_adjustable_generic")
         return "generic_model";
     if (id == "diode" || id == "zener_diode" || id == "schottky_diode" || id == "led"
         || id == "npn" || id == "pnp" || id == "nmos" || id == "pmos" || id == "njfet" || id == "pjfet")
