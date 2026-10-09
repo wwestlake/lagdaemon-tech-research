@@ -148,6 +148,14 @@ std::map<juce::String, std::vector<ParamSpec>> buildCatalog()
                   quantity("pinchoff", "Pinch-off |Vp|", "V", "2") };
     c["switch_spst"] = { toggle("state", "Contacts", "Open", "Closed", "Open") };
     c["switch_spdt"] = { choice("state", "Common connects to", { "A", "B" }, "A") };
+    c["voltage_controlled_switch"] = { quantity("ron", "On resistance", "ohm", "1"),
+                                       quantity("roff", "Off resistance", "ohm", "1G"),
+                                       quantity("threshold", "Switch threshold", "V", "2.5"),
+                                       quantity("hysteresis", "Hysteresis", "V", "0") };
+    c["current_controlled_switch"] = { quantity("ron", "On resistance", "ohm", "1"),
+                                       quantity("roff", "Off resistance", "ohm", "1G"),
+                                       quantity("threshold", "Switch threshold", "A", "1m"),
+                                       quantity("hysteresis", "Hysteresis", "A", "0") };
     c["relay_spst"] = { toggle("state", "Contacts", "Open", "Closed", "Open"),
                         quantity("coil_resistance", "Coil resistance", "ohm", "100") };
     c["fuse"] = { quantity("value", "Rating", "A", "1", Storage::Value) };
@@ -220,7 +228,9 @@ juce::String displayName(const juce::String& id)
         { "regulator_lm317", "LM317 Regulator" },
         { "npn", "NPN Transistor" }, { "pnp", "PNP Transistor" },
         { "nmos", "N-Channel MOSFET" }, { "pmos", "P-Channel MOSFET" }, { "njfet", "N-Channel JFET" }, { "pjfet", "P-Channel JFET" },
-        { "switch_spst", "SPST Switch" }, { "switch_spdt", "SPDT Switch" }, { "relay_spst", "SPST Relay" }, { "fuse", "Fuse" },
+        { "switch_spst", "SPST Switch" }, { "switch_spdt", "SPDT Switch" },
+        { "voltage_controlled_switch", "Voltage-Controlled Switch" }, { "current_controlled_switch", "Current-Controlled Switch" },
+        { "relay_spst", "SPST Relay" }, { "fuse", "Fuse" },
         { "connector_2", "2-Pin Connector" }, { "connector_3", "3-Pin Connector" }, { "test_point", "Test Point" },
         { "ground", "Ground" }, { "power_port", "Supply Port" }, { "audio_in", "Audio Input" }, { "audio_out", "Audio Output" }, { "net_label", "Net Label" },
         { "power_bus", "Power Bus" }, { "ground_bus", "Ground Bus" },
@@ -239,6 +249,8 @@ juce::String simulationFidelity(const juce::String& id)
         return "vendor_model";
     if (id == "opamp_generic" || id == "comparator_generic"
         || id == "regulator_fixed_generic" || id == "regulator_adjustable_generic")
+        return "generic_model";
+    if (id == "voltage_controlled_switch" || id == "current_controlled_switch")
         return "generic_model";
     if (id == "diode" || id == "zener_diode" || id == "schottky_diode" || id == "led"
         || id == "npn" || id == "pnp" || id == "nmos" || id == "pmos" || id == "njfet" || id == "pjfet")

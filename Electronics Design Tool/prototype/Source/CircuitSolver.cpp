@@ -356,7 +356,8 @@ Matrix<double> deviceJacobian(const Element& e, const std::vector<double>& v)
 bool isNonlinear(Element::Type t)
 {
     return t == Element::Type::Diode || t == Element::Type::Npn || t == Element::Type::Pnp
-        || t == Element::Type::Nmos || t == Element::Type::Pmos || t == Element::Type::Njfet || t == Element::Type::Pjfet || t == Element::Type::OpAmp;
+        || t == Element::Type::Nmos || t == Element::Type::Pmos || t == Element::Type::Njfet || t == Element::Type::Pjfet
+        || t == Element::Type::OpAmp || t == Element::Type::VoltageControlledSwitch || t == Element::Type::CurrentControlledSwitch;
 }
 
 bool needsBranch(Element::Type t)
@@ -576,6 +577,21 @@ System<double> assemble(const Circuit& c, const Layout& l, const Options& o, Mod
             case Element::Type::Switch:
                 s.conductance(e.nodes[0], e.nodes[1], 1.0 / std::max(e.value, 1e-9));
                 break;
+            case Element::Type::VoltageControlledSwitch:
+            {
+                const auto vc = nodeVoltage(x, e.nodes[2]) - nodeVoltage(x, e.nodes[3]);
+                const auto r = vc >= e.threshold ? e.value : e.offResistance;
+                s.conductance(e.nodes[0], e.nodes[1], 1.0 / std::max(r, 1e-9));
+                break;
+            }
+            case Element::Type::CurrentControlledSwitch:
+            {
+                const auto ic = e.control >= 0 && e.control < (int)l.branch.size() && l.branch[(size_t)e.control] >= 0
+                    ? x[(size_t)l.branch[(size_t)e.control]] : 0.0;
+                const auto r = ic >= e.threshold ? e.value : e.offResistance;
+                s.conductance(e.nodes[0], e.nodes[1], 1.0 / std::max(r, 1e-9));
+                break;
+            }
             case Element::Type::Capacitor:
                 if (mode == Mode::Transient)
                 {
@@ -1065,6 +1081,8 @@ int Circuit::find(const std::string& name) const
 int Circuit::addResistor(const std::string& n, Node a, Node b, double ohms) { Element e; e.type = Element::Type::Resistor; e.name = n; e.nodes = { a, b }; e.value = ohms; return add(e); }
 int Circuit::addVariableResistor(const std::string& n, Node a, Node b, double r, const std::string& pId, bool wiper2) { Element e; e.type = Element::Type::VariableResistor; e.name = n; e.nodes = { a, b }; e.value = r; e.paramId = pId; e.isWiperToPin2 = wiper2; return add(e); }
 int Circuit::addSwitch(const std::string& n, Node a, Node b, const std::string& pId) { Element e; e.type = Element::Type::Switch; e.name = n; e.nodes = { a, b }; e.paramId = pId; return add(e); }
+int Circuit::addVoltageControlledSwitch(const std::string& n, Node a, Node b, Node cp, Node cm, double ron, double roff, double vt, double vh) { Element e; e.type = Element::Type::VoltageControlledSwitch; e.name = n; e.nodes = { a, b, cp, cm }; e.value = ron; e.offResistance = roff; e.threshold = vt; e.hysteresis = vh; return add(e); }
+int Circuit::addCurrentControlledSwitch(const std::string& n, Node a, Node b, int src, double ron, double roff, double it, double ih) { Element e; e.type = Element::Type::CurrentControlledSwitch; e.name = n; e.nodes = { a, b }; e.control = src; e.value = ron; e.offResistance = roff; e.threshold = it; e.hysteresis = ih; return add(e); }
 int Circuit::addCapacitor(const std::string& n, Node a, Node b, double f) { Element e; e.type = Element::Type::Capacitor; e.name = n; e.nodes = { a, b }; e.value = f; return add(e); }
 int Circuit::addInductor(const std::string& n, Node a, Node b, double h) { Element e; e.type = Element::Type::Inductor; e.name = n; e.nodes = { a, b }; e.value = h; return add(e); }
 int Circuit::addCoupling(const std::string& n, int la, int lb, double k) { Element e; e.type = Element::Type::Coupling; e.name = n; e.control = la; e.control2 = lb; e.value = k; return add(e); }
@@ -1092,6 +1110,7 @@ std::vector<std::string> parameterNames(Element::Type type)
         case T::Resistor:
           case T::VariableResistor:
           case T::Switch: return { "value", "tc1", "tc2" };
+        case T::VoltageControlledSwitch: case T::CurrentControlledSwitch: return { "ron", "roff", "threshold", "hysteresis" };
         case T::Capacitor: case T::Inductor: case T::Coupling: return { "value" };
         case T::VoltageSource: case T::CurrentSource: return { "dc", "amplitude", "frequency", "ac" };
         case T::Vcvs: case T::Vccs: case T::Ccvs: case T::Cccs: return { "value" };
@@ -1118,6 +1137,12 @@ bool getParameter(const Element& e, const std::string& name, double& out)
         case T::Capacitor: case T::Inductor: case T::Coupling:
         case T::Vcvs: case T::Vccs: case T::Ccvs: case T::Cccs:
             if (name == "value") { out = e.value; return true; }
+            return false;
+        case T::VoltageControlledSwitch: case T::CurrentControlledSwitch:
+            if (name == "ron") { out = e.value; return true; }
+            if (name == "roff") { out = e.offResistance; return true; }
+            if (name == "threshold") { out = e.threshold; return true; }
+            if (name == "hysteresis") { out = e.hysteresis; return true; }
             return false;
         case T::VoltageSource: case T::CurrentSource:
             if (name == "dc") { out = e.wave.kind == Waveform::Kind::Dc || e.wave.kind == Waveform::Kind::Sine || e.wave.kind == Waveform::Kind::Square ? e.wave.offset : e.wave.dcValue(); return true; }
@@ -1172,6 +1197,12 @@ bool setParameter(Element& e, const std::string& name, double value)
         case T::Capacitor: case T::Inductor: case T::Coupling:
         case T::Vcvs: case T::Vccs: case T::Ccvs: case T::Cccs:
             e.value = value;
+            return true;
+        case T::VoltageControlledSwitch: case T::CurrentControlledSwitch:
+            if (name == "ron") e.value = value;
+            if (name == "roff") e.offResistance = value;
+            if (name == "threshold") e.threshold = value;
+            if (name == "hysteresis") e.hysteresis = value;
             return true;
         case T::VoltageSource: case T::CurrentSource:
             if (name == "dc")

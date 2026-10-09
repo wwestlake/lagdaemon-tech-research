@@ -297,7 +297,8 @@ const juce::StringArray& supportedSymbolIds()
         "ccvs", "cccs", "signal_source", "ground", "opamp_generic", "opamp_741",
         "comparator_generic", "comparator_lm311", "regulator_fixed_generic",
         "regulator_adjustable_generic", "regulator_lm317", "npn", "pnp",
-        "nmos", "pmos", "njfet", "pjfet", "switch_spst", "switch_spdt", "relay_spst",
+        "nmos", "pmos", "njfet", "pjfet", "switch_spst", "switch_spdt",
+        "voltage_controlled_switch", "current_controlled_switch", "relay_spst",
         "fuse", "connector_2", "connector_3", "test_point", "logic_not", "logic_and",
         "logic_or", "logic_nand", "logic_nor", "logic_xor", "oscilloscope_2ch",
         "digital_multimeter", "bode_analyzer", "annotation_text"
@@ -365,6 +366,10 @@ SymbolDef symbolFor(const juce::String& id)
     if (id == "pjfet")               return make(id, "PJFET", { -24, -24, 54, 48 }, { { "G", { -48, 0 } }, { "S", { 24, -48 } }, { "D", { 24, 48 } } });
     if (id == "switch_spst")         return make(id, "SW", { -30, -24, 60, 30 }, { { "1", { -48, 0 } }, { "2", { 48, 0 } } });
     if (id == "switch_spdt")         return make(id, "SWDT", { -30, -30, 60, 60 }, { { "C", { -48, 0 } }, { "A", { 48, -24 } }, { "B", { 48, 24 } } }, true);
+    if (id == "voltage_controlled_switch")
+                                     return make(id, "VSW", { -36, -30, 72, 60 }, { { "1", { -60, 0 } }, { "2", { 60, 0 } }, { "CP+", { -24, -54 } }, { "CP-", { 24, -54 } } }, true);
+    if (id == "current_controlled_switch")
+                                     return make(id, "ISW", { -36, -30, 72, 60 }, { { "1", { -60, 0 } }, { "2", { 60, 0 } }, { "S+", { -24, -54 } }, { "S-", { 24, -54 } } }, true);
     if (id == "relay_spst")          return make(id, "K", { -48, -36, 96, 72 }, { { "COIL+", { -72, -24 } }, { "COIL-", { -72, 24 } }, { "1", { 72, -24 } }, { "2", { 72, 24 } } }, true);
     if (id == "fuse")                return make(id, "FUSE", { -30, -12, 60, 24 }, { { "1", { -48, 0 } }, { "2", { 48, 0 } } });
     if (id == "connector_2")         return make(id, "J2", { -24, -18, 36, 60 }, { { "1", { -48, 0 } }, { "2", { -48, 24 } } }, true);

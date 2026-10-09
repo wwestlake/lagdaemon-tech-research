@@ -106,7 +106,7 @@ struct Element
         BehavioralVoltageSource, BehavioralCurrentSource,
         Vcvs, Vccs, Ccvs, Cccs,
         Diode, Npn, Pnp, Nmos, Pmos, Njfet, Pjfet, OpAmp,
-        VariableResistor, Switch
+        VariableResistor, Switch, VoltageControlledSwitch, CurrentControlledSwitch
     };
 
     Type type = Type::Resistor;
@@ -114,6 +114,9 @@ struct Element
     std::vector<Node> nodes; // see the add* helpers for terminal order
     std::string modelName;   // selected SPICE .MODEL/.SUBCKT name, when bound
     double value = 0.0;      // R ohms, C farads, L henries, gain, coupling k
+    double offResistance = 1e9; // controlled switch Roff
+    double threshold = 0.0;  // controlled switch Vt/It
+    double hysteresis = 0.0; // controlled switch Vh/Ih
     std::string expression;  // Xyce behavioral source expression
     double tc1 = 0.0, tc2 = 0.0; // resistor temperature coefficients (1/K, 1/K^2)
     bool noiseless = false;  // e.g. instrument input resistances
@@ -138,6 +141,10 @@ public:
     int addResistor(const std::string& name, Node a, Node b, double ohms);
     int addVariableResistor(const std::string& name, Node a, Node b, double totalResistance, const std::string& paramId, bool isWiperToPin2);
     int addSwitch(const std::string& name, Node a, Node b, const std::string& paramId);
+    int addVoltageControlledSwitch(const std::string& name, Node a, Node b, Node controlPlus, Node controlMinus,
+                                   double ron, double roff, double threshold, double hysteresis);
+    int addCurrentControlledSwitch(const std::string& name, Node a, Node b, int controllingSource,
+                                   double ron, double roff, double threshold, double hysteresis);
     int addCapacitor(const std::string& name, Node a, Node b, double farads);
     int addInductor(const std::string& name, Node a, Node b, double henries);
     int addCoupling(const std::string& name, int inductorA, int inductorB, double k);

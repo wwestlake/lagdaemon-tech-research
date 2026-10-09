@@ -1505,6 +1505,12 @@ Result run(Analysis analysis, const Settings& given, const Netlist& netlist)
             r.error = juce::String(e.name) + " is a Xyce behavioral source. Select the Xyce engine; the internal solver does not support equation-driven sources.";
             return r;
         }
+        else if ((e.type == ElementType::VoltageControlledSwitch || e.type == ElementType::CurrentControlledSwitch)
+                 && std::abs(e.hysteresis) > 0.0)
+        {
+            r.error = juce::String(e.name) + " uses switch hysteresis. Select the Xyce engine; the internal solver supports threshold switching only.";
+            return r;
+        }
     const auto started = juce::Time::getMillisecondCounterHiRes();
     switch (analysis)
     {

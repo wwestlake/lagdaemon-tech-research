@@ -97,6 +97,8 @@ juce::String elementPrintName(const Element& e, size_t index)
         case ElementType::Resistor:
         case ElementType::VariableResistor:
         case ElementType::Switch: return elementName(e, index, "R");
+        case ElementType::VoltageControlledSwitch: return elementName(e, index, "S");
+        case ElementType::CurrentControlledSwitch: return elementName(e, index, "W");
         case ElementType::Capacitor: return elementName(e, index, "C");
         case ElementType::Inductor: return elementName(e, index, "L");
         case ElementType::Diode: return elementName(e, index, "D");
@@ -401,6 +403,24 @@ const std::vector<ModelBinding>& modelBindingRegistry()
             { { "D", "D", 0 }, { "G", "G", 1 }, { "S", "S", 2 } },
             true,
         },
+        {
+            "voltage_controlled_switch",
+            "generic_model",
+            "generated_sw",
+            "SW",
+            { "generated_sw" },
+            { { "1", "1", 0 }, { "2", "2", 1 }, { "CP+", "CP+", 2 }, { "CP-", "CP-", 3 } },
+            true,
+        },
+        {
+            "current_controlled_switch",
+            "generic_model",
+            "generated_csw",
+            "CSW",
+            { "generated_csw" },
+            { { "1", "1", 0 }, { "2", "2", 1 }, { "SENSE", "SENSE", -1 } },
+            true,
+        },
     };
     return bindings;
 }
@@ -537,6 +557,34 @@ bool appendElement(const analytics::Netlist& n, juce::String& netlist, std::map<
         case ElementType::Switch:
             netlist << elementName(e, index, "R") << " " << nd(0) << " " << nd(1) << " " << value(std::max(e.value, 1e-9)) << "\n";
             return true;
+        case ElementType::VoltageControlledSwitch:
+        {
+            const auto model = elementName(e, index, "S") + "_MODEL";
+            subcircuits.insert(".MODEL " + model + " SW(Ron=" + value(std::max(e.value, 1e-9))
+                               + " Roff=" + value(std::max(e.offResistance, 1e-9))
+                               + " Vt=" + value(e.threshold)
+                               + " Vh=" + value(e.hysteresis) + ")");
+            netlist << elementName(e, index, "S") << " " << nd(0) << " " << nd(1) << " " << nd(2) << " " << nd(3)
+                    << " " << model << "\n";
+            return true;
+        }
+        case ElementType::CurrentControlledSwitch:
+        {
+            const auto found = voltageSourceNames.find(e.control);
+            if (found == voltageSourceNames.end())
+            {
+                error = juce::String(e.name) + " controls a source that has not been lowered to Xyce.";
+                return false;
+            }
+            const auto model = elementName(e, index, "W") + "_MODEL";
+            subcircuits.insert(".MODEL " + model + " CSW(Ron=" + value(std::max(e.value, 1e-9))
+                               + " Roff=" + value(std::max(e.offResistance, 1e-9))
+                               + " It=" + value(e.threshold)
+                               + " Ih=" + value(e.hysteresis) + ")");
+            netlist << elementName(e, index, "W") << " " << nd(0) << " " << nd(1) << " " << found->second
+                    << " " << model << "\n";
+            return true;
+        }
         case ElementType::Capacitor:
             netlist << elementName(e, index, "C") << " " << nd(0) << " " << nd(1) << " " << value(e.value) << "\n";
             return true;

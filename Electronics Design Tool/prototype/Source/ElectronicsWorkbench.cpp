@@ -15,7 +15,6 @@
 #include "AudioPipeline.h"
 #include "AudioDsp.h"
 #include "SpiceLibrary.h"
-
 #include <ai_provider/AiConfig.h>
 
 #include <algorithm>
@@ -1517,6 +1516,8 @@ private:
         add({ "pjfet", "P-Channel JFET - generic", "Discrete" });
         add({ "switch_spst", "SPST Switch", "Switch" });
         add({ "switch_spdt", "SPDT Switch", "Switch" });
+        add({ "voltage_controlled_switch", "Voltage-Controlled Switch", "Switch" });
+        add({ "current_controlled_switch", "Current-Controlled Switch", "Switch" });
         add({ "relay_spst", "SPST Relay", "Switch" });
         add({ "fuse", "Fuse", "Protection" });
         add({ "connector_2", "2-Pin Connector", "Connector" });
@@ -2111,6 +2112,10 @@ public:
             const auto* def = spice_library::findModel(partValue(instance, "value"));
             if (def != nullptr)
                 modelLines.insert(def->rawText);
+            auto param = [&](const juce::String& key, const juce::String& fallback) {
+                const auto v = partValue(instance, key).trim();
+                return v.isNotEmpty() ? v : fallback;
+            };
 
             if (instance.symbolId == "resistor")
             {
@@ -2154,6 +2159,29 @@ public:
             {
                 juce::String name = def ? def->name : instance.value;
                 netlist << "X" << instance.refdes << " " << pinNet("IN+") << " " << pinNet("IN-") << " " << pinNet("V+") << " " << pinNet("V-") << " " << pinNet("OUT") << " " << name << "\n";
+            }
+            else if (instance.symbolId == "voltage_controlled_switch")
+            {
+                const auto model = instance.refdes + "_MODEL";
+                modelLines.insert(".MODEL " + model + " SW(Ron=" + param("ron", "1")
+                                  + " Roff=" + param("roff", "1G")
+                                  + " Vt=" + param("threshold", "2.5")
+                                  + " Vh=" + param("hysteresis", "0") + ")");
+                netlist << "S" << instance.refdes << " " << pinNet("1") << " " << pinNet("2") << " "
+                        << pinNet("CP+") << " " << pinNet("CP-") << " " << model << "\n";
+                hasProbe = true;
+            }
+            else if (instance.symbolId == "current_controlled_switch")
+            {
+                const auto sense = "V" + instance.refdes + "_SENSE";
+                const auto model = instance.refdes + "_MODEL";
+                netlist << sense << " " << pinNet("S+") << " " << pinNet("S-") << " DC 0\n";
+                modelLines.insert(".MODEL " + model + " CSW(Ron=" + param("ron", "1")
+                                  + " Roff=" + param("roff", "1G")
+                                  + " It=" + param("threshold", "1m")
+                                  + " Ih=" + param("hysteresis", "0") + ")");
+                netlist << "W" << instance.refdes << " " << pinNet("1") << " " << pinNet("2") << " " << sense << " " << model << "\n";
+                hasProbe = true;
             }
             else if (instance.symbolId == "voltage_source")
             {
@@ -2274,7 +2302,9 @@ public:
                 || instance.symbolId == "vcvs"
                 || instance.symbolId == "vccs"
                 || instance.symbolId == "ccvs"
-                || instance.symbolId == "cccs")
+                || instance.symbolId == "cccs"
+                || instance.symbolId == "voltage_controlled_switch"
+                || instance.symbolId == "current_controlled_switch")
                 hasLoweredPrimitive = true;
         }
 
@@ -6666,6 +6696,19 @@ private:
             }
             else if (id == "switch_spdt")
                 element = c.addResistor(name, node(i, "C"), node(i, partValue(inst, "state") == "B" ? "B" : "A"), 1e-3);
+            else if (id == "voltage_controlled_switch")
+            {
+                element = c.addVoltageControlledSwitch(name, node(i, "1"), node(i, "2"), node(i, "CP+"), node(i, "CP-"),
+                                                       number(inst, "ron", 1.0), number(inst, "roff", 1e9),
+                                                       number(inst, "threshold", 2.5), number(inst, "hysteresis", 0.0));
+            }
+            else if (id == "current_controlled_switch")
+            {
+                const auto sense = c.addVoltageSource(name + "_sense", node(i, "S+"), node(i, "S-"), dcWave(0.0));
+                element = c.addCurrentControlledSwitch(name, node(i, "1"), node(i, "2"), sense,
+                                                       number(inst, "ron", 1.0), number(inst, "roff", 1e9),
+                                                       number(inst, "threshold", 1e-3), number(inst, "hysteresis", 0.0));
+            }
             else if (id == "relay_spst")
             {
                 c.addResistor(name + "_coil", node(i, "COIL+"), node(i, "COIL-"), number(inst, "coil_resistance", 100.0));
@@ -11276,7 +11319,7 @@ private:
             {
                 "schematic_place_symbol",
                 "Place a schematic symbol or instrument node at a grid coordinate. Use deliberate layout spacing: keep symbols at least 144 px apart horizontally or 96 px vertically, arrange signal flow left-to-right, put sources on the left, outputs/load on the right, grounds below, instruments to the far right, and never reuse the same x/y for multiple parts.",
-                R"({"type":"object","properties":{"symbolId":{"type":"string","description":"Supported symbol id: resistor, potentiometer, capacitor, capacitor_polarized, variable_capacitor, inductor, coupled_inductor, transformer, diode, zener_diode, led, schottky_diode, power_bus, ground_bus, power_port, net_label, battery, voltage_source, ac_voltage_source, current_source, ac_current_source, vcvs, vccs, ccvs, cccs, signal_source, ground, opamp_generic, opamp_741, comparator_generic, comparator_lm311, regulator_fixed_generic, regulator_adjustable_generic, regulator_lm317, npn, pnp, nmos, pmos, njfet, pjfet, switch_spst, switch_spdt, relay_spst, fuse, connector_2, connector_3, test_point, logic_not, logic_and, logic_or, logic_nand, logic_nor, logic_xor, oscilloscope_2ch, digital_multimeter, bode_analyzer, or annotation_text. Use annotation_text for free-form schematic notes. Use ground and power_port symbols at each pin that needs ground or a supply instead of long wires: power_port takes busName like +12V (drawn pointing up) or -12V (place with a leading minus; drawn pointing down); ports with the same busName are the same net. net_label takes busName as its label; labels with the same name are one net. After placing and connecting, call schematic_auto_layout once for a standards-conforming drawing. Unsupported symbols are rejected, not substituted."},"x":{"type":"number","description":"Grid x coordinate. Leave at least 144 px horizontal space from other symbols."},"y":{"type":"number","description":"Grid y coordinate. Leave at least 96 px vertical space from other symbols."},"value":{"type":"string"},"frequency":{"type":"string"},"busName":{"type":"string"}},"required":["symbolId","x","y"],"additionalProperties":false})"
+                R"({"type":"object","properties":{"symbolId":{"type":"string","description":"Supported symbol id: resistor, potentiometer, capacitor, capacitor_polarized, variable_capacitor, inductor, coupled_inductor, transformer, diode, zener_diode, led, schottky_diode, power_bus, ground_bus, power_port, net_label, battery, voltage_source, ac_voltage_source, current_source, ac_current_source, vcvs, vccs, ccvs, cccs, signal_source, ground, opamp_generic, opamp_741, comparator_generic, comparator_lm311, regulator_fixed_generic, regulator_adjustable_generic, regulator_lm317, npn, pnp, nmos, pmos, njfet, pjfet, switch_spst, switch_spdt, voltage_controlled_switch, current_controlled_switch, relay_spst, fuse, connector_2, connector_3, test_point, logic_not, logic_and, logic_or, logic_nand, logic_nor, logic_xor, oscilloscope_2ch, digital_multimeter, bode_analyzer, or annotation_text. Use annotation_text for free-form schematic notes. Use ground and power_port symbols at each pin that needs ground or a supply instead of long wires: power_port takes busName like +12V (drawn pointing up) or -12V (place with a leading minus; drawn pointing down); ports with the same busName are the same net. net_label takes busName as its label; labels with the same name are one net. After placing and connecting, call schematic_auto_layout once for a standards-conforming drawing. Unsupported symbols are rejected, not substituted."},"x":{"type":"number","description":"Grid x coordinate. Leave at least 144 px horizontal space from other symbols."},"y":{"type":"number","description":"Grid y coordinate. Leave at least 96 px vertical space from other symbols."},"value":{"type":"string"},"frequency":{"type":"string"},"busName":{"type":"string"}},"required":["symbolId","x","y"],"additionalProperties":false})"
             },
             {
                 "schematic_connect",
@@ -15073,13 +15116,6 @@ juce::String ElectronicsWorkbench::pcbLayoutTool(const juce::String& name, const
     }
     return reply(false, "Unknown PCB tool " + name + ".", false, nullptr);
 }
-
-
-
-
-
-
-
 
 
 
