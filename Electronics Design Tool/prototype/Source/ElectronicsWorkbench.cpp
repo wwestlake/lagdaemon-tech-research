@@ -15,6 +15,7 @@
 #include "AudioPipeline.h"
 #include "AudioDsp.h"
 #include "SpiceLibrary.h"
+#include "CircuitHierarchyPanel.h"
 #include <ai_provider/AiConfig.h>
 
 #include <algorithm>
@@ -5438,6 +5439,21 @@ private:
         }
         return path;
     }
+
+public:
+    // Every sub-diagram sheet in the diagram, for the Circuit Hierarchy panel.
+    std::vector<circuit_hierarchy::Sheet> hierarchySheets() const
+    {
+        std::vector<circuit_hierarchy::Sheet> sheets;
+        for (const auto& instance : instances)
+            if (instance.symbolId == "sub_block" && instance.childSheet.isNotEmpty())
+                sheets.push_back({ instance.childSheet.toStdString(), instance.value.toStdString(), instance.sheet.toStdString() });
+        return sheets;
+    }
+    juce::String viewedSheet() const { return currentSheet; }
+    void showSheet(const juce::String& sheet) { openSheet(sheet); }
+
+private:
 
     static juce::String partsListCell(juce::String text)
     {
@@ -12398,6 +12414,13 @@ ElectronicsWorkbench::ElectronicsWorkbench()
     auto agent = std::make_unique<AgentPanel>(std::move(agentTools));
     auto* agentPanel = agent.get();
     openAgentSettingsDialog = [agentPanel] { agentPanel->showAiSettingsForSelected(); };
+    CircuitHierarchyPanel::Source hierarchySource;
+    hierarchySource.sheets = [panel = schematic.get()] { return panel->hierarchySheets(); };
+    hierarchySource.rootName = [this] { return currentDiagram.isNotEmpty() ? currentDiagram : juce::String("Main"); };
+    hierarchySource.currentSheet = [panel = schematic.get()] { return panel->viewedSheet(); };
+    hierarchySource.openSheet = [panel = schematic.get()](const juce::String& sheet) { panel->showSheet(sheet); };
+    dockManager->registerPanel("hierarchy", "Circuit Hierarchy", std::make_unique<CircuitHierarchyPanel>(std::move(hierarchySource)),
+                               CreationDock::DockTargetZone::Left);
     dockManager->registerPanel("schematic", "Schematic", std::move(schematic), CreationDock::DockTargetZone::CenterTab);
     analyticsDockPanel = dockManager->registerPanel("analytics", "Analytics", std::move(analyticsOwner), CreationDock::DockTargetZone::CenterTab);
     dockManager->registerPanel("pcb", "PCB", std::move(pcbOwner), CreationDock::DockTargetZone::CenterTab);

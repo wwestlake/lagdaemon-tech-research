@@ -3,6 +3,7 @@
 
 #include "../../Source/CircuitSolver.h"
 #include "../../Source/SignalMeasure.h"
+#include "../../Source/CircuitHierarchy.h"
 
 #include <cmath>
 #include <crtdbg.h>
@@ -708,6 +709,25 @@ int main()
         check("RL starts at initial current (A)", tr.sourceCurrents.empty() ? 0.0 : tr.sourceCurrents.front()[(size_t)ind], 0.1, 1e-9);
         checkTrue("RL current decays", tr.sourceCurrents.size() > 100 && std::abs(tr.sourceCurrents[100][(size_t)ind]) < 0.1,
                   tr.sourceCurrents.size() > 100 ? "(" + std::to_string(tr.sourceCurrents[100][(size_t)ind]) + ")" : "");
+    }
+
+    std::printf("\n-- circuit hierarchy tree --\n");
+    {
+        using circuit_hierarchy::flatten;
+        auto describe = [](const std::vector<circuit_hierarchy::Row>& rows) {
+            std::string s;
+            for (const auto& r : rows)
+                s += r.name + ":" + std::to_string(r.depth) + (r.missingParent ? "!" : "") + " ";
+            return s;
+        };
+        const auto empty = flatten({}, "Main");
+        checkTrue("hierarchy empty diagram is just the top level", describe(empty) == "Main:0 ", describe(empty));
+        // A and C on the top level, B inside A, D's parent is gone, X/Y form a cycle,
+        // and a sub_block with no sheet id is not a navigable sheet.
+        const auto rows = flatten({ { "s1", "A", "" }, { "s2", "B", "s1" }, { "s3", "C", "" }, { "s4", "D", "ghost" },
+                                    { "s5", "X", "s6" }, { "s6", "Y", "s5" }, { "", "NoSheet", "" } }, "Main");
+        checkTrue("hierarchy full tree, nested and expanded in order",
+                  describe(rows) == "Main:0 A:1 B:2 C:1 D:1! X:1! Y:2 ", describe(rows));
     }
 
     std::printf("\n%s: %d failure(s)\n", failures == 0 ? "ALL PASSED" : "FAILED", failures);

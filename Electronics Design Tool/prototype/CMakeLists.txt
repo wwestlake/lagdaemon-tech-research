@@ -132,6 +132,8 @@ target_sources(DjehutiElectronicsLab PRIVATE
     Source/Analytics.cpp
     Source/AnalyticsPanel.h
     Source/AnalyticsPanel.cpp
+    Source/CircuitHierarchy.cpp
+    Source/CircuitHierarchyPanel.cpp
     Source/XyceBackend.h
     Source/XyceBackend.cpp
     Source/SchematicSymbols.h
@@ -274,6 +276,7 @@ juce_generate_juce_header(FrustEngineSmoke)
 add_executable(CircuitSolverTests
     tools/solver_tests/SolverTests.cpp
     Source/CircuitSolver.cpp
+    Source/CircuitHierarchy.cpp
     Source/SignalMeasure.cpp
 )
 set_target_properties(CircuitSolverTests PROPERTIES
