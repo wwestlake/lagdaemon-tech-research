@@ -13315,9 +13315,18 @@ private:
             bool ok = false;
             juce::String finalText;
 
-            for (int round = 0; round < 12; ++round)
+            // No cap on tool rounds: the agent runs until it answers, the
+            // provider fails, the user stops it, or it keeps repeating one
+            // failing call. (Each provider request keeps its own timeout.)
+            constexpr int maxIdenticalFailures = 3;
+            std::string lastFailedCall;
+            int identicalFailures = 0;
+            int rounds = 0, toolCalls = 0;
+            auto stopped = [&safeThis] { return safeThis == nullptr || safeThis->stopRequested.load(); };
+
+            for (bool running = true; running; ++rounds)
             {
-                if (safeThis == nullptr || safeThis->stopRequested.load())
+                if (stopped())
                 {
                     response = { false, {}, "Stopped by the user." };
                     break;
@@ -13343,8 +13352,20 @@ private:
 
                 for (const auto& call : response.toolCalls)
                 {
-                    if (safeThis == nullptr)
-                        break;
+                    ai_provider::ChatMessage toolMessage;
+                    toolMessage.role = "tool";
+                    toolMessage.toolCallId = call.id;
+                    if (!running || stopped())
+                    {
+                        // Every requested call still gets a result, so the
+                        // conversation stays valid for the next message.
+                        toolMessage.content = R"({"ok": false, "error": "Not run: the request was stopped."})";
+                        messages.push_back(toolMessage);
+                        if (running)
+                            response = { false, {}, "Stopped by the user." };
+                        running = false;
+                        continue;
+                    }
 
                     juce::MessageManager::callAsync([safeThis, name = juce::String(call.name)] {
                         if (safeThis != nullptr)
@@ -13352,19 +13373,34 @@ private:
                     });
 
                     const auto result = safeThis->executeToolFromWorker(call);
-                    ai_provider::ChatMessage toolMessage;
-                    toolMessage.role = "tool";
+                    ++toolCalls;
                     toolMessage.content = result.toStdString();
-                    toolMessage.toolCallId = call.id;
                     messages.push_back(toolMessage);
+
+                    const auto parsed = juce::JSON::parse(result);
+                    const bool failed = parsed.isObject() && parsed.hasProperty("ok") && !(bool)parsed.getProperty("ok", true);
+                    const auto signature = call.name + "\n" + call.argumentsJson;
+                    identicalFailures = failed ? (signature == lastFailedCall ? identicalFailures + 1 : 1) : 0;
+                    lastFailedCall = failed ? signature : std::string();
+                    if (identicalFailures >= maxIdenticalFailures)
+                    {
+                        response = { false, {}, ("Stopped: " + juce::String(call.name) + " failed " + juce::String(identicalFailures)
+                                                 + " times in a row with the same arguments ("
+                                                 + parsed.getProperty("error", "no error text").toString() + ").").toStdString() };
+                        running = false;
+                    }
                 }
+                if (!running)
+                    break;
             }
 
-            if (response.ok && !ok && finalText.isEmpty())
-            {
-                response.ok = false;
-                response.errorMessage = "The assistant used too many tool rounds without producing a final answer.";
-            }
+            const auto summary = ok ? "Agent finished after " + juce::String(rounds + 1) + " model round(s) and " + juce::String(toolCalls) + " tool call(s)."
+                                    : "Agent ended after " + juce::String(rounds + 1) + " model round(s) and " + juce::String(toolCalls)
+                                          + " tool call(s): " + juce::String(response.errorMessage);
+            juce::MessageManager::callAsync([safeThis, summary] {
+                if (safeThis != nullptr && safeThis->tools.log)
+                    safeThis->tools.log(summary);
+            });
 
             juce::MessageManager::callAsync([safeThis, messages = std::move(messages), response,
                                              ok, finalText, completion = std::move(completion)]() mutable {
