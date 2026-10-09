@@ -16,6 +16,50 @@
 #include "AudioDsp.h"
 #include "SpiceLibrary.h"
 #include "CircuitHierarchyPanel.h"
+
+// Interaction profiler: set DJEHUTI_DRAG_PROFILE=1 and each mouse-up appends
+// per-section call counts and avg/max milliseconds for the gesture to
+// %TEMP%\djehuti_drag_profile.txt. Off by default; one bool check otherwise.
+namespace drag_profile
+{
+inline bool enabled()
+{
+    static const bool on = juce::SystemStats::getEnvironmentVariable("DJEHUTI_DRAG_PROFILE", {}).isNotEmpty();
+    return on;
+}
+struct Stat { double total = 0.0, max = 0.0; int count = 0; };
+inline std::map<juce::String, Stat>& stats()
+{
+    static std::map<juce::String, Stat> s;
+    return s;
+}
+struct Scope
+{
+    explicit Scope(const char* n) : name(n), start(enabled() ? juce::Time::getMillisecondCounterHiRes() : 0.0) {}
+    ~Scope()
+    {
+        if (!enabled()) return;
+        const auto ms = juce::Time::getMillisecondCounterHiRes() - start;
+        auto& s = stats()[name];
+        s.total += ms;
+        s.max = std::max(s.max, ms);
+        ++s.count;
+    }
+    const char* name;
+    double start;
+};
+inline void flush(const juce::String& gesture)
+{
+    if (!enabled() || stats().empty()) return;
+    juce::String text;
+    text << "== " << gesture << "\n";
+    for (const auto& [name, s] : stats())
+        text << name << "\tcalls " << s.count << "\tavg " << juce::String(s.total / s.count, 2)
+             << " ms\tmax " << juce::String(s.max, 2) << " ms\n";
+    juce::File::getSpecialLocation(juce::File::tempDirectory).getChildFile("djehuti_drag_profile.txt").appendText(text);
+    stats().clear();
+}
+}
 #include <ai_provider/AiConfig.h>
 
 #include <algorithm>
@@ -2524,17 +2568,18 @@ public:
 
     void paint(juce::Graphics& g) override
     {
+        drag_profile::Scope profile("paint");
         g.fillAll(juce::Colour(0xff0e141a));
 
         g.saveState();
         g.addTransform(juce::AffineTransform::scale(canvasZoom).translated(viewOffset.x, viewOffset.y));
-        drawGrid(g);
-        drawWires(g);
+        { drag_profile::Scope p("paint.grid"); drawGrid(g); }
+        { drag_profile::Scope p("paint.wires"); drawWires(g); }
         drawGroups(g);
-        drawInstances(g);
+        { drag_profile::Scope p("paint.instances"); drawInstances(g); }
         drawPendingWire(g);
         drawSelectionBox(g);
-        drawErcAnnotations(g);
+        { drag_profile::Scope p("paint.ercAnnotations"); drawErcAnnotations(g); }
         g.restoreState();
         drawBreadcrumb(g);
 
@@ -2736,6 +2781,7 @@ public:
 
     void mouseDrag(const juce::MouseEvent& event) override
     {
+        drag_profile::Scope profile("mouseDrag");
         if (panning)
         {
             viewOffset = panStartOffset + (event.position - panStartMouse);
@@ -2761,7 +2807,10 @@ public:
         if (selectingBox)
         {
             selectionBoxEnd = modelPosition;
-            updateSelectionFromBox();
+            {
+                drag_profile::Scope p("drag.updateSelectionFromBox");
+                updateSelectionFromBox();
+            }
             repaint();
             return;
         }
@@ -2779,12 +2828,18 @@ public:
             moveSelectedInstances(delta);
         else
             instances[(size_t)selectedInstance].position = snapPoint(dragStartPosition + (modelPosition - dragStartMouse));
-        notifySelection();
+        {
+            drag_profile::Scope p("drag.notifySelection");
+            notifySelection();
+        }
         repaint();
     }
 
     void mouseUp(const juce::MouseEvent& event) override
     {
+        drag_profile::flush(selectingBox ? "box select" : draggingInstance ? "part drag (" + juce::String((int)std::max<size_t>(1, selectedInstances.size())) + " parts, "
+                                                                               + juce::String((int)instances.size()) + " in diagram)"
+                                                                           : "other");
         const auto modelPosition = viewToCanvas(event.position);
         if (wireDragging)
         {
@@ -4981,10 +5036,11 @@ private:
 
     void ensureRoutes() const
     {
-        auto signature = currentRouteSignature();
+        auto signature = [this] { drag_profile::Scope p("routes.signature"); return currentRouteSignature(); }();
         if (signature == routeSignature && routeCache.size() == wires.size())
             return;
         routeSignature = std::move(signature);
+        drag_profile::Scope profile("routes.recompute");
 
         std::vector<int> obstacleInstance;
         schematic::routing::Problem problem;
@@ -7366,6 +7422,7 @@ public:
 
         if (!isNetMarker(instance.symbolId) && instance.symbolId != "sub_block" && instance.symbolId != "block_port")
         {
+            drag_profile::Scope profile("properties.pinVoltages");
             auto sim = buildSimNetlist();
             const auto op = sim.error.isEmpty() ? circuit_sim::solveOperatingPoint(sim.circuit) : circuit_sim::OperatingPoint {};
             const auto symbol = symbolForInstance(instance);
