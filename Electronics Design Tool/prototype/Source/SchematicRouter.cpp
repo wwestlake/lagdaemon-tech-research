@@ -518,7 +518,122 @@ void slideJunctions(std::vector<Polyline>& routes, const Problem& problem, std::
 }
 }
 
-std::vector<Polyline> routeConnections(const Problem& problem, float gridSize, std::vector<juce::Point<float>>* adjustedJunctions, const Style& style)
+std::vector<Polyline> routePieces(const Problem& problem, float gridSize, std::vector<juce::Point<float>>* adjustedJunctions, const Style& style);
+
+bool routesOverlap(const Polyline& a, const Polyline& b)
+{
+    for (size_t i = 0; i + 1 < a.size(); ++i)
+        for (size_t j = 0; j + 1 < b.size(); ++j)
+            if (collinearOverlap({ a[i], a[i + 1] }, { b[j], b[j + 1] }))
+                return true;
+    return false;
+}
+
+bool visitsInOrder(const Polyline& route, const std::vector<juce::Point<float>>& points)
+{
+    // Walk forward along the route: each point must lie at or after the
+    // previous one, measured as distance travelled from the start.
+    float travelled = -1.0f;
+    for (const auto& p : points)
+    {
+        bool found = false;
+        float before = 0.0f;
+        for (size_t s = 0; s + 1 < route.size() && !found; ++s)
+        {
+            if (segmentTouchesPoint(route[s], route[s + 1], p))
+            {
+                const auto along = before + route[s].getDistanceFrom(p);
+                if (along >= travelled - 0.5f)
+                {
+                    travelled = along;
+                    found = true;
+                }
+            }
+            before += route[s].getDistanceFrom(route[s + 1]);
+        }
+        if (!found)
+            return false;
+    }
+    return true;
+}
+
+bool crossesBody(const Polyline& route, const std::vector<Obstacle>& obstacles)
+{
+    // Pins sit on the body edge, so only the interior counts.
+    for (size_t s = 0; s + 1 < route.size(); ++s)
+        for (const auto& o : obstacles)
+            if (segmentHitsRect(route[s], route[s + 1], o.bounds.reduced(1.0f)))
+                return true;
+    return false;
+}
+
+std::vector<Polyline> routeConnections(const Problem& problem, float gridSize, std::vector<juce::Point<float>>* adjustedJunctions,
+                                       const Style& style, std::vector<juce::String>* failures)
+{
+    // Split each connection at its pinned waypoints: every stretch between two
+    // fixed points (pin, junction or waypoint) is routed as its own piece, so
+    // the waypoints cannot drift, then the pieces are joined back up.
+    Problem expanded;
+    expanded.obstacles = problem.obstacles;
+    expanded.junctions = problem.junctions;
+    std::vector<std::vector<size_t>> piecesOf(problem.connections.size());
+    std::vector<juce::String> failure(problem.connections.size());
+    for (size_t i = 0; i < problem.connections.size(); ++i)
+    {
+        const auto& c = problem.connections[i];
+        for (const auto& w : c.waypoints)
+            for (const auto& o : problem.obstacles)
+                if (o.bounds.reduced(1.0f).contains(w))
+                    failure[i] = "pinned point (" + juce::String(w.x) + ", " + juce::String(w.y) + ") lies inside a component";
+        if (failure[i].isNotEmpty())
+            continue;
+        auto from = c.a;
+        for (const auto& w : c.waypoints)
+        {
+            piecesOf[i].push_back(expanded.connections.size());
+            expanded.connections.push_back({ from, Endpoint::forPoint(w), c.net, {} });
+            from = Endpoint::forPoint(w);
+        }
+        piecesOf[i].push_back(expanded.connections.size());
+        expanded.connections.push_back({ from, c.b, c.net, {} });
+    }
+
+    const auto pieces = routePieces(expanded, gridSize, adjustedJunctions, style);
+
+    std::vector<Polyline> result(problem.connections.size());
+    for (size_t i = 0; i < problem.connections.size(); ++i)
+    {
+        if (failure[i].isNotEmpty())
+            continue;
+        Polyline joined;
+        for (const auto piece : piecesOf[i])
+        {
+            const auto& route = pieces[piece];
+            if (route.size() < 2)
+            {
+                failure[i] = "no legal path found";
+                break;
+            }
+            for (size_t k = joined.empty() ? 0 : 1; k < route.size(); ++k)
+                joined.push_back(route[k]);
+        }
+        if (failure[i].isEmpty())
+        {
+            simplify(joined);
+            if (!visitsInOrder(joined, problem.connections[i].waypoints))
+                failure[i] = "route could not pass through its pinned points in order";
+            else if (crossesBody(joined, problem.obstacles))
+                failure[i] = "only path found passes through a component";
+        }
+        if (failure[i].isEmpty())
+            result[i] = std::move(joined);
+    }
+    if (failures != nullptr)
+        *failures = std::move(failure);
+    return result;
+}
+
+std::vector<Polyline> routePieces(const Problem& problem, float gridSize, std::vector<juce::Point<float>>* adjustedJunctions, const Style& style)
 {
     std::vector<Polyline> result(problem.connections.size());
     if (problem.connections.empty())

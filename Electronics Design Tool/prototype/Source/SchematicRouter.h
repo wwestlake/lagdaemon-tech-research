@@ -49,6 +49,10 @@ struct Connection
     Endpoint a;
     Endpoint b;
     int net = -1;                  // connections of the same net may share and touch
+    // Pinned routing points, absolute and grid-aligned, visited in this order.
+    // Only the stretches between them (and the ends) are routed; the points
+    // themselves never move.
+    std::vector<juce::Point<float>> waypoints;
 };
 
 using Polyline = std::vector<juce::Point<float>>;
@@ -67,11 +71,21 @@ struct Problem
 };
 
 // Routes every connection together. Result has one polyline per connection
-// (empty if libavoid could not route it), snapped to the schematic grid.
+// (empty if it could not be routed legally), snapped to the schematic grid.
 // Junctions are slid along shared runs to where their wires actually part;
 // pass adjustedJunctions to receive those positions (same order).
+// A connection fails - empty polyline, reason in failures[i] - when libavoid
+// finds no path, a pinned waypoint is not visited in order, or the route would
+// pass through a component body. Callers keep their previous route then.
 std::vector<Polyline> routeConnections(const Problem& problem, float gridSize,
-                                       std::vector<juce::Point<float>>* adjustedJunctions = nullptr, const Style& style = {});
+                                       std::vector<juce::Point<float>>* adjustedJunctions = nullptr, const Style& style = {},
+                                       std::vector<juce::String>* failures = nullptr);
+
+// Checks used by routeConnections, exposed for tests.
+bool visitsInOrder(const Polyline& route, const std::vector<juce::Point<float>>& points);
+bool crossesBody(const Polyline& route, const std::vector<Obstacle>& obstacles);
+// True when the two routes run along the same line for more than a point.
+bool routesOverlap(const Polyline& a, const Polyline& b);
 
 // One net to be routed as a tree.
 struct NetTerminals

@@ -464,6 +464,21 @@ const SchematicToolSpec schematicToolSpecs[] = {
         R"({"type":"object","properties":{"refdes":{"type":"string"},"newRefdes":{"type":"string"}},"required":["refdes","newRefdes"],"additionalProperties":false})"
     },
     {
+        "schematic_wire_get",
+        "Get one wire's routing points (absolute diagram coordinates, pinned or free) and its current drawn route.",
+        R"({"type":"object","properties":{"a":{"type":"string","description":"One end, such as R1.1 or N2."},"b":{"type":"string","description":"The other end."}},"required":["a","b"],"additionalProperties":false})"
+    },
+    {
+        "schematic_wire_set_points",
+        "Set a wire's routing points (replaces them; empty list clears). Pinned points are fixed absolute waypoints the route must pass through in order and are never moved automatically; points snap to the grid. Geometry only - connectivity never changes. If the wire cannot be routed legally through them, nothing changes and the reason is returned.",
+        R"({"type":"object","properties":{"a":{"type":"string"},"b":{"type":"string"},"points":{"type":"array","items":{"type":"object","properties":{"x":{"type":"number"},"y":{"type":"number"},"pinned":{"type":"boolean"}},"required":["x","y"]}}},"required":["a","b","points"],"additionalProperties":false})"
+    },
+    {
+        "schematic_reroute_wires",
+        "Reroute only the listed wires, respecting pinned points and component bodies; every other wire keeps its exact geometry. A wire with no legal route keeps its previous path and is reported in failures.",
+        R"({"type":"object","properties":{"wires":{"type":"array","items":{"type":"object","properties":{"a":{"type":"string"},"b":{"type":"string"}},"required":["a","b"]}}},"required":["wires"],"additionalProperties":false})"
+    },
+    {
         "schematic_rotate_component",
         "Set a part's rotation to 0, 90, 180 or 270 degrees.",
         R"({"type":"object","properties":{"refdes":{"type":"string"},"rotation":{"type":"string","description":"0, 90, 180 or 270."}},"required":["refdes","rotation"],"additionalProperties":false})"
@@ -1822,6 +1837,7 @@ public:
                     error = "Project wire references an unknown node: " + a + " -> " + b;
                     return false;
                 }
+                readRoutePoints(*object, wire);
                 loadedWires.push_back(wire);
             }
         }
@@ -1968,6 +1984,7 @@ public:
         groups = std::move(loadedGroups);
         simulationParameters = std::move(loadedSimulationParameters);
         circuitParameters = std::move(loadedCircuitParameters);
+        routeKeys.clear(); // a different diagram: no route survives from the last one
         measurements = std::move(loadedMeasurements);
         parameterSweeps = std::move(loadedParameterSweeps);
         selectedInstance = instances.empty() ? -1 : 0;
@@ -2062,7 +2079,17 @@ public:
             const auto& wire = wires[i];
             if (i != 0) text << ",\n";
             text << "    { \"a\": " << quote(nodeLabel(wire.a))
-                 << ", \"b\": " << quote(nodeLabel(wire.b)) << " }";
+                 << ", \"b\": " << quote(nodeLabel(wire.b));
+            if (!wire.routePoints.empty())
+            {
+                text << ", \"points\": [";
+                for (size_t p = 0; p < wire.routePoints.size(); ++p)
+                    text << (p != 0 ? ", " : "") << "{ \"x\": " << juce::String(wire.routePoints[p].position.x)
+                         << ", \"y\": " << juce::String(wire.routePoints[p].position.y)
+                         << ", \"pinned\": " << (wire.routePoints[p].pinned ? "true" : "false") << " }";
+                text << "]";
+            }
+            text << " }";
         }
         text << "\n  ],\n";
         text << "  \"junctions\": [\n";
@@ -2888,6 +2915,7 @@ public:
         menu.addItem(15, "Save Sub-Diagram to User Library...", blockUnderMouse >= 0);
         menu.addItem(16, "Expose Block Parameter...", blockUnderMouse >= 0);
         menu.addItem(12, "Up One Level", currentSheet.isNotEmpty());
+        menu.addItem(17, "Reroute Wires of Selected Parts", !selectedInstances.isEmpty() || selectedInstance >= 0);
         const auto libraryBlocks = userBlocks();
         if (!libraryBlocks.empty())
         {
@@ -2943,6 +2971,21 @@ public:
                 const auto index = instanceIndexForRefdesAnySheet(supplyRefdes);
                 const auto done = result == 13 ? railToSymbols(index, error) : symbolsToRail(index, error);
                 if (done.isEmpty() && onStatus) onStatus("Could not change the supply form: " + error);
+            }
+            if (result == 17)
+            {
+                std::vector<int> touched;
+                for (int w = 0; w < (int)wires.size(); ++w)
+                    for (const auto& n : { wires[(size_t)w].a, wires[(size_t)w].b })
+                        if (n.isPin() && (n.pin.instanceIndex == selectedInstance || selectedInstances.contains(n.pin.instanceIndex)))
+                        {
+                            touched.push_back(w);
+                            break;
+                        }
+                const auto failures = rerouteWires(touched);
+                if (onStatus)
+                    onStatus(failures.isEmpty() ? "Rerouted " + juce::String((int)touched.size()) + " wire(s); other wires unchanged."
+                                                : "Kept the previous path where no legal route exists: " + failures.joinIntoString("; "));
             }
             if (result == 8)
                 promptSubDiagramFromSelection();
@@ -3445,6 +3488,17 @@ public:
     {
         if (instances.empty())
             return "{ \"ok\": false, \"error\": \"No schematic components to lay out.\" }";
+
+        // Auto Layout redraws this sheet's wiring from scratch, which would
+        // drop manual routing. Pinned points are never discarded silently.
+        juce::StringArray manual;
+        for (const auto& wire : wires)
+            if (wireOnSheet(wire) && std::any_of(wire.routePoints.begin(), wire.routePoints.end(), [](const RoutePoint& p) { return p.pinned; }))
+                manual.add(nodeLabel(wire.a) + " - " + nodeLabel(wire.b));
+        if (!manual.isEmpty())
+            return "{ \"ok\": false, \"error\": " + quote("Auto Layout would redraw wires that have pinned routing points ("
+                   + manual.joinIntoString(", ") + "). Nothing was changed. Clear those points first (schematic_wire_set_points with an empty list) "
+                   "or use Reroute Selected, which keeps them.") + " }";
 
         std::set<int> scopeSet;
         for (int index : scope)
@@ -3949,10 +4003,21 @@ private:
         bool isValid() const { return isPin() || isJunction(); }
     };
 
+    // A routing point on a wire, in absolute diagram coordinates. Pinned
+    // points are constraints the router must pass through, in order, and are
+    // never moved or dropped automatically; unpinned points are kept but
+    // free. Geometry only - they never affect connectivity.
+    struct RoutePoint
+    {
+        juce::Point<float> position;
+        bool pinned = true;
+    };
+
     struct Wire
     {
         WireNode a;
         WireNode b;
+        std::vector<RoutePoint> routePoints;
     };
 
     struct Probe
@@ -5105,16 +5170,116 @@ private:
             const auto net = netForNode(wire.a, netNames);
             const auto found = netIds.find(net);
             connection.net = found != netIds.end() ? found->second : (netIds[net] = (int)netIds.size());
+            for (const auto& point : wire.routePoints)
+                if (point.pinned)
+                    connection.waypoints.push_back(point.position);
             connectionOfWire[i] = (int)problem.connections.size();
             problem.connections.push_back(connection);
         }
 
-        const auto routes = schematic::routing::routeConnections(problem, schematic::gridSize, &routedJunctions, routingStyle());
-        routeCache.assign(wires.size(), {});
+        std::vector<juce::String> failures;
+        const auto routes = schematic::routing::routeConnections(problem, schematic::gridSize, &routedJunctions, routingStyle(), &failures);
+
+        // Scoped update: a wire keeps the exact geometry it had unless it is
+        // affected (an end moved, its pinned points changed, its old path now
+        // runs through a body, or it was asked to reroute). A wire the router
+        // cannot route legally keeps its previous route and is reported.
+        std::map<juce::String, std::vector<juce::Point<float>>> previous;
+        for (size_t i = 0; i < routeCache.size() && i < routeKeys.size(); ++i)
+            if (routeCache[i].size() >= 2)
+                previous[routeKeys[i]] = routeCache[i];
+
+        std::vector<std::vector<juce::Point<float>>> next(wires.size());
+        std::vector<juce::String> nextKeys(wires.size());
+        std::vector<bool> kept(wires.size(), false);
+        juce::StringArray failed;
         for (size_t i = 0; i < wires.size(); ++i)
-            if (connectionOfWire[i] >= 0)
-                routeCache[i] = routes[(size_t)connectionOfWire[i]];
+        {
+            nextKeys[i] = routeKeyFor(wires[i]);
+            if (connectionOfWire[i] < 0)
+                continue;
+            const auto c = (size_t)connectionOfWire[i];
+            const auto old = previous.find(nextKeys[i]);
+            const bool haveOld = old != previous.end();
+            if (failures[c].isNotEmpty())
+            {
+                failed.add(nodeLabel(wires[i].a) + " - " + nodeLabel(wires[i].b) + ": " + failures[c]);
+                if (haveOld)
+                    next[i] = old->second;
+                continue;
+            }
+            const bool unaffected = haveOld && forcedReroutes.count((int)i) == 0
+                && old->second.front().getDistanceFrom(nodePosition(wires[i].a)) < 0.5f
+                && old->second.back().getDistanceFrom(nodePosition(wires[i].b)) < 0.5f
+                && !schematic::routing::crossesBody(old->second, problem.obstacles);
+            next[i] = unaffected ? old->second : routes[c];
+            kept[i] = unaffected;
+        }
+        // A kept route must not end up sharing a segment with a fresh route of
+        // another net; refresh it if it would.
+        for (size_t i = 0; i < wires.size(); ++i)
+        {
+            if (!kept[i]) continue;
+            for (size_t j = 0; j < wires.size() && kept[i]; ++j)
+                if (j != i && !kept[j] && connectionOfWire[j] >= 0 && connectionOfWire[i] >= 0
+                    && problem.connections[(size_t)connectionOfWire[i]].net != problem.connections[(size_t)connectionOfWire[j]].net
+                    && schematic::routing::routesOverlap(next[i], next[j]))
+                {
+                    next[i] = routes[(size_t)connectionOfWire[i]];
+                    kept[i] = false;
+                }
+        }
+        routeCache = std::move(next);
+        routeKeys = std::move(nextKeys);
+        if (failed != routeFailures)
+        {
+            routeFailures = failed;
+            if (!failed.isEmpty())
+                juce::MessageManager::callAsync([safe = juce::Component::SafePointer<SchematicCanvasPanel>(const_cast<SchematicCanvasPanel*>(this)), failed] {
+                    if (safe != nullptr && safe->onStatus)
+                        safe->onStatus("Routing kept the previous path for " + juce::String(failed.size()) + " wire(s): "
+                                       + failed.joinIntoString("; ") + ".");
+                });
+        }
     }
+
+    // Wire identity for keeping routes across edits: its two ends plus its
+    // routing points (a changed point means a changed route).
+    juce::String routeKeyFor(const Wire& wire) const
+    {
+        auto key = nodeLabel(wire.a) + ">" + nodeLabel(wire.b);
+        for (const auto& p : wire.routePoints)
+            key << '|' << p.position.x << ',' << p.position.y << (p.pinned ? "P" : "F");
+        return key;
+    }
+
+    mutable std::vector<juce::String> routeKeys;  // parallel to routeCache
+    mutable juce::StringArray routeFailures;      // last routing failures, "a - b: reason"
+    std::set<int> forcedReroutes;                 // wires Reroute Selected must route afresh
+
+public:
+    // Reroute Selected: route these wires afresh (respecting pinned points and
+    // obstacles); every other wire keeps its geometry. Returns the failures.
+    juce::StringArray rerouteWires(const std::vector<int>& wireIndices)
+    {
+        forcedReroutes.clear();
+        for (const auto i : wireIndices)
+            if (i >= 0 && i < (int)wires.size())
+                forcedReroutes.insert(i);
+        routeSignature.clear();
+        ensureRoutes();
+        forcedReroutes.clear();
+        juce::StringArray failures;
+        for (const auto i : wireIndices)
+            if (i >= 0 && i < (int)wires.size())
+                for (const auto& f : routeFailures)
+                    if (f.startsWith(nodeLabel(wires[(size_t)i].a) + " - " + nodeLabel(wires[(size_t)i].b) + ":"))
+                        failures.add(f);
+        repaint();
+        return failures;
+    }
+
+private:
 
     std::vector<juce::Point<float>> routedWirePoints(const WireNode& a,
                                                      juce::Point<float> b,
@@ -6366,7 +6531,10 @@ private:
                     continue;
                 Wire wire;
                 if (nodeFromLabel(stringProperty(*w, "a", {}), wire.a) && nodeFromLabel(stringProperty(*w, "b", {}), wire.b))
+                {
+                    readRoutePoints(*w, wire);
                     wires.push_back(wire);
+                }
             }
         }
 
@@ -6653,6 +6821,15 @@ private:
         error << " It is not a defined circuit parameter either (" << juce::String(expressionError)
               << "); define one and write {NAME}.";
         return false;
+    }
+
+    static void readRoutePoints(const juce::DynamicObject& object, Wire& wire)
+    {
+        if (const auto* points = object.getProperty("points").getArray())
+            for (const auto& entry : *points)
+                if (const auto* p = entry.getDynamicObject())
+                    wire.routePoints.push_back({ { (float)(double)p->getProperty("x"), (float)(double)p->getProperty("y") },
+                                                 (bool)p->getProperty("pinned") });
     }
 
     static bool parseOptionalQuantity(juce::String text, double& value)
@@ -8420,6 +8597,88 @@ public:
             for (const auto& refdes : deleted)
                 quoted.add(quote(refdes));
             return "{ \"ok\": true, \"tool\": " + quote(name) + ", \"deleted\": [" + quoted.joinIntoString(", ") + "] }";
+        }
+        if (name == "schematic_wire_get" || name == "schematic_wire_set_points" || name == "schematic_reroute_wires")
+        {
+            auto findWire = [&](const juce::String& a, const juce::String& b, juce::String& error) {
+                WireNode first, second;
+                if (!nodeFromLabel(a, first, error) || !nodeFromLabel(b, second, error))
+                    return -1;
+                for (int w = 0; w < (int)wires.size(); ++w)
+                    if ((sameNode(wires[(size_t)w].a, first) && sameNode(wires[(size_t)w].b, second))
+                        || (sameNode(wires[(size_t)w].a, second) && sameNode(wires[(size_t)w].b, first)))
+                        return w;
+                error = "No wire between " + a + " and " + b + ".";
+                return -1;
+            };
+            auto wireJson = [&](int w) {
+                ensureRoutes();
+                const auto& wire = wires[(size_t)w];
+                juce::String json;
+                json << "{ \"a\": " << quote(nodeLabel(wire.a)) << ", \"b\": " << quote(nodeLabel(wire.b)) << ", \"points\": [";
+                for (size_t p = 0; p < wire.routePoints.size(); ++p)
+                    json << (p ? ", " : "") << "{ \"x\": " << wire.routePoints[p].position.x << ", \"y\": " << wire.routePoints[p].position.y
+                         << ", \"pinned\": " << (wire.routePoints[p].pinned ? "true" : "false") << " }";
+                json << "], \"route\": [";
+                const auto& route = (size_t)w < routeCache.size() ? routeCache[(size_t)w] : std::vector<juce::Point<float>> {};
+                for (size_t p = 0; p < route.size(); ++p)
+                    json << (p ? ", " : "") << "[" << route[p].x << ", " << route[p].y << "]";
+                json << "] }";
+                return json;
+            };
+
+            if (name == "schematic_wire_get")
+            {
+                juce::String error;
+                const auto w = findWire(arg("a"), arg("b"), error);
+                if (w < 0) return toolFailure(name, error);
+                return "{ \"ok\": true, \"tool\": " + quote(name) + ", \"wire\": " + wireJson(w) + " }";
+            }
+            if (name == "schematic_wire_set_points")
+            {
+                juce::String error;
+                const auto w = findWire(arg("a"), arg("b"), error);
+                if (w < 0) return toolFailure(name, error);
+                std::vector<RoutePoint> points;
+                if (const auto* list = args.getProperty("points", {}).getArray())
+                    for (const auto& item : *list)
+                        points.push_back({ snapPoint({ (float)(double)item.getProperty("x", 0.0), (float)(double)item.getProperty("y", 0.0) }),
+                                           (bool)item.getProperty("pinned", true) });
+                pushUndoSnapshot();
+                const auto before = wires[(size_t)w].routePoints;
+                wires[(size_t)w].routePoints = points;
+                const auto failures = rerouteWires({ w });
+                if (!failures.isEmpty())
+                {
+                    // An unreachable constraint is refused, not stored.
+                    wires[(size_t)w].routePoints = before;
+                    rerouteWires({ w });
+                    return toolFailure(name, failures.joinIntoString("; ") + " The wire's previous points and route are unchanged.");
+                }
+                forceDeferredRepaint();
+                return "{ \"ok\": true, \"tool\": " + quote(name) + ", \"wire\": " + wireJson(w) + " }";
+            }
+            // schematic_reroute_wires
+            std::vector<int> chosen;
+            if (const auto* list = args.getProperty("wires", {}).getArray())
+                for (const auto& item : *list)
+                {
+                    juce::String error;
+                    const auto w = findWire(item.getProperty("a", {}).toString().trim(), item.getProperty("b", {}).toString().trim(), error);
+                    if (w < 0) return toolFailure(name, error);
+                    chosen.push_back(w);
+                }
+            if (chosen.empty())
+                return toolFailure(name, "wires must list at least one {\"a\", \"b\"} pair.");
+            const auto failures = rerouteWires(chosen);
+            juce::String list = "[";
+            for (size_t k = 0; k < chosen.size(); ++k)
+                list << (k ? ", " : "") << wireJson(chosen[k]);
+            list << "]";
+            juce::StringArray quoted;
+            for (const auto& f : failures) quoted.add(quote(f));
+            return "{ \"ok\": " + juce::String(failures.isEmpty() ? "true" : "false") + ", \"tool\": " + quote(name)
+                 + ", \"failures\": [" + quoted.joinIntoString(", ") + "], \"wires\": " + list + " }";
         }
         if (name == "schematic_rotate_component")
         {

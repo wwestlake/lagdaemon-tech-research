@@ -322,6 +322,28 @@ target_link_libraries(SchematicPreview PRIVATE
 )
 juce_generate_juce_header(SchematicPreview)
 
+# Constrained-routing invariants (pinned waypoints, failures, overlaps, bodies).
+juce_add_console_app(SchematicRoutingTests PRODUCT_NAME "Schematic Routing Tests")
+set_target_properties(SchematicRoutingTests PROPERTIES
+    OUTPUT_NAME "schematic_routing_tests"
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/bin")
+target_sources(SchematicRoutingTests PRIVATE
+    tools/routing_tests/RoutingTests.cpp
+    Source/SchematicRouter.cpp
+)
+target_compile_definitions(SchematicRoutingTests PRIVATE
+    JUCE_WEB_BROWSER=0
+    JUCE_USE_CURL=0
+)
+target_link_libraries(SchematicRoutingTests PRIVATE
+    libavoid
+    juce::juce_core
+    juce::juce_events
+    juce::juce_graphics
+)
+juce_generate_juce_header(SchematicRoutingTests)
+add_test(NAME SchematicRoutingTests COMMAND SchematicRoutingTests)
+
 find_program(POWERSHELL_EXECUTABLE
     NAMES pwsh powershell
 )
