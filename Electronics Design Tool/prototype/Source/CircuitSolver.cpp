@@ -1078,6 +1078,12 @@ int Circuit::find(const std::string& name) const
     return -1;
 }
 
+void Circuit::setNodeInitialVoltage(Node node, double volts)
+{
+    if (node != 0)
+        initialNodeVoltages[node] = volts;
+}
+
 int Circuit::addResistor(const std::string& n, Node a, Node b, double ohms) { Element e; e.type = Element::Type::Resistor; e.name = n; e.nodes = { a, b }; e.value = ohms; return add(e); }
 int Circuit::addVariableResistor(const std::string& n, Node a, Node b, double r, const std::string& pId, bool wiper2) { Element e; e.type = Element::Type::VariableResistor; e.name = n; e.nodes = { a, b }; e.value = r; e.paramId = pId; e.isWiperToPin2 = wiper2; return add(e); }
 int Circuit::addSwitch(const std::string& n, Node a, Node b, const std::string& pId) { Element e; e.type = Element::Type::Switch; e.name = n; e.nodes = { a, b }; e.paramId = pId; return add(e); }
@@ -1546,7 +1552,27 @@ TransientResult solveTransient(const Circuit& circuit, const TransientSettings& 
             state.v[i] = nodeVoltage(x, e.nodes[0]) - nodeVoltage(x, e.nodes[1]);
         if (e.type == Element::Type::Inductor)
             state.i[i] = x[(size_t)layout.branch[i]];
+        if ((e.type == Element::Type::Capacitor || e.type == Element::Type::Inductor) && e.hasInitialCondition)
+        {
+            if (e.type == Element::Type::Capacitor)
+            {
+                state.v[i] = e.initialCondition;
+                if (e.nodes[1] == 0 && e.nodes[0] > 0)
+                    x[(size_t)idx(e.nodes[0])] = e.initialCondition;
+                else if (e.nodes[0] == 0 && e.nodes[1] > 0)
+                    x[(size_t)idx(e.nodes[1])] = -e.initialCondition;
+            }
+            else
+            {
+                state.i[i] = e.initialCondition;
+                if (layout.branch[i] >= 0)
+                    x[(size_t)layout.branch[i]] = e.initialCondition;
+            }
+        }
     }
+    for (const auto& [node, volts] : circuit.nodeInitialVoltages())
+        if (node > 0 && node < (int)x.size() + 1)
+            x[(size_t)idx(node)] = volts;
 
     // Time points: the regular grid plus every source corner.
     std::vector<double> times;

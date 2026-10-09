@@ -586,10 +586,16 @@ bool appendElement(const analytics::Netlist& n, juce::String& netlist, std::map<
             return true;
         }
         case ElementType::Capacitor:
-            netlist << elementName(e, index, "C") << " " << nd(0) << " " << nd(1) << " " << value(e.value) << "\n";
+            netlist << elementName(e, index, "C") << " " << nd(0) << " " << nd(1) << " " << value(e.value);
+            if (e.hasInitialCondition)
+                netlist << " IC=" << value(e.initialCondition);
+            netlist << "\n";
             return true;
         case ElementType::Inductor:
-            netlist << elementName(e, index, "L") << " " << nd(0) << " " << nd(1) << " " << value(e.value) << "\n";
+            netlist << elementName(e, index, "L") << " " << nd(0) << " " << nd(1) << " " << value(e.value);
+            if (e.hasInitialCondition)
+                netlist << " IC=" << value(e.initialCondition);
+            netlist << "\n";
             return true;
         case ElementType::VoltageSource:
         {
@@ -902,6 +908,14 @@ juce::String acTraceLabel(const juce::String& signal)
     return "V(" + signal + ")";
 }
 
+bool hasDeviceInitialConditions(const circuit_sim::Circuit& circuit)
+{
+    for (const auto& e : circuit.elements())
+        if ((e.type == ElementType::Capacitor || e.type == ElementType::Inductor) && e.hasInitialCondition)
+            return true;
+    return false;
+}
+
 juce::String netlistFor(analytics::Analysis analysis, const analytics::Settings& s, const analytics::Netlist& n, juce::String& error)
 {
     juce::String out;
@@ -932,7 +946,14 @@ juce::String netlistFor(analytics::Analysis analysis, const analytics::Settings&
         const auto step = s.count("step") != 0 && !s.at("step").equalsIgnoreCase("auto") ? s.at("step") : "10u";
         const auto prints = selectedPrints(n, s, false, error);
         if (prints.isEmpty()) return {};
-        out << "\n.TRAN " << step << " " << stop << "\n.PRINT TRAN" << prints;
+        if (!n.circuit.nodeInitialVoltages().empty())
+        {
+            out << "\n.IC";
+            for (const auto& [node, volts] : n.circuit.nodeInitialVoltages())
+                out << " V(" << nodeName(n, node) << ")=" << value(volts);
+            out << "\n";
+        }
+        out << "\n.TRAN " << step << " " << stop << (hasDeviceInitialConditions(n.circuit) ? " UIC" : "") << "\n.PRINT TRAN" << prints;
     }
     else if (analysis == analytics::Analysis::Ac)
     {

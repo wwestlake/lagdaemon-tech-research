@@ -608,6 +608,35 @@ int main()
         checkTrue("op amp macro THD < 0.05 %", fr.ok && fr.thdPercent < 0.05, "(" + std::to_string(fr.thdPercent) + ")");
     }
 
+    // 23. Initial capacitor voltage: 1 uF charged to 5 V discharges through 1 k.
+    {
+        Circuit c;
+        auto out = c.addNode();
+        c.addResistor("R", out, 0, 1000.0);
+        const auto cap = c.addCapacitor("C", out, 0, 1e-6);
+        c.elements()[(size_t)cap].hasInitialCondition = true;
+        c.elements()[(size_t)cap].initialCondition = 5.0;
+        const auto tr = solveTransient(c, 5e-3, 10e-6, {}, 1 << 20);
+        checkTrue("RC initial-voltage transient solves", tr.ok, tr.error);
+        check("RC starts at initial voltage (V)", tr.voltages.empty() ? 0.0 : tr.voltages.front()[(size_t)out], 5.0, 1e-9);
+        check("RC decays after one tau (V)", tr.voltages.size() > 100 ? tr.voltages[100][(size_t)out] : 0.0, 5.0 * std::exp(-1.0), 0.03);
+    }
+
+    // 24. Initial inductor current: 10 mH with 100 mA through 100 ohms decays.
+    {
+        Circuit c;
+        auto out = c.addNode();
+        const auto ind = c.addInductor("L", out, 0, 10e-3);
+        c.addResistor("R", out, 0, 100.0);
+        c.elements()[(size_t)ind].hasInitialCondition = true;
+        c.elements()[(size_t)ind].initialCondition = 0.1;
+        const auto tr = solveTransient(c, 1e-3, 1e-6, {}, 1 << 20);
+        checkTrue("RL initial-current transient solves", tr.ok, tr.error);
+        check("RL starts at initial current (A)", tr.sourceCurrents.empty() ? 0.0 : tr.sourceCurrents.front()[(size_t)ind], 0.1, 1e-9);
+        checkTrue("RL current decays", tr.sourceCurrents.size() > 100 && std::abs(tr.sourceCurrents[100][(size_t)ind]) < 0.1,
+                  tr.sourceCurrents.size() > 100 ? "(" + std::to_string(tr.sourceCurrents[100][(size_t)ind]) + ")" : "");
+    }
+
     std::printf("\n%s: %d failure(s)\n", failures == 0 ? "ALL PASSED" : "FAILED", failures);
     return failures == 0 ? 0 : 1;
 }

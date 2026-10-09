@@ -6397,6 +6397,16 @@ private:
         return parsed ? value : fallback;
     }
 
+    static bool parseOptionalQuantity(juce::String text, double& value)
+    {
+        text = text.trim();
+        if (text.isEmpty())
+            return false;
+        bool ok = false;
+        value = parseQuantity(text, 0.0, &ok);
+        return ok;
+    }
+
     public:
     struct SimNetlist
     {
@@ -6513,11 +6523,32 @@ private:
                 element = c.addVariableResistor(name + "_b", node(i, "W"), node(i, "2"), total, name + "_position", true);
             }
             else if (id == "capacitor" || id == "variable_capacitor")
+            {
                 element = c.addCapacitor(name, node(i, "1"), node(i, "2"), number(inst, "value", 1e-6));
+                if (double ic = 0.0; id == "capacitor" && element >= 0 && parseOptionalQuantity(partValue(inst, "initial_voltage"), ic))
+                {
+                    c.elements()[(size_t)element].hasInitialCondition = true;
+                    c.elements()[(size_t)element].initialCondition = ic;
+                }
+            }
             else if (id == "capacitor_polarized")
+            {
                 element = c.addCapacitor(name, node(i, "+"), node(i, "-"), number(inst, "value", 10e-6));
+                if (double ic = 0.0; element >= 0 && parseOptionalQuantity(partValue(inst, "initial_voltage"), ic))
+                {
+                    c.elements()[(size_t)element].hasInitialCondition = true;
+                    c.elements()[(size_t)element].initialCondition = ic;
+                }
+            }
             else if (id == "inductor")
+            {
                 element = c.addInductor(name, node(i, "1"), node(i, "2"), number(inst, "value", 10e-3));
+                if (double ic = 0.0; element >= 0 && parseOptionalQuantity(partValue(inst, "initial_current"), ic))
+                {
+                    c.elements()[(size_t)element].hasInitialCondition = true;
+                    c.elements()[(size_t)element].initialCondition = ic;
+                }
+            }
             else if (id == "coupled_inductor")
             {
                 const auto l = number(inst, "value", 10e-3);
@@ -6746,6 +6777,15 @@ private:
 
             if (element >= 0)
                 sim.elementOfPart[inst.refdes] = element;
+        }
+        for (int i = 0; i < (int)instances.size(); ++i)
+        {
+            const auto& inst = instances[(size_t)i];
+            if (inst.symbolId != "net_label")
+                continue;
+            double initialVoltage = 0.0;
+            if (parseOptionalQuantity(partValue(inst, "initial_voltage"), initialVoltage))
+                sim.circuit.setNodeInitialVoltage(node(i, "1"), initialVoltage);
         }
         return sim;
     }

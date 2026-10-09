@@ -22,6 +22,7 @@
 // onto this; this file knows nothing about schematics or UI.
 
 #include <complex>
+#include <map>
 #include <string>
 #include <utility>
 #include <vector>
@@ -117,6 +118,8 @@ struct Element
     double offResistance = 1e9; // controlled switch Roff
     double threshold = 0.0;  // controlled switch Vt/It
     double hysteresis = 0.0; // controlled switch Vh/Ih
+    bool hasInitialCondition = false; // C: volts across node[0]-node[1], L: current node[0]->node[1]
+    double initialCondition = 0.0;
     std::string expression;  // Xyce behavioral source expression
     double tc1 = 0.0, tc2 = 0.0; // resistor temperature coefficients (1/K, 1/K^2)
     bool noiseless = false;  // e.g. instrument input resistances
@@ -167,11 +170,14 @@ public:
     const std::vector<Element>& elements() const { return parts; }
     std::vector<Element>& elements() { return parts; }
     int find(const std::string& name) const; // element index or -1
+    void setNodeInitialVoltage(Node node, double volts);
+    const std::map<Node, double>& nodeInitialVoltages() const { return initialNodeVoltages; }
 
 private:
     int add(Element e);
     int nodes = 1; // ground
     std::vector<Element> parts;
+    std::map<Node, double> initialNodeVoltages;
 };
 
 struct Options

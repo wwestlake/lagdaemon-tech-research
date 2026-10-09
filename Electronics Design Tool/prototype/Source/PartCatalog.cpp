@@ -74,10 +74,13 @@ std::map<juce::String, std::vector<ParamSpec>> buildCatalog()
                       quantity("tempco", "Temperature coefficient", "ppm/K", "0", Storage::Param, "Used by temperature analyses (models are at 27 C)") };
     c["potentiometer"] = { quantity("value", "Total resistance", "ohm", "10k", Storage::Value),
                            fraction("position", "Wiper position", "0.5", "0 = pin 1 end, 1 = pin 2 end") };
-    c["capacitor"] = { quantity("value", "Capacitance", "F", "1u", Storage::Value) };
-    c["capacitor_polarized"] = { quantity("value", "Capacitance", "F", "10u", Storage::Value) };
+    c["capacitor"] = { quantity("value", "Capacitance", "F", "1u", Storage::Value),
+                       quantity("initial_voltage", "Initial voltage", "V", "", Storage::Param, "Blank = unspecified; measured from pin 1 to pin 2") };
+    c["capacitor_polarized"] = { quantity("value", "Capacitance", "F", "10u", Storage::Value),
+                                 quantity("initial_voltage", "Initial voltage", "V", "", Storage::Param, "Blank = unspecified; measured from + to -") };
     c["variable_capacitor"] = { quantity("value", "Capacitance", "F", "100p", Storage::Value) };
-    c["inductor"] = { quantity("value", "Inductance", "H", "10m", Storage::Value) };
+    c["inductor"] = { quantity("value", "Inductance", "H", "10m", Storage::Value),
+                      quantity("initial_current", "Initial current", "A", "", Storage::Param, "Blank = unspecified; positive from pin 1 to pin 2") };
     c["coupled_inductor"] = { quantity("value", "Inductance (each)", "H", "10m", Storage::Value),
                               quantity("coupling", "Coupling k", "", "0.99", Storage::Param, "0 to 1") };
     c["transformer"] = { text("value", "Turns ratio (primary:secondary)", "1:1", Storage::Value),
@@ -160,7 +163,8 @@ std::map<juce::String, std::vector<ParamSpec>> buildCatalog()
                         quantity("coil_resistance", "Coil resistance", "ohm", "100") };
     c["fuse"] = { quantity("value", "Rating", "A", "1", Storage::Value) };
     c["power_port"] = { text("busName", "Supply net name", "+5V", Storage::BusName, "Ports with the same name are one net; a leading - draws it pointing down") };
-    c["net_label"] = { text("busName", "Label", "NET1", Storage::BusName, "Labels with the same name are one net") };
+    c["net_label"] = { text("busName", "Label", "NET1", Storage::BusName, "Labels with the same name are one net"),
+                       quantity("initial_voltage", "Initial voltage", "V", "", Storage::Param, "Blank = unspecified; emits .IC for this net") };
     c["power_bus"] = { text("busName", "Rail name", "+V", Storage::BusName) };
     c["audio_in"] = { choice("source", "Input Type", { "Hardware", "File" }, "Hardware"), text("file", "File Path", "") };
     c["audio_out"] = { choice("sink", "Output Type", { "Hardware", "File" }, "Hardware"), text("file", "File Path", "") };
@@ -271,6 +275,8 @@ bool validate(const ParamSpec& spec, const juce::String& value, juce::String& er
         {
             double parsed = 0.0;
             auto textValue = value.trim();
+            if (textValue.isEmpty() && spec.defaultValue.trim().isEmpty())
+                return true;
             // European voltage notation 5V1 = 5.1 V.
             if (spec.unit == "V" && textValue.containsChar('V') && textValue.upToFirstOccurrenceOf("V", false, false).containsOnly("0123456789")
                 && textValue.fromFirstOccurrenceOf("V", false, false).containsOnly("0123456789") && textValue.fromFirstOccurrenceOf("V", false, false).isNotEmpty())
@@ -329,6 +335,8 @@ bool validate(const ParamSpec& spec, const juce::String& value, juce::String& er
         case Kind::Text:
             if (value.trim().isEmpty())
             {
+                if (spec.defaultValue.trim().isEmpty())
+                    return true;
                 error = spec.label + " cannot be empty.";
                 return false;
             }
