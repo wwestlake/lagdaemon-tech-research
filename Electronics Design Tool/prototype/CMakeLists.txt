@@ -142,6 +142,7 @@ target_sources(DjehutiElectronicsLab PRIVATE
     Source/SchematicLayout.cpp
     Source/SchematicRouter.h
     Source/SchematicRouter.cpp
+    Source/RouteEditing.cpp
     Source/ElectronicsKnowledge.h
     Source/ElectronicsKnowledge.cpp
     Source/LocalAgentApi.h
@@ -309,6 +310,7 @@ target_sources(SchematicPreview PRIVATE
     Source/SchematicSymbols.cpp
     Source/SchematicLayout.cpp
     Source/SchematicRouter.cpp
+    Source/RouteEditing.cpp
 )
 target_compile_definitions(SchematicPreview PRIVATE
     JUCE_WEB_BROWSER=0
@@ -330,6 +332,7 @@ set_target_properties(SchematicRoutingTests PROPERTIES
 target_sources(SchematicRoutingTests PRIVATE
     tools/routing_tests/RoutingTests.cpp
     Source/SchematicRouter.cpp
+    Source/RouteEditing.cpp
 )
 target_compile_definitions(SchematicRoutingTests PRIVATE
     JUCE_WEB_BROWSER=0

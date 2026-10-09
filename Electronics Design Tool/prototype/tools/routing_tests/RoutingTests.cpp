@@ -4,6 +4,7 @@
 
 #include <JuceHeader.h>
 #include "../../Source/SchematicRouter.h"
+#include "../../Source/RouteEditing.h"
 
 #include <cstdio>
 
@@ -135,6 +136,68 @@ int main()
         const auto routes = routing::routeConnections(p, grid, nullptr, {}, &why);
         checkTrue("routes via a point beyond the target", why[0].isEmpty() && routes[0].size() >= 2, why[0] + " " + describe(routes[0]));
         checkTrue("visits (720,72)", routing::visitsInOrder(routes[0], { { 720.0f, 72.0f } }), describe(routes[0]));
+    }
+
+    std::printf("-- manual editing constraints --\n");
+    {
+        namespace edit = schematic::route_edit;
+        routing::Problem p;
+        p.obstacles = { resistor(96, 96), resistor(480, 96), block() };
+        p.connections = { connect(0, 1, 1, 0, 0) };
+        auto routeWith = [&](const std::vector<edit::EditPoint>& points, juce::String& why) {
+            p.connections[0].waypoints.clear();
+            for (const auto& e : points) if (e.pinned) p.connections[0].waypoints.push_back(e.position);
+            std::vector<juce::String> w;
+            const auto r = routing::routeConnections(p, grid, nullptr, {}, &w);
+            why = w[0];
+            return r[0];
+        };
+        juce::String why;
+        const auto original = routeWith({}, why); // (192,120)(240,120)(240,216)(432,216)(432,120)(480,120)
+
+        // Drag the bottom run (segment 2) down by 100 px: snaps to 96.
+        const auto offset = edit::segmentOffset(original, 2, { 7.0f, 100.0f }, grid);
+        checkTrue("segment drag offset is perpendicular and grid-snapped", offset == P(0, 96), juce::String(offset.x) + "," + juce::String(offset.y));
+        const auto dragged = edit::pointsForSegmentDrag(original, {}, 2, offset, grid);
+        checkTrue("segment drag pins exactly the two moved corners", dragged.size() == 2 && dragged[0].position == P(240, 312)
+                  && dragged[1].position == P(432, 312) && dragged[0].pinned && dragged[1].pinned);
+        const auto afterDrag = routeWith(dragged, why);
+        checkTrue("router honours the dragged segment", why.isEmpty() && routing::visitsInOrder(afterDrag, { { 240, 312 }, { 432, 312 } }), why + " " + describe(afterDrag));
+        checkTrue("dragged route has no body crossing", !routing::crossesBody(afterDrag, p.obstacles, 0, 1), describe(afterDrag));
+        const auto preview = edit::shiftedSegment(original, 2, offset);
+        checkTrue("preview matches the committed route", preview == afterDrag, describe(preview));
+
+        // Drag the first segment (it leaves R1's pin) down 48: pin stays, midpoint holds it.
+        const auto endDrag = edit::pointsForSegmentDrag(original, {}, 0, { 0, 48 }, grid);
+        checkTrue("end-segment drag pins its midpoint and far corner", endDrag.size() == 2 && endDrag[0].position == P(216, 168)
+                  && endDrag[1].position == P(240, 168), describe({ endDrag.empty() ? P() : endDrag[0].position, endDrag.size() > 1 ? endDrag[1].position : P() }));
+        const auto afterEnd = routeWith(endDrag, why);
+        checkTrue("end-segment drag routes, starts on the pin", why.isEmpty() && !afterEnd.empty() && afterEnd.front() == P(192, 120), why + " " + describe(afterEnd));
+        const auto jog = edit::shiftedSegment(original, 0, { 0, 48 });
+        checkTrue("end-segment preview keeps the pin and jogs", jog.size() >= 3 && jog[0] == P(192, 120) && jog[1] == P(192, 168), describe(jog));
+
+        // Existing points on a dragged segment move with it; others stay.
+        const auto withExisting = edit::pointsForSegmentDrag(afterDrag, dragged, 3, { 0, 0 }, grid);
+        checkTrue("zero drag leaves constraints as they were", withExisting.size() == 2 && withExisting[0].position == P(240, 312));
+
+        // Insert keeps order along the wire.
+        auto inserted = edit::withInsertedPoint(original, {}, { 336, 216 });
+        inserted = edit::withInsertedPoint(original, inserted, { 264, 216 });
+        checkTrue("inserted points are ordered along the wire", inserted.size() == 2 && inserted[0].position == P(264, 216) && inserted[1].position == P(336, 216));
+        const auto withPoints = routeWith(inserted, why);
+        // The points keep their exact coordinates; the free stretches next to
+        // them may pick a different, equally short bend.
+        checkTrue("inserted points are visited in order, no body crossing",
+                  why.isEmpty() && routing::visitsInOrder(withPoints, { { 264, 216 }, { 336, 216 } }) && !routing::crossesBody(withPoints, p.obstacles, 0, 1),
+                  why + " " + describe(withPoints));
+
+        // Impossible: a point inside the block is refused (canvas restores the original).
+        const auto bad = edit::withInsertedPoint(original, {}, { 336, 120 });
+        const auto refused = routeWith(bad, why);
+        checkTrue("point inside a body is refused", refused.empty() && why.contains("inside a component"), why);
+
+        checkTrue("orthogonal chain turns at a corner", edit::orthogonalChain({ { 0, 0 }, { 48, 24 } }) == routing::Polyline({ { 0, 0 }, { 48, 0 }, { 48, 24 } }));
+        checkTrue("segmentAt finds the bottom run", edit::segmentAt(original, { 330, 220 }, 8.0f) == 2);
     }
 
     std::printf("-- app-shaped obstacles: padded 0.6 grid, pins inside the obstacle --\n");
