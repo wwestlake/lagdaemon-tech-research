@@ -41,8 +41,8 @@ void style(juce::TextButton& b, bool primary)
 const schematic::PinSide sides[] { schematic::PinSide::Left, schematic::PinSide::Right, schematic::PinSide::Top, schematic::PinSide::Bottom };
 }
 
-PinLayoutEditor::PinLayoutEditor(juce::String n, juce::String id, std::vector<schematic::BlockPort> p, SaveFn fn)
-    : name(std::move(n)), symbolId(std::move(id)), ports(std::move(p)), onSave(std::move(fn))
+PinLayoutEditor::PinLayoutEditor(juce::String n, juce::String id, std::vector<schematic::BlockPort> p, SaveFn fn, bool editable)
+    : name(std::move(n)), symbolId(std::move(id)), ports(std::move(p)), onSave(std::move(fn)), pinsEditable(editable)
 {
     schematic::normalizePinOrders(ports);
     rows = std::make_unique<Rows>(*this);
@@ -86,11 +86,31 @@ PinLayoutEditor::PinLayoutEditor(juce::String n, juce::String id, std::vector<sc
         if (auto* w = findParentComponentOfClass<juce::DialogWindow>()) w->exitModalState(1);
     };
 
+    if (pinsEditable)
+    {
+        pinName.setTextToShowWhenEmpty("pin name", juce::Colour(0xff71808c));
+        pinName.setColour(juce::TextEditor::backgroundColourId, juce::Colour(0xff151a20));
+        pinName.setColour(juce::TextEditor::textColourId, juce::Colour(0xffdce9ee));
+        pinName.setColour(juce::TextEditor::outlineColourId, juce::Colour(0xff33424d));
+        pinName.onReturnKey = [this] { addPin(); };
+        addAndMakeVisible(pinName);
+        for (auto* b : { &addButton, &renameButton, &removeButton })
+        {
+            style(*b, false);
+            addAndMakeVisible(*b);
+        }
+        addButton.onClick = [this] { addPin(); };
+        renameButton.onClick = [this] { renamePin(); };
+        removeButton.onClick = [this] { removePin(); };
+    }
+
     hint.setColour(juce::Label::textColourId, juce::Colour(0xff93a7b0));
-    hint.setText("Pins keep their identity and connections; only where they are drawn changes.", juce::dontSendNotification);
+    hint.setText(pinsEditable ? "A rename keeps every wire; a removed pin takes only its own wires. Changes apply on Save."
+                              : "Pins keep their identity and connections; only where they are drawn changes.",
+                 juce::dontSendNotification);
     addAndMakeVisible(hint);
 
-    setSize(760, 480);
+    setSize(760, pinsEditable ? 520 : 480);
     list.selectRow(0);
     select(0);
 }
@@ -100,16 +120,73 @@ PinLayoutEditor::~PinLayoutEditor()
     list.setModel(nullptr);
 }
 
-void PinLayoutEditor::show(juce::String n, juce::String id, std::vector<schematic::BlockPort> p, SaveFn fn)
+void PinLayoutEditor::show(juce::String n, juce::String id, std::vector<schematic::BlockPort> p, SaveFn fn, bool editable)
 {
     juce::DialogWindow::LaunchOptions options;
-    options.content.setOwned(new PinLayoutEditor(n, std::move(id), std::move(p), std::move(fn)));
+    options.content.setOwned(new PinLayoutEditor(n, std::move(id), std::move(p), std::move(fn), editable));
     options.dialogTitle = "Pin layout - " + n;
     options.dialogBackgroundColour = juce::Colour(0xff10161d);
     options.escapeKeyTriggersCloseButton = true;
     options.useNativeTitleBar = true;
     options.resizable = true;
     options.launchAsync();
+}
+
+void PinLayoutEditor::showError(const juce::String& text)
+{
+    hint.setColour(juce::Label::textColourId, juce::Colour(0xffffb36b));
+    hint.setText(text, juce::dontSendNotification);
+}
+
+// The canvas checks again on Save; this catches a clash while typing.
+bool PinLayoutEditor::checkName(const juce::String& text, int except)
+{
+    const auto n = text.trim();
+    if (n.isEmpty()) { showError("Type a pin name first."); return false; }
+    if (n.containsAnyOf(" .\t\"'")) { showError("Pin names cannot contain spaces, dots or quotes."); return false; }
+    for (int k = 0; k < (int)ports.size(); ++k)
+        if (k != except && ports[(size_t)k].name.equalsIgnoreCase(n))
+        {
+            showError("There is already a pin named " + ports[(size_t)k].name + "; pin names are unique on a block.");
+            return false;
+        }
+    return true;
+}
+
+void PinLayoutEditor::addPin()
+{
+    if (!checkName(pinName.getText(), -1)) return;
+    const auto s = selected >= 0 && selected < (int)ports.size() ? ports[(size_t)selected].side : schematic::PinSide::Left;
+    ports.push_back({ pinName.getText().trim(), s }); // no id: a new pin
+    schematic::placePort(ports, (int)ports.size() - 1, s, -1);
+    selected = (int)ports.size() - 1;
+    pinName.clear();
+    hint.setColour(juce::Label::textColourId, juce::Colour(0xff93a7b0));
+    hint.setText("Added " + ports.back().name + " (inside the block it gets a port bubble on Save).", juce::dontSendNotification);
+    refresh();
+    list.selectRow(selected);
+}
+
+void PinLayoutEditor::renamePin()
+{
+    if (selected < 0 || selected >= (int)ports.size()) return;
+    if (!checkName(pinName.getText(), selected)) return;
+    ports[(size_t)selected].name = pinName.getText().trim();
+    pinName.clear();
+    refresh();
+}
+
+void PinLayoutEditor::removePin()
+{
+    if (selected < 0 || selected >= (int)ports.size()) return;
+    const auto gone = ports[(size_t)selected].name;
+    ports.erase(ports.begin() + selected);
+    schematic::normalizePinOrders(ports);
+    selected = juce::jmin(selected, (int)ports.size() - 1);
+    hint.setColour(juce::Label::textColourId, juce::Colour(0xff93a7b0));
+    hint.setText("Removed " + gone + "; on Save its port bubble inside and the wires on it go too.", juce::dontSendNotification);
+    refresh();
+    if (selected >= 0) list.selectRow(selected);
 }
 
 void PinLayoutEditor::select(int pin)
@@ -170,6 +247,18 @@ void PinLayoutEditor::resized()
     hint.setBounds(bottom);
     area.removeFromBottom(6);
     auto left = area.removeFromLeft(280);
+    if (pinsEditable)
+    {
+        auto edits = left.removeFromBottom(32);
+        pinName.setBounds(edits.removeFromLeft(90).reduced(0, 3));
+        edits.removeFromLeft(4);
+        addButton.setBounds(edits.removeFromLeft(64).reduced(0, 2));
+        edits.removeFromLeft(4);
+        renameButton.setBounds(edits.removeFromLeft(56).reduced(0, 2));
+        edits.removeFromLeft(4);
+        removeButton.setBounds(edits.reduced(0, 2));
+        left.removeFromBottom(6);
+    }
     auto controls = left.removeFromBottom(32);
     side.setBounds(controls.removeFromLeft(100).reduced(0, 3));
     controls.removeFromLeft(6);

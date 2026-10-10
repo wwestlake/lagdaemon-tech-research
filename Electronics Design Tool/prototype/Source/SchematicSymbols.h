@@ -82,6 +82,10 @@ bool parsePinSide(const juce::String& text, PinSide& side);   // case-insensitiv
 struct BlockPort
 {
     juce::String name;
+    // Sub Diagram blocks: the pin's stable identity (P1, P2...), shared with
+    // its port bubble(s) inside; the name is only an editable label. Empty
+    // for FRust components (their pins are named by their definition).
+    juce::String id;
     PinSide side = PinSide::Left;
     int order = -1; // position along its side (0 first: top to bottom, left to right); -1 = after the ordered ones, in port order
 

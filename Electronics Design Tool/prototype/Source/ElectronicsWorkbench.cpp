@@ -153,8 +153,8 @@ const SchematicToolSpec schematicToolSpecs[] = {
     },
     {
         "schematic_subdiagram_create",
-        "Fold components into a sub-diagram block to make a complex schematic easier to read. The block shows one pin per signal net crossing its edge (ground and named supplies stay global and never become pins); double-clicking it opens its own sheet, where each pin appears as a port bubble with the pin name. Nothing about the circuit changes. Give members (reference designators on the sheet being viewed) or an existing group. Blocks can contain blocks.",
-        R"({"type":"object","properties":{"name":{"type":"string","description":"Block name, such as Output Stage."},"members":{"type":"array","items":{"type":"string"},"description":"Reference designators to fold into the block."},"group":{"type":"string","description":"Alternatively, a group id or name whose members become the block (the group box is replaced by the block)."}},"required":["name"],"additionalProperties":false})"
+        "Make a sub-diagram block. Bottom-up: give members (reference designators on the sheet being viewed) or an existing group to fold them into a block; it shows one pin per signal net crossing its edge (ground and named supplies stay global and never become pins), and nothing about the circuit changes. Top-down: give no members for an empty block (no pins, blank sheet) at x, y, then add pins with schematic_subdiagram_add_port (or place block_port symbols inside its sheet), open it with schematic_subdiagram_open and build the circuit there. Each pin appears inside as a port bubble; pin and bubble share a stable id, so renaming never disconnects anything. Blocks can contain blocks.",
+        R"({"type":"object","properties":{"name":{"type":"string","description":"Block name, such as Output Stage."},"members":{"type":"array","items":{"type":"string"},"description":"Reference designators to fold into the block; omit for an empty block."},"group":{"type":"string","description":"Alternatively, a group id or name whose members become the block (the group box is replaced by the block)."},"x":{"type":"number","description":"Empty block only: where to place it on the sheet being viewed."},"y":{"type":"number"}},"required":["name"],"additionalProperties":false})"
     },
     {
         "schematic_subdiagram_expand",
@@ -173,8 +173,18 @@ const SchematicToolSpec schematicToolSpecs[] = {
     },
     {
         "schematic_subdiagram_rename_port",
-        "Rename one of a sub-diagram block's pins; the matching port bubble inside the block is renamed with it.",
+        "Rename one of a sub-diagram block's pins; its port bubble(s) inside are renamed with it. The pin keeps its stable id, so every wire inside and outside stays connected. Names are unique on a block (ignoring case) and cannot contain spaces, dots or quotes; a clash is refused.",
         R"({"type":"object","properties":{"block":{"type":"string","description":"Block refdes or name."},"port":{"type":"string","description":"Current pin name, such as IN or OUT2."},"name":{"type":"string","description":"New pin name."}},"required":["block","port","name"],"additionalProperties":false})"
+    },
+    {
+        "schematic_subdiagram_add_port",
+        "Add a pin to a sub-diagram block from outside: the pin appears on the block (side left, right, top or bottom; order = position along that side, omit for last) and a matching port bubble appears inside its sheet, ready to wire. Unwired pins and ports are allowed while building and simulate as open connections. Names are unique on the block (ignoring case); a clash is refused, never renamed. From inside, placing a block_port symbol (schematic_place_symbol, busName = name) on the block's sheet does the same.",
+        R"({"type":"object","properties":{"block":{"type":"string","description":"Block refdes or name."},"name":{"type":"string","description":"New pin name, such as IN or VREF."},"side":{"type":"string","description":"left, right, top or bottom (default left)."},"order":{"type":"integer","description":"Position along the side, 0 first; omit for last."}},"required":["block","name"],"additionalProperties":false})"
+    },
+    {
+        "schematic_subdiagram_remove_port",
+        "Remove a pin from a sub-diagram block together with its port bubble(s) inside. Only the wires ending on that pin or those bubbles are removed; every other connection stays on the same pin. Deleting a pin's last port bubble inside (schematic_delete_components) removes the pin the same way.",
+        R"({"type":"object","properties":{"block":{"type":"string","description":"Block refdes or name."},"port":{"type":"string","description":"Pin name."}},"required":["block","port"],"additionalProperties":false})"
     },
     {
         "schematic_subdiagram_expose_parameter",
@@ -1494,6 +1504,11 @@ public:
             add({ "bode_analyzer", "Frequency Analyzer (Bode)", "Instrument" });
         if (std::none_of(allSymbols.begin(), allSymbols.end(), [](const SymbolInfo& s) { return s.id == "xyz_plotter"; }))
             add({ "xyz_plotter", "2D/3D Plotter (Time / XY / XYZ)", "Instrument" });
+        // Top-down Sub Diagrams: an empty block, and a port placed inside one.
+        if (std::none_of(allSymbols.begin(), allSymbols.end(), [](const SymbolInfo& s) { return s.id == "sub_block"; }))
+            add({ "sub_block", "Sub Diagram (empty)", "Sub Diagrams" });
+        if (std::none_of(allSymbols.begin(), allSymbols.end(), [](const SymbolInfo& s) { return s.id == "block_port"; }))
+            add({ "block_port", "Sub Diagram Port (inside a block)", "Sub Diagrams" });
         content.rebuild();
 
         if (onSymbolSelected != nullptr)
@@ -1545,7 +1560,7 @@ private:
     {
         static const juce::StringArray order { "Passives", "Magnetics", "Diodes", "Transistors", "Sources",
                                                "Controlled Sources", "Power & Ground", "Analog ICs", "Digital Logic",
-                                               "Switches & Relays", "Protection", "Connectors & Test Points", "Instruments" };
+                                               "Switches & Relays", "Protection", "Connectors & Test Points", "Instruments", "Sub Diagrams" };
         return order;
     }
 
@@ -2221,6 +2236,7 @@ public:
         groups = std::move(loadedGroups);
         simulationParameters = std::move(loadedSimulationParameters);
         circuitParameters = std::move(loadedCircuitParameters);
+        syncBlockPorts(); // older files: pin ids by name; a bubble for every pin
         if (!restoringSnapshot)
         {
             routeKeys.clear(); // a different diagram: no route survives from the last one
@@ -3699,8 +3715,21 @@ public:
                                      const juce::String& busName)
     {
         const auto requestedSymbol = symbolId.trim();
-        if (requestedSymbol == "sub_block" || requestedSymbol == "block_port")
-            return "{ \"ok\": false, \"error\": \"Sub-diagram blocks and ports are created with schematic_subdiagram_create, not placed directly.\" }";
+        if (requestedSymbol == "sub_block")
+        {
+            const auto index = createEmptySubDiagram(value, snapPoint({ x, y }));
+            return "{ \"ok\": true, \"tool\": \"schematic_place_symbol\", \"refdes\": " + quote(instances[(size_t)index].refdes)
+                 + ", \"symbolId\": \"sub_block\", \"block\": " + blockJson(index) + " }";
+        }
+        if (requestedSymbol == "block_port")
+        {
+            juce::String error;
+            if (!placePortInside(busName.isNotEmpty() ? busName : value, snapPoint({ x, y }), error))
+                return "{ \"ok\": false, \"error\": " + quote(error) + " }";
+            const auto block = blockForSheet(currentSheet);
+            return "{ \"ok\": true, \"tool\": \"schematic_place_symbol\", \"refdes\": " + quote(instances.back().refdes)
+                 + ", \"symbolId\": \"block_port\", \"block\": " + blockJson(block) + " }";
+        }
         if (requestedSymbol == "frust_component")
             return "{ \"ok\": false, \"error\": \"FRust programmable components are placed with component_place (they need a definition).\" }";
         if (!schematic::isSupportedSymbol(requestedSymbol))
@@ -4994,6 +5023,7 @@ private:
         schematic::PinSide side;
         p.side = schematic::parsePinSide(port.getProperty("side", {}).toString(), side) ? side : schematic::PinSide::Left;
         p.order = port.hasProperty("order") ? (int)port.getProperty("order", -1) : -1;
+        p.id = port.getProperty("id", {}).toString().trim(); // older files: assigned by name on load
         return p;
     }
 
@@ -5001,6 +5031,8 @@ private:
     {
         juce::String text;
         text << "{ \"name\": " << quote(port.name) << ", \"side\": " << quote(schematic::pinSideName(port.side));
+        if (port.id.isNotEmpty())
+            text << ", \"id\": " << quote(port.id);
         if (port.order >= 0)
             text << ", \"order\": " << port.order;
         return text + " }";
@@ -5329,18 +5361,16 @@ private:
         for (const auto& [name, ordinal] : namedSupplyPins)
             supplyNetNames[sets.find(ordinal)] = spiceNetName(name);
 
-        // A sub-diagram block pin and the port bubble of the same name inside
-        // its sheet are one net.
-        for (size_t i = 0; i < instances.size(); ++i)
+        // A sub-diagram block pin and its port bubble(s) inside its sheet are
+        // one net, matched by the pin's stable id (the name is only a label).
+        for (int j = 0; j < (int)instances.size(); ++j)
         {
-            const auto& block = instances[i];
-            if (block.symbolId != "sub_block")
+            if (instances[(size_t)j].symbolId != "block_port")
                 continue;
-            for (size_t k = 0; k < block.ports.size(); ++k)
-                for (size_t j = 0; j < instances.size(); ++j)
-                    if (instances[j].symbolId == "block_port" && instances[j].sheet == block.childSheet
-                        && instances[j].busName == block.ports[k].name)
-                        sets.unite(pinOrdinal({ (int)i, (int)k }), pinOrdinal({ (int)j, 0 }));
+            int block = -1;
+            const auto k = portIndexOfBubble(j, block);
+            if (k >= 0)
+                sets.unite(pinOrdinal({ block, k }), pinOrdinal({ j, 0 }));
         }
 
         // Net labels with the same name are one net (probe connections).
@@ -6900,8 +6930,11 @@ private:
         block.position = snapToGrid(innerBox.getCentre());
         block.sheet = currentSheet;
         block.childSheet = child;
-        for (const auto& c : crossings)
+        for (auto& c : crossings)
+        {
+            c.port.id = newPortId(block.ports);
             block.ports.push_back(c.port);
+        }
         const auto blockIndex = (int)instances.size();
         instances.push_back(block);
 
@@ -6914,6 +6947,7 @@ private:
             bubble.symbolId = "block_port";
             bubble.busName = c.port.name;
             bubble.value = c.port.name;
+            bubble.params["portId"] = c.port.id;
             bubble.family = familyFor("block_port");
             bubble.sheet = child;
             const bool portOnRight = c.port.side == schematic::PinSide::Right;
@@ -7085,6 +7119,30 @@ private:
              + ", \"sheet\": " + quote(sheetName(parent)) + ", \"group\": " + quote(group.id) + " }";
     }
 
+    bool pinHasWire(int instanceIndex, int pinIndex) const
+    {
+        for (const auto& wire : wires)
+            for (const auto* end : { &wire.a, &wire.b })
+                if (end->isPin() && end->pin.instanceIndex == instanceIndex && end->pin.pinIndex == pinIndex)
+                    return true;
+        return false;
+    }
+
+    // A block's pins with nothing wired to them outside, and those whose
+    // bubbles have nothing wired inside: open connections while building.
+    void unwiredBlockPins(int blockIndex, juce::StringArray& outside, juce::StringArray& inside) const
+    {
+        const auto& ports = instances[(size_t)blockIndex].ports;
+        for (int k = 0; k < (int)ports.size(); ++k)
+        {
+            if (!pinHasWire(blockIndex, k))
+                outside.add(ports[(size_t)k].name);
+            const auto bubbles = bubblesOfPort(blockIndex, k);
+            if (std::none_of(bubbles.begin(), bubbles.end(), [this](int j) { return pinHasWire(j, 0); }))
+                inside.add(ports[(size_t)k].name);
+        }
+    }
+
     juce::String blockJson(int blockIndex) const
     {
         const auto& block = instances[(size_t)blockIndex];
@@ -7096,7 +7154,15 @@ private:
              << ", \"ports\": [";
         for (size_t k = 0; k < block.ports.size(); ++k)
             text << (k == 0 ? "" : ", ") << blockPortJson(block.ports[k]);
-        text << "], \"members\": [";
+        juce::StringArray openOutside, openInside;
+        unwiredBlockPins(blockIndex, openOutside, openInside);
+        auto list = [](const juce::StringArray& names) {
+            juce::StringArray quoted;
+            for (const auto& n : names) quoted.add(quote(n));
+            return "[" + quoted.joinIntoString(", ") + "]";
+        };
+        text << "], \"unwiredOutside\": " << list(openOutside) << ", \"unwiredInside\": " << list(openInside);
+        text << ", \"members\": [";
         bool firstMember = true;
         for (const auto& instance : instances)
             if (instance.sheet == block.childSheet && instance.symbolId != "block_port" && !schematic::isPowerSymbol(instance.symbolId))
@@ -7409,6 +7475,7 @@ private:
                     groups.push_back(group);
             }
         }
+        syncBlockPorts(); // blocks saved before pin ids get them by name
 
         selectedInstance = blockIndex;
         selectedInstances.clear();
@@ -8146,6 +8213,20 @@ public:
             if (parseOptionalQuantity(partValue(inst, "initial_voltage"), initialVoltage))
                 sim.circuit.setNodeInitialVoltage(node(i, "1"), initialVoltage);
         }
+        // Unwired Sub Diagram pins and ports simulate as open connections
+        // (nothing is attached there); say which, so it is never a surprise.
+        for (int i = 0; i < (int)instances.size(); ++i)
+        {
+            if (instances[(size_t)i].symbolId != "sub_block")
+                continue;
+            juce::StringArray outside, inside;
+            unwiredBlockPins(i, outside, inside);
+            const auto who = instances[(size_t)i].refdes + " (" + instances[(size_t)i].value + ")";
+            if (!outside.isEmpty())
+                sim.warnings.add(who + ": pin(s) " + outside.joinIntoString(", ") + " not wired outside the block; open connection.");
+            if (!inside.isEmpty())
+                sim.warnings.add(who + ": port(s) " + inside.joinIntoString(", ") + " not wired inside the block; open connection.");
+        }
         return sim;
     }
 
@@ -8631,28 +8712,424 @@ public:
         return true;
     }
 
+    // ---- Sub Diagram pins and ports ----
+    // A block pin (BlockPort; pin index == port index, which wires use) and
+    // its port bubble(s) inside the block's sheet share a stable id:
+    // BlockPort::id and the bubble's "portId" param. Names are labels, so a
+    // rename never changes which net a pin is. Names are unique on a block,
+    // ignoring case; a clash is refused, never renamed automatically.
+
+    static juce::String bubblePortId(const Instance& bubble)
+    {
+        const auto found = bubble.params.find("portId");
+        return found != bubble.params.end() ? found->second : juce::String();
+    }
+
+    // The port index (on blockIndex) of a port bubble, or -1. Bubbles from
+    // before ids match their pin by name until syncBlockPorts() gives them one.
+    int portIndexOfBubble(int bubbleIndex, int& blockIndex) const
+    {
+        blockIndex = -1;
+        if (bubbleIndex < 0 || bubbleIndex >= (int)instances.size())
+            return -1;
+        const auto& bubble = instances[(size_t)bubbleIndex];
+        if (bubble.symbolId != "block_port" || bubble.sheet.isEmpty())
+            return -1;
+        blockIndex = blockForSheet(bubble.sheet);
+        if (blockIndex < 0)
+            return -1;
+        const auto id = bubblePortId(bubble);
+        const auto& ports = instances[(size_t)blockIndex].ports;
+        for (int k = 0; k < (int)ports.size(); ++k)
+            if (id.isNotEmpty() ? ports[(size_t)k].id == id : ports[(size_t)k].name == bubble.busName)
+                return k;
+        return -1;
+    }
+
+    std::vector<int> bubblesOfPort(int blockIndex, int portIndex) const
+    {
+        std::vector<int> list;
+        for (int j = 0; j < (int)instances.size(); ++j)
+        {
+            int block = -1;
+            if (instances[(size_t)j].symbolId == "block_port" && portIndexOfBubble(j, block) == portIndex && block == blockIndex)
+                list.push_back(j);
+        }
+        return list;
+    }
+
+    static juce::String newPortId(const std::vector<schematic::BlockPort>& ports)
+    {
+        int highest = 0;
+        for (const auto& p : ports)
+            if (p.id.length() > 1 && p.id.startsWith("P") && p.id.substring(1).containsOnly("0123456789"))
+                highest = std::max(highest, p.id.substring(1).getIntValue());
+        return "P" + juce::String(highest + 1);
+    }
+
+    static int portIndexByName(const std::vector<schematic::BlockPort>& ports, const juce::String& name)
+    {
+        for (int k = 0; k < (int)ports.size(); ++k)
+            if (ports[(size_t)k].name == name.trim())
+                return k;
+        for (int k = 0; k < (int)ports.size(); ++k)
+            if (ports[(size_t)k].name.equalsIgnoreCase(name.trim()))
+                return k;
+        return -1;
+    }
+
+    static bool portNameTaken(const std::vector<schematic::BlockPort>& ports, const juce::String& name, int except = -1)
+    {
+        for (int k = 0; k < (int)ports.size(); ++k)
+            if (k != except && ports[(size_t)k].name.equalsIgnoreCase(name.trim()))
+                return true;
+        return false;
+    }
+
+    static juce::String uniquePortName(const std::vector<schematic::BlockPort>& ports, const juce::String& base)
+    {
+        if (!portNameTaken(ports, base))
+            return base;
+        for (int n = 2;; ++n)
+            if (!portNameTaken(ports, base + juce::String(n)))
+                return base + juce::String(n);
+    }
+
+public:
+    // A pin name is a label in wire names (A1.IN), so no spaces, dots or quotes.
+    static bool validPortName(const juce::String& name, juce::String& error)
+    {
+        if (name.trim().isEmpty()) { error = "A pin needs a name."; return false; }
+        if (name.trim().containsAnyOf(" .\t\"'")) { error = "Pin names cannot contain spaces, dots or quotes (" + name.trim() + ")."; return false; }
+        return true;
+    }
+
+private:
+    // Where a new bubble goes on a block's sheet: a column left of the parts
+    // (pins on the left or top) or right of them, below the bubbles already there.
+    juce::Point<float> newBubbleSpot(const juce::String& sheet, bool right) const
+    {
+        juce::Rectangle<float> box;
+        bool any = false;
+        int rows = 0;
+        for (const auto& inst : instances)
+        {
+            if (inst.sheet != sheet)
+                continue;
+            if (inst.symbolId == "block_port")
+            {
+                if ((inst.rotation == 180) == right) ++rows;
+                continue;
+            }
+            const juce::Rectangle<float> at(inst.position.x, inst.position.y, 1.0f, 1.0f);
+            box = any ? box.getUnion(at) : at;
+            any = true;
+        }
+        if (!any)
+            box = { 240.0f, 0.0f, 1.0f, 1.0f };
+        return { right ? box.getRight() + 168.0f : box.getX() - 168.0f, box.getY() + (float)rows * 72.0f };
+    }
+
+    // Adds a port bubble for pin `portIndex` inside the block's sheet.
+    int addBubble(int blockIndex, int portIndex)
+    {
+        const auto port = instances[(size_t)blockIndex].ports[(size_t)portIndex];
+        const auto sheet = instances[(size_t)blockIndex].childSheet;
+        const bool right = port.side == schematic::PinSide::Right || port.side == schematic::PinSide::Bottom;
+        Instance bubble;
+        bubble.symbolId = "block_port";
+        bubble.busName = port.name;
+        bubble.value = port.name;
+        bubble.family = familyFor("block_port");
+        bubble.sheet = sheet;
+        bubble.rotation = right ? 180 : 0;
+        bubble.position = snapToGrid(newBubbleSpot(sheet, right));
+        bubble.refdes = nextRefdesFor("block_port");
+        bubble.params["portId"] = port.id;
+        instances.push_back(bubble);
+        return (int)instances.size() - 1;
+    }
+
+    // Brings every block and its sheet into agreement, only ever adding:
+    // pins without an id get one; a bubble without a port id takes the pin of
+    // its name (files from before ids); a bubble whose pin is missing becomes
+    // a new pin; a pin with no bubble gets one, unwired (an open connection,
+    // as before). Never removes a pin, bubble or wire, so no connection changes.
+    void syncBlockPorts()
+    {
+        for (auto& inst : instances)
+            if (inst.symbolId == "sub_block")
+                for (auto& port : inst.ports)
+                    if (port.id.isEmpty())
+                        port.id = newPortId(inst.ports);
+
+        const auto count = (int)instances.size();
+        for (int j = 0; j < count; ++j)
+        {
+            if (instances[(size_t)j].symbolId != "block_port" || instances[(size_t)j].sheet.isEmpty())
+                continue;
+            int block = -1;
+            auto k = portIndexOfBubble(j, block);
+            if (block < 0)
+                continue;
+            auto& ports = instances[(size_t)block].ports;
+            if (k < 0)
+            {
+                auto name = instances[(size_t)j].busName.trim();
+                juce::String ignored;
+                if (!validPortName(name, ignored))
+                    name = "PORT";
+                schematic::BlockPort port { uniquePortName(ports, name),
+                                            instances[(size_t)j].rotation == 180 ? schematic::PinSide::Right : schematic::PinSide::Left };
+                port.id = newPortId(ports);
+                ports.push_back(port);
+                k = (int)ports.size() - 1;
+                schematic::placePort(ports, k, port.side, -1);
+            }
+            instances[(size_t)j].params["portId"] = ports[(size_t)k].id;
+            instances[(size_t)j].busName = ports[(size_t)k].name;
+            instances[(size_t)j].value = ports[(size_t)k].name;
+        }
+
+        for (int i = 0; i < (int)instances.size(); ++i)
+            if (instances[(size_t)i].symbolId == "sub_block")
+                for (int k = 0; k < (int)instances[(size_t)i].ports.size(); ++k)
+                    if (bubblesOfPort(i, k).empty())
+                        addBubble(i, k);
+    }
+
+    // Removes pin `k` of a block: the wires ending on it outside, and its
+    // bubbles inside with the wires ending on them. Every other wire keeps its
+    // pin (indices after k shift down with the pins). No undo snapshot.
+    void removeBlockPort(int blockIndex, int k, juce::StringArray& droppedProbes)
+    {
+        const auto bubbles = bubblesOfPort(blockIndex, k);
+        auto isPin = [&](const WireNode& n) { return n.isPin() && n.pin.instanceIndex == blockIndex && n.pin.pinIndex == k; };
+        wires.erase(std::remove_if(wires.begin(), wires.end(), [&](const Wire& w) { return isPin(w.a) || isPin(w.b); }), wires.end());
+        for (auto& wire : wires)
+            for (auto* end : { &wire.a, &wire.b })
+                if (end->isPin() && end->pin.instanceIndex == blockIndex && end->pin.pinIndex > k)
+                    --end->pin.pinIndex;
+        for (auto it = probes.begin(); it != probes.end();)
+        {
+            if (isPin(it->node))
+            {
+                droppedProbes.add(it->id);
+                it = probes.erase(it);
+                continue;
+            }
+            if (it->node.isPin() && it->node.pin.instanceIndex == blockIndex && it->node.pin.pinIndex > k)
+                --it->node.pin.pinIndex;
+            ++it;
+        }
+        auto& ports = instances[(size_t)blockIndex].ports;
+        ports.erase(ports.begin() + k);
+        schematic::normalizePinOrders(ports);
+        removeInstancesAndJunctions(std::set<int>(bubbles.begin(), bubbles.end()), {}, droppedProbes);
+    }
+
+    int blockIndexByRefdes(const juce::String& refdes) const
+    {
+        for (int i = 0; i < (int)instances.size(); ++i)
+            if (instances[(size_t)i].symbolId == "sub_block" && instances[(size_t)i].refdes == refdes)
+                return i;
+        return -1;
+    }
+
+    void finishPortEdit(const juce::StringArray& droppedProbes)
+    {
+        for (const auto& probeId : droppedProbes)
+            if (onProbeChanged) onProbeChanged(probeId, {}, {});
+        routeSignature.clear();
+        notifySelection();
+        forceDeferredRepaint();
+    }
+
+public:
+    // An empty Sub Diagram block on the sheet being viewed: no pins, a blank
+    // sheet. Pins come from Add pin (outside) or Ports placed inside.
+    int createEmptySubDiagram(juce::String name, juce::Point<float> position)
+    {
+        pushUndoSnapshot();
+        Instance block;
+        block.symbolId = "sub_block";
+        block.refdes = nextRefdesFor("sub_block");
+        block.value = name.trim().isNotEmpty() ? name.trim() : juce::String("Sub-diagram");
+        block.family = familyFor("sub_block");
+        block.position = snapToGrid(position);
+        block.sheet = currentSheet;
+        block.childSheet = nextSheetId();
+        instances.push_back(block);
+        selectedInstance = (int)instances.size() - 1;
+        selectedInstances.clear();
+        selectedInstances.add(selectedInstance);
+        selectedGroup = -1;
+        routeSignature.clear();
+        notifySelection();
+        if (onStatus) onStatus("Placed empty Sub Diagram " + block.value + " (" + block.refdes
+                               + "). Add pins with Pin layout..., or double-click it and place Ports inside.");
+        forceDeferredRepaint();
+        return selectedInstance;
+    }
+
+    // Adds a pin to a block (from outside) and its port bubble inside.
+    bool addBlockPort(const juce::String& blockKey, const juce::String& name, schematic::PinSide side, int order, juce::String& error)
+    {
+        const auto block = blockIndexFor(blockKey);
+        if (block < 0) { error = "No sub-diagram block " + blockKey + "."; return false; }
+        if (!validPortName(name, error))
+            return false;
+        auto& ports = instances[(size_t)block].ports;
+        if (portNameTaken(ports, name))
+        {
+            error = "Block " + instances[(size_t)block].refdes + " already has a pin named " + name.trim() + "; pin names are unique on a block.";
+            return false;
+        }
+        pushUndoSnapshot();
+        schematic::BlockPort port { name.trim(), side };
+        port.id = newPortId(ports);
+        ports.push_back(port);
+        schematic::placePort(ports, (int)ports.size() - 1, side, order);
+        addBubble(block, (int)instances[(size_t)block].ports.size() - 1);
+        finishPortEdit({});
+        if (onStatus) onStatus("Added pin " + name.trim() + " to " + instances[(size_t)block].refdes + ".");
+        return true;
+    }
+
+    // Removes a pin from a block with its bubbles inside; only wires ending on
+    // that pin or those bubbles go.
+    bool removeBlockPortByName(const juce::String& blockKey, const juce::String& name, juce::String& error)
+    {
+        const auto block = blockIndexFor(blockKey);
+        if (block < 0) { error = "No sub-diagram block " + blockKey + "."; return false; }
+        const auto k = portIndexByName(instances[(size_t)block].ports, name);
+        if (k < 0) { error = "Block " + instances[(size_t)block].refdes + " has no pin " + name.trim() + "."; return false; }
+        pushUndoSnapshot();
+        const auto refdes = instances[(size_t)block].refdes;
+        juce::StringArray dropped;
+        removeBlockPort(block, k, dropped);
+        finishPortEdit(dropped);
+        if (onStatus) onStatus("Removed pin " + name.trim() + " from " + refdes + ".");
+        return true;
+    }
+
+    // Renames a pin: a new label on the same pin, so every wire stays.
     bool renameBlockPin(const juce::String& blockKey, const juce::String& oldName, const juce::String& newName, juce::String& error)
     {
         const auto block = blockIndexFor(blockKey);
         if (block < 0) { error = "No sub-diagram block " + blockKey + "."; return false; }
         auto& ports = instances[(size_t)block].ports;
-        const auto found = std::find_if(ports.begin(), ports.end(), [&](const schematic::BlockPort& port) { return port.name == oldName; });
-        if (found == ports.end()) { error = "Block " + instances[(size_t)block].refdes + " has no pin " + oldName + "."; return false; }
-        if (newName.trim().isEmpty() || (newName.trim() != oldName && std::any_of(ports.begin(), ports.end(), [&](const schematic::BlockPort& p) { return p.name == newName.trim(); })))
+        const auto k = portIndexByName(ports, oldName);
+        if (k < 0) { error = "Block " + instances[(size_t)block].refdes + " has no pin " + oldName + "."; return false; }
+        if (!validPortName(newName, error))
+            return false;
+        if (portNameTaken(ports, newName, k))
         {
-            error = "Pin names must be non-empty and unique on the block.";
+            error = "Block " + instances[(size_t)block].refdes + " already has a pin named " + newName.trim() + "; pin names are unique on a block.";
             return false;
         }
-        found->name = newName.trim();
-        for (auto& instance : instances)
-            if (instance.symbolId == "block_port" && instance.sheet == instances[(size_t)block].childSheet && instance.busName == oldName)
-            {
-                instance.busName = newName.trim();
-                instance.value = newName.trim();
-            }
+        const auto bubbles = bubblesOfPort(block, k);
+        pushUndoSnapshot();
+        instances[(size_t)block].ports[(size_t)k].name = newName.trim();
+        for (int j : bubbles)
+        {
+            instances[(size_t)j].busName = newName.trim();
+            instances[(size_t)j].value = newName.trim();
+        }
         forceDeferredRepaint();
         return true;
     }
+
+    // Renames the pin a port bubble (inside) belongs to.
+    bool renamePortFromBubble(const juce::String& bubbleRefdes, const juce::String& newName, juce::String& error)
+    {
+        const auto j = instanceIndexForRefdesAnySheet(bubbleRefdes);
+        int block = -1;
+        const auto k = portIndexOfBubble(j, block);
+        if (k < 0) { error = bubbleRefdes + " is not a port of a Sub Diagram."; return false; }
+        return renameBlockPin(instances[(size_t)block].refdes, instances[(size_t)block].ports[(size_t)k].name, newName, error);
+    }
+
+    // The block and pin a port bubble belongs to, for the Properties pane.
+    bool portOfBubble(const juce::String& bubbleRefdes, juce::String& blockRefdes, juce::String& blockName, juce::String& pinName) const
+    {
+        int block = -1;
+        const auto k = portIndexOfBubble(instanceIndexForRefdesAnySheet(bubbleRefdes), block);
+        if (k < 0) return false;
+        blockRefdes = instances[(size_t)block].refdes;
+        blockName = instances[(size_t)block].value;
+        pinName = instances[(size_t)block].ports[(size_t)k].name;
+        return true;
+    }
+
+    // Applies the Pin Layout dialog's edit of a block: the pins it lists (by
+    // id; an empty id is a new pin), with their names, sides and orders.
+    // Pins left out are removed with their bubbles; new ones get a bubble.
+    // One undo step. Wires stay on every pin that remains.
+    bool applyBlockPins(const juce::String& refdes, const std::vector<schematic::BlockPort>& layout, juce::String& error)
+    {
+        auto block = blockIndexFor(refdes);
+        if (block < 0) { error = "No sub-diagram block " + refdes + "."; return false; }
+        const auto blockRefdes = instances[(size_t)block].refdes;
+        std::set<juce::String> names, ids;
+        for (const auto& p : layout)
+        {
+            if (!validPortName(p.name, error))
+                return false;
+            if (!names.insert(p.name.trim().toLowerCase()).second)
+            {
+                error = "Two pins are named " + p.name.trim() + "; pin names are unique on a block.";
+                return false;
+            }
+            if (p.id.isNotEmpty())
+            {
+                const auto& ports = instances[(size_t)block].ports;
+                if (std::none_of(ports.begin(), ports.end(), [&](const schematic::BlockPort& q) { return q.id == p.id; }) || !ids.insert(p.id).second)
+                {
+                    error = "The block's pins changed while the dialog was open; reopen Pin layout.";
+                    return false;
+                }
+            }
+        }
+        pushUndoSnapshot();
+        juce::StringArray dropped;
+        for (;;)
+        {
+            const auto& ports = instances[(size_t)block].ports;
+            const auto gone = std::find_if(ports.begin(), ports.end(), [&](const schematic::BlockPort& q) { return ids.count(q.id) == 0; });
+            if (gone == ports.end())
+                break;
+            removeBlockPort(block, (int)(gone - ports.begin()), dropped);
+            block = blockIndexByRefdes(blockRefdes); // removing bubbles renumbers instances
+        }
+        for (const auto& p : layout)
+        {
+            auto& ports = instances[(size_t)block].ports;
+            if (p.id.isEmpty())
+            {
+                schematic::BlockPort added { p.name.trim(), p.side, p.order };
+                added.id = newPortId(ports);
+                ports.push_back(added);
+                addBubble(block, (int)ports.size() - 1);
+                continue;
+            }
+            const auto k = (int)(std::find_if(ports.begin(), ports.end(), [&](const schematic::BlockPort& q) { return q.id == p.id; }) - ports.begin());
+            const auto bubbles = bubblesOfPort(block, k);
+            auto& port = instances[(size_t)block].ports[(size_t)k];
+            port.name = p.name.trim();
+            port.side = p.side;
+            port.order = p.order;
+            for (int j : bubbles)
+            {
+                instances[(size_t)j].busName = port.name;
+                instances[(size_t)j].value = port.name;
+            }
+        }
+        schematic::normalizePinOrders(instances[(size_t)block].ports);
+        finishPortEdit(dropped);
+        return true;
+    }
+
 
     bool exposeBlockParameter(const juce::String& blockKey,
                               const juce::String& parameterName,
@@ -10165,6 +10642,12 @@ public:
                     return toolFailure(name, "No group with id or name " + text("group") + ".");
                 members = groups[(size_t)groupIndex].memberInstances;
             }
+            else if (const auto* list = args.getProperty("members", {}).getArray(); list == nullptr || list->isEmpty())
+            {
+                // No members: an empty block to build top-down.
+                const auto at = snapPoint({ (float)(double)args.getProperty("x", 0.0), (float)(double)args.getProperty("y", 0.0) });
+                return ok("\"block\": " + blockJson(createEmptySubDiagram(text("name"), at)));
+            }
             else if (!membersFromRefdes(args.getProperty("members", {}), members, error))
                 return toolFailure(name, error);
             auto blockName = text("name");
@@ -10219,6 +10702,26 @@ public:
                 return toolFailure(name, "A new name is required.");
             instances[(size_t)block].value = text("name");
             return ok("\"block\": " + blockJson(block));
+        }
+
+        if (name == "schematic_subdiagram_add_port")
+        {
+            juce::String error;
+            schematic::PinSide side = schematic::PinSide::Left;
+            if (text("side").isNotEmpty() && !schematic::parsePinSide(text("side"), side))
+                return toolFailure(name, "side must be left, right, top or bottom.");
+            const auto order = args.hasProperty("order") ? (int)args.getProperty("order", -1) : -1;
+            if (!addBlockPort(text("block"), text("name"), side, order, error))
+                return toolFailure(name, error);
+            return ok("\"block\": " + blockJson(blockIndexFor(text("block"))));
+        }
+
+        if (name == "schematic_subdiagram_remove_port")
+        {
+            juce::String error;
+            if (!removeBlockPortByName(text("block"), text("port"), error))
+                return toolFailure(name, error);
+            return ok("\"block\": " + blockJson(blockIndexFor(text("block"))));
         }
 
         if (name == "schematic_subdiagram_rename_port")
@@ -10693,8 +11196,37 @@ private:
             if (index >= 0 && index < (int)instances.size() && instances[(size_t)index].sheet == currentSheet)
                 names.add(instances[(size_t)index].refdes);
 
+        // Deleting a pin's last port bubble removes the pin from its block
+        // (with only the wires on that pin); a pin with another bubble stays.
+        std::vector<std::pair<juce::String, juce::String>> goneBlockPins; // block refdes, pin id
+        for (int index : deadInstances)
+        {
+            int block = -1;
+            const auto k = portIndexOfBubble(index, block);
+            if (k < 0 || deadInstances.count(block) != 0)
+                continue;
+            const auto bubbles = bubblesOfPort(block, k);
+            if (std::all_of(bubbles.begin(), bubbles.end(), [&](int j) { return deadInstances.count(j) != 0; }))
+                goneBlockPins.push_back({ instances[(size_t)block].refdes, instances[(size_t)block].ports[(size_t)k].id });
+        }
+
         juce::StringArray returnedProbes;
         removeInstancesAndJunctions(deadInstances, deadJunctions, returnedProbes);
+        for (const auto& [blockRefdes, pinId] : goneBlockPins)
+        {
+            const auto block = blockIndexByRefdes(blockRefdes);
+            if (block < 0)
+                continue;
+            const auto& ports = instances[(size_t)block].ports;
+            const auto k = (int)(std::find_if(ports.begin(), ports.end(), [&](const schematic::BlockPort& p) { return p.id == pinId; }) - ports.begin());
+            if (k < (int)ports.size())
+            {
+                names.add(blockRefdes + " pin " + ports[(size_t)k].name);
+                removeBlockPort(block, k, returnedProbes);
+            }
+        }
+        if (!goneBlockPins.empty())
+            routeSignature.clear();
         for (const auto& probeId : returnedProbes)
             if (onProbeChanged) onProbeChanged(probeId, {}, {});
         notifySelection();
@@ -10734,8 +11266,20 @@ private:
         return prefix + juce::String(highest + 1);
     }
 
-    void placeSymbol(const juce::String& symbolId, juce::Point<float> p)
+    void placeSymbol(const juce::String& symbolId, juce::Point<float> p, const juce::String& portName = {})
     {
+        if (symbolId == "sub_block")
+        {
+            createEmptySubDiagram({}, p);
+            return;
+        }
+        if (symbolId == "block_port")
+        {
+            juce::String error;
+            if (!placePortInside(portName, p, error) && onStatus)
+                onStatus(error);
+            return;
+        }
         const auto symbol = symbolFor(symbolId);
         if (!symbol.isValid())
             return;
@@ -10756,6 +11300,54 @@ private:
         selectedGroup = -1;
         notifySelection();
         if (onStatus) onStatus("Placed " + symbol.title + (snapEnabled ? " at schematic grid." : "."));
+    }
+
+    // A Port placed inside a Sub Diagram's sheet: the block outside gets a pin
+    // of the same name (left side; right when the bubble faces left). An
+    // empty name picks PORT, PORT2...; a name the block already has is refused.
+    bool placePortInside(const juce::String& name, juce::Point<float> p, juce::String& error)
+    {
+        const auto block = currentSheet.isEmpty() ? -1 : blockForSheet(currentSheet);
+        if (block < 0)
+        {
+            error = "A Sub Diagram port goes inside a Sub Diagram: open the block's sheet first (double-click the block).";
+            return false;
+        }
+        auto portName = name.trim();
+        if (portName.isEmpty())
+            portName = uniquePortName(instances[(size_t)block].ports, "PORT");
+        if (!validPortName(portName, error))
+            return false;
+        if (portNameTaken(instances[(size_t)block].ports, portName))
+        {
+            error = "Block " + instances[(size_t)block].refdes + " already has a pin named " + portName + "; pin names are unique on a block.";
+            return false;
+        }
+        pushUndoSnapshot();
+        auto& ports = instances[(size_t)block].ports;
+        schematic::BlockPort port { portName, schematic::PinSide::Left };
+        port.id = newPortId(ports);
+        ports.push_back(port);
+        schematic::placePort(ports, (int)ports.size() - 1, port.side, -1);
+        Instance bubble;
+        bubble.symbolId = "block_port";
+        bubble.refdes = nextRefdesFor("block_port");
+        bubble.busName = portName;
+        bubble.value = portName;
+        bubble.family = familyFor("block_port");
+        bubble.position = p;
+        bubble.sheet = currentSheet;
+        bubble.params["portId"] = port.id;
+        instances.push_back(bubble);
+        selectedInstance = (int)instances.size() - 1;
+        selectedInstances.clear();
+        selectedInstances.add(selectedInstance);
+        selectedGroup = -1;
+        routeSignature.clear();
+        notifySelection();
+        if (onStatus) onStatus("Placed port " + portName + "; " + instances[(size_t)block].refdes + " now has pin " + portName + ".");
+        forceDeferredRepaint();
+        return true;
     }
 
     juce::String displayValueFor(const Instance& instance) const
@@ -12662,6 +13254,10 @@ private:
             ok = text == oldName || canvas->renameBlockPin(current, oldName, text, error);
             if (ok) row.key = "#pin:" + text;
         }
+        else if (row.key == "#portname")
+        {
+            ok = canvas->renamePortFromBubble(current, text, error);
+        }
         else if (row.key == "#blockname")
         {
             ok = canvas->setBlockName(current, text, error);
@@ -12796,6 +13392,27 @@ private:
             styleActionButton(*layoutButton);
             layoutButton->onClick = [this] { if (canvas->openPinLayout != nullptr) canvas->openPinLayout(current); };
             content.addAndMakeVisible(layoutButton);
+        }
+        else if (view.symbolId == "block_port")
+        {
+            juce::String blockRefdes, blockName, pinName;
+            if (canvas->portOfBubble(current, blockRefdes, blockName, pinName))
+            {
+                addHeading("Sub Diagram port");
+                addReadOnlyRow("Pin of", blockRefdes + " (" + blockName + ")", "Renaming the port renames the block's pin; wires stay connected.");
+                Row row;
+                row.key = "#portname";
+                row.label.reset(makeLabel("Name", 12.5f, juce::Colour(0xff93a7b0)));
+                row.hint.reset(makeLabel({}, 11.0f, juce::Colour(0xff71808c)));
+                auto* field = makeField(pinName);
+                wireTextRow(field, rows.size(), false);
+                row.control.reset(field);
+                row.height = 64;
+                content.addAndMakeVisible(*row.label);
+                content.addAndMakeVisible(*row.control);
+                content.addAndMakeVisible(*row.hint);
+                rows.push_back(std::move(row));
+            }
         }
         else if (view.symbolId == "frust_component")
         {
@@ -13682,7 +14299,7 @@ private:
             {
                 "schematic_place_symbol",
                 "Place a schematic symbol or instrument node at a grid coordinate. Use deliberate layout spacing: keep symbols at least 144 px apart horizontally or 96 px vertically, arrange signal flow left-to-right, put sources on the left, outputs/load on the right, grounds below, instruments to the far right, and never reuse the same x/y for multiple parts.",
-                R"({"type":"object","properties":{"symbolId":{"type":"string","description":"Supported symbol id, from the live registry: {{SYMBOL_IDS}}. workbench_capabilities gives each one's pins and parameters (xyz_plotter is the 2D/3D plotter, channels A/B/C with +/- pins; annotation_text is a free-form note). Use annotation_text for free-form schematic notes. Use ground and power_port symbols at each pin that needs ground or a supply instead of long wires: power_port takes busName like +12V (drawn pointing up) or -12V (place with a leading minus; drawn pointing down); ports with the same busName are the same net. net_label takes busName as its label; labels with the same name are one net. After placing and connecting, call schematic_auto_layout once for a standards-conforming drawing. Unsupported symbols are rejected, not substituted."},"x":{"type":"number","description":"Grid x coordinate. Leave at least 144 px horizontal space from other symbols."},"y":{"type":"number","description":"Grid y coordinate. Leave at least 96 px vertical space from other symbols."},"value":{"type":"string"},"frequency":{"type":"string"},"busName":{"type":"string"}},"required":["symbolId","x","y"],"additionalProperties":false})"
+                R"({"type":"object","properties":{"symbolId":{"type":"string","description":"Supported symbol id, from the live registry: {{SYMBOL_IDS}}. workbench_capabilities gives each one's pins and parameters (xyz_plotter is the 2D/3D plotter, channels A/B/C with +/- pins; annotation_text is a free-form note). Use annotation_text for free-form schematic notes. sub_block places an empty Sub Diagram block (value = its name). block_port goes only on a Sub Diagram's own sheet (open it first): busName is the port name and the block outside gets a pin of that name. Use ground and power_port symbols at each pin that needs ground or a supply instead of long wires: power_port takes busName like +12V (drawn pointing up) or -12V (place with a leading minus; drawn pointing down); ports with the same busName are the same net. net_label takes busName as its label; labels with the same name are one net. After placing and connecting, call schematic_auto_layout once for a standards-conforming drawing. Unsupported symbols are rejected, not substituted."},"x":{"type":"number","description":"Grid x coordinate. Leave at least 144 px horizontal space from other symbols."},"y":{"type":"number","description":"Grid y coordinate. Leave at least 96 px vertical space from other symbols."},"value":{"type":"string"},"frequency":{"type":"string"},"busName":{"type":"string"}},"required":["symbolId","x","y"],"additionalProperties":false})"
             },
             {
                 "schematic_connect",
@@ -18384,9 +19001,10 @@ void ElectronicsWorkbench::openPinLayoutEditor(const juce::String& refdes)
                 placements.push_back({ p.name, p.side, p.order });
             return safe->applyComponentLayout(blockName, placements, error);
         }
+        // A Sub Diagram block: pins may also have been added, renamed or removed.
         auto* c = dynamic_cast<SchematicCanvasPanel*>(safe->schematicView.getComponent());
-        return c != nullptr && c->setBlockLayout(refdes, layout, error);
-    });
+        return c != nullptr && c->applyBlockPins(refdes, layout, error);
+    }, symbolId == "sub_block");
 }
 
 juce::String ElectronicsWorkbench::componentTool(const juce::String& name, const juce::var& args)
