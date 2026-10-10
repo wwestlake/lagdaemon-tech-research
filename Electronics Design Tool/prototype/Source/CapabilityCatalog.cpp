@@ -6,6 +6,7 @@
 #include "XyceBackend.h"
 
 #include <algorithm>
+#include <map>
 
 namespace capability_catalog
 {
@@ -78,12 +79,94 @@ juce::StringArray words(const juce::String& text)
     return out;
 }
 
-bool matchesAll(const juce::String& hay, const juce::StringArray& query)
+bool matchesAny(const juce::String& hay, const juce::StringArray& query)
 {
     for (const auto& w : query)
-        if (!hay.contains(w))
-            return false;
-    return true;
+        if (hay.contains(w))
+            return true;
+    return false;
+}
+
+juce::String norm(const juce::String& s)
+{
+    return s.toLowerCase().retainCharacters("abcdefghijklmnopqrstuvwxyz0123456789");
+}
+
+// Everyday engineering names for kinds of part, mapped to the words the
+// registry's own ids use. Words only: what exists still comes from the
+// registry, never from this table.
+const std::map<juce::String, juce::StringArray>& synonyms()
+{
+    static const std::map<juce::String, juce::StringArray> table {
+        { "op", { "opamp" } }, { "operationalamplifier", { "opamp" } }, { "amplifier", { "opamp" } },
+        { "gnd", { "ground" } }, { "earth", { "ground" } }, { "cap", { "capacitor" } }, { "res", { "resistor" } },
+        { "coil", { "inductor" } }, { "choke", { "inductor" } }, { "pot", { "potentiometer" } },
+        { "bjt", { "npn", "pnp" } }, { "transistor", { "npn", "pnp", "nmos", "pmos", "njfet", "pjfet" } },
+        { "mosfet", { "nmos", "pmos" } }, { "jfet", { "njfet", "pjfet" } },
+        { "supply", { "powerport", "powerbus" } }, { "rail", { "powerport", "powerbus" } }, { "power", { "powerport", "powerbus" } },
+        { "vcc", { "powerport" } }, { "vdd", { "powerport" } }, { "vee", { "powerport" } }, { "vss", { "powerport" } },
+        { "scope", { "oscilloscope" } }, { "meter", { "multimeter" } }, { "dmm", { "multimeter" } },
+        { "plot", { "plotter" } }, { "plotter", { "xyzplotter" } }, { "graph", { "plotter" } },
+        { "label", { "netlabel" } }, { "vsource", { "voltagesource" } }, { "isource", { "currentsource" } }
+    };
+    return table;
+}
+
+juce::StringArray candidatesFor(const juce::String& term)
+{
+    juce::StringArray out { term };
+    if (const auto found = synonyms().find(term); found != synonyms().end())
+        out.addArray(found->second);
+    return out;
+}
+
+// Query terms: split on spaces, commas and semicolons; op-amp and power_port
+// become opamp and powerport; filler words are dropped.
+juce::StringArray queryTerms(const juce::String& text)
+{
+    static const juce::StringArray filler { "and", "or", "with", "the", "a", "an", "of", "for", "component", "components", "part", "parts",
+                                            "symbol", "symbols", "device", "devices", "element", "elements" };
+    juce::StringArray out;
+    for (const auto& token : juce::StringArray::fromTokens(text, " ,;\t\r\n/", ""))
+    {
+        const auto t = norm(token);
+        if (t.isNotEmpty() && !filler.contains(t))
+            out.addIfNotAlreadyThere(t);
+    }
+    return out;
+}
+
+// Search match: the term (or one of its synonyms) inside the id or display
+// name, or equal to one of their words.
+bool termMatches(const juce::String& term, const juce::String& id)
+{
+    const auto nid = norm(id), nname = norm(parts::displayName(id));
+    juce::StringArray words = juce::StringArray::fromTokens(id, "_", "");
+    words.addTokens(parts::displayName(id), " -()/", "");
+    for (auto& w : words)
+        w = norm(w);
+    for (const auto& c : candidatesFor(term))
+        if ((c.length() >= 3 && (nid.contains(c) || nname.contains(c))) || words.contains(c))
+            return true;
+    return false;
+}
+
+// Strict match, for deciding whether a named part exists: the term or a
+// synonym names the part itself (its id, its display name, or its id without
+// a qualifier such as _generic or _2ch), not just shares a word with it.
+bool namesPart(const juce::String& term, const juce::String& id)
+{
+    static const juce::StringArray qualifiers { "generic", "2ch", "spst", "spdt", "fixed", "adjustable", "polarized", "bus", "port", "digital", "xyz", "variable" };
+    juce::StringArray names { norm(id), norm(parts::displayName(id)) };
+    const auto bits = juce::StringArray::fromTokens(id, "_", "");
+    if (bits.size() >= 2 && qualifiers.contains(bits[bits.size() - 1]))
+        names.add(norm(bits[0]));
+    if (bits.size() >= 2 && qualifiers.contains(bits[0]))
+        names.add(norm(bits[bits.size() - 1]));
+    for (const auto& c : candidatesFor(term))
+        if (names.contains(c))
+            return true;
+    return false;
 }
 
 juce::var component(const juce::String& id, bool detail)
@@ -167,7 +250,7 @@ juce::var analysesList(const juce::StringArray& query)
             if (!f.options.isEmpty()) fo->setProperty("options", arrayOf(f.options));
             fields.add(juce::var(fo));
         }
-        if (!query.isEmpty() && !matchesAll(hay.toLowerCase(), query))
+        if (!query.isEmpty() && !matchesAny(hay.toLowerCase(), query))
             continue;
         auto* o = new Obj();
         o->setProperty("key", a.key);
@@ -203,9 +286,10 @@ juce::String toJson(const Request& request)
     auto* root = new Obj();
     root->setProperty("ok", true);
     root->setProperty("tool", "workbench_capabilities");
-    root->setProperty("source", "Live application registries (symbol table, part parameter catalog, analysis table). Only what is listed exists.");
+    root->setProperty("source", "Live application registries (symbol table, part parameter catalog, analysis table).");
+    root->setProperty("registryComponentCount", schematic::supportedSymbolIds().size());
     const auto section = request.section.trim().toLowerCase();
-    const auto query = words(request.query);
+    const auto query = queryTerms(request.query);
 
     if (request.symbolId.trim().isNotEmpty())
     {
@@ -224,14 +308,66 @@ juce::String toJson(const Request& request)
     const bool all = section.isEmpty();
     if (all || section == "components" || section == "instruments")
     {
-        juce::Array<juce::var> comps, instruments;
+        // Each query term is matched on its own; a part matching any term is
+        // listed, parts matching more terms first, each with the terms it matched.
+        struct Hit { juce::String id; juce::StringArray terms; };
+        std::vector<Hit> hits;
+        std::map<juce::String, juce::StringArray> byTerm;
+        std::map<juce::String, int> exactCount, qualifiedCount;
         for (const auto& id : schematic::supportedSymbolIds())
         {
-            if (!query.isEmpty() && !matchesAll(haystack(id), query))
+            Hit hit { id, {} };
+            for (const auto& term : query)
+                if (termMatches(term, id))
+                {
+                    hit.terms.add(term);
+                    // The part the term names outright (ground -> ground) leads that
+                    // term's list, then parts it names with a qualifier (ground_bus).
+                    const bool outright = norm(id) == term || norm(parts::displayName(id)) == term;
+                    if (outright)
+                        byTerm[term].insert(exactCount[term]++, id);
+                    else if (namesPart(term, id))
+                        byTerm[term].insert(exactCount[term] + qualifiedCount[term]++, id);
+                    else
+                        byTerm[term].add(id);
+                }
+            if (query.isEmpty() || !hit.terms.isEmpty())
+                hits.push_back(hit);
+        }
+        std::stable_sort(hits.begin(), hits.end(), [](const Hit& a, const Hit& b) { return a.terms.size() > b.terms.size(); });
+        juce::Array<juce::var> comps, instruments;
+        for (const auto& hit : hits)
+        {
+            const bool instrument = schematic::isInstrumentSymbol(hit.id);
+            if (section == "instruments" && !instrument)
                 continue;
-            const bool instrument = schematic::isInstrumentSymbol(id);
-            const bool detail = !query.isEmpty() || instrument;
-            (instrument ? instruments : comps).add(component(id, detail));
+            auto entry = component(hit.id, !query.isEmpty() || instrument);
+            if (!hit.terms.isEmpty())
+                entry.getDynamicObject()->setProperty("matchedTerms", arrayOf(hit.terms));
+            (instrument ? instruments : comps).add(entry);
+        }
+        if (!query.isEmpty())
+        {
+            juce::Array<juce::var> terms;
+            juce::StringArray unmatched;
+            for (const auto& term : query)
+            {
+                auto* t = new Obj();
+                t->setProperty("term", term);
+                t->setProperty("matches", arrayOf(byTerm[term]));
+                if (byTerm[term].isEmpty())
+                {
+                    t->setProperty("closeMatches", arrayOf(closeMatches(term)));
+                    unmatched.add(term);
+                }
+                terms.add(juce::var(t));
+            }
+            root->setProperty("queryTerms", terms);
+            root->setProperty("searchRule", "Each term is matched separately against component ids, display names and common synonyms; a component matching any term is listed, most matched terms first.");
+            if (!unmatched.isEmpty())
+                root->setProperty("note", "No component matched: " + unmatched.joinIntoString(", ") + ". An empty search does not show a part is absent: "
+                                          "call workbench_capabilities with no query to list all " + juce::String(schematic::supportedSymbolIds().size())
+                                          + " registered components, or look one up by symbolId, before concluding anything is missing.");
         }
         if (all || section == "components")
             root->setProperty("components", comps);
@@ -246,14 +382,49 @@ juce::String toJson(const Request& request)
         root->setProperty("analyses", analysesList(section == "analyses" ? query : juce::StringArray()));
     if (all || section == "engines")
         root->setProperty("engines", engines());
-    if (!query.isEmpty())
-    {
-        const auto comps = root->getProperty("components");
-        const auto inst = root->getProperty("instruments");
-        const auto found = (comps.isArray() ? comps.size() : 0) + (inst.isArray() ? inst.size() : 0);
-        if (found == 0 && section != "analyses" && section != "engines")
-            root->setProperty("note", "Nothing matches '" + request.query + "'. The Workbench has no such component; say so rather than inventing one.");
-    }
     return juce::JSON::toString(juce::var(root), true);
+}
+
+std::vector<TermResolution> resolve(const juce::StringArray& names)
+{
+    std::vector<TermResolution> out;
+    for (const auto& name : names)
+    {
+        TermResolution r { name, {} };
+        const auto term = norm(name);
+        if (term.isNotEmpty())
+            for (const auto& id : schematic::supportedSymbolIds())
+                if (namesPart(term, id))
+                    r.ids.add(id);
+        out.push_back(r);
+    }
+    return out;
+}
+
+juce::String checkGapClaim(const juce::String& category, const juce::String& description, const juce::String& neededCapability,
+                           const juce::StringArray& components)
+{
+    juce::StringArray claimed = components;
+    const auto cat = category.toLowerCase();
+    if (claimed.isEmpty() && (cat.contains("component") || cat.contains("part") || cat.contains("library")))
+    {
+        // Words and adjacent word pairs ("voltage source") of the claim.
+        const auto tokens = juce::StringArray::fromTokens(description + " " + neededCapability, " ,;:.()[]\t\r\n/'\"", "");
+        for (int i = 0; i < tokens.size(); ++i)
+        {
+            claimed.add(tokens[i]);
+            if (i + 1 < tokens.size())
+                claimed.add(tokens[i] + " " + tokens[i + 1]);
+        }
+    }
+    juce::StringArray existing;
+    for (const auto& r : resolve(claimed))
+        if (!r.ids.isEmpty())
+            existing.addIfNotAlreadyThere(r.name.trim() + " -> " + r.ids.joinIntoString(", "));
+    if (existing.isEmpty())
+        return {};
+    return "Not recorded: the registry has these components: " + existing.joinIntoString("; ")
+         + ". A search that returned nothing is not evidence that a part is missing; use these ids (workbench_capabilities symbolId gives pins and parameters). "
+           "If the gap is something more specific (a particular model or part), name exactly that in components.";
 }
 }

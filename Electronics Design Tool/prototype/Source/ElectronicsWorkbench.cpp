@@ -423,8 +423,8 @@ const SchematicToolSpec schematicToolSpecs[] = {
     },
     {
         "workbench_capabilities",
-        "Discover what this Workbench actually has, from its live registries: component types (pins, parameters with units, choices, defaults and help, simulation fidelity), virtual instruments and their modes, analyses (analytics_* tools and their settings) and simulation engines. Use it before choosing parts, and look a part up by symbolId before setting its parameters. Anything not listed does not exist: never invent component types or model names.",
-        R"({"type":"object","properties":{"section":{"type":"string","description":"components, instruments, analyses or engines; omit for a summary of all."},"query":{"type":"string","description":"Optional words that every returned entry must contain, such as 'behavioral current', 'opamp', 'plot', 'initial'. Matches ids, names, pins and parameter text."},"symbolId":{"type":"string","description":"Optional component id for full detail, such as behavioral_current_source. Unknown ids are reported with close matches."}},"additionalProperties":false})"
+        "Discover what this Workbench actually has, from its live registries: component types (pins, parameters with units, choices, defaults and help, simulation fidelity), virtual instruments and their modes, analyses (analytics_* tools and their settings) and simulation engines. Omit query to list every registered component. A query's terms are matched separately (any term matches; most matches first) and each term's matches are reported. Look a part up by symbolId before setting its parameters. Use only listed ids; an empty search is not proof a part is missing - list all or look up by symbolId first.",
+        R"({"type":"object","properties":{"section":{"type":"string","description":"components, instruments, analyses or engines; omit for a summary of all."},"query":{"type":"string","description":"Optional search terms separated by spaces or commas, such as 'opamp resistor capacitor ground diode' or 'behavioral current source'. Each term is matched on its own against ids, display names and common synonyms (op-amp, gnd, supply...)."},"symbolId":{"type":"string","description":"Optional component id for full detail, such as behavioral_current_source. Unknown ids are reported with close matches."}},"additionalProperties":false})"
     },
     {
         "instrument_read",
@@ -13064,7 +13064,9 @@ private:
                "when the circuit shows the required behaviour in its results. "
                "When a task is finished, end it with agent_report_outcome (completed with evidence, failed, or blocked); a reply that only says what you will do next keeps the task open. "
                "Discover parts, instruments, analyses and engines with workbench_capabilities (the application's own registry) before designing; "
-               "look a part up by symbolId before setting its parameters. Use cookbook_lookup for engineering knowledge and reference designs. "
+               "look a part up by symbolId before setting its parameters. If a search finds nothing, that is inconclusive: list all components (no query) "
+               "or look up the likely id before concluding a part is missing, and check engine support separately (simulationFidelity, engines). "
+               "Use cookbook_lookup for engineering knowledge and reference designs. "
                "Never invent component types, model names or parameters; if what you need does not exist, say so or record it with capability_gap_record. "
                "If a schematic_connect call fails, correct the pin labels using the available-labels error; do not continue as if it succeeded. "
                "When reporting component counts, wire counts, ERC counts, or artifact paths, copy them from tool results or circuit_inspect; never infer or invent them. "
@@ -13133,7 +13135,7 @@ private:
             {
                 "capability_gap_record",
                 "Append a reusable missing-capability record to the project gap registry.",
-                R"({"type":"object","properties":{"category":{"type":"string","description":"Gap category such as solver, component_model, analysis, plotting, instrument, ui, or agent_workflow."},"description":{"type":"string","description":"What blocked the engineering step."},"neededCapability":{"type":"string","description":"Reusable tool or app capability needed to close the gap."},"evidence":{"type":"string","description":"Tool result, report path, or observation proving the gap."},"source":{"type":"string","description":"Acceptance goal id, report path, cookbook card id, or user goal that exposed the gap."},"status":{"type":"string","description":"open, planned, in_progress, closed, or deferred."}},"required":["description","neededCapability"],"additionalProperties":false})"
+                R"({"type":"object","properties":{"category":{"type":"string","description":"Gap category such as solver, component_model, analysis, plotting, instrument, ui, or agent_workflow."},"components":{"type":"array","items":{"type":"string"},"description":"For a missing part: the exact parts claimed missing. Checked against the component registry; claims about parts that exist are refused."},"description":{"type":"string","description":"What blocked the engineering step."},"neededCapability":{"type":"string","description":"Reusable tool or app capability needed to close the gap."},"evidence":{"type":"string","description":"Tool result, report path, or observation proving the gap."},"source":{"type":"string","description":"Acceptance goal id, report path, cookbook card id, or user goal that exposed the gap."},"status":{"type":"string","description":"open, planned, in_progress, closed, or deferred."}},"required":["description","neededCapability"],"additionalProperties":false})"
             },
             {
                 "circuit_inspect",
@@ -13309,6 +13311,18 @@ private:
             const auto status = parsed.getProperty("status", {}).toString().trim();
             if (description.isEmpty() || neededCapability.isEmpty())
                 return "{ \"ok\": false, \"error\": \"description and neededCapability are required.\" }";
+            // A claim that parts are missing is checked against the registry
+            // first: an empty search must not become a recorded "missing" fact.
+            juce::StringArray components;
+            if (auto* list = parsed.getProperty("components", {}).getArray())
+                for (const auto& item : *list)
+                    components.add(item.toString());
+            else if (parsed.getProperty("components", {}).toString().isNotEmpty())
+                components.addTokens(parsed.getProperty("components", {}).toString(), ",;", "");
+            components.trim();
+            components.removeEmptyStrings();
+            if (const auto refusal = capability_catalog::checkGapClaim(category, description, neededCapability, components); refusal.isNotEmpty())
+                return "{ \"ok\": false, \"tool\": \"capability_gap_record\", \"error\": " + juce::JSON::toString(refusal) + " }";
             return tools.capabilityGapRecord != nullptr
                 ? tools.capabilityGapRecord(category, description, neededCapability, evidence, source, status)
                 : "{ \"ok\": false, \"error\": \"Capability gap recording is unavailable.\" }";

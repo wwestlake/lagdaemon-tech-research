@@ -287,8 +287,10 @@ int main(int argc, char** argv)
         checkTrue("unknown id refused", !(bool)unknown.getProperty("ok", true) && unknown.getProperty("error", {}).toString().contains("No component type"));
         checkTrue("close matches offered", unknown.getProperty("closeMatches", {}).size() >= 1,
                   juce::JSON::toString(unknown.getProperty("closeMatches", {}), true));
-        const auto none = catalog("components", "flux capacitor", "");
-        checkTrue("no-match query says so", none.getProperty("components", {}).size() == 0 && none.getProperty("note", {}).toString().contains("no such component"));
+        const auto none = catalog("components", "warpdrive", "");
+        checkTrue("no-match query says it is inconclusive, not absent",
+                  none.getProperty("components", {}).size() == 0 && none.getProperty("note", {}).toString().contains("does not show a part is absent"),
+                  none.getProperty("note", {}).toString());
     }
 
     std::printf("-- reference Chua circuits (values the cards document) --\n");
@@ -532,6 +534,63 @@ int main(int argc, char** argv)
             const auto again = t.reviewOutcome("completed", "Looks fine.", "");
             checkTrue("a repeated unverified claim is accepted once, with a caveat (no endless pushback)", !first.accepted && again.accepted && again.message.contains("singular"));
         }
+    }
+
+    std::printf("-- capability discovery: multi-term search, aliases, false gaps --\n");
+    {
+        auto idsOf = [](const juce::var& list) {
+            juce::StringArray ids;
+            if (auto* a = list.getArray())
+                for (const auto& e : *a)
+                    ids.add(e.getProperty("id", {}).toString());
+            return ids;
+        };
+        // The exact query from the Wien bridge run.
+        const auto six = catalog("components", "opamp resistor capacitor power_port ground diode", "");
+        const auto found = idsOf(six.getProperty("components", {}));
+        bool all = true;
+        for (const auto id : { "opamp_generic", "resistor", "capacitor", "power_port", "ground", "diode" })
+            all = all && found.contains(id);
+        checkTrue("the six-part query finds all six kinds of part", all, found.joinIntoString(", ").substring(0, 200));
+        checkTrue("every term reports its matches, none unmatched", six.getProperty("queryTerms", {}).size() == 6 && !six.hasProperty("note"));
+        checkTrue("each listed part says which terms it matched", six.getProperty("components", {})[0].hasProperty("matchedTerms"));
+        checkTrue("registry size is reported", (int)six.getProperty("registryComponentCount", 0) > 50);
+        for (const auto& [term, id] : std::initializer_list<std::pair<const char*, const char*>> {
+                 { "resistor", "resistor" }, { "capacitor", "capacitor" }, { "opamp", "opamp_generic" }, { "ground", "ground" },
+                 { "power", "power_port" }, { "diode", "diode" } })
+            checkTrue((juce::String("single search: ") + term).toRawUTF8(), idsOf(catalog("components", term, "").getProperty("components", {})).contains(id));
+        for (const auto& [term, id] : std::initializer_list<std::pair<const char*, const char*>> {
+                 { "op-amp", "opamp_generic" }, { "op amp", "opamp_generic" }, { "gnd", "ground" }, { "supply", "power_port" },
+                 { "cap", "capacitor" }, { "scope", "oscilloscope_2ch" }, { "plotter", "xyz_plotter" } })
+            checkTrue((juce::String("alias: ") + term).toRawUTF8(),
+                      idsOf(catalog("", term, "").getProperty("components", {})).contains(id) || idsOf(catalog("", term, "").getProperty("instruments", {})).contains(id));
+        const auto multi = catalog("components", "behavioral current source", "");
+        checkTrue("the part matching most terms comes first", idsOf(multi.getProperty("components", {}))[0] == "behavioral_current_source",
+                  idsOf(multi.getProperty("components", {})).joinIntoString(",").substring(0, 120));
+        const auto mixed = catalog("components", "resistor warpdrive", "");
+        checkTrue("an unmatched term is named while others still match",
+                  idsOf(mixed.getProperty("components", {})).contains("resistor") && mixed.getProperty("note", {}).toString().contains("warpdrive"));
+        checkTrue("the full catalog lists every registered part",
+                  catalog("components", "", "").getProperty("components", {}).size() + catalog("instruments", "", "").getProperty("instruments", {}).size()
+                      == (int)catalog("", "", "").getProperty("registryComponentCount", 0));
+        checkTrue("availability and engine support are separate facts",
+                  catalog("", "", "opamp_generic").getProperty("component", {}).hasProperty("simulationFidelity") && catalog("engines", "", "").hasProperty("engines"));
+
+        const auto r = capability_catalog::resolve({ "opamp", "Resistor", "power_port", "chua diode", "warp drive" });
+        checkTrue("resolve: opamp -> opamp_generic", r[0].ids.contains("opamp_generic"));
+        checkTrue("resolve: names are case-insensitive", r[1].ids.contains("resistor"));
+        checkTrue("resolve: registry id itself", r[2].ids.contains("power_port"));
+        checkTrue("resolve: a genuinely missing part resolves to nothing", r[3].ids.isEmpty() && r[4].ids.isEmpty());
+
+        // The exact false claim the agent recorded.
+        const auto refusal = capability_catalog::checkGapClaim("component_model",
+            "Missing components for Wien bridge sine-wave oscillator design: opamp, resistor, capacitor, power_port, ground, diode.",
+            "Extend component library to include basic analog elements for oscillators and filters.", {});
+        checkTrue("the false 'missing basic parts' gap is refused", refusal.contains("opamp -> opamp_generic") && refusal.contains("resistor -> resistor")
+                                                                   && refusal.contains("not evidence"), refusal.substring(0, 160));
+        checkTrue("a genuine missing part is accepted", capability_catalog::checkGapClaim("component_model", "Need a Chua diode part", "chua diode", { "Chua diode" }).isEmpty());
+        checkTrue("non-component gaps are not second-guessed",
+                  capability_catalog::checkGapClaim("solver", "Xyce has no model for opamp_generic", "Xyce op-amp model", {}).isEmpty());
     }
 
     std::printf(failures == 0 ? "ALL PASSED\n" : "%d FAILURE(S)\n", failures);
