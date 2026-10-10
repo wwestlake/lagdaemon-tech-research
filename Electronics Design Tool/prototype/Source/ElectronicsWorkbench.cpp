@@ -10435,7 +10435,12 @@ private:
                 const auto pinNames = prefs::get("display.pin_names");
                 if (pinNames == "Always" || (pinNames == "Auto" && symbol.showPinNames))
                 {
-                    auto toward = instance.position - pin;
+                    // Straight in along the pin's own lead, so labels on a tall
+                    // body stay level with their pins; toward the centre only
+                    // for parts whose pins have no lead side.
+                    auto toward = -schematic::rotateOffset(schematic::pinLeadDirection(symbol, (int)i), instance.rotation);
+                    if (toward == juce::Point<float>())
+                        toward = instance.position - pin;
                     const auto len = std::sqrt(toward.x * toward.x + toward.y * toward.y);
                     if (len > 0.001f)
                         toward = toward / len;

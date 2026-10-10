@@ -961,6 +961,32 @@ void drawSymbolArt(juce::Graphics& g, const SymbolDef& symbol, const juce::Strin
         line(g, { -72, 24 }, { -60, 24 });
         line(g, { 0, 48 }, { 0, 72 });
     }
+    else if (id == "xyz_plotter")
+    {
+        const juce::Rectangle<float> body { -60, -72, 120, 144 };
+        g.setColour(instrumentFill);
+        g.fillRoundedRectangle(body, 6.0f);
+        g.setColour(juce::Colour(0xff4cc9f0));
+        g.drawRoundedRectangle(body, 6.0f, 2.0f);
+        const auto screen = body.reduced(14.0f, 26.0f).translated(6.0f, 8.0f);
+        g.setColour(juce::Colour(0xff26323d));
+        g.fillRoundedRectangle(screen, 4.0f);
+        juce::Path trace; // a Lissajous figure: one signal against another
+        const auto c = screen.getCentre();
+        const auto rx = screen.getWidth() * 0.38f, ry = screen.getHeight() * 0.38f;
+        for (int i = 0; i <= 64; ++i)
+        {
+            const auto t = juce::MathConstants<float>::twoPi * (float)i / 64.0f;
+            const juce::Point<float> p { c.x + rx * std::sin(2.0f * t), c.y + ry * std::sin(3.0f * t + 0.6f) };
+            if (i == 0) trace.startNewSubPath(p); else trace.lineTo(p);
+        }
+        g.setColour(juce::Colour(0xff4cc9f0));
+        strokePath(g, trace, 1.6f);
+        text(g, "PLOT XYZ", body.withHeight(22.0f), 11.0f);
+        g.setColour(lineColour);
+        for (const auto y : { -60.0f, -36.0f, -12.0f, 12.0f, 36.0f, 60.0f })
+            line(g, { -72, y }, { -60, y });
+    }
     else if (id == "digital_multimeter")
     {
         const juce::Rectangle<float> body { -48, -36, 96, 72 };
