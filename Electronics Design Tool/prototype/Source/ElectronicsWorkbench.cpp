@@ -3501,7 +3501,9 @@ public:
         }
 
         const auto before = instances.size();
-        placeSymbol(requestedSymbol, snapPoint({ x, y }));
+        const auto requested = snapPoint({ x, y });
+        const auto at = freePlacement(requestedSymbol, requested);
+        placeSymbol(requestedSymbol, at);
         if (instances.size() == before)
             return "{ \"ok\": false, \"error\": \"Could not place symbol.\" }";
 
@@ -3523,10 +3525,48 @@ public:
         result << "  \"displayTool\": \"schematic.place_symbol\",\n";
         result << "  \"refdes\": " << quote(instance.refdes) << ",\n";
         result << "  \"symbolId\": " << quote(instance.symbolId) << ",\n";
+        if (at != requested)
+            result << "  \"movedToAvoidOverlap\": true, \"requestedX\": " << requested.x << ", \"requestedY\": " << requested.y
+                   << ", \"note\": " << quote("The requested spot overlaps another part; placed at the nearest free spot.") << ",\n";
         result << "  \"x\": " << instance.position.x << ",\n";
         result << "  \"y\": " << instance.position.y << "\n";
         result << "}";
         return result;
+    }
+
+    // The nearest grid spot to `wanted` where a new part (body and pin ends,
+    // plus a grid step of clearance) overlaps no part on this sheet. Parts
+    // stacked on one another leave the router no legal path to their pins,
+    // so it keeps old wires running across them.
+    juce::Point<float> freePlacement(const juce::String& symbolId, juce::Point<float> wanted) const
+    {
+        const auto extent = schematic::extentBounds(schematic::symbolFor(symbolId));
+        std::vector<juce::Rectangle<float>> taken;
+        for (const auto& inst : instances)
+            if (inst.sheet == currentSheet && !isRailBus(inst.symbolId))
+                taken.push_back(schematic::rotateBounds(schematic::extentBounds(symbolForInstance(inst)), inst.rotation)
+                                    .translated(inst.position.x, inst.position.y));
+        auto clear = [&](juce::Point<float> p) {
+            const auto box = extent.translated(p.x, p.y).expanded(schematic::gridSize);
+            for (const auto& t : taken)
+                if (box.intersects(t))
+                    return false;
+            return true;
+        };
+        if (clear(wanted))
+            return wanted;
+        const auto step = schematic::gridSize;
+        for (int ring = 1; ring <= 40; ++ring)
+            for (int dy = -ring; dy <= ring; ++dy)
+                for (int dx = -ring; dx <= ring; ++dx)
+                {
+                    if (std::max(std::abs(dx), std::abs(dy)) != ring)
+                        continue;
+                    const auto p = wanted + juce::Point<float>((float)dx * step, (float)dy * step);
+                    if (clear(p))
+                        return p;
+                }
+        return wanted;
     }
 
     juce::String createRlcHighPassFilterFromTool(double cutoffHz, double impedanceOhms)
