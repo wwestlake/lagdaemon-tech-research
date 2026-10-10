@@ -1,5 +1,7 @@
 #include "SchematicSymbols.h"
 
+#include <climits>
+
 #include <algorithm>
 #include <cmath>
 
@@ -291,7 +293,7 @@ const juce::StringArray& supportedSymbolIds()
     static const juce::StringArray ids {
         "resistor", "potentiometer", "capacitor", "capacitor_polarized", "variable_capacitor",
         "inductor", "coupled_inductor", "transformer", "diode", "zener_diode", "led",
-        "schottky_diode", "power_bus", "ground_bus", "power_port", "net_label", "sub_block", "block_port", "battery", "voltage_source", "audio_in", "audio_out",
+        "schottky_diode", "power_bus", "ground_bus", "power_port", "net_label", "sub_block", "frust_component", "block_port", "battery", "voltage_source", "audio_in", "audio_out",
         "ac_voltage_source", "current_source", "ac_current_source", "behavioral_voltage_source",
         "behavioral_current_source", "vcvs", "vccs",
         "ccvs", "cccs", "signal_source", "ground", "opamp_generic", "opamp_741",
@@ -333,6 +335,8 @@ SymbolDef symbolFor(const juce::String& id)
     if (id == "block_port")          return make(id, "PORT", { -120, -12, 120, 24 }, { { "1", { 0, 0 } } });
     // Pins depend on the block's ports; see blockSymbol().
     if (id == "sub_block")           return make(id, "BLOCK", { -72, -48, 144, 72 }, {});
+    // A FRust programmable component: pins from its definition; see blockSymbol().
+    if (id == "frust_component")     return make(id, "FRUST", { -72, -48, 144, 72 }, {});
     if (id == "ground")              return make(id, "GND", { -18, 0, 36, 30 }, { { "0", { 0, 0 } } });
     if (id == "battery")             return make(id, "BAT", { -24, -18, 48, 36 }, { { "+", { 0, -48 } }, { "-", { 0, 48 } } });
     if (id == "audio_in")          return make(id, "IN", { -24, -24, 48, 48 }, { { "+", { 0, -48 } }, { "-", { 0, 48 } } });
@@ -418,6 +422,7 @@ juce::String refdesPrefixFor(const juce::String& id)
     if (id == "power_port") return "PWR";
     if (id == "net_label") return "LBL";
     if (id == "sub_block") return "A";      // IEEE 315: assembly / subassembly
+    if (id == "frust_component") return "U"; // integrated device
     if (id == "block_port") return "PORT";
     if (id == "ground_bus") return "GBUS";
     if (id == "power_bus") return "PBUS";
@@ -520,28 +525,129 @@ juce::Rectangle<float> portBubbleRect()
     return { -118.0f, -11.0f, 108.0f, 22.0f };
 }
 
-SymbolDef blockSymbol(const std::vector<BlockPort>& ports)
+juce::String pinSideName(PinSide side)
 {
-    std::vector<const BlockPort*> left, right;
-    for (const auto& port : ports)
-        (port.rightSide ? right : left).push_back(&port);
+    switch (side)
+    {
+        case PinSide::Left: return "left";
+        case PinSide::Right: return "right";
+        case PinSide::Top: return "top";
+        case PinSide::Bottom: return "bottom";
+    }
+    return "left";
+}
+
+bool parsePinSide(const juce::String& text, PinSide& side)
+{
+    const auto t = text.trim().toLowerCase();
+    if (t == "left" || t == "input") side = PinSide::Left;
+    else if (t == "right" || t == "output") side = PinSide::Right;
+    else if (t == "top") side = PinSide::Top;
+    else if (t == "bottom") side = PinSide::Bottom;
+    else return false;
+    return true;
+}
+
+std::vector<int> portsOnSide(const std::vector<BlockPort>& ports, PinSide side)
+{
+    std::vector<int> list;
+    for (int i = 0; i < (int)ports.size(); ++i)
+        if (ports[(size_t)i].side == side)
+            list.push_back(i);
+    std::stable_sort(list.begin(), list.end(), [&ports](int a, int b) {
+        const auto oa = ports[(size_t)a].order < 0 ? INT_MAX : ports[(size_t)a].order;
+        const auto ob = ports[(size_t)b].order < 0 ? INT_MAX : ports[(size_t)b].order;
+        return oa != ob ? oa < ob : a < b;
+    });
+    return list;
+}
+
+void normalizePinOrders(std::vector<BlockPort>& ports)
+{
+    for (auto side : { PinSide::Left, PinSide::Right, PinSide::Top, PinSide::Bottom })
+    {
+        const auto list = portsOnSide(ports, side);
+        for (int k = 0; k < (int)list.size(); ++k)
+            ports[(size_t)list[(size_t)k]].order = k;
+    }
+}
+
+bool placePort(std::vector<BlockPort>& ports, int index, PinSide side, int position)
+{
+    if (index < 0 || index >= (int)ports.size())
+        return false;
+    normalizePinOrders(ports);
+    auto list = portsOnSide(ports, side);
+    list.erase(std::remove(list.begin(), list.end(), index), list.end());
+    const auto at = position < 0 || position > (int)list.size() ? (int)list.size() : position;
+    list.insert(list.begin() + at, index);
+    ports[(size_t)index].side = side;
+    for (int k = 0; k < (int)list.size(); ++k)
+        ports[(size_t)list[(size_t)k]].order = k;
+    normalizePinOrders(ports);
+    return true;
+}
+
+namespace
+{
+// Label room, at the 11 px font the block art uses.
+float labelWidth(const juce::String& text)
+{
+    return 6.5f * (float)text.length() + 8.0f;
+}
+
+float upToGrid(float v)
+{
+    return std::ceil(v / gridSize - 1e-4f) * gridSize;
+}
+}
+
+bool isBlockSymbol(const juce::String& symbolId)
+{
+    return symbolId == "sub_block" || symbolId == "frust_component";
+}
+
+SymbolDef blockSymbol(const std::vector<BlockPort>& ports, const juce::String& symbolId)
+{
+    const auto left = portsOnSide(ports, PinSide::Left);
+    const auto right = portsOnSide(ports, PinSide::Right);
+    const auto top = portsOnSide(ports, PinSide::Top);
+    const auto bottom = portsOnSide(ports, PinSide::Bottom);
     const auto rows = std::max<size_t>({ left.size(), right.size(), (size_t)1 });
     const auto half = (float)rows * 24.0f;
+    const auto cols = std::max(top.size(), bottom.size());
 
-    std::vector<PinDef> pins;
-    // Pins in port order so pin index == port index.
-    for (const auto& port : ports)
-    {
-        const auto& side = port.rightSide ? right : left;
-        const auto n = (int)side.size();
-        const auto k = (int)(std::find(side.begin(), side.end(), &port) - side.begin());
-        pins.push_back({ port.name, { port.rightSide ? 96.0f : -96.0f, (float)(2 * k - (n - 1)) * 24.0f } });
-    }
+    // Width: the top/bottom pins two grid steps apart, and the left and right
+    // labels side by side; never narrower than the classic 144 px block.
+    auto widest = [&ports](const std::vector<int>& list) {
+        float w = 0.0f;
+        for (auto i : list) w = std::max(w, labelWidth(ports[(size_t)i].name));
+        return w;
+    };
+    const auto halfWidth = std::max({ 72.0f, upToGrid((float)cols * 24.0f + 12.0f),
+                                      upToGrid((widest(left) + widest(right) + 16.0f) * 0.5f) });
+    // Height: the left/right rows plus, for top/bottom pins, room for their
+    // labels written along the pin (reading up).
+    const auto topRoom = top.empty() ? 0.0f : upToGrid(widest(top) + 4.0f);
+    const auto bottomRoom = bottom.empty() ? 0.0f : upToGrid(widest(bottom) + 4.0f);
+    const auto bodyTop = -half - 24.0f - topRoom;
+    const auto bodyBottom = half + bottomRoom;
+
+    std::vector<PinDef> pins(ports.size());
+    auto across = [](int k, size_t n) { return (float)(2 * k - ((int)n - 1)) * 24.0f; };
+    for (int k = 0; k < (int)left.size(); ++k)
+        pins[(size_t)left[(size_t)k]] = { ports[(size_t)left[(size_t)k]].name, { -halfWidth - 24.0f, across(k, left.size()) } };
+    for (int k = 0; k < (int)right.size(); ++k)
+        pins[(size_t)right[(size_t)k]] = { ports[(size_t)right[(size_t)k]].name, { halfWidth + 24.0f, across(k, right.size()) } };
+    for (int k = 0; k < (int)top.size(); ++k)
+        pins[(size_t)top[(size_t)k]] = { ports[(size_t)top[(size_t)k]].name, { across(k, top.size()), bodyTop - 24.0f } };
+    for (int k = 0; k < (int)bottom.size(); ++k)
+        pins[(size_t)bottom[(size_t)k]] = { ports[(size_t)bottom[(size_t)k]].name, { across(k, bottom.size()), bodyBottom + 24.0f } };
 
     SymbolDef def;
-    def.id = "sub_block";
-    def.title = "BLOCK";
-    def.bounds = { -72.0f, -half - 24.0f, 144.0f, half * 2.0f + 24.0f };
+    def.id = symbolId;
+    def.title = symbolId == "frust_component" ? "FRUST" : "BLOCK";
+    def.bounds = { -halfWidth, bodyTop, halfWidth * 2.0f, bodyBottom - bodyTop };
     def.pins = std::move(pins);
     def.showPinNames = false; // drawBlockArt writes them inside the box
     return def;
@@ -554,7 +660,22 @@ void drawBlockArt(juce::Graphics& g, const SymbolDef& block, const juce::String&
     g.fillRoundedRectangle(body, 6.0f);
     g.setColour(juce::Colour(0xff78dcca));
     g.drawRoundedRectangle(body, 6.0f, 2.0f);
-    const auto band = body.withHeight(24.0f);
+
+    // Pins above the body push the name band down below their labels.
+    float labelsAbove = 0.0f;
+    for (const auto& pin : block.pins)
+        if (pin.offset.y < body.getY())
+            labelsAbove = body.getY() - pin.offset.y; // lead length; the room is the rest
+    float bandTop = body.getY();
+    if (labelsAbove > 0.0f)
+    {
+        float widest = 0.0f;
+        for (const auto& pin : block.pins)
+            if (pin.offset.y < body.getY())
+                widest = std::max(widest, labelWidth(pin.name));
+        bandTop += upToGrid(widest + 4.0f);
+    }
+    const auto band = juce::Rectangle<float>(body.getX(), bandTop, body.getWidth(), 24.0f);
     g.setColour(juce::Colour(0xff78dcca).withAlpha(0.18f));
     g.fillRect(band.reduced(2.0f, 2.0f));
     g.setColour(juce::Colour(0xffe8f1f2));
@@ -564,20 +685,39 @@ void drawBlockArt(juce::Graphics& g, const SymbolDef& block, const juce::String&
     g.setFont(juce::Font(11.0f));
     for (const auto& pin : block.pins)
     {
-        const auto onRight = pin.offset.x > 0.0f;
-        const auto edge = onRight ? body.getRight() : body.getX();
+        const bool onLeft = pin.offset.x < body.getX();
+        const bool onRight = pin.offset.x > body.getRight();
+        const bool above = pin.offset.y < body.getY();
         g.setColour(lineColour);
-        line(g, pin.offset, { edge, pin.offset.y });
-        g.setColour(juce::Colour(0xff93a7b0));
-        const auto textArea = juce::Rectangle<float>(onRight ? edge - 66.0f : edge + 6.0f, pin.offset.y - 8.0f, 60.0f, 16.0f);
-        g.drawText(pin.name, textArea.toNearestInt(), onRight ? juce::Justification::centredRight : juce::Justification::centredLeft, true);
+        if (onLeft || onRight)
+        {
+            const auto edge = onRight ? body.getRight() : body.getX();
+            line(g, pin.offset, { edge, pin.offset.y });
+            g.setColour(juce::Colour(0xff93a7b0));
+            const auto room = body.getWidth() * 0.5f - 8.0f;
+            const auto textArea = juce::Rectangle<float>(onRight ? edge - 6.0f - room : edge + 6.0f, pin.offset.y - 8.0f, room, 16.0f);
+            g.drawText(pin.name, textArea.toNearestInt(), onRight ? juce::Justification::centredRight : juce::Justification::centredLeft, true);
+        }
+        else
+        {
+            const auto edge = above ? body.getY() : body.getBottom();
+            line(g, pin.offset, { pin.offset.x, edge });
+            g.setColour(juce::Colour(0xff93a7b0));
+            // The label runs along the pin, inside the body, reading up.
+            const auto length = labelWidth(pin.name);
+            const auto anchorY = above ? edge + 4.0f + length : edge - 4.0f;
+            juce::Graphics::ScopedSaveState state(g);
+            g.addTransform(juce::AffineTransform::rotation(-juce::MathConstants<float>::halfPi, pin.offset.x, anchorY));
+            g.drawText(pin.name, juce::Rectangle<float>(pin.offset.x, anchorY - 8.0f, length, 16.0f).toNearestInt(),
+                       juce::Justification::centredLeft, true);
+        }
     }
 }
 
 LabelRects labelRectsFor(const SymbolDef& symbol, int rotation)
 {
     // Ports and blocks carry their names inside their own art.
-    if (symbol.id == "block_port" || symbol.id == "sub_block")
+    if (symbol.id == "block_port" || isBlockSymbol(symbol.id))
         return {};
 
     constexpr float w = 96.0f, h = 15.0f, gap = 4.0f;

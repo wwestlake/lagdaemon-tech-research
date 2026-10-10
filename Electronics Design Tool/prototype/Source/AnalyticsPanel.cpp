@@ -1257,6 +1257,23 @@ private:
 // ============================================================================
 // Panel
 
+namespace
+{
+bool hasProgrammableComponent(const analytics::Netlist& netlist)
+{
+    for (const auto& e : netlist.circuit.elements())
+        if (e.type == circuit_sim::Element::Type::Programmable)
+            return true;
+    return false;
+}
+
+juce::String programmableNote()
+{
+    return "This circuit has FRust programmable components, so the internal solver ran it: their programs run at "
+           "every Newton iteration inside the app, which the external Xyce process cannot call.";
+}
+}
+
 AnalyticsPanel::AnalyticsPanel()
 {
     list = std::make_unique<AnalysisList>();
@@ -1542,17 +1559,23 @@ void AnalyticsPanel::runSelected()
     const auto requestedEngine = values.find("engine");
     const auto compare = engineBox.getSelectedId() == 3
         || (requestedEngine != values.end() && requestedEngine->second.containsIgnoreCase("compare"));
-    const auto engine = (engineBox.getSelectedId() == 2
+    // A FRust programmable component runs at every Newton iteration inside
+    // the app, which the external Xyce engine cannot call: such a circuit
+    // runs on the internal solver (the result says so).
+    const bool programmable = hasProgrammableComponent(netlist);
+    const auto engine = (programmable || engineBox.getSelectedId() == 2
                          || (requestedEngine != values.end() && requestedEngine->second.containsIgnoreCase("internal")))
         ? xyce_backend::Engine::InternalSolver : xyce_backend::Engine::Xyce;
     const auto outRoot = outputFolder != nullptr ? outputFolder() : juce::File {};
     std::weak_ptr<bool> weak = alive;
-    pool.addJob([this, analysis, values, netlist, weak, engine, compare, outRoot] {
+    pool.addJob([this, analysis, values, netlist, weak, engine, compare, outRoot, programmable] {
         auto result = compare ? (analysis == analytics::Analysis::Transient
                                      ? compareTransientSolvers(values, netlist, outRoot)
                                      : comparisonFailure("Solver comparison is available for transient analysis only.", analysis, values, 0.0))
                               : engine == xyce_backend::Engine::Xyce ? xyce_backend::run(analysis, values, netlist, outRoot)
                                                                       : analytics::run(analysis, values, netlist);
+        if (programmable)
+            result.warnings.add(programmableNote());
         juce::MessageManager::callAsync([this, weak, result]() mutable {
             if (weak.expired()) return;
             deliver(std::move(result));
@@ -1576,7 +1599,11 @@ const AnalyticsPanel::Run& AnalyticsPanel::runNow(analytics::Analysis analysis, 
     const auto requestedEngine = values.find("engine");
     const auto compare = engineBox.getSelectedId() == 3
         || (requestedEngine != values.end() && requestedEngine->second.containsIgnoreCase("compare"));
-    const auto engine = (engineBox.getSelectedId() == 2
+    // A FRust programmable component runs at every Newton iteration inside
+    // the app, which the external Xyce engine cannot call: such a circuit
+    // runs on the internal solver (the result says so).
+    const bool programmable = hasProgrammableComponent(netlist);
+    const auto engine = (programmable || engineBox.getSelectedId() == 2
                          || (requestedEngine != values.end() && requestedEngine->second.containsIgnoreCase("internal")))
         ? xyce_backend::Engine::InternalSolver : xyce_backend::Engine::Xyce;
     const auto outRoot = outputFolder != nullptr ? outputFolder() : juce::File {};
@@ -1585,6 +1612,8 @@ const AnalyticsPanel::Run& AnalyticsPanel::runNow(analytics::Analysis analysis, 
                                  : comparisonFailure("Solver comparison is available for transient analysis only.", analysis, values, 0.0))
                           : engine == xyce_backend::Engine::Xyce ? xyce_backend::run(analysis, values, netlist, outRoot)
                                                                   : analytics::run(analysis, values, netlist);
+    if (programmable)
+        result.warnings.add(programmableNote());
     settings[analysis] = result.settings;
     saveSettings();
     if (analysis != current)

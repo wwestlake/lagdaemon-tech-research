@@ -7,6 +7,7 @@
 #include <cctype>
 #include <map>
 #include <set>
+#include <iomanip>
 #include <sstream>
 #include <algorithm>
 #include <vector>
@@ -103,6 +104,10 @@ std::string FormatFnFor(const std::string& t) {
 }
 
 struct CodegenState {
+    // A programmable component's program: its pins, parameters and state
+    // variables by name -> index (the host functions take the index).
+    bool component = false;
+    std::map<std::string, int> pinIndex, paramIndex, stateIndex;
     std::map<std::string, NodeDef*> nodesById;
     std::map<std::string, std::string> paramType;  // param name -> type
     std::map<std::string, std::string> resultType; // node id -> its result Frust type
@@ -157,7 +162,13 @@ bool EmitNode(CodegenState& st, const NodeDef& n) {
         juce::var val = n.raw.getDynamicObject()->getProperty("value");
         std::string frustType, literalText;
         if (type == "literal_i64") { frustType = "i64"; literalText = std::to_string((int64_t)val); }
-        else if (type == "literal_f64") { frustType = "f64"; literalText = std::to_string((double)val); }
+        else if (type == "literal_f64") {
+            frustType = "f64";
+            std::ostringstream f;
+            f << std::setprecision(17) << (double)val;
+            literalText = f.str();
+            if (literalText.find_first_of(".eEn") == std::string::npos) literalText += ".0"; // 3 -> 3.0 (an f64 literal)
+        }
         else if (type == "literal_bool") { frustType = "bool"; literalText = (bool)val ? "true" : "false"; }
         else {
             frustType = "String";
@@ -224,6 +235,88 @@ bool EmitNode(CodegenState& st, const NodeDef& n) {
         for (size_t i = 0; i < n.inputs.size(); ++i) { if (i) st.body << ", "; st.body << RefName(n.inputs[i]); }
         st.body << ");\n";
         st.resultType[n.id] = retType;
+        return true;
+    }
+
+    // ---- programmable component nodes (Workbench) ----
+    // Each reads or drives the component's electrical interface through the
+    // Workbench's host functions (FrustComponent.cpp), by index: the name a
+    // node is given ("text") is looked up in the component's pins,
+    // parameters or state. Values are f64 volts, amps, seconds.
+    if (type.rfind("pc_", 0) == 0) {
+        auto* obj = n.raw.getDynamicObject();
+        const auto name = obj->getProperty("text").toString().trim().toStdString();
+        auto lookup = [&](const std::map<std::string, int>& table, const char* what, int& index) -> bool {
+            if (!st.component) { *st.err = "node '" + n.id + "' (" + type + ") belongs in a programmable component's program"; return false; }
+            const auto found = table.find(name);
+            if (found == table.end()) {
+                std::string known;
+                for (const auto& [k, v] : table) known += (known.empty() ? "" : ", ") + k;
+                *st.err = "node '" + n.id + "': the component has no " + what + " '" + name + "'" + (known.empty() ? std::string() : " (it has: " + known + ")");
+                return false;
+            }
+            index = found->second;
+            return true;
+        };
+        auto host = [&](const std::string& decl, const std::string& key) { DeclareExtern(st, decl, key); };
+        // An input value as f64 (an integer is promoted; a bool is 1.0 / 0.0).
+        auto valueInput = [&](std::string& expr) -> bool {
+            if (n.inputs.size() != 1) { *st.err = "node '" + n.id + "' (" + type + ") needs its value input wired"; return false; }
+            const auto t = RefType(st, n.inputs[0]);
+            if (t == "f64") expr = RefName(n.inputs[0]);
+            else if (t == "i64") expr = "(" + RefName(n.inputs[0]) + " + 0.0)";
+            else if (t == "bool") expr = "if (" + RefName(n.inputs[0]) + ") { 1.0 } else { 0.0 }";
+            else { *st.err = "node '" + n.id + "': its value must be a number or a bool, not " + (t.empty() ? std::string("unknown") : t); return false; }
+            return true;
+        };
+        int index = 0;
+        std::string call, value;
+        if (type == "pc_pin_voltage") {
+            if (!lookup(st.pinIndex, "pin", index)) return false;
+            host("extern fn djehuti_pc_v(pin: i64) -> f64;", "djehuti_pc_v");
+            call = "djehuti_pc_v(" + std::to_string(index) + ")";
+        } else if (type == "pc_pin_current") {
+            if (!lookup(st.pinIndex, "pin", index)) return false;
+            host("extern fn djehuti_pc_i(pin: i64) -> f64;", "djehuti_pc_i");
+            call = "djehuti_pc_i(" + std::to_string(index) + ")";
+        } else if (type == "pc_time") {
+            if (!st.component) { *st.err = "node '" + n.id + "' (pc_time) belongs in a programmable component's program"; return false; }
+            host("extern fn djehuti_pc_time() -> f64;", "djehuti_pc_time");
+            call = "djehuti_pc_time()";
+        } else if (type == "pc_timestep") {
+            if (!st.component) { *st.err = "node '" + n.id + "' (pc_timestep) belongs in a programmable component's program"; return false; }
+            host("extern fn djehuti_pc_dt() -> f64;", "djehuti_pc_dt");
+            call = "djehuti_pc_dt()";
+        } else if (type == "pc_parameter") {
+            if (!lookup(st.paramIndex, "parameter", index)) return false;
+            host("extern fn djehuti_pc_param(index: i64) -> f64;", "djehuti_pc_param");
+            call = "djehuti_pc_param(" + std::to_string(index) + ")";
+        } else if (type == "pc_state_get") {
+            if (!lookup(st.stateIndex, "state variable", index)) return false;
+            host("extern fn djehuti_pc_state(index: i64) -> f64;", "djehuti_pc_state");
+            call = "djehuti_pc_state(" + std::to_string(index) + ")";
+        } else if (type == "pc_state_set") {
+            if (!lookup(st.stateIndex, "state variable", index) || !valueInput(value)) return false;
+            host("extern fn djehuti_pc_set_state(index: i64, value: f64) -> f64;", "djehuti_pc_set_state");
+            call = "djehuti_pc_set_state(" + std::to_string(index) + ", " + value + ")";
+        } else if (type == "pc_drive") {
+            if (!lookup(st.pinIndex, "pin", index) || !valueInput(value)) return false;
+            host("extern fn djehuti_pc_drive(pin: i64, value: f64) -> f64;", "djehuti_pc_drive");
+            call = "djehuti_pc_drive(" + std::to_string(index) + ", " + value + ")";
+        } else if (type == "pc_drive_current") {
+            if (!lookup(st.pinIndex, "pin", index) || !valueInput(value)) return false;
+            host("extern fn djehuti_pc_drive_current(pin: i64, amps: f64) -> f64;", "djehuti_pc_drive_current");
+            call = "djehuti_pc_drive_current(" + std::to_string(index) + ", " + value + ")";
+        } else if (type == "pc_set_resistance") {
+            if (!lookup(st.pinIndex, "pin", index) || !valueInput(value)) return false;
+            host("extern fn djehuti_pc_set_resistance(pin: i64, ohms: f64) -> f64;", "djehuti_pc_set_resistance");
+            call = "djehuti_pc_set_resistance(" + std::to_string(index) + ", " + value + ")";
+        } else {
+            *st.err = "unknown node type '" + type + "' (node '" + n.id + "')";
+            return false;
+        }
+        st.body << "    let " << n.id << ": f64 = " << call << ";\n";
+        st.resultType[n.id] = "f64";
         return true;
     }
 
@@ -371,6 +464,8 @@ CompileResult CompileGraphToSource(const std::string& graphJson, const CompileOp
         }
     }
 
+    if (root->getProperty("component").isObject() && !root->hasProperty("output"))
+        root->setProperty("output", "");
     if (!parsed.getDynamicObject()->getProperty("nodes").isArray()) {
         result.errorMessage = "'nodes' must be an array";
         return result;
@@ -408,6 +503,17 @@ CompileResult CompileGraphToSource(const std::string& graphJson, const CompileOp
     CodegenState st;
     std::string genErr;
     st.err = &genErr;
+    if (const auto* component = root->getProperty("component").getDynamicObject()) {
+        st.component = true;
+        auto names = [component](const char* key, std::map<std::string, int>& into) {
+            if (const auto* list = component->getProperty(key).getArray())
+                for (int i = 0; i < list->size(); ++i)
+                    into[list->getReference(i).toString().toStdString()] = i;
+        };
+        names("pins", st.pinIndex);
+        names("parameters", st.paramIndex);
+        names("state", st.stateIndex);
+    }
     for (auto& p : params) st.paramType[p.name] = p.type;
     std::map<std::string, NodeDef*> byId;
     for (auto& n : nodes) byId[n.id] = &n;
@@ -433,11 +539,16 @@ CompileResult CompileGraphToSource(const std::string& graphJson, const CompileOp
         }
     }
 
-    if (!st.resultType.count(outputId)) {
+    // A component's program acts through its pins and state; compute()
+    // returns 0.0 and the "output" is not used.
+    if (st.component)
+        outputId.clear();
+    if (!st.component && !st.resultType.count(outputId)) {
         result.errorMessage = "output node '" + outputId + "' does not exist or produces no value (e.g. a 'print' node can't be the output)";
         return result;
     }
-    std::string returnType = st.resultType[outputId];
+    std::string returnType = st.component ? std::string("f64") : st.resultType[outputId];
+    const std::string returnValue = st.component ? std::string("0.0") : outputId;
 
     std::ostringstream src;
     src << st.externs.str();
@@ -459,7 +570,7 @@ CompileResult CompileGraphToSource(const std::string& graphJson, const CompileOp
     }
     src << "\n";
     src << st.body.str();
-    src << "    " << (instrument ? DebugLeave(fn) + " " : std::string()) << outputId << "\n";
+    src << "    " << (instrument ? DebugLeave(fn) + " " : std::string()) << returnValue << "\n";
     src << "}\n";
     for (const auto& [id, bodyLine] : nodeBodyLines)
         sourceMap.push_back({ id, "", bodyStart + bodyLine, 5 });

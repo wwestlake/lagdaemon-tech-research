@@ -9,6 +9,8 @@
 
 class AudioPipeline;
 
+struct ComponentPinPlacement;
+
 class ElectronicsWorkbench final : public juce::Component,
                                    public juce::DragAndDropContainer,
                                    public juce::MenuBarModel
@@ -153,6 +155,15 @@ private:
     void syncDebugMarkers();
     void executionChanged();
     class FrustDebuggerPanel* debuggerPanel = nullptr;
+    // FRust programmable components (FrustComponent) and the common external
+    // pin layout (Sub Diagram blocks and components): component_* and
+    // pin_layout_* tools, the Properties buttons, the canvas device factory.
+    juce::String componentTool(const juce::String& name, const juce::var& args);
+    juce::File componentFile(const juce::String& componentName) const;
+    bool compileComponent(const juce::String& componentName, juce::String& error, juce::String* source = nullptr);
+    bool openComponentProgram(const juce::String& componentName, juce::String& error);
+    bool applyComponentLayout(const juce::String& componentName, const std::vector<ComponentPinPlacement>& layout, juce::String& error);
+    void openPinLayoutEditor(const juce::String& refdes);
     int executionListener = 0;
     juce::uint64 lastReportedSession = 0;
     juce::Component::SafePointer<CreationDock::DockPanel> analyticsDockPanel;

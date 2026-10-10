@@ -77,6 +77,11 @@ juce::File programsDirectory(const Project& project)
     return project.folder.getChildFile("programs");
 }
 
+juce::File componentsDirectory(const Project& project)
+{
+    return project.folder.getChildFile("components");
+}
+
 bool saveManifest(const Project& project, juce::String& error)
 {
     auto* root = new juce::DynamicObject();

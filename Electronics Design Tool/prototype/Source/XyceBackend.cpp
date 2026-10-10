@@ -561,6 +561,17 @@ bool appendElement(const analytics::Netlist& n, juce::String& netlist, std::map<
     if (shouldSkipUa741Internal(n, e, index))
         return true;
 
+    // A FRust programmable component computes its outputs in the app at every
+    // Newton iteration. Xyce runs as a separate program with no way to call
+    // into the app during its solve, so such a circuit is not written for it
+    // (no post-processed stand-in): the internal solver simulates it.
+    if (e.type == ElementType::Programmable)
+    {
+        error = juce::String(e.name) + " is a FRust programmable component: its program runs inside the app at every solver "
+                "iteration, which the external Xyce engine cannot call. Simulate this circuit with the internal solver engine.";
+        return false;
+    }
+
     auto nd = [&](size_t i) { return nodeName(n, e.nodes[i]); };
     switch (e.type)
     {

@@ -14,6 +14,8 @@
 #include "NodeDesignerPanel.h"
 #include "FrustExecution.h"
 #include "FrustDebuggerPanel.h"
+#include "FrustComponent.h"
+#include "PinLayoutEditor.h"
 #include <djehuti_route/outline.h>
 #include "Preferences.h"
 #include "AudioPipeline.h"
@@ -568,6 +570,56 @@ const SchematicToolSpec schematicToolSpecs[] = {
         "node_debug_watch",
         "Set or clear a watch on a node of the open node program (saved with the program); a running debug session follows the change.",
         R"({"type":"object","properties":{"node":{"type":"string"},"set":{"type":"boolean","description":"true to watch (default), false to stop watching."}},"required":["node"],"additionalProperties":false})"
+    },
+    {
+        "component_create",
+        "Create a FRust programmable electronic component in the open project: a schematic part whose behaviour is a FRust node program. pins: its external electrical pins (id = stable identity; side/order = where it is drawn). Every pin is a branch from the pin to its reference (ground, or another pin): current into the circuit = I + (V - Vpin_to_ref)/R, with V, R and I set by the program at every solver iteration. role gives the start values: input = no load until the program sets a resistance (input impedance); voltage_output = V behind outputResistance (output impedance, changeable by the program); current_output = I. parameters: numbers each instance can set (with defaults). state: variables kept between accepted simulation steps (with initial values). Also creates its empty program; edit it with component_open_program and the node_program_* tools, then component_compile.",
+        R"({"type":"object","properties":{"name":{"type":"string","description":"Letters, digits, _; starts with a letter."},"description":{"type":"string"},"pins":{"type":"array","items":{"type":"object","properties":{"id":{"type":"string","description":"Pin name (stable identity)."},"role":{"type":"string","enum":["input","voltage_output","current_output"]},"side":{"type":"string","enum":["left","right","top","bottom"]},"order":{"type":"integer"},"reference":{"type":"string","description":"Another pin its branch returns through (a floating pin between two terminals); omit for ground."}},"required":["id","role"],"additionalProperties":false}},"parameters":{"type":"array","items":{"type":"object","properties":{"name":{"type":"string"},"default":{"type":"number"}},"required":["name"],"additionalProperties":false}},"state":{"type":"array","items":{"type":"object","properties":{"name":{"type":"string"},"initial":{"type":"number"}},"required":["name"],"additionalProperties":false}},"outputResistance":{"type":"number","description":"Ohms, each voltage output (default 1)."}},"required":["name","pins"],"additionalProperties":false})"
+    },
+    {
+        "component_update",
+        "Change a programmable component's description, pins, parameters, state variables or output resistance (each given replaces that list). Instances on the schematic follow; wires stay on the pin with the same name. Pins given without side keep their layout.",
+        R"({"type":"object","properties":{"name":{"type":"string"},"description":{"type":"string"},"pins":{"type":"array","items":{"type":"object","properties":{"id":{"type":"string","description":"Pin name (stable identity)."},"role":{"type":"string","enum":["input","voltage_output","current_output"]},"side":{"type":"string","enum":["left","right","top","bottom"]},"order":{"type":"integer"},"reference":{"type":"string","description":"Another pin its branch returns through (a floating pin between two terminals); omit for ground."}},"required":["id","role"],"additionalProperties":false}},"parameters":{"type":"array","items":{"type":"object","properties":{"name":{"type":"string"},"default":{"type":"number"}},"required":["name"],"additionalProperties":false}},"state":{"type":"array","items":{"type":"object","properties":{"name":{"type":"string"},"initial":{"type":"number"}},"required":["name"],"additionalProperties":false}},"outputResistance":{"type":"number"}},"required":["name"],"additionalProperties":false})"
+    },
+    {
+        "component_list",
+        "List the open project's FRust programmable components with their pin counts and the schematic instances of each.",
+        R"({"type":"object","properties":{},"additionalProperties":false})"
+    },
+    {
+        "component_get",
+        "Read a programmable component's definition: pins (role, side, order, symbol position), parameters, state variables, output resistance, program file and its schematic instances.",
+        R"({"type":"object","properties":{"name":{"type":"string"}},"required":["name"],"additionalProperties":false})"
+    },
+    {
+        "component_open_program",
+        "Open a programmable component's program in the Node Designer to edit it with the node_program_* tools. Component nodes (types): pc_pin_voltage (volts to ground; differences with sub), pc_pin_current (amps the pin drove into the circuit at the last accepted step), pc_time, pc_timestep, pc_parameter, pc_state_get (each outputs a number); pc_state_set, pc_drive (V for input/voltage pins, I for current pins), pc_drive_current (I), pc_set_resistance (R, ohms; 0 = open) take a value input. Each names its pin, parameter or state variable in its text parameter; literal_f64 is a number constant. The solver re-runs the program at every Newton iteration with the new pin voltages, so values computed from pin voltages (a voltage-dependent resistance, a comparator, a controlled current) are solved with the circuit. A state read gives the value at the last accepted step; writes, and pin settings, are kept when the step is accepted.",
+        R"({"type":"object","properties":{"name":{"type":"string"}},"required":["name"],"additionalProperties":false})"
+    },
+    {
+        "component_compile",
+        "Save (if open in the Node Designer) and compile a programmable component's program with the node compiler and embedded FRust compiler. Returns the generated FRust source or the compile error. Simulations compile automatically when needed; this checks it first.",
+        R"({"type":"object","properties":{"name":{"type":"string"}},"required":["name"],"additionalProperties":false})"
+    },
+    {
+        "component_place",
+        "Place an instance of a programmable component on the current schematic sheet at x, y. Returns its refdes and pins; wire it like any part (pins by name). Each instance has its own state in simulation.",
+        R"({"type":"object","properties":{"name":{"type":"string"},"x":{"type":"number"},"y":{"type":"number"}},"required":["name","x","y"],"additionalProperties":false})"
+    },
+    {
+        "component_set_parameter",
+        "Set one instance's value of a component parameter (a number such as 2.5, 10m, 4.7k); empty restores the definition's default.",
+        R"({"type":"object","properties":{"refdes":{"type":"string"},"name":{"type":"string"},"value":{"type":"string"}},"required":["refdes","name","value"],"additionalProperties":false})"
+    },
+    {
+        "pin_layout_get",
+        "Read the external pin layout of a Sub Diagram block or a programmable component instance: each pin's index (its electrical identity), name, side, order on that side and its position on the symbol, and the symbol size.",
+        R"({"type":"object","properties":{"refdes":{"type":"string"}},"required":["refdes"],"additionalProperties":false})"
+    },
+    {
+        "pin_layout_set",
+        "Arrange the external pins of a Sub Diagram block or a programmable component: for each pin given, its side (left, right, top, bottom) and its order on that side (0 first: top to bottom, left to right). Positions and the symbol size are computed. Only where pins are drawn changes: which terminal each pin is, and every connection, stay the same. A component's layout belongs to its definition (all its instances).",
+        R"({"type":"object","properties":{"refdes":{"type":"string"},"pins":{"type":"array","items":{"type":"object","properties":{"name":{"type":"string"},"side":{"type":"string","enum":["left","right","top","bottom"]},"order":{"type":"integer"}},"required":["name","side"],"additionalProperties":false}}},"required":["refdes","pins"],"additionalProperties":false})"
     },
     {
         "node_program_validate",
@@ -1941,8 +1993,7 @@ public:
             instance.childSheet = stringProperty(*object, "childSheet", {});
             if (const auto* portArray = object->getProperty("ports").getArray())
                 for (const auto& port : *portArray)
-                    instance.ports.push_back({ port.getProperty("name", {}).toString(),
-                                               port.getProperty("side", {}).toString() == "right" });
+                    instance.ports.push_back(blockPortFromVar(port));
 
             if (const auto* component = object->getProperty("component").getDynamicObject())
             {
@@ -2230,13 +2281,19 @@ public:
             text << "      \"rotation\": " << instance.rotation << ",\n";
             if (instance.sheet.isNotEmpty())
                 text << "      \"sheet\": " << quote(instance.sheet) << ",\n";
+            if (instance.symbolId == "frust_component")
+            {
+                text << "      \"ports\": [";
+                for (size_t k = 0; k < instance.ports.size(); ++k)
+                    text << (k == 0 ? "" : ", ") << blockPortJson(instance.ports[k]);
+                text << "],\n";
+            }
             if (instance.symbolId == "sub_block")
             {
                 text << "      \"childSheet\": " << quote(instance.childSheet) << ",\n";
                 text << "      \"ports\": [";
                 for (size_t k = 0; k < instance.ports.size(); ++k)
-                    text << (k == 0 ? "" : ", ") << "{ \"name\": " << quote(instance.ports[k].name)
-                         << ", \"side\": " << quote(instance.ports[k].rightSide ? "right" : "left") << " }";
+                    text << (k == 0 ? "" : ", ") << blockPortJson(instance.ports[k]);
                 text << "],\n";
             }
             if (isRailBus(instance.symbolId))
@@ -3639,6 +3696,8 @@ public:
         const auto requestedSymbol = symbolId.trim();
         if (requestedSymbol == "sub_block" || requestedSymbol == "block_port")
             return "{ \"ok\": false, \"error\": \"Sub-diagram blocks and ports are created with schematic_subdiagram_create, not placed directly.\" }";
+        if (requestedSymbol == "frust_component")
+            return "{ \"ok\": false, \"error\": \"FRust programmable components are placed with component_place (they need a definition).\" }";
         if (!schematic::isSupportedSymbol(requestedSymbol))
             return "{ \"ok\": false, \"error\": \"Unsupported symbolId; no substitute was placed.\", \"requestedSymbolId\": "
                 + quote(requestedSymbol) + " }";
@@ -4920,10 +4979,32 @@ private:
         return schematic::isInstrumentSymbol(symbolId);
     }
 
+    // A block pin as saved: its name, side and order on that side. Older
+    // files have only left/right (or input/output) and no order; their pins
+    // keep their port order on that side.
+    static schematic::BlockPort blockPortFromVar(const juce::var& port)
+    {
+        schematic::BlockPort p;
+        p.name = port.getProperty("name", {}).toString();
+        schematic::PinSide side;
+        p.side = schematic::parsePinSide(port.getProperty("side", {}).toString(), side) ? side : schematic::PinSide::Left;
+        p.order = port.hasProperty("order") ? (int)port.getProperty("order", -1) : -1;
+        return p;
+    }
+
+    static juce::String blockPortJson(const schematic::BlockPort& port)
+    {
+        juce::String text;
+        text << "{ \"name\": " << quote(port.name) << ", \"side\": " << quote(schematic::pinSideName(port.side));
+        if (port.order >= 0)
+            text << ", \"order\": " << port.order;
+        return text + " }";
+    }
+
     SymbolDef symbolForInstance(const Instance& instance) const
     {
-        if (instance.symbolId == "sub_block")
-            return schematic::blockSymbol(instance.ports);
+        if (schematic::isBlockSymbol(instance.symbolId))
+            return schematic::blockSymbol(instance.ports, instance.symbolId);
         return symbolFor(instance.symbolId);
     }
 
@@ -6749,7 +6830,7 @@ private:
             float outX = 0.0f;
             for (const auto& pin : side.out) outX += pinPosition(pin).x;
             const auto rightSide = explicitPort != explicitPorts.end()
-                ? explicitPort->second.rightSide
+                ? explicitPort->second.side == schematic::PinSide::Right
                 : (outX / (float)side.out.size()) > innerBox.getCentreX();
             auto portName = explicitPort != explicitPorts.end() ? explicitPort->second.name
                           : side.label.isNotEmpty() ? side.label
@@ -6830,9 +6911,10 @@ private:
             bubble.value = c.port.name;
             bubble.family = familyFor("block_port");
             bubble.sheet = child;
-            bubble.rotation = c.port.rightSide ? 180 : 0;
-            const auto row = (float)(c.port.rightSide ? rightRow++ : leftRow++);
-            bubble.position = snapToGrid({ c.port.rightSide ? innerBox.getRight() + 168.0f : innerBox.getX() - 168.0f,
+            const bool portOnRight = c.port.side == schematic::PinSide::Right;
+            bubble.rotation = portOnRight ? 180 : 0;
+            const auto row = (float)(portOnRight ? rightRow++ : leftRow++);
+            bubble.position = snapToGrid({ portOnRight ? innerBox.getRight() + 168.0f : innerBox.getX() - 168.0f,
                                            innerBox.getY() + row * 72.0f });
             bubble.refdes = nextRefdesFor("block_port");
             bubbleIndex.push_back((int)instances.size());
@@ -7008,8 +7090,7 @@ private:
              << ", \"childSheet\": " << quote(block.childSheet)
              << ", \"ports\": [";
         for (size_t k = 0; k < block.ports.size(); ++k)
-            text << (k == 0 ? "" : ", ") << "{ \"name\": " << quote(block.ports[k].name)
-                 << ", \"side\": " << quote(block.ports[k].rightSide ? "output" : "input") << " }";
+            text << (k == 0 ? "" : ", ") << blockPortJson(block.ports[k]);
         text << "], \"members\": [";
         bool firstMember = true;
         for (const auto& instance : instances)
@@ -7188,8 +7269,7 @@ private:
         block.childSheet = sheetMap[sourceSheet];
         if (const auto* ports = sourceBlockObject->getProperty("ports").getArray())
             for (const auto& port : *ports)
-                block.ports.push_back({ port.getProperty("name", {}).toString(),
-                                        port.getProperty("side", {}).toString() == "right" });
+                block.ports.push_back(blockPortFromVar(port));
         if (const auto* params = sourceBlockObject->getProperty("params").getDynamicObject())
             for (const auto& property : params->getProperties())
                 block.params[property.name.toString()] = property.value.toString();
@@ -7220,8 +7300,7 @@ private:
                 instance.childSheet = sheetMap[childSheet];
             if (const auto* ports = c->getProperty("ports").getArray())
                 for (const auto& port : *ports)
-                    instance.ports.push_back({ port.getProperty("name", {}).toString(),
-                                               port.getProperty("side", {}).toString() == "right" });
+                    instance.ports.push_back(blockPortFromVar(port));
             if (const auto* params = c->getProperty("params").getDynamicObject())
                 for (const auto& property : params->getProperties())
                     instance.params[property.name.toString()] = property.value.toString();
@@ -8031,6 +8110,24 @@ public:
             }
             else if (id.startsWith("logic_"))
                 sim.warnings.add(inst.refdes + " (" + parts::displayName(id) + ") is not simulated yet.");
+            else if (id == "frust_component")
+            {
+                // Its pins by name (identity), never by where they are drawn.
+                std::vector<circuit_sim::Node> pins;
+                for (const auto& port : inst.ports)
+                    pins.push_back(node(i, port.name));
+                juce::String why;
+                auto device = makeComponentDevice != nullptr ? makeComponentDevice(inst.value, inst.refdes, inst.params, why) : nullptr;
+                if (device != nullptr)
+                    element = c.addProgrammable(name, std::move(pins), std::move(device));
+                else
+                {
+                    const auto message = inst.refdes + " (" + inst.value + "): "
+                                       + (why.isNotEmpty() ? why : juce::String("programmable components are unavailable here."));
+                    sim.valueErrors.add(message);
+                    if (sim.error.isEmpty()) sim.error = message;
+                }
+            }
 
             if (element >= 0)
                 sim.elementOfPart[inst.refdes] = element;
@@ -8847,8 +8944,209 @@ public:
         const auto block = blockIndexFor(refdes);
         if (block >= 0)
             for (const auto& port : instances[(size_t)block].ports)
-                pins.push_back({ port.name, port.rightSide ? "Output pin" : "Input pin" });
+                pins.push_back({ port.name, "Pin (" + schematic::pinSideName(port.side) + " side)" });
         return pins;
+    }
+
+    // ---- External pin layout (Sub Diagram blocks and FRust components) ----
+    // A block's pins are its ports; pin index == port index is the pin's
+    // electrical identity. Only each port's side and order are changed here.
+
+    // The block or programmable component a refdes names (any sheet), or -1.
+    int laidOutBlockIndex(const juce::String& refdes) const
+    {
+        for (int i = 0; i < (int)instances.size(); ++i)
+            if (schematic::isBlockSymbol(instances[(size_t)i].symbolId) && instances[(size_t)i].refdes.equalsIgnoreCase(refdes.trim()))
+                return i;
+        return blockIndexFor(refdes);
+    }
+
+    bool blockPortsFor(const juce::String& refdes, std::vector<schematic::BlockPort>& ports, juce::String& symbolId, juce::String& name) const
+    {
+        const auto i = laidOutBlockIndex(refdes);
+        if (i < 0) return false;
+        ports = instances[(size_t)i].ports;
+        symbolId = instances[(size_t)i].symbolId;
+        name = instances[(size_t)i].value;
+        return true;
+    }
+
+    // Sets a Sub Diagram block's pin layout: the same ports (same names in
+    // the same order), new sides and orders. Wires stay on the same pins;
+    // only their geometry follows.
+    bool setBlockLayout(const juce::String& refdes, const std::vector<schematic::BlockPort>& layout, juce::String& error)
+    {
+        const auto i = blockIndexFor(refdes);
+        if (i < 0) { error = "No sub-diagram block " + refdes + "."; return false; }
+        auto& ports = instances[(size_t)i].ports;
+        if (!sameTerminals(ports, layout, error))
+            return false;
+        pushUndoSnapshot();
+        for (size_t k = 0; k < ports.size(); ++k)
+        {
+            ports[k].side = layout[k].side;
+            ports[k].order = layout[k].order;
+        }
+        schematic::normalizePinOrders(ports);
+        routeSignature.clear();
+        forceDeferredRepaint();
+        return true;
+    }
+
+    static bool sameTerminals(const std::vector<schematic::BlockPort>& ports, const std::vector<schematic::BlockPort>& layout, juce::String& error)
+    {
+        if (layout.size() != ports.size())
+        {
+            error = "The layout has " + juce::String((int)layout.size()) + " pins; the block has " + juce::String((int)ports.size()) + ".";
+            return false;
+        }
+        for (size_t k = 0; k < ports.size(); ++k)
+            if (layout[k].name != ports[k].name)
+            {
+                error = "Pin " + juce::String((int)k) + " is " + ports[k].name + ", not " + layout[k].name
+                      + "; a layout only moves pins, it never swaps which terminal a pin is.";
+                return false;
+            }
+        return true;
+    }
+
+    // ---- FRust programmable components ----
+
+    // Makes the device for one instance in a simulation (set by the Workbench).
+    std::function<std::shared_ptr<circuit_sim::ProgrammableDevice>(const juce::String& definition, const juce::String& refdes,
+                                                                    const std::map<juce::String, juce::String>& params,
+                                                                    juce::String& error)> makeComponentDevice;
+
+    // The Properties pane's Pin layout... and Edit program buttons (set by the Workbench).
+    std::function<void(const juce::String& refdes)> openPinLayout;
+    std::function<void(const juce::String& definition)> openComponentProgram;
+    // A definition's parameters: name and default (set by the Workbench).
+    std::function<std::vector<std::pair<juce::String, juce::String>>(const juce::String& definition)> componentParameterList;
+
+    std::vector<std::pair<juce::String, juce::String>> componentParameterNames(const juce::String& refdes) const
+    {
+        const auto definition = componentDefinitionOf(refdes);
+        return definition.isNotEmpty() && componentParameterList != nullptr ? componentParameterList(definition)
+                                                                            : std::vector<std::pair<juce::String, juce::String>> {};
+    }
+
+    juce::String placeComponent(const juce::String& definition, const std::vector<schematic::BlockPort>& ports,
+                                juce::Point<float> position, juce::String& error)
+    {
+        if (ports.empty()) { error = "The component has no pins."; return {}; }
+        pushUndoSnapshot();
+        Instance part;
+        part.symbolId = "frust_component";
+        part.refdes = nextRefdesFor("frust_component");
+        part.value = definition;
+        part.family = familyFor("frust_component");
+        part.position = snapToGrid(position);
+        part.sheet = currentSheet;
+        part.ports = ports;
+        part.params["definition"] = definition;
+        instances.push_back(part);
+        routeSignature.clear();
+        forceDeferredRepaint();
+        return part.refdes;
+    }
+
+    juce::StringArray componentInstances(const juce::String& definition) const
+    {
+        juce::StringArray list;
+        for (const auto& inst : instances)
+            if (inst.symbolId == "frust_component" && inst.value == definition)
+                list.add(inst.refdes);
+        return list;
+    }
+
+    // The definition changed: every instance takes its pins (names, order,
+    // sides). Pins are matched by name, so a wire stays on the same terminal;
+    // a wire on a pin the definition no longer has is reported, not moved.
+    juce::StringArray refreshComponentPorts(const juce::String& definition, const std::vector<schematic::BlockPort>& ports)
+    {
+        juce::StringArray problems;
+        bool changed = false;
+        for (int i = 0; i < (int)instances.size(); ++i)
+        {
+            auto& inst = instances[(size_t)i];
+            if (inst.symbolId != "frust_component" || inst.value != definition)
+                continue;
+            const auto old = inst.ports;
+            std::map<int, int> remap; // old pin index -> new
+            for (int o = 0; o < (int)old.size(); ++o)
+                for (int n = 0; n < (int)ports.size(); ++n)
+                    if (ports[(size_t)n].name == old[(size_t)o].name)
+                        remap[o] = n;
+            bool samePins = old.size() == ports.size();
+            for (const auto& [o, n] : remap) samePins &= o == n;
+            if (samePins && (int)remap.size() == (int)old.size())
+            {
+                bool sameLayout = true;
+                for (size_t k = 0; k < old.size(); ++k)
+                    sameLayout &= old[k].side == ports[k].side && old[k].order == ports[k].order;
+                if (sameLayout) continue;
+            }
+            if (!changed) pushUndoSnapshot();
+            changed = true;
+            for (auto& wire : wires)
+                for (auto* end : { &wire.a, &wire.b })
+                    if (end->isPin() && end->pin.instanceIndex == i)
+                    {
+                        const auto found = remap.find(end->pin.pinIndex);
+                        if (found != remap.end())
+                            end->pin.pinIndex = found->second;
+                        else
+                            problems.add(inst.refdes + ": a wire was on pin " + old[(size_t)end->pin.pinIndex].name
+                                         + ", which " + definition + " no longer has; it was left on pin index "
+                                         + juce::String(end->pin.pinIndex) + " - check it.");
+                    }
+            inst.ports = ports;
+        }
+        if (changed)
+        {
+            routeSignature.clear();
+            forceDeferredRepaint();
+        }
+        return problems;
+    }
+
+    juce::String componentParameter(const juce::String& refdes, const juce::String& name) const
+    {
+        const auto i = instanceIndexForRefdesAnySheet(refdes);
+        if (i < 0) return {};
+        const auto found = instances[(size_t)i].params.find("param." + name);
+        return found != instances[(size_t)i].params.end() ? found->second : juce::String();
+    }
+
+    bool setComponentParameter(const juce::String& refdes, const juce::String& name, const juce::String& value, juce::String& error)
+    {
+        const auto i = instanceIndexForRefdesAnySheet(refdes);
+        if (i < 0 || instances[(size_t)i].symbolId != "frust_component")
+        {
+            error = "No programmable component " + refdes + ".";
+            return false;
+        }
+        bool ok = true;
+        if (value.trim().isNotEmpty())
+            parseQuantity(value.trim(), 0.0, &ok);
+        if (!ok)
+        {
+            error = "'" + value + "' is not a number (use values like 2.5, 10m, 4.7k).";
+            return false;
+        }
+        pushUndoSnapshot();
+        if (value.trim().isEmpty())
+            instances[(size_t)i].params.erase("param." + name);
+        else
+            instances[(size_t)i].params["param." + name] = value.trim();
+        forceDeferredRepaint();
+        return true;
+    }
+
+    juce::String componentDefinitionOf(const juce::String& refdes) const
+    {
+        const auto i = instanceIndexForRefdesAnySheet(refdes);
+        return i >= 0 && instances[(size_t)i].symbolId == "frust_component" ? instances[(size_t)i].value : juce::String();
     }
 
     // ---- Instruments: measurements behind the instrument windows ----
@@ -10504,7 +10802,7 @@ private:
         g.saveState();
         g.addTransform(juce::AffineTransform::rotation(juce::degreesToRadians((float)instance.rotation))
                            .translated(instance.position.x, instance.position.y));
-        if (instance.symbolId == "sub_block")
+        if (schematic::isBlockSymbol(instance.symbolId))
             schematic::drawBlockArt(g, symbol, instance.value);
         else
             schematic::drawSymbolArt(g, symbol, instance.value);
@@ -12116,6 +12414,7 @@ private:
         if (row.key == "#refdes") return current;
         if (row.key.startsWith("#pin:")) return row.key.fromFirstOccurrenceOf("#pin:", false, false);
         if (row.key == "#blockname") return canvas->blockName(current);
+        if (row.key.startsWith("#cparam:")) return canvas->componentParameter(current, row.key.fromFirstOccurrenceOf("#cparam:", false, false));
         return canvas->instrumentSetting(current, row.key);
     }
 
@@ -12362,6 +12661,10 @@ private:
         {
             ok = canvas->setBlockName(current, text, error);
         }
+        else if (row.key.startsWith("#cparam:"))
+        {
+            ok = canvas->setComponentParameter(current, row.key.fromFirstOccurrenceOf("#cparam:", false, false), text, error);
+        }
         else
         {
             if (text == canvas->instrumentSetting(current, row.key))
@@ -12484,6 +12787,37 @@ private:
             styleActionButton(*expose);
             expose->onClick = [this] { canvas->promptExposeBlockParameterFor(current); };
             content.addAndMakeVisible(expose);
+            auto* layoutButton = actionButtons.add(new juce::TextButton("Pin layout..."));
+            styleActionButton(*layoutButton);
+            layoutButton->onClick = [this] { if (canvas->openPinLayout != nullptr) canvas->openPinLayout(current); };
+            content.addAndMakeVisible(layoutButton);
+        }
+        else if (view.symbolId == "frust_component")
+        {
+            addHeading("Programmable component " + canvas->componentDefinitionOf(current));
+            for (const auto& [paramName, unused] : canvas->componentParameterNames(current))
+            {
+                Row paramRow;
+                paramRow.key = "#cparam:" + paramName;
+                paramRow.label.reset(makeLabel(paramName + " (default " + unused + ")", 12.5f, juce::Colour(0xff93a7b0)));
+                paramRow.hint.reset(makeLabel({}, 11.0f, juce::Colour(0xff71808c)));
+                auto* field = makeField(canvas->componentParameter(current, paramName));
+                wireTextRow(field, rows.size(), false);
+                paramRow.control.reset(field);
+                paramRow.height = 64;
+                content.addAndMakeVisible(*paramRow.label);
+                content.addAndMakeVisible(*paramRow.control);
+                content.addAndMakeVisible(*paramRow.hint);
+                rows.push_back(std::move(paramRow));
+            }
+            auto* program = actionButtons.add(new juce::TextButton("Edit program"));
+            styleActionButton(*program);
+            program->onClick = [this] { if (canvas->openComponentProgram != nullptr) canvas->openComponentProgram(canvas->componentDefinitionOf(current)); };
+            content.addAndMakeVisible(program);
+            auto* layoutButton = actionButtons.add(new juce::TextButton("Pin layout..."));
+            styleActionButton(*layoutButton);
+            layoutButton->onClick = [this] { if (canvas->openPinLayout != nullptr) canvas->openPinLayout(current); };
+            content.addAndMakeVisible(layoutButton);
         }
         else if (!specs.empty())
         {
@@ -14263,6 +14597,8 @@ ElectronicsWorkbench::ElectronicsWorkbench()
             return frustTool(name, args);
         if (name.startsWith("node_program_"))
             return nodeProgramTool(name, args);
+        if (name.startsWith("component_") || name.startsWith("pin_layout_"))
+            return componentTool(name, args);
         if (name.startsWith("pcb_board_"))
             return pcbTool(name, args);
         if (name.startsWith("pcb_"))
@@ -14313,6 +14649,48 @@ ElectronicsWorkbench::ElectronicsWorkbench()
             appendLog("Start Debugging: " + why);
     };
     nodeDesignerPanel->onDebugMarkersChanged = [this] { syncDebugMarkers(); };
+    // FRust programmable components: each instance in a simulation gets its
+    // own device (state), from the definition's compiled program.
+    schematicPanel->makeComponentDevice = [this](const juce::String& definition, const juce::String& refdes,
+                                                 const std::map<juce::String, juce::String>& params, juce::String& error)
+        -> std::shared_ptr<circuit_sim::ProgrammableDevice> {
+        if (project.folder == juce::File())
+        {
+            error = "no project is open (component definitions are saved in a project).";
+            return nullptr;
+        }
+        frust_component::Definition d;
+        if (!frust_component::load(componentFile(definition), d, error) || !compileComponent(definition, error))
+            return nullptr;
+        std::map<juce::String, double> values;
+        for (const auto& p : d.parameters)
+            if (const auto found = params.find("param." + p.name); found != params.end())
+            {
+                double v = 0.0;
+                if (!circuit_sim::parseValue(found->second.toStdString(), v))
+                {
+                    error = "parameter " + p.name + " = '" + found->second + "' is not a number.";
+                    return nullptr;
+                }
+                values[p.name] = v;
+            }
+        return frust_component::Library::instance().makeDevice(d, values, refdes, error);
+    };
+    schematicPanel->openPinLayout = [this](const juce::String& refdes) { openPinLayoutEditor(refdes); };
+    schematicPanel->componentParameterList = [this](const juce::String& definition) {
+        std::vector<std::pair<juce::String, juce::String>> list;
+        frust_component::Definition d;
+        juce::String ignored;
+        if (project.folder != juce::File() && frust_component::load(componentFile(definition), d, ignored))
+            for (const auto& p : d.parameters)
+                list.push_back({ p.name, juce::String(p.defaultValue) });
+        return list;
+    };
+    schematicPanel->openComponentProgram = [this](const juce::String& definition) {
+        juce::String error;
+        if (!openComponentProgram(definition, error))
+            appendLog("Edit program: " + error);
+    };
     dockManager->registerPanel("frust", "Frust", std::move(frustOwner), CreationDock::DockTargetZone::Bottom);
     FrustDebuggerPanel::Actions debugActions;
     debugActions.startDebugging = [this] { return startNodeDebugging(); };
@@ -17798,8 +18176,409 @@ juce::String ElectronicsWorkbench::pcbLayoutTool(const juce::String& name, const
     return reply(false, "Unknown PCB tool " + name + ".", false, nullptr);
 }
 
+// ---------------------------------------------------------------------------
+// FRust programmable components and the common external pin layout.
+// ---------------------------------------------------------------------------
 
+struct ComponentPinPlacement
+{
+    juce::String pin;
+    schematic::PinSide side = schematic::PinSide::Left;
+    int order = -1;
+};
 
+juce::File ElectronicsWorkbench::componentFile(const juce::String& componentName) const
+{
+    return project_store::componentsDirectory(project).getChildFile(componentName + ".frcomp.json");
+}
 
+namespace
+{
+juce::var portsVar(const std::vector<schematic::BlockPort>& ports, const schematic::SymbolDef* symbol)
+{
+    juce::Array<juce::var> list;
+    for (size_t k = 0; k < ports.size(); ++k)
+    {
+        auto* o = new juce::DynamicObject();
+        o->setProperty("index", (int)k);
+        o->setProperty("name", ports[k].name);
+        o->setProperty("side", schematic::pinSideName(ports[k].side));
+        o->setProperty("order", ports[k].order);
+        if (symbol != nullptr && k < symbol->pins.size())
+        {
+            o->setProperty("x", symbol->pins[k].offset.x);
+            o->setProperty("y", symbol->pins[k].offset.y);
+        }
+        list.add(juce::var(o));
+    }
+    return list;
+}
 
+juce::var definitionVar(const frust_component::Definition& d)
+{
+    auto v = frust_component::toVar(d);
+    const auto symbol = schematic::blockSymbol(d.ports(), "frust_component");
+    v.getDynamicObject()->setProperty("layout", portsVar(d.ports(), &symbol));
+    return v;
+}
 
+// Pins from {id, role, side?, order?} objects; sides default by role.
+bool pinsFromVar(const juce::var& list, std::vector<frust_component::Pin>& pins, juce::String& error)
+{
+    if (!list.isArray())
+    {
+        error = "pins must be a list of { id, role, side?, order? }.";
+        return false;
+    }
+    for (const auto& p : *list.getArray())
+    {
+        frust_component::Pin pin;
+        pin.id = p.getProperty("id", p.getProperty("name", {})).toString().trim();
+        if (!frust_component::parseRole(p.getProperty("role", "input").toString(), pin.role))
+        {
+            error = "Pin " + pin.id + ": role must be input, voltage_output or current_output.";
+            return false;
+        }
+        schematic::PinSide side;
+        pin.side = p.hasProperty("side") && schematic::parsePinSide(p.getProperty("side", {}).toString(), side) ? side
+                 : pin.role == frust_component::PinRole::Input ? schematic::PinSide::Left : schematic::PinSide::Right;
+        pin.order = p.hasProperty("order") ? (int)p.getProperty("order", -1) : -1;
+        pin.reference = p.getProperty("reference", {}).toString().trim();
+        pins.push_back(pin);
+    }
+    return true;
+}
+}
+
+bool ElectronicsWorkbench::compileComponent(const juce::String& componentName, juce::String& error, juce::String* source)
+{
+    frust_component::Definition d;
+    if (!frust_component::load(componentFile(componentName), d, error))
+        return false;
+    const auto programFile = componentFile(componentName).getSiblingFile(d.programFile);
+    // The program as the Node Designer has it, if it is open there (saved first).
+    if (nodeDesignerPanel != nullptr && nodeDesignerPanel->currentFile() == programFile)
+    {
+        juce::String saveError;
+        if (!nodeDesignerPanel->saveToFile(programFile, saveError))
+        {
+            error = saveError;
+            return false;
+        }
+    }
+    const auto definitionText = juce::JSON::toString(frust_component::toVar(d), true);
+    const auto programText = programFile.loadFileAsString();
+    // What was compiled: the definition and the program (hash and length).
+    const auto inputs = definitionText + "\n" + programText;
+    const auto key = (juce::String::toHexString(inputs.hashCode64()) + ":" + juce::String(inputs.length())).toStdString();
+    if (source == nullptr && frust_component::Library::instance().isCompiled(d.name, key))
+        return true;
+    // The node compiler, through an off-screen Node Designer: the same
+    // compile path as the editor's Compile button.
+    NodeDesignerPanel compiler;
+    juce::String problems;
+    if (!compiler.openFile(programFile, problems))
+    {
+        error = "Component " + d.name + ": its program " + programFile.getFileName() + " does not open: " + problems;
+        return false;
+    }
+    compiler.setComponentContext(d.compilerContext());
+    juce::String message;
+    if (!compiler.compileProgram(message))
+    {
+        error = "Component " + d.name + " (program " + programFile.getFileName() + "): " + message;
+        return false;
+    }
+    if (source != nullptr)
+        *source = compiler.generatedProgramSource();
+    return frust_component::Library::instance().compile(d, compiler.generatedProgramSource().toStdString(), key, error);
+}
+
+bool ElectronicsWorkbench::openComponentProgram(const juce::String& componentName, juce::String& error)
+{
+    frust_component::Definition d;
+    if (!frust_component::load(componentFile(componentName), d, error))
+        return false;
+    if (nodeDesignerPanel == nullptr)
+    {
+        error = "The Node Designer is unavailable.";
+        return false;
+    }
+    const auto programFile = componentFile(componentName).getSiblingFile(d.programFile);
+    juce::String problems;
+    if (!nodeDesignerPanel->openFile(programFile, problems))
+    {
+        error = problems;
+        return false;
+    }
+    nodeDesignerPanel->setComponentContext(d.compilerContext());
+    return true;
+}
+
+bool ElectronicsWorkbench::applyComponentLayout(const juce::String& componentName, const std::vector<ComponentPinPlacement>& layout,
+                                                juce::String& error)
+{
+    frust_component::Definition d;
+    if (!frust_component::load(componentFile(componentName), d, error))
+        return false;
+    auto ports = d.ports();
+    for (const auto& placement : layout)
+    {
+        const auto index = d.pinIndex(placement.pin);
+        if (index < 0)
+        {
+            error = componentName + " has no pin " + placement.pin + ".";
+            return false;
+        }
+        ports[(size_t)index].side = placement.side;
+        ports[(size_t)index].order = placement.order;
+    }
+    schematic::normalizePinOrders(ports);
+    d.setLayout(ports);
+    if (!frust_component::save(componentFile(componentName), d, error))
+        return false;
+    if (auto* canvas = dynamic_cast<SchematicCanvasPanel*>(schematicView.getComponent()))
+        canvas->refreshComponentPorts(d.name, d.ports());
+    return true;
+}
+
+void ElectronicsWorkbench::openPinLayoutEditor(const juce::String& refdes)
+{
+    auto* canvas = dynamic_cast<SchematicCanvasPanel*>(schematicView.getComponent());
+    if (canvas == nullptr)
+        return;
+    std::vector<schematic::BlockPort> ports;
+    juce::String symbolId, blockName;
+    if (!canvas->blockPortsFor(refdes, ports, symbolId, blockName))
+        return;
+    juce::Component::SafePointer<ElectronicsWorkbench> safe(this);
+    PinLayoutEditor::show(blockName, symbolId, ports, [safe, refdes, symbolId, blockName](const std::vector<schematic::BlockPort>& layout, juce::String& error) {
+        if (safe == nullptr) { error = "The Workbench closed."; return false; }
+        if (symbolId == "frust_component")
+        {
+            std::vector<ComponentPinPlacement> placements;
+            for (const auto& p : layout)
+                placements.push_back({ p.name, p.side, p.order });
+            return safe->applyComponentLayout(blockName, placements, error);
+        }
+        auto* c = dynamic_cast<SchematicCanvasPanel*>(safe->schematicView.getComponent());
+        return c != nullptr && c->setBlockLayout(refdes, layout, error);
+    });
+}
+
+juce::String ElectronicsWorkbench::componentTool(const juce::String& name, const juce::var& args)
+{
+    auto* root = new juce::DynamicObject();
+    root->setProperty("tool", name);
+    auto fail = [root](const juce::String& error) {
+        root->setProperty("ok", false);
+        root->setProperty("error", error);
+        return juce::JSON::toString(juce::var(root), true);
+    };
+    auto text = [&args](const char* key) { return args.getProperty(key, {}).toString().trim(); };
+    auto* canvas = dynamic_cast<SchematicCanvasPanel*>(schematicView.getComponent());
+    if (canvas == nullptr)
+        return fail("The schematic is unavailable.");
+    juce::String error;
+
+    // ---- the common pin layout: Sub Diagram blocks and components ----
+    if (name == "pin_layout_get" || name == "pin_layout_set")
+    {
+        std::vector<schematic::BlockPort> ports;
+        juce::String symbolId, blockName;
+        const auto refdes = text("refdes");
+        if (!canvas->blockPortsFor(refdes, ports, symbolId, blockName))
+            return fail("No Sub Diagram block or programmable component " + refdes + ".");
+        if (name == "pin_layout_set")
+        {
+            const auto list = args.getProperty("pins", {});
+            if (!list.isArray())
+                return fail("pins must be a list of { name, side, order }.");
+            auto layout = ports;
+            for (const auto& p : *list.getArray())
+            {
+                const auto pinName = p.getProperty("name", {}).toString();
+                const auto it = std::find_if(layout.begin(), layout.end(), [&](const schematic::BlockPort& b) { return b.name == pinName; });
+                if (it == layout.end())
+                    return fail(refdes + " has no pin " + pinName + ".");
+                schematic::PinSide side;
+                if (!schematic::parsePinSide(p.getProperty("side", schematic::pinSideName(it->side)).toString(), side))
+                    return fail("Pin " + pinName + ": side must be left, right, top or bottom.");
+                it->side = side;
+                it->order = p.hasProperty("order") ? (int)p.getProperty("order", -1) : -1;
+            }
+            // Pins given an order go to that position; the rest keep theirs after.
+            for (const auto& p : *list.getArray())
+            {
+                const auto pinName = p.getProperty("name", {}).toString();
+                const auto index = (int)(std::find_if(layout.begin(), layout.end(), [&](const schematic::BlockPort& b) { return b.name == pinName; }) - layout.begin());
+                schematic::placePort(layout, index, layout[(size_t)index].side, p.hasProperty("order") ? (int)p.getProperty("order", -1) : -1);
+            }
+            bool ok = false;
+            if (symbolId == "frust_component")
+            {
+                std::vector<ComponentPinPlacement> placements;
+                for (const auto& p : layout)
+                    placements.push_back({ p.name, p.side, p.order });
+                ok = applyComponentLayout(blockName, placements, error);
+            }
+            else
+                ok = canvas->setBlockLayout(refdes, layout, error);
+            if (!ok)
+                return fail(error);
+            canvas->blockPortsFor(refdes, ports, symbolId, blockName);
+        }
+        const auto symbol = schematic::blockSymbol(ports, symbolId);
+        root->setProperty("refdes", refdes);
+        root->setProperty("kind", symbolId == "frust_component" ? "programmable component" : "sub diagram block");
+        root->setProperty("name", blockName);
+        root->setProperty("pins", portsVar(ports, &symbol));
+        root->setProperty("width", symbol.bounds.getWidth());
+        root->setProperty("height", symbol.bounds.getHeight());
+        if (symbolId == "frust_component")
+            root->setProperty("note", "A component's layout belongs to its definition: every instance of " + blockName + " uses it.");
+    }
+    else if (project.folder == juce::File())
+        return fail("Open or create a project first; components are saved in its components folder.");
+    else if (name == "component_list")
+    {
+        juce::Array<juce::var> list;
+        for (const auto& f : project_store::componentsDirectory(project).findChildFiles(juce::File::findFiles, false, "*.frcomp.json"))
+        {
+            frust_component::Definition d;
+            juce::String loadError;
+            auto* o = new juce::DynamicObject();
+            o->setProperty("file", f.getFileName());
+            if (frust_component::load(f, d, loadError))
+            {
+                o->setProperty("name", d.name);
+                o->setProperty("pins", (int)d.pins.size());
+                juce::Array<juce::var> instances;
+                for (const auto& r : canvas->componentInstances(d.name)) instances.add(r);
+                o->setProperty("instances", instances);
+            }
+            else
+                o->setProperty("error", loadError);
+            list.add(juce::var(o));
+        }
+        root->setProperty("components", list);
+    }
+    else if (name == "component_create" || name == "component_update")
+    {
+        const auto componentName = text("name");
+        frust_component::Definition d;
+        const bool creating = name == "component_create";
+        if (creating)
+        {
+            if (componentFile(componentName).existsAsFile())
+                return fail("A component named " + componentName + " already exists; use component_update.");
+            d.name = componentName;
+            d.programFile = componentName + ".frnode.json";
+        }
+        else if (!frust_component::load(componentFile(componentName), d, error))
+            return fail(error);
+        if (args.hasProperty("description")) d.description = text("description");
+        if (args.hasProperty("pins") || creating)
+        {
+            std::vector<frust_component::Pin> pins;
+            if (!pinsFromVar(args.getProperty("pins", {}), pins, error))
+                return fail(error);
+            // An existing pin keeps its layout unless the call sets one.
+            for (auto& pin : pins)
+                if (const auto old = d.pinIndex(pin.id); old >= 0 && !args.getProperty("pins", {})[(int)(&pin - &pins[0])].hasProperty("side"))
+                {
+                    pin.side = d.pins[(size_t)old].side;
+                    pin.order = d.pins[(size_t)old].order;
+                }
+            d.pins = pins;
+        }
+        if (args.hasProperty("parameters"))
+        {
+            d.parameters.clear();
+            if (const auto* list = args.getProperty("parameters", {}).getArray())
+                for (const auto& p : *list)
+                    d.parameters.push_back({ p.getProperty("name", {}).toString().trim(), (double)p.getProperty("default", 0.0) });
+        }
+        if (args.hasProperty("state"))
+        {
+            d.state.clear();
+            if (const auto* list = args.getProperty("state", {}).getArray())
+                for (const auto& p : *list)
+                    d.state.push_back({ p.getProperty("name", {}).toString().trim(), (double)p.getProperty("initial", 0.0) });
+        }
+        if (args.hasProperty("outputResistance"))
+            d.outputResistance = (double)args.getProperty("outputResistance", 1.0);
+        auto ports = d.ports();
+        schematic::normalizePinOrders(ports);
+        d.setLayout(ports);
+        if (const auto problems = frust_component::problemsWith(d); problems.isNotEmpty())
+            return fail(problems);
+        if (!frust_component::save(componentFile(d.name), d, error))
+            return fail(error);
+        const auto programFile = componentFile(d.name).getSiblingFile(d.programFile);
+        if (!programFile.existsAsFile())
+        {
+            // A new, empty program for the component (a function graph).
+            NodeDesignerPanel starter;
+            starter.newGraph("node_graph", false);
+            starter.setComponentContext(d.compilerContext());
+            if (!starter.saveToFile(programFile, error))
+                return fail(error);
+        }
+        const auto moved = canvas->refreshComponentPorts(d.name, d.ports());
+        if (!moved.isEmpty())
+            root->setProperty("warnings", moved.joinIntoString("\n"));
+        root->setProperty("component", definitionVar(d));
+        root->setProperty("program", programFile.getFullPathName());
+    }
+    else if (name == "component_get")
+    {
+        frust_component::Definition d;
+        if (!frust_component::load(componentFile(text("name")), d, error))
+            return fail(error);
+        root->setProperty("component", definitionVar(d));
+        juce::Array<juce::var> instances;
+        for (const auto& r : canvas->componentInstances(d.name)) instances.add(r);
+        root->setProperty("instances", instances);
+    }
+    else if (name == "component_open_program")
+    {
+        if (!openComponentProgram(text("name"), error))
+            return fail(error);
+        root->setProperty("message", "The component's program is open in the Node Designer: edit it with the node_program_* tools "
+                                     "(component nodes: pc_pin_voltage, pc_pin_current, pc_time, pc_timestep, pc_parameter, "
+                                     "pc_state_get, pc_state_set, pc_drive, each naming a pin, parameter or state variable in its text). "
+                                     "component_compile saves and compiles it.");
+        root->setProperty("program", nodeDesignerPanel->describeGraph());
+    }
+    else if (name == "component_compile")
+    {
+        juce::String source;
+        if (!compileComponent(text("name"), error, &source))
+            return fail(error);
+        root->setProperty("source", source);
+        root->setProperty("message", "Compiled; simulations use this program now.");
+    }
+    else if (name == "component_place")
+    {
+        frust_component::Definition d;
+        if (!frust_component::load(componentFile(text("name")), d, error))
+            return fail(error);
+        const auto refdes = canvas->placeComponent(d.name, d.ports(), { (float)(double)args.getProperty("x", 0.0), (float)(double)args.getProperty("y", 0.0) }, error);
+        if (refdes.isEmpty())
+            return fail(error);
+        root->setProperty("refdes", refdes);
+        const auto symbol = schematic::blockSymbol(d.ports(), "frust_component");
+        root->setProperty("pins", portsVar(d.ports(), &symbol));
+    }
+    else if (name == "component_set_parameter")
+    {
+        if (!canvas->setComponentParameter(text("refdes"), text("name"), text("value"), error))
+            return fail(error);
+    }
+    else
+        return fail("Unknown component tool.");
+
+    root->setProperty("ok", true);
+    return juce::JSON::toString(juce::var(root), true);
+}

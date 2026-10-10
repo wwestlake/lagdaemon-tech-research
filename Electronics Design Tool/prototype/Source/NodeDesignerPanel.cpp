@@ -68,6 +68,15 @@ float propertyFloat(const juce::var& object, const juce::Identifier& property, f
     return value.isVoid() ? fallback : (float)(double)value;
 }
 
+// Nodes whose one setting is text in the inspector: a String's text, a
+// Number's value, and the name a component node refers to (pin, parameter
+// or state variable).
+bool usesTextField(const juce::String& type)
+{
+    return type == "literal_string" || type == "literal_f64"
+        || (type.startsWith("pc_") && type != "pc_time" && type != "pc_timestep");
+}
+
 juce::String baseIdForType(const juce::String& type)
 {
     if (type == "reroute") return "route";
@@ -78,6 +87,17 @@ juce::String baseIdForType(const juce::String& type)
     if (type == "param_i64") return "x";
     if (type == "literal_i64") return "number";
     if (type == "literal_string") return "text";
+    if (type == "literal_f64") return "number";
+    if (type == "pc_pin_voltage") return "v";
+    if (type == "pc_pin_current") return "i";
+    if (type == "pc_time") return "t";
+    if (type == "pc_timestep") return "dt";
+    if (type == "pc_parameter") return "param";
+    if (type == "pc_state_get") return "state";
+    if (type == "pc_state_set") return "set_state";
+    if (type == "pc_drive") return "drive";
+    if (type == "pc_drive_current") return "drive_i";
+    if (type == "pc_set_resistance") return "pin_r";
     if (type == "add") return "add";
     if (type == "sub") return "sub";
     if (type == "mul") return "mul";
@@ -1053,7 +1073,7 @@ public:
             }
         };
         stringValue.onTextChange = [this] {
-            if (auto* node = owner.findNode(owner.selectedNodeUid); node != nullptr && node->type == "literal_string")
+            if (auto* node = owner.findNode(owner.selectedNodeUid); node != nullptr && usesTextField(node->type))
             {
                 node->textValue = stringValue.getText();
                 if (owner.canvas != nullptr) owner.canvas->repaint();
@@ -1169,7 +1189,7 @@ public:
                 integerValue.setBounds(area.removeFromTop(26));
                 integerValue.setVisible(true);
             }
-            else if (node->type == "literal_string")
+            else if (usesTextField(node->type))
             {
                 area.removeFromTop(42);
                 stringValue.setBounds(area.removeFromTop(52));
@@ -1235,7 +1255,7 @@ private:
 
             if (node->type == "literal_i64" && integerValue.getText() != juce::String(node->literalValue))
                 integerValue.setText(juce::String(node->literalValue), juce::dontSendNotification);
-            if (node->type == "literal_string" && stringValue.getText() != node->textValue)
+            if (usesTextField(node->type) && stringValue.getText() != node->textValue)
                 stringValue.setText(node->textValue, juce::dontSendNotification);
 
             for (int i = 0; i < inputEditors.size(); ++i)
@@ -1368,9 +1388,11 @@ private:
             drawLabel(g, "Value", integerValue.getBounds().translated(0, -18));
             y = integerValue.getBottom() + 14;
         }
-        else if (node.type == "literal_string")
+        else if (usesTextField(node.type))
         {
-            drawLabel(g, "Text", stringValue.getBounds().translated(0, -18));
+            drawLabel(g, node.type == "literal_string" ? "Text" : node.type == "literal_f64" ? "Value (number)"
+                         : node.type.contains("pin") || node.type.startsWith("pc_drive") || node.type == "pc_set_resistance" ? "Pin" : node.type == "pc_parameter" ? "Parameter" : "State variable",
+                      stringValue.getBounds().translated(0, -18));
             y = stringValue.getBottom() + 14;
         }
         else if (node.type == "event_start")
@@ -1695,6 +1717,7 @@ std::vector<NodeDesignerPanel::NodeTemplate> NodeDesignerPanel::buildTemplates()
         { "literal_i64", "Integer", "Sources", juce::Colour(0xff2f6fb8), 10, {}, { out("value") } },
         { "literal_string", "String", "Sources", juce::Colour(0xffd85ad0), 0, {}, { out("value", "string") } },
         { "const_bool", "Boolean", "Sources", juce::Colour(0xff2f6fb8), 0, {}, { out("value", "bool") } },
+        { "literal_f64", "Number", "Sources", juce::Colour(0xff2f6fb8), 0, {}, { out("value", "any") } },
         { "add", "Add", "Math", juce::Colour(0xff5f9c5a), 0, { in("a"), in("b") }, { out("sum") } },
         { "sub", "Subtract", "Math", juce::Colour(0xff5f9c5a), 0, { in("a"), in("b") }, { out("difference") } },
         { "mul", "Multiply", "Math", juce::Colour(0xff5f9c5a), 0, { in("a"), in("b") }, { out("product") } },
@@ -1725,6 +1748,19 @@ std::vector<NodeDesignerPanel::NodeTemplate> NodeDesignerPanel::buildTemplates()
         { "sample_texture", "Sample Texture", "Resources", juce::Colour(0xff9c5a9c), 0, { resourceIn("texture", "Texture"), in("uv", "any") }, { out("color", "any") } }
         ,
         { "reroute", "Reroute", "Graph", juce::Colour(0xff7fffd4), 0, { in("in", "any") }, { out("out", "any") } },
+        // A FRust programmable component's electrical interface (Workbench):
+        // values are f64 volts, amps, seconds; each names a pin, parameter
+        // or state variable of the component.
+        { "pc_pin_voltage", "Pin Voltage", "Component", juce::Colour(0xffc8a24b), 0, {}, { out("volts", "any") } },
+        { "pc_pin_current", "Pin Current", "Component", juce::Colour(0xffc8a24b), 0, {}, { out("amps", "any") } },
+        { "pc_time", "Simulation Time", "Component", juce::Colour(0xffc8a24b), 0, {}, { out("seconds", "any") } },
+        { "pc_timestep", "Time Step", "Component", juce::Colour(0xffc8a24b), 0, {}, { out("seconds", "any") } },
+        { "pc_parameter", "Component Parameter", "Component", juce::Colour(0xffc8a24b), 0, {}, { out("value", "any") } },
+        { "pc_state_get", "Read State", "Component", juce::Colour(0xffc8a24b), 0, {}, { out("value", "any") } },
+        { "pc_state_set", "Write State", "Component", juce::Colour(0xffc8a24b), 0, { in("value", "any") }, { out("value", "any") } },
+        { "pc_drive", "Drive Pin", "Component", juce::Colour(0xffc8a24b), 0, { in("value", "any") }, { out("value", "any") } },
+        { "pc_drive_current", "Drive Current", "Component", juce::Colour(0xffc8a24b), 0, { in("amps", "any") }, { out("value", "any") } },
+        { "pc_set_resistance", "Pin Resistance", "Component", juce::Colour(0xffc8a24b), 0, { in("ohms", "any") }, { out("value", "any") } },
         { "state_machine_instance", "State Machine", "State Machine", juce::Colour(0xff4b8fc8), 0,
           { execIn("tick"), in("event", "string"), in("payload", "any") },
           { execOut("then"), out("state", "string"), out("transition", "string") } },
@@ -2955,9 +2991,11 @@ juce::String NodeDesignerPanel::buildCompilerJson(bool includeRoutingNodes) cons
         }
         if (n.type == "literal_i64")
             text << ", \"value\": " << n.literalValue;
+        else if (n.type == "literal_f64")
+            text << ", \"value\": " << juce::String(n.textValue.getDoubleValue(), 15);
         else if (n.type == "const_bool")
             text << ", \"value\": " << (n.literalValue != 0 ? "true" : "false");
-        if (n.type == "literal_string" || n.type.startsWith("sm_") || n.type == "state_machine_instance")
+        if (usesTextField(n.type) || n.type.startsWith("sm_") || n.type == "state_machine_instance")
             text << ", \"text\": " << quoted(n.textValue);
         if (n.type == "sm_state")
         {
@@ -3036,7 +3074,10 @@ juce::String NodeDesignerPanel::buildCompilerJson(bool includeRoutingNodes) cons
         }
         text << " }";
     }
-    text << "\n  ]\n}";
+    text << "\n  ]";
+    if (componentInfo.isObject())
+        text << ",\n  \"component\": " << juce::JSON::toString(componentInfo, true);
+    text << "\n}";
     return text;
 }
 
@@ -3409,7 +3450,7 @@ juce::StringArray parameterNamesFor(const juce::String& type)
 {
     juce::StringArray names;
     if (type == "literal_i64" || type == "const_bool") names.add("value");
-    if (type == "literal_string" || type.startsWith("sm_") || type == "state_machine_instance") names.add("text");
+    if (usesTextField(type) || type.startsWith("sm_") || type == "state_machine_instance") names.add("text");
     if (type == "sm_state") names.addArray(juce::StringArray { "accessibility", "initial", "terminal", "entryAction", "updateAction", "exitAction" });
     if (type == "sm_transition") names.addArray(juce::StringArray { "event", "guard", "action" });
     if (type == "sm_event") names.addArray(juce::StringArray { "event", "payloadType" });
@@ -4300,4 +4341,16 @@ void NodeDesignerPanel::setExecutionMarker(const juce::String& nodeId)
     executionNodeId = nodeId;
     if (canvas != nullptr)
         canvas->repaint();
+}
+
+void NodeDesignerPanel::setComponentContext(const juce::var& context)
+{
+    componentInfo = context;
+    if (diagramType != "state_machine" && context.isObject())
+    {
+        // A component's program is a function graph (compute()).
+        frustProjectType = "lib";
+        frustProjectTypeSelector.setSelectedId(2, juce::dontSendNotification);
+    }
+    refreshProperties();
 }

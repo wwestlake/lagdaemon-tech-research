@@ -23,6 +23,7 @@
 
 #include <complex>
 #include <map>
+#include <memory>
 #include <string>
 #include <utility>
 #include <vector>
@@ -98,6 +99,32 @@ struct OpAmpModel
     bool limited = true;           // false: a linear gain stage (the rails are applied by a later stage)
 };
 
+// A device whose behaviour is a program (the Workbench's FRust programmable
+// components). Its pins are the element's nodes, in order. At every Newton
+// iteration the solver asks it for the current each pin drives INTO the
+// circuit at that iterate's pin voltages; a pin model is whatever the
+// program makes it (a driven voltage behind a resistance, a current, a load
+// to ground or to another pin). The solver linearizes those currents with
+// a Jacobian from finite differences of the same evaluation, so behaviour
+// that depends on the pin voltages takes part in Newton's convergence.
+// An evaluation is a trial: it must not change the device's persistent
+// state. accept() commits the state of the last evaluation; it is called
+// only for accepted transient steps (a rejected step is never accepted).
+class ProgrammableDevice
+{
+public:
+    virtual ~ProgrammableDevice() = default;
+    // State back to its initial values (each analysis starts here).
+    virtual void reset() = 0;
+    // pinCurrents[k] = amps the device drives into the circuit at pin k, for
+    // these pin voltages at time t (h: the step, 0 for DC).
+    virtual bool evaluate(double t, double h, const std::vector<double>& pinVoltages, std::vector<double>& pinCurrents,
+                          std::string& error) = 0;
+    // The transient solution at t was accepted: commit the state the last
+    // evaluation computed.
+    virtual void accept(double t) = 0;
+};
+
 struct Element
 {
     enum class Type
@@ -107,7 +134,8 @@ struct Element
         BehavioralVoltageSource, BehavioralCurrentSource,
         Vcvs, Vccs, Ccvs, Cccs,
         Diode, Npn, Pnp, Nmos, Pmos, Njfet, Pjfet, OpAmp,
-        VariableResistor, Switch, VoltageControlledSwitch, CurrentControlledSwitch
+        VariableResistor, Switch, VoltageControlledSwitch, CurrentControlledSwitch,
+        Programmable
     };
 
     Type type = Type::Resistor;
@@ -134,6 +162,7 @@ struct Element
     int control2 = -1;       // Coupling: second inductor
     std::string paramId;     // For live parameters
     bool isWiperToPin2 = false; // For potentiometers
+    std::shared_ptr<ProgrammableDevice> device; // Programmable: its program (one per instance)
 };
 
 class Circuit
@@ -167,6 +196,8 @@ public:
     int addMosfet(const std::string& name, bool nChannel, Node drain, Node gate, Node source, MosModel model = {});
     int addJfet(const std::string& name, bool nChannel, Node drain, Node gate, Node source, JfetModel model = {});
     int addOpAmp(const std::string& name, Node inPlus, Node inMinus, Node out, Node railPlus, Node railMinus, OpAmpModel model = {});
+    // Pins in the device's pin order; each instance has its own device (state).
+    int addProgrammable(const std::string& name, std::vector<Node> pins, std::shared_ptr<ProgrammableDevice> device);
 
     const std::vector<Element>& elements() const { return parts; }
     std::vector<Element>& elements() { return parts; }

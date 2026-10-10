@@ -180,6 +180,10 @@ target_sources(DjehutiElectronicsLab PRIVATE
     Source/FrustExecution.cpp
     Source/FrustDebuggerPanel.h
     Source/FrustDebuggerPanel.cpp
+    Source/FrustComponent.h
+    Source/FrustComponent.cpp
+    Source/PinLayoutEditor.h
+    Source/PinLayoutEditor.cpp
     Source/AudioPipeline.h
     Source/AudioPipeline.cpp
     Source/FrustAudioGenerator.h
@@ -477,10 +481,44 @@ target_link_libraries(FrustDebuggerTests PRIVATE
 juce_generate_juce_header(FrustDebuggerTests)
 add_test(NAME FrustDebuggerTests COMMAND FrustDebuggerTests)
 
+# FRust programmable components (real programs solved in circuits) and the
+# common external pin layout.
+juce_add_console_app(ProgrammableComponentTests PRODUCT_NAME "Programmable Component Tests")
+set_target_properties(ProgrammableComponentTests PROPERTIES
+    OUTPUT_NAME "programmable_component_tests"
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/bin")
+target_sources(ProgrammableComponentTests PRIVATE
+    tools/programmable_component_tests/ProgrammableComponentTests.cpp
+    Source/Analytics.cpp
+    Source/SignalMeasure.cpp
+    Source/XyceBackend.cpp
+    Source/SpiceLibrary.cpp
+    Source/CircuitSolver.cpp
+    Source/FrustComponent.cpp
+    Source/SchematicSymbols.cpp
+    Source/NodeDesignerPanel.cpp
+    Source/NodeCompiler.cpp
+    Source/FrustEngine.cpp
+)
+target_compile_definitions(ProgrammableComponentTests PRIVATE
+    JUCE_WEB_BROWSER=0
+    JUCE_USE_CURL=0
+)
+target_link_libraries(ProgrammableComponentTests PRIVATE
+    frust_plugin_host
+    juce::juce_core
+    juce::juce_events
+    juce::juce_graphics
+    juce::juce_data_structures
+    juce::juce_gui_basics
+)
+juce_generate_juce_header(ProgrammableComponentTests)
+add_test(NAME ProgrammableComponentTests COMMAND ProgrammableComponentTests)
+
 # Node programs (and their core pod) call the FRust runtime's exported C
 # functions (frust_format_i64, frust_str_concat, ...); the JIT finds them in
 # this program's export table, so the whole runtime library is linked in.
-foreach(runtime_user DjehutiElectronicsLab NodeDesignerTests FrustDebuggerTests)
+foreach(runtime_user DjehutiElectronicsLab NodeDesignerTests FrustDebuggerTests ProgrammableComponentTests)
     target_link_libraries(${runtime_user} PRIVATE frust_runtime)
     target_link_options(${runtime_user} PRIVATE "LINKER:/WHOLEARCHIVE:$<TARGET_FILE:frust_runtime>")
 endforeach()

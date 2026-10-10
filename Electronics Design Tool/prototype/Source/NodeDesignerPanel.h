@@ -109,6 +109,11 @@ public:
     // The node execution is stopped at (highlighted), or "" for none.
     void setExecutionMarker(const juce::String& nodeId);
     juce::String executionMarker() const { return executionNodeId; }
+    // A FRust programmable component's program: the component's pins,
+    // parameters and state (frust_component::Definition::compilerContext),
+    // which its component nodes name; void for an ordinary program.
+    void setComponentContext(const juce::var& context);
+    juce::var componentContext() const { return componentInfo; }
     // A marker changed (so a running debug session can follow it).
     std::function<void()> onDebugMarkersChanged;
     // Start Debugging (toolbar and canvas menu).
@@ -362,6 +367,7 @@ private:
     juce::File currentGraphFile;
     std::unique_ptr<juce::FileChooser> fileChooser;
     juce::String executionNodeId;
+    juce::var componentInfo;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(NodeDesignerPanel)
 };

@@ -357,7 +357,8 @@ bool isNonlinear(Element::Type t)
 {
     return t == Element::Type::Diode || t == Element::Type::Npn || t == Element::Type::Pnp
         || t == Element::Type::Nmos || t == Element::Type::Pmos || t == Element::Type::Njfet || t == Element::Type::Pjfet
-        || t == Element::Type::OpAmp || t == Element::Type::VoltageControlledSwitch || t == Element::Type::CurrentControlledSwitch;
+        || t == Element::Type::OpAmp || t == Element::Type::VoltageControlledSwitch || t == Element::Type::CurrentControlledSwitch
+        || t == Element::Type::Programmable;
 }
 
 bool needsBranch(Element::Type t)
@@ -560,6 +561,98 @@ void stampNonlinear(System<double>& s, const Element& e, const std::vector<doubl
     }
 }
 
+// A programmable device's failure during assembly (its program reported an
+// error): Newton stops with it.
+thread_local std::string programmableError;
+
+std::vector<double> pinVoltagesOf(const Element& e, const std::vector<double>& x)
+{
+    std::vector<double> v(e.nodes.size());
+    for (size_t i = 0; i < e.nodes.size(); ++i)
+        v[i] = nodeVoltage(x, e.nodes[i]);
+    return v;
+}
+
+void stampProgrammable(System<double>& s, const Element& e, const std::vector<double>& x, double t, double h)
+{
+    if (e.device == nullptr)
+        return;
+    // i(V): the currents the pins drive into the circuit. Newton companion:
+    // i(V) ~ i(V0) + J (V - V0) with J = di/dV by finite differences of the
+    // (side-effect free) trial evaluation. KCL row k (currents leaving node k
+    // through elements on the left): -J[k][j] in the matrix, i0 - J V0 on the
+    // right.
+    const auto v0 = pinVoltagesOf(e, x);
+    const auto n = v0.size();
+    std::vector<double> i0;
+    std::string error;
+    if (!e.device->evaluate(t, h, v0, i0, error) || i0.size() != n)
+    {
+        if (programmableError.empty())
+            programmableError = e.name + ": " + (error.empty() ? std::string("the program returned no pin currents") : error);
+        return;
+    }
+    std::vector<std::vector<double>> jac(n, std::vector<double>(n, 0.0));
+    for (size_t j = 0; j < n; ++j)
+    {
+        if (e.nodes[j] == 0)
+            continue; // ground: its voltage never changes
+        auto v = v0;
+        const auto delta = 1e-6 * std::max(1.0, std::abs(v0[j]));
+        v[j] += delta;
+        std::vector<double> ip;
+        if (!e.device->evaluate(t, h, v, ip, error) || ip.size() != n)
+        {
+            if (programmableError.empty())
+                programmableError = e.name + ": " + error;
+            return;
+        }
+        for (size_t k = 0; k < n; ++k)
+            jac[k][j] = (ip[k] - i0[k]) / delta;
+    }
+    for (size_t k = 0; k < n; ++k)
+    {
+        const auto nk = e.nodes[k];
+        if (nk == 0)
+            continue;
+        double rhs = i0[k];
+        for (size_t j = 0; j < n; ++j)
+        {
+            if (e.nodes[j] == 0)
+                continue;
+            s.add(idx(nk), idx(e.nodes[j]), -jac[k][j]);
+            rhs -= jac[k][j] * v0[j];
+        }
+        s.rhs(idx(nk), rhs);
+    }
+}
+
+// Each analysis starts every programmable device from its initial state.
+void resetProgrammable(const Circuit& c)
+{
+    for (const auto& e : c.elements())
+        if (e.type == Element::Type::Programmable && e.device != nullptr)
+            e.device->reset();
+}
+
+// An accepted transient solution: each device is evaluated at it once more
+// and commits that state.
+bool acceptProgrammable(const Circuit& c, const std::vector<double>& x, double t, double h, std::string& error)
+{
+    for (const auto& e : c.elements())
+        if (e.type == Element::Type::Programmable && e.device != nullptr)
+        {
+            std::vector<double> currents;
+            if (!e.device->evaluate(t, h, pinVoltagesOf(e, x), currents, error))
+            {
+                error = e.name + ": " + error;
+                return false;
+            }
+            e.device->accept(t);
+        }
+    return true;
+}
+
 System<double> assemble(const Circuit& c, const Layout& l, const Options& o, Mode mode, const std::vector<double>& x,
                         double t, double h, double sourceScale, const ReactiveState& state, JunctionMemory* memory = nullptr)
 {
@@ -678,6 +771,9 @@ System<double> assemble(const Circuit& c, const Layout& l, const Options& o, Mod
                 s.rhs(k, tf.value - tf.slope * vin);
                 break;
             }
+            case Element::Type::Programmable:
+                stampProgrammable(s, e, x, mode == Mode::Transient ? t : 0.0, mode == Mode::Transient ? h : 0.0);
+                break;
             default:
                 stampNonlinear(s, e, x, memory, ei);
                 break;
@@ -694,7 +790,14 @@ bool newton(const Circuit& c, const Layout& l, const Options& o, Mode mode, std:
     for (int it = 0; it < o.maxIterations; ++it)
     {
         memory.limited = false;
+        programmableError.clear();
         auto system = assemble(c, l, o, mode, x, t, h, sourceScale, state, &memory);
+        if (!programmableError.empty())
+        {
+            error = programmableError;
+            programmableError.clear();
+            return false;
+        }
         std::vector<double> next;
         if (!solveDense(system.a, system.b, next))
         {
@@ -762,6 +865,9 @@ bool solveDcState(const Circuit& c, const Layout& l, const Options& o, std::vect
 {
     if (error = unsupportedElement(c); !error.empty())
         return false;
+    // A DC solution is computed from programmable devices' initial state
+    // (a transient's later steps advance it; see solveTransient).
+    resetProgrammable(c);
     const auto& none = noReactiveState(c);
     if (warmStart && (int)x.size() == l.size)
     {
@@ -1116,6 +1222,15 @@ int Circuit::addCcvs(const std::string& n, Node op, Node om, int src, double g) 
 int Circuit::addCccs(const std::string& n, Node of, Node ot, int src, double g) { Element e; e.type = Element::Type::Cccs; e.name = n; e.nodes = { of, ot }; e.control = src; e.value = g; return add(e); }
 int Circuit::addDiode(const std::string& n, Node a, Node k, DiodeModel m) { Element e; e.type = Element::Type::Diode; e.name = n; e.nodes = { a, k }; e.diode = m; return add(e); }
 int Circuit::addBjt(const std::string& n, bool npn, Node c, Node b, Node em, BjtModel m) { Element e; e.type = npn ? Element::Type::Npn : Element::Type::Pnp; e.name = n; e.nodes = { c, b, em }; e.bjt = m; return add(e); }
+int Circuit::addProgrammable(const std::string& n, std::vector<Node> pins, std::shared_ptr<ProgrammableDevice> device)
+{
+    Element e;
+    e.type = Element::Type::Programmable;
+    e.name = n;
+    e.nodes = std::move(pins);
+    e.device = std::move(device);
+    return add(e);
+}
 int Circuit::addMosfet(const std::string& n, bool nc, Node d, Node g, Node s, MosModel m) { Element e; e.type = nc ? Element::Type::Nmos : Element::Type::Pmos; e.name = n; e.nodes = { d, g, s }; e.mos = m; return add(e); }
 int Circuit::addJfet(const std::string& n, bool nc, Node d, Node g, Node s, JfetModel m) { Element e; e.type = nc ? Element::Type::Njfet : Element::Type::Pjfet; e.name = n; e.nodes = { d, g, s }; e.jfet = m; return add(e); }
 int Circuit::addOpAmp(const std::string& n, Node ip, Node im, Node out, Node rp, Node rm, OpAmpModel m) { Element e; e.type = Element::Type::OpAmp; e.name = n; e.nodes = { ip, im, out, rp, rm }; e.opamp = m; return add(e); }
@@ -1542,6 +1657,7 @@ TransientResult solveTransient(const Circuit& circuit, const TransientSettings& 
     }
     const auto layout = makeLayout(circuit);
     const auto& parts = circuit.elements();
+    resetProgrammable(circuit);
 
     // Initial state: the operating point with every source at its t = 0 value.
     Circuit atZero = circuit;
@@ -1559,6 +1675,9 @@ TransientResult solveTransient(const Circuit& circuit, const TransientSettings& 
         result.error = "Initial operating point: " + result.error;
         return result;
     }
+    // Programmable devices: the t = 0 solution is their initial accepted state.
+    if (!acceptProgrammable(circuit, x, 0.0, 0.0, result.error))
+        return result;
 
     ReactiveState state { std::vector<double>(parts.size(), 0.0), std::vector<double>(parts.size(), 0.0) };
     for (size_t i = 0; i < parts.size(); ++i)
@@ -1644,7 +1763,14 @@ TransientResult solveTransient(const Circuit& circuit, const TransientSettings& 
         std::string error;
         if (newton(circuit, layout, options, Mode::Transient, x, to, to - from, 1.0, state, its, error))
         {
+            // Accepted: reactive state and programmable devices move on. A
+            // failed (rejected) attempt above changed neither.
             updateState(to - from);
+            if (!acceptProgrammable(circuit, x, to, to - from, error))
+            {
+                result.error = error;
+                return false;
+            }
             return true;
         }
         x = savedX;

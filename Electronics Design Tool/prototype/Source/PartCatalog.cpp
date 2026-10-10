@@ -265,6 +265,7 @@ juce::String displayName(const juce::String& id)
         { "power_bus", "Power Bus" }, { "ground_bus", "Ground Bus" },
         { "oscilloscope_2ch", "Oscilloscope" }, { "digital_multimeter", "Digital Multimeter" }, { "bode_analyzer", "Frequency Analyzer" }, { "xyz_plotter", "2D/3D Plotter" },
         { "sub_block", "Sub-diagram Block" }, { "block_port", "Sub-diagram Port" },
+        { "frust_component", "FRust Programmable Component" },
         { "annotation_text", "Text Note" },
         { "logic_not", "Inverter" }, { "logic_and", "AND Gate" }, { "logic_or", "OR Gate" },
         { "logic_nand", "NAND Gate" }, { "logic_nor", "NOR Gate" }, { "logic_xor", "XOR Gate" } };
@@ -286,6 +287,9 @@ juce::String simulationFidelity(const juce::String& id)
         return "generic_model";
     if (id == "switch_spst" || id == "switch_spdt" || id.startsWith("logic_") || id == "fuse")
         return "ideal";
+    // Its program runs in the internal solver at every Newton iteration (Xyce cannot call it).
+    if (id == "frust_component")
+        return "programmable";
     if (id == "relay_spst" || id == "oscilloscope_2ch" || id == "digital_multimeter" || id == "bode_analyzer" || id == "xyz_plotter"
         || id == "audio_out" || id == "sub_block" || id == "block_port" || id == "annotation_text")
         return "unsupported";

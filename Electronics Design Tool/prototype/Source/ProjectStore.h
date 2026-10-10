@@ -43,6 +43,9 @@ juce::File outputsDirectory(const Project& project, const juce::String& diagramN
 juce::File memoryDirectory(const Project& project);
 // Node programs (FRust node schematics) of the project: programs\<Name>.frnode.json.
 juce::File programsDirectory(const Project& project);
+// FRust programmable component definitions: components\<Name>.frcomp.json,
+// each with its node program beside it (<Name>.frnode.json).
+juce::File componentsDirectory(const Project& project);
 
 // Creates <location>\<name>\ with an empty diagram list. Fails if that
 // folder already holds a project.
