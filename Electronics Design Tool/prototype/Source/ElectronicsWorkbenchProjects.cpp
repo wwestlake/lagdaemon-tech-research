@@ -663,6 +663,11 @@ juce::String ElectronicsWorkbench::projectTool(const juce::String& name, const j
 
     if (name == "project_create")
     {
+        // A relative folder would land in the app's working directory (once, the
+        // source tree); only absolute folders are accepted.
+        if (text("location").isNotEmpty() && !juce::File::isAbsolutePath(text("location")))
+            return fail("location must be an absolute folder path; omit it to use the default projects folder ("
+                        + project_store::defaultProjectsRoot().getFullPathName() + ").");
         const auto location = text("location").isNotEmpty() ? juce::File(text("location")) : project_store::defaultProjectsRoot();
         return createNewProject(location, text("name"), error) ? ok() : fail(error);
     }

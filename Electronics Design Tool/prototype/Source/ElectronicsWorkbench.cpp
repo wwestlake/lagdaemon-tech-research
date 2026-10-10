@@ -209,7 +209,7 @@ const SchematicToolSpec schematicToolSpecs[] = {
     {
         "project_create",
         "Create a new named project (a folder holding named diagrams) and make it the open project. Then create its first diagram with diagram_create.",
-        R"({"type":"object","properties":{"name":{"type":"string","description":"Project name; also the folder name."},"location":{"type":"string","description":"Optional parent folder; defaults to Documents\\Djehuti Electronics Lab\\Projects."}},"required":["name"],"additionalProperties":false})"
+        R"({"type":"object","properties":{"name":{"type":"string","description":"Project name; also the folder name."},"location":{"type":"string","description":"Optional absolute parent folder; omit it to use the default projects folder."}},"required":["name"],"additionalProperties":false})"
     },
     {
         "project_open",
