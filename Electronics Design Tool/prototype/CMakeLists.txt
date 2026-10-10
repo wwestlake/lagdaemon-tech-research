@@ -176,6 +176,10 @@ target_sources(DjehutiElectronicsLab PRIVATE
     Source/NodeDesignerPanel.cpp
     Source/NodeCompiler.h
     Source/NodeCompiler.cpp
+    Source/FrustExecution.h
+    Source/FrustExecution.cpp
+    Source/FrustDebuggerPanel.h
+    Source/FrustDebuggerPanel.cpp
     Source/AudioPipeline.h
     Source/AudioPipeline.cpp
     Source/FrustAudioGenerator.h
@@ -443,10 +447,40 @@ target_link_libraries(NodeDesignerTests PRIVATE
 )
 juce_generate_juce_header(NodeDesignerTests)
 
+# The FRust debugger (FrustExecution): node programs run on the worker, stop
+# at breakpoints, step, report variables and watches, and are stopped; the
+# test drives the real executor with real compiled programs.
+juce_add_console_app(FrustDebuggerTests PRODUCT_NAME "Frust Debugger Tests")
+set_target_properties(FrustDebuggerTests PROPERTIES
+    OUTPUT_NAME "frust_debugger_tests"
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/bin")
+target_sources(FrustDebuggerTests PRIVATE
+    tools/frust_debugger_tests/FrustDebuggerTests.cpp
+    Source/NodeDesignerPanel.cpp
+    Source/NodeCompiler.cpp
+    Source/FrustEngine.cpp
+    Source/FrustExecution.cpp
+    Source/FrustDebuggerPanel.cpp
+)
+target_compile_definitions(FrustDebuggerTests PRIVATE
+    JUCE_WEB_BROWSER=0
+    JUCE_USE_CURL=0
+)
+target_link_libraries(FrustDebuggerTests PRIVATE
+    frust_plugin_host
+    juce::juce_core
+    juce::juce_events
+    juce::juce_graphics
+    juce::juce_data_structures
+    juce::juce_gui_basics
+)
+juce_generate_juce_header(FrustDebuggerTests)
+add_test(NAME FrustDebuggerTests COMMAND FrustDebuggerTests)
+
 # Node programs (and their core pod) call the FRust runtime's exported C
 # functions (frust_format_i64, frust_str_concat, ...); the JIT finds them in
 # this program's export table, so the whole runtime library is linked in.
-foreach(runtime_user DjehutiElectronicsLab NodeDesignerTests)
+foreach(runtime_user DjehutiElectronicsLab NodeDesignerTests FrustDebuggerTests)
     target_link_libraries(${runtime_user} PRIVATE frust_runtime)
     target_link_options(${runtime_user} PRIVATE "LINKER:/WHOLEARCHIVE:$<TARGET_FILE:frust_runtime>")
 endforeach()

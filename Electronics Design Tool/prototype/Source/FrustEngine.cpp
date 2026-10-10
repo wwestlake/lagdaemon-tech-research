@@ -4,6 +4,8 @@
 #include <frust_plugin_host/FrustPluginHostSource.h>
 #include <CompilerApi.h>
 
+#include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cmath>
 #include <iostream>
@@ -73,9 +75,27 @@ extern "C" double djehuti_dsp_exp(double x) { return std::exp(x); }
 extern "C" double djehuti_dsp_log(double x) { return std::log(x); }
 
 // The Frust compiler emits a call to frust_dbg_tick(line, column) before every
-// expression (its IDE debugger hook). The app does not step through Frust code,
-// so it is a no-op; without it no compiled unit links.
-extern "C" void djehuti_frust_dbg_tick(int, int) {}
+// expression (its IDE debugger hook); without a definition no compiled unit
+// links. This registration and the FRust runtime's own frust_dbg_tick (which
+// calls g_frust_dbg_callback) both lead to the app's handler, the debugger;
+// with none installed a tick does nothing.
+std::atomic<TickHandler> tickHandler { nullptr };
+
+extern "C" void djehuti_frust_dbg_tick(int line, int column)
+{
+    if (auto* handler = tickHandler.load(std::memory_order_relaxed))
+        handler(line, column);
+}
+
+// The script running on this thread, so a Stop from inside it can restore
+// standard output and unload it (abandonRunningScript).
+struct RunningScript
+{
+    FrustPluginHandle handle = nullptr;
+    std::ostringstream* printed = nullptr;
+    std::streambuf* consoleBuffer = nullptr;
+};
+thread_local RunningScript* runningScript = nullptr;
 
 void ensureHostSetup()
 {
@@ -213,14 +233,45 @@ bool Engine::isLoaded(const std::string& key) const
     return units.count(key) != 0;
 }
 
+void setTickHandler(TickHandler handler)
+{
+    tickHandler.store(handler);
+}
+
+std::string abandonRunningScript()
+{
+    auto* running = runningScript;
+    if (running == nullptr)
+        return {};
+    runningScript = nullptr;
+    scriptLog = nullptr;
+    std::string printed;
+    if (running->printed != nullptr)
+    {
+        std::cout.rdbuf(running->consoleBuffer);
+        printed = running->printed->str();
+    }
+    if (running->handle != nullptr)
+        frust_plugin_unload(running->handle);
+    return printed;
+}
+
 Result runScript(const std::string& script)
+{
+    return runScript(script, RunOptions {});
+}
+
+Result runScript(const std::string& script, const RunOptions& options)
 {
     ensureHostSetup();
     const std::string unitName = "script.frust";
-    const std::string header = manifestLine("electronics_lab_script", "A script run in Djehuti Electronics Lab.", { "djehuti_frust_log" })
+    std::vector<std::string> hostFunctions { "djehuti_frust_log" };
+    hostFunctions.insert(hostFunctions.end(), options.hostFunctions.begin(), options.hostFunctions.end());
+    const std::string header = manifestLine("electronics_lab_script", "A script run in Djehuti Electronics Lab.", hostFunctions)
                              + "extern fn djehuti_frust_log(text: String) -> i64;\n"
-                               "pub fn print_line(text: String) -> i64 = { djehuti_frust_log(text) }\n";
-    constexpr int headerLines = 3;
+                               "pub fn print_line(text: String) -> i64 = { djehuti_frust_log(text) }\n"
+                             + options.prelude;
+    const int headerLines = (int)std::count(header.begin(), header.end(), '\n');
     const auto source = header + script;
 
     auto result = checkWithOffset(unitName, source, headerLines);
@@ -257,15 +308,29 @@ Result runScript(const std::string& script)
     // The FRust runtime prints (frust_print_str, which node programs' Print
     // nodes call) to standard output; while the script runs that is captured,
     // with its print_line lines in order, as the script's output.
+    if (options.shouldRun != nullptr && !options.shouldRun())
+    {
+        frust_plugin_unload(handle);
+        result.ok = false;
+        result.error = "Stopped before the script ran.";
+        return result;
+    }
     std::vector<std::string> lines;
     std::ostringstream printed;
-    auto* consoleBuffer = std::cout.rdbuf(printed.rdbuf());
+    if (options.beforeRun != nullptr)
+        options.beforeRun(headerLines);
+    RunningScript running;
+    running.handle = handle;
+    running.printed = &printed;
+    running.consoleBuffer = std::cout.rdbuf(printed.rdbuf());
+    runningScript = &running;
     scriptLog = &lines;
     const auto runStart = std::chrono::steady_clock::now();
     const char* returned = run();
     result.runMs = millisecondsSince(runStart);
     scriptLog = nullptr;
-    std::cout.rdbuf(consoleBuffer);
+    runningScript = nullptr;
+    std::cout.rdbuf(running.consoleBuffer);
     result.output += printed.str();
     if (returned != nullptr)
         result.output += returned;

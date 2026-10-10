@@ -1,6 +1,7 @@
 #include <JuceHeader.h>
 
 #include "ElectronicsWorkbench.h"
+#include "FrustExecution.h"
 
 #if JUCE_DEBUG && JUCE_WINDOWS
  #include <crtdbg.h>
@@ -61,7 +62,18 @@ public:
 
     void systemRequestedQuit() override
     {
-        quit();
+        quitAfterFrustStops();
+    }
+
+    // A FRust program still running or paused is stopped first, and the app
+    // quits once its worker has ended (or after 3 s if it cannot be stopped,
+    // e.g. inside native code). Nothing waits on the message thread.
+    static void quitAfterFrustStops()
+    {
+        frust_exec::Executor::instance().shutdown([] {
+            if (auto* app = juce::JUCEApplicationBase::getInstance())
+                app->quit();
+        }, 3000);
     }
 
     void anotherInstanceStarted(const juce::String&) override
@@ -94,7 +106,7 @@ private:
         void closeButtonPressed() override
         {
             if (auto* workbench = dynamic_cast<ElectronicsWorkbench*>(getContentComponent()))
-                workbench->confirmCloseThen([] { juce::JUCEApplication::getInstance()->quit(); });
+                workbench->confirmCloseThen([] { quitAfterFrustStops(); });
             else
                 juce::JUCEApplication::getInstance()->systemRequestedQuit();
         }

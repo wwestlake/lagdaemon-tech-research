@@ -108,8 +108,41 @@ struct SourceMapEntry {
     int column = 1;
 };
 
+// Workbench debugger support. A debug compile emits the same program with
+// calls to the Workbench's debugger host functions (DebugPrelude) added on
+// the lines they belong to, so line numbers do not move: entering and
+// leaving each generated function, and each value a node produces. What the
+// debugger shows is what those calls report while the program runs.
+struct DebugFunction {
+    std::string name;    // generated FRust function
+    std::string nodeId;  // the node it belongs to ("" for the program's own)
+    int firstLine = 0;   // its lines in the generated program; a tick outside
+    int lastLine = 0;    // them is not this call's (e.g. a callee's prologue)
+};
+
+struct DebugSlot {
+    std::string name;                  // the generated variable
+    std::string type;                  // i64, f64, bool or String
+    std::vector<std::string> nodeIds;  // nodes whose value this is
+    std::vector<std::string> valueNames; // i64 values that name something (state, event): index -> name
+};
+
+struct DebugInfo {
+    std::vector<DebugFunction> functions; // index = djehuti_dbg_enter argument
+    std::vector<DebugSlot> slots;         // index = djehuti_dbg_<type> slot argument
+};
+
+struct CompileOptions {
+    bool debugInstrumentation = false;
+};
+
+// The extern declarations a debug compile's source needs; the run puts them
+// ahead of the program (the program's own line numbers do not change).
+std::string DebugPrelude();
+
 struct SchematicCompileResult {
     bool ok = false;
+    DebugInfo debug;          // with CompileOptions::debugInstrumentation
     ArtifactKind artifactKind = ArtifactKind::FunctionSource;
     std::string packageName;
     std::string namespaceName;
@@ -131,6 +164,10 @@ struct SchematicCompileResult {
 // type error comes back as ok=false with that error, not silently
 // handed to the caller as if it were fine.
 CompileResult CompileGraphToSource(const std::string& graphJson);
+// The same with a source map (each node's line) and, when asked for, the
+// debugger instrumentation.
+CompileResult CompileGraphToSource(const std::string& graphJson, const CompileOptions& options,
+                                   std::vector<SourceMapEntry>& sourceMap, DebugInfo& debug);
 
 // Compiles the richer schematic/package JSON. This is the real boundary
 // for IDE node schematics: it accepts v1 graphs and v2 schematics,
@@ -141,6 +178,7 @@ CompileResult CompileGraphToSource(const std::string& graphJson);
 // The older CompileGraphToSource API remains for tests and callers that
 // only need a pure function source string.
 SchematicCompileResult CompileSchematic(const std::string& schematicJson);
+SchematicCompileResult CompileSchematic(const std::string& schematicJson, const CompileOptions& options);
 
 } // namespace node_compiler
 

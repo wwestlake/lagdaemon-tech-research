@@ -429,31 +429,42 @@ public:
             const int nodeUid = hitTestNode(event.position);
             juce::PopupMenu m;
             // Breakpoint and watch markers are saved with the schematic (its
-            // debug section). The Workbench has no FRust debugger attached to
-            // node programs yet, so nothing else happens when they change.
+            // debug section) and used by the Workbench's FRust debugger.
             if (nodeUid > 0) {
                 if (auto* n = owner.findNode(nodeUid)) {
                     m.addItem(1, n->breakpoint ? "Clear Breakpoint" : "Set Breakpoint");
+                    if (n->breakpoint)
+                        m.addItem(4, n->breakpointEnabled ? "Disable Breakpoint" : "Enable Breakpoint");
                     m.addItem(2, n->watched ? "Clear Watch" : "Set Watch");
                 }
             } else {
                 m.addItem(3, "Compile & Run Schematic");
+                m.addItem(5, "Start Debugging");
             }
             m.showMenuAsync(juce::PopupMenu::Options(), [this, nodeUid](int result) {
-                if (result == 1) {
+                if (result == 1 || result == 4) {
                     if (auto* n = owner.findNode(nodeUid)) {
-                        n->breakpoint = !n->breakpoint;
+                        if (result == 1) {
+                            n->breakpoint = !n->breakpoint;
+                            n->breakpointEnabled = true;
+                        } else
+                            n->breakpointEnabled = !n->breakpointEnabled;
+                        owner.debugMarkersChanged();
                         owner.refreshProperties();
                         repaint();
                     }
                 } else if (result == 2) {
                     if (auto* n = owner.findNode(nodeUid)) {
                         n->watched = !n->watched;
+                        owner.debugMarkersChanged();
                         owner.refreshProperties();
                         repaint();
                     }
                 } else if (result == 3) {
                     owner.compileAndRun();
+                } else if (result == 5) {
+                    if (owner.onDebugRequested != nullptr)
+                        owner.onDebugRequested();
                 }
             });
             return;
@@ -503,6 +514,8 @@ public:
             if (n->type == "reroute")
                 return;
             n->breakpoint = !n->breakpoint;
+            n->breakpointEnabled = true;
+            owner.debugMarkersChanged();
             owner.refreshProperties();
             repaint();
         }
@@ -880,11 +893,26 @@ private:
             g.setColour(selected ? juce::Colours::white : juce::Colour(0xff384354));
             g.drawRoundedRectangle(bounds, 6.0f, selected ? 2.0f : 1.0f);
 
+            if (node.id == owner.executionNodeId)
+            {
+                // Execution is stopped at this node.
+                g.setColour(juce::Colour(0xffffd60a));
+                g.drawRoundedRectangle(bounds.expanded(4.0f), 8.0f, 3.0f);
+                juce::Path arrow;
+                const float ax = bounds.getX() - 22.0f, ay = bounds.getY() + headerHeight * zoom * 0.5f;
+                arrow.addTriangle(ax, ay - 7.0f, ax, ay + 7.0f, ax + 12.0f, ay);
+                g.fillPath(arrow);
+            }
+
             if (node.breakpoint)
             {
+                // A disabled breakpoint is drawn hollow.
                 const auto dot = juce::Rectangle<float>(bounds.getX() - 7.0f, bounds.getY() - 7.0f, 14.0f, 14.0f);
                 g.setColour(juce::Colour(0xffff3b30));
-                g.fillEllipse(dot);
+                if (node.breakpointEnabled)
+                    g.fillEllipse(dot);
+                else
+                    g.drawEllipse(dot.reduced(1.0f), 2.0f);
                 g.setColour(juce::Colour(0xfff8d7da));
                 g.drawEllipse(dot, 1.0f);
             }
@@ -1719,7 +1747,7 @@ NodeDesignerPanel::NodeDesignerPanel()
     titleLabel.setColour(juce::Label::textColourId, juce::Colour(0xff7fffd4));
     addAndMakeVisible(titleLabel);
 
-    for (auto* button : { &newButton, &openButton, &saveButton, &validateButton, &compileButton, &saveSourceButton })
+    for (auto* button : { &newButton, &openButton, &saveButton, &validateButton, &compileButton, &saveSourceButton, &debugButton })
     {
         button->setColour(juce::TextButton::buttonColourId, juce::Colour(0xff263942));
         button->setColour(juce::TextButton::textColourOffId, juce::Colour(0xfff0f6f8));
@@ -1735,6 +1763,8 @@ NodeDesignerPanel::NodeDesignerPanel()
     validateButton.onClick = [this] { showValidation(); };
     compileButton.onClick = [this] { compileGraph(); };
     saveSourceButton.onClick = [this] { saveGeneratedSource(); };
+    debugButton.setTooltip("Start Debugging: run the program in the debugger (breakpoints, stepping, variables, watches)");
+    debugButton.onClick = [this] { if (onDebugRequested != nullptr) onDebugRequested(); };
 
     diagramTypeLabel.setColour(juce::Label::textColourId, juce::Colour(0xffdce9ee));
     diagramTypeSelector.addItem("Node Graph", 1);
@@ -1818,10 +1848,10 @@ void NodeDesignerPanel::resized()
     auto b = getLocalBounds().reduced(8);
     auto header = b.removeFromTop(30);
     titleLabel.setBounds(header.removeFromLeft(230));
-    for (auto* button : { &newButton, &openButton, &saveButton, &validateButton, &compileButton, &saveSourceButton })
+    for (auto* button : { &newButton, &openButton, &saveButton, &validateButton, &compileButton, &saveSourceButton, &debugButton })
     {
         header.removeFromLeft(5);
-        button->setBounds(header.removeFromLeft(button == &validateButton || button == &saveSourceButton ? 80 : (button == &compileButton ? 70 : 56)));
+        button->setBounds(header.removeFromLeft(button == &validateButton || button == &saveSourceButton ? 80 : (button == &compileButton || button == &debugButton ? 64 : 56)));
     }
     header.removeFromLeft(14);
     diagramTypeLabel.setBounds(header.removeFromLeft(58));
@@ -2839,7 +2869,10 @@ bool NodeDesignerPanel::loadFromJson(const juce::String& text, juce::String& pro
     if (auto* breakpoints = breakpointsVar.getArray())
         for (const auto& bp : *breakpoints)
             if (auto* n = findNode(ids[propertyText(bp.getProperty("target", {}), "nodeId")]))
-                n->breakpoint = (bool)bp.getProperty("enabled", true);
+            {
+                n->breakpoint = true;
+                n->breakpointEnabled = (bool)bp.getProperty("enabled", true);
+            }
 
     auto watchesVar = debugVar.getProperty("watches", {});
     if (auto* watches = watchesVar.getArray())
@@ -3302,7 +3335,7 @@ juce::String NodeDesignerPanel::buildSchematicJson(bool includeRoutingNodes) con
         if (!first) debug << ", ";
         first = false;
         debug << "{ \"id\": " << quoted("bp_" + n.id) << ", \"target\": { \"kind\": \"node\", \"nodeId\": "
-              << quoted(n.id) << " }, \"enabled\": true, \"condition\": \"\", \"hitCount\": 0 }";
+              << quoted(n.id) << " }, \"enabled\": " << (n.breakpointEnabled ? "true" : "false") << ", \"condition\": \"\", \"hitCount\": 0 }";
     }
     debug << "],\n    \"watches\": [";
     first = true;
@@ -3381,7 +3414,7 @@ juce::StringArray parameterNamesFor(const juce::String& type)
     if (type == "sm_transition") names.addArray(juce::StringArray { "event", "guard", "action" });
     if (type == "sm_event") names.addArray(juce::StringArray { "event", "payloadType" });
     if (type == "state_machine_instance") names.add("machineRef");
-    names.addArray(juce::StringArray { "breakpoint", "watched" });
+    names.addArray(juce::StringArray { "breakpoint", "breakpointEnabled", "watched" });
     return names;
 }
 
@@ -3781,7 +3814,10 @@ bool NodeDesignerPanel::setNodeParameter(const juce::String& nodeId, const juce:
     else if (name == "payloadType") n->payloadType = value.toString();
     else if (name == "machineRef") n->machineRef = value.toString();
     else if (name == "breakpoint") n->breakpoint = (bool)value;
+    else if (name == "breakpointEnabled") n->breakpointEnabled = (bool)value;
     else if (name == "watched") n->watched = (bool)value;
+    if (name == "breakpoint" || name == "breakpointEnabled" || name == "watched")
+        debugMarkersChanged();
     refreshProperties();
     if (canvas != nullptr) canvas->repaint();
     return true;
@@ -3821,6 +3857,7 @@ juce::var NodeDesignerPanel::describeGraph() const
             else if (p == "payloadType") params->setProperty("payloadType", n.payloadType);
             else if (p == "machineRef") params->setProperty("machineRef", n.machineRef);
             else if (p == "breakpoint") params->setProperty("breakpoint", n.breakpoint);
+            else if (p == "breakpointEnabled") params->setProperty("breakpointEnabled", n.breakpointEnabled);
             else if (p == "watched") params->setProperty("watched", n.watched);
         }
         for (int i = 0; i < (int)n.inputs.size() && i < (int)n.inputDefaults.size(); ++i)
@@ -4003,17 +4040,22 @@ bool NodeDesignerPanel::exportProgram(juce::File& packageRoot, juce::String& mes
 
 bool NodeDesignerPanel::buildRunScript(juce::String& script, juce::String& error) const
 {
-    // The reference sent the program to the IDE REPL (adding `compute();`
-    // for function source). A Workbench script is a unit with
-    // `pub fn run() -> String`, so the program gets that entry point:
-    // executable pods run main(); function source returns compute()'s value;
-    // a state-machine library returns its initial state's name.
     if (generatedSource.trim().isEmpty())
     {
         error = "Compile the schematic before running it.";
         return false;
     }
-    const auto& src = generatedSource;
+    return wrapForRun(generatedSource, script, error);
+}
+
+bool NodeDesignerPanel::wrapForRun(const juce::String& src, juce::String& script, juce::String& error)
+{
+    // The reference sent the program to the IDE REPL (adding `compute();`
+    // for function source). A Workbench script is a unit with
+    // `pub fn run() -> String`, so the program gets that entry point after
+    // its own lines: executable pods run main(); function source returns
+    // compute()'s value; a state-machine library returns its initial
+    // state's name.
     if (src.contains("fn main() -> i64"))
     {
         script = src + "\npub fn run() -> String = {\n    main();\n    \"\"\n}\n";
@@ -4075,4 +4117,187 @@ void NodeDesignerPanel::compileAndRun()
         onRunRequested(script, currentGraphFile.existsAsFile() ? currentGraphFile.getFileName() : diagramName);
     else
         setStatus("Compiled. Nothing is connected to run the program here.", true);
+}
+
+// ---------------------------------------------------------------------------
+// Debugging: markers, the debug build, and the execution marker.
+// ---------------------------------------------------------------------------
+
+void NodeDesignerPanel::debugMarkersChanged()
+{
+    if (onDebugMarkersChanged != nullptr)
+        onDebugMarkersChanged();
+}
+
+std::vector<NodeDesignerPanel::BreakpointMarker> NodeDesignerPanel::breakpointMarkers() const
+{
+    std::vector<BreakpointMarker> list;
+    for (const auto& n : nodes)
+        if (n.breakpoint)
+            list.push_back({ n.id, n.breakpointEnabled });
+    return list;
+}
+
+juce::StringArray NodeDesignerPanel::watchedNodes() const
+{
+    juce::StringArray list;
+    for (const auto& n : nodes)
+        if (n.watched)
+            list.add(n.id);
+    return list;
+}
+
+bool NodeDesignerPanel::setBreakpoint(const juce::String& nodeId, bool present, bool enabled, juce::String& error)
+{
+    auto* found = findNodeById(nodeId);
+    if (found == nullptr)
+    {
+        error = "No node '" + nodeId + "'.";
+        return false;
+    }
+    auto* n = findNode(found->uid);
+    n->breakpoint = present;
+    n->breakpointEnabled = enabled;
+    debugMarkersChanged();
+    refreshProperties();
+    if (canvas != nullptr) canvas->repaint();
+    return true;
+}
+
+bool NodeDesignerPanel::setWatch(const juce::String& nodeId, bool watched, juce::String& error)
+{
+    auto* found = findNodeById(nodeId);
+    if (found == nullptr)
+    {
+        error = "No node '" + nodeId + "'.";
+        return false;
+    }
+    findNode(found->uid)->watched = watched;
+    debugMarkersChanged();
+    refreshProperties();
+    if (canvas != nullptr) canvas->repaint();
+    return true;
+}
+
+juce::String NodeDesignerPanel::programId() const
+{
+    return currentGraphFile != juce::File() ? currentGraphFile.getFullPathName() : "unsaved:" + diagramName;
+}
+
+juce::String NodeDesignerPanel::programLabel() const
+{
+    return currentGraphFile.existsAsFile() ? currentGraphFile.getFileName() : diagramName;
+}
+
+juce::String NodeDesignerPanel::panelNodeIdFor(const std::string& compilerId) const
+{
+    // The node compiler names a node by its id, and a state machine's event
+    // by its event name.
+    const auto id = juce::String(compilerId);
+    if (findNodeById(id) != nullptr)
+        return id;
+    for (const auto& n : nodes)
+        if (n.type == "sm_event" && n.eventName == id)
+            return n.id;
+    return {};
+}
+
+std::map<juce::String, int> NodeDesignerPanel::nodeLines(juce::String& error)
+{
+    std::map<juce::String, int> lines;
+    if (diagramType != "state_machine" && selectedTarget() != "frust")
+    {
+        error = "Only the FRust target can be debugged.";
+        return lines;
+    }
+    const auto result = node_compiler::CompileSchematic(buildSchematicJson(false).toStdString());
+    if (!result.ok)
+    {
+        error = "Compilation failed: " + juce::String(result.errorMessage);
+        return lines;
+    }
+    for (const auto& e : result.sourceMap)
+    {
+        const auto id = panelNodeIdFor(e.nodeId);
+        if (id.isNotEmpty() && lines.count(id) == 0)
+            lines[id] = e.line;
+    }
+    return lines;
+}
+
+bool NodeDesignerPanel::buildDebugProgram(frust_exec::Program& program, juce::String& error)
+{
+    if (diagramType == "state_machine")
+    {
+        const auto validation = validateStateMachine();
+        if (validation.isNotEmpty())
+        {
+            error = "State-machine validation failed: " + validation;
+            return false;
+        }
+    }
+    else if (selectedTarget() != "frust")
+    {
+        error = "Only the FRust target can be debugged.";
+        return false;
+    }
+    node_compiler::CompileOptions options;
+    options.debugInstrumentation = true;
+    const auto result = node_compiler::CompileSchematic(buildSchematicJson(false).toStdString(), options);
+    if (!result.ok)
+    {
+        error = "Compilation failed: " + juce::String(result.errorMessage);
+        return false;
+    }
+    juce::String script;
+    if (!wrapForRun(juce::String(result.source), script, error))
+        return false;
+
+    program = {};
+    program.label = programLabel().toStdString();
+    program.programId = programId().toStdString();
+    program.script = script.toStdString();
+    program.programLines = (int)std::count(result.source.begin(), result.source.end(), '\n');
+    program.debug = true;
+    program.prelude = node_compiler::DebugPrelude();
+    program.info = result.debug;
+    // The compiler names nodes as the schematic does, except events (by
+    // event name); everything the debugger reports uses the editor's ids.
+    for (auto& slot : program.info.slots)
+        for (auto& id : slot.nodeIds)
+        {
+            const auto panelId = panelNodeIdFor(id);
+            if (panelId.isNotEmpty()) id = panelId.toStdString();
+        }
+    for (auto& fn : program.info.functions)
+        if (!fn.nodeId.empty())
+        {
+            const auto panelId = panelNodeIdFor(fn.nodeId);
+            if (panelId.isNotEmpty()) fn.nodeId = panelId.toStdString();
+        }
+    std::map<juce::String, int> lines;
+    for (const auto& e : result.sourceMap)
+    {
+        const auto id = panelNodeIdFor(e.nodeId);
+        if (id.isEmpty())
+            continue;
+        if (lines.count(id) == 0)
+            lines[id] = e.line;
+        program.lineNodes.emplace(e.line, id.toStdString());
+    }
+    for (const auto& marker : breakpointMarkers())
+        program.breakpoints.push_back({ marker.nodeId.toStdString(), lines.count(marker.nodeId) != 0 ? lines[marker.nodeId] : 0,
+                                        marker.enabled, 0 });
+    for (const auto& id : watchedNodes())
+        program.watches.push_back(id.toStdString());
+    return true;
+}
+
+void NodeDesignerPanel::setExecutionMarker(const juce::String& nodeId)
+{
+    if (executionNodeId == nodeId)
+        return;
+    executionNodeId = nodeId;
+    if (canvas != nullptr)
+        canvas->repaint();
 }

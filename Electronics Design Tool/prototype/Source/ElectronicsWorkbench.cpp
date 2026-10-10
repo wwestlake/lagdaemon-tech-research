@@ -12,6 +12,8 @@
 #include "FrustPanel.h"
 #include "PcbPanel.h"
 #include "NodeDesignerPanel.h"
+#include "FrustExecution.h"
+#include "FrustDebuggerPanel.h"
 #include <djehuti_route/outline.h>
 #include "Preferences.h"
 #include "AudioPipeline.h"
@@ -414,8 +416,8 @@ const SchematicToolSpec schematicToolSpecs[] = {
     },
     {
         "frust_run",
-        "Compile Frust source with the app's embedded Frust compiler (in memory, LLVM JIT) and run it in the app. The source must define `pub fn run() -> String`; print_line(text: String) -> i64 adds output lines. Returns the output, or compile diagnostics with line numbers. The code is shown in the Frust panel.",
-        R"({"type":"object","properties":{"source":{"type":"string","description":"Frust source defining pub fn run() -> String."}},"required":["source"],"additionalProperties":false})"
+        "Compile Frust source with the app's embedded Frust compiler (in memory, LLVM JIT) and run it in the app. The source must define `pub fn run() -> String`; print_line(text: String) -> i64 adds output lines. Runs on the FRust worker thread; returns the output once it ends, or compile diagnostics with line numbers. If it has not ended after wait_ms the reply says it is still running (node_debug_stop ends it). The code is shown in the Frust panel.",
+        R"({"type":"object","properties":{"source":{"type":"string","description":"Frust source defining pub fn run() -> String."},"wait_ms":{"type":"integer","description":"How long to wait for it to end (default 10000, at most 100000)."}},"required":["source"],"additionalProperties":false})"
     },
     {
         "frust_check",
@@ -494,8 +496,78 @@ const SchematicToolSpec schematicToolSpecs[] = {
     },
     {
         "node_program_run",
-        "Compile the open node program and run it in the app with the embedded FRust compiler (Compile & Run). Returns what it printed and returned; the code and output are shown in the Frust panel. Function programs with inputs cannot be run this way (compute() is called without arguments).",
+        "Compile the open node program and run it in the app with the embedded FRust compiler (Compile & Run), on the FRust worker thread. Returns what it printed and returned once it ends; the code and output are shown in the Frust panel. If it has not ended after wait_ms the reply says it is still running (node_debug_state reads it, node_debug_stop ends it). Function programs with inputs cannot be run this way (compute() is called without arguments).",
+        R"({"type":"object","properties":{"wait_ms":{"type":"integer","description":"How long to wait for the program to end (default 10000, at most 100000)."}},"additionalProperties":false})"
+    },
+    {
+        "node_debug_start",
+        "Start Debugging the open node program: compile it with the debugger's instrumentation and run it on the FRust worker with its breakpoints and watches. Replies when it stops (breakpoint) or ends, or after wait_ms. The reply is the debugger state: state, where it is paused (line, node), call stack with variables, watches, breakpoints (with lines and hits), and output when it has ended.",
+        R"({"type":"object","properties":{"wait_ms":{"type":"integer","description":"How long to wait for a stop or the end (default 10000, at most 100000)."}},"additionalProperties":false})"
+    },
+    {
+        "node_debug_continue",
+        "Continue a paused debug session to the next enabled breakpoint or the end. Replies when it stops again or ends, or after wait_ms, with the debugger state.",
+        R"({"type":"object","properties":{"wait_ms":{"type":"integer"}},"additionalProperties":false})"
+    },
+    {
+        "node_debug_step_into",
+        "Step Into: run a paused program to its next line, in the current call or in any call it makes (stopping on the called function's first line). Replies with the debugger state.",
+        R"({"type":"object","properties":{"wait_ms":{"type":"integer"}},"additionalProperties":false})"
+    },
+    {
+        "node_debug_step_over",
+        "Step Over: run a paused program to the next line of the current call, running any calls on this line without stopping in them (unless a breakpoint is there); at the end of a function it stops in the caller. Replies with the debugger state.",
+        R"({"type":"object","properties":{"wait_ms":{"type":"integer"}},"additionalProperties":false})"
+    },
+    {
+        "node_debug_step_out",
+        "Step Out: run a paused program until the current call returns, stopping in the caller where the call returns to (unless a breakpoint stops it first). From the outermost call it runs to the end. Replies with the debugger state.",
+        R"({"type":"object","properties":{"wait_ms":{"type":"integer"}},"additionalProperties":false})"
+    },
+    {
+        "node_debug_pause",
+        "Pause a running debug session at the next line it reaches. Replies once it is paused or has ended.",
+        R"({"type":"object","properties":{"wait_ms":{"type":"integer"}},"additionalProperties":false})"
+    },
+    {
+        "node_debug_stop",
+        "Stop the running FRust program (any: a debug session, node_program_run, frust_run or the Frust panel's Run). A paused program is released and ended; a running one ends at its next expression. Replies once it has ended.",
+        R"({"type":"object","properties":{"wait_ms":{"type":"integer"}},"additionalProperties":false})"
+    },
+    {
+        "node_debug_state",
+        "Read the FRust executor's state now: idle, compiling, running, paused, completed, failed or cancelled; where a paused program is stopped (reason, line, node); the call stack with each call's recorded variables; watches; breakpoints; and the output and errors of a program that has ended.",
         R"({"type":"object","properties":{},"additionalProperties":false})"
+    },
+    {
+        "node_debug_stack",
+        "Read the call stack of the paused program, innermost call first: each generated function, the line and node it is at.",
+        R"({"type":"object","properties":{},"additionalProperties":false})"
+    },
+    {
+        "node_debug_variables",
+        "Read the variables of a call in the paused program's stack (frame 0 is the innermost): each value recorded by the running program so far in that call, with its type and the nodes it belongs to.",
+        R"({"type":"object","properties":{"frame":{"type":"integer","description":"Stack index (default 0, the innermost call)."}},"additionalProperties":false})"
+    },
+    {
+        "node_debug_watches",
+        "Read the watched nodes' values: the last value each produced while the debug session ran (with where it was recorded), not computed yet, or no value (the node has no value in the generated program).",
+        R"({"type":"object","properties":{},"additionalProperties":false})"
+    },
+    {
+        "node_debug_breakpoint",
+        "Set, clear, enable or disable a breakpoint on a node of the open node program (saved with the program). A running debug session of the program follows the change at once. Execution stops when it reaches the node's line in the generated program; nodes with no code of their own (such as literals inlined into a Print) cannot stop execution and are reported so.",
+        R"({"type":"object","properties":{"node":{"type":"string"},"set":{"type":"boolean","description":"true to have a breakpoint (default), false to remove it."},"enabled":{"type":"boolean","description":"false keeps the breakpoint but disabled (default true)."}},"required":["node"],"additionalProperties":false})"
+    },
+    {
+        "node_debug_breakpoints",
+        "List the open node program's breakpoints: node, enabled, the node's line in the generated program (none for a node with no code of its own), and hit counts in a running debug session.",
+        R"({"type":"object","properties":{},"additionalProperties":false})"
+    },
+    {
+        "node_debug_watch",
+        "Set or clear a watch on a node of the open node program (saved with the program); a running debug session follows the change.",
+        R"({"type":"object","properties":{"node":{"type":"string"},"set":{"type":"boolean","description":"true to watch (default), false to stop watching."}},"required":["node"],"additionalProperties":false})"
     },
     {
         "node_program_validate",
@@ -14158,6 +14230,8 @@ ElectronicsWorkbench::ElectronicsWorkbench()
     };
     agentTools.toolManifest = [this] { return buildAssistantToolManifestJson(); };
     agentTools.longTool = [this](const juce::String& name, const juce::var& args, std::function<void(juce::String)> done) {
+        if (name == "frust_run" || name == "node_program_run" || name.startsWith("node_debug_"))
+            return frustExecutionTool(name, args, std::move(done));
         if (name != "pcb_route" || pcbPanel == nullptr)
             return false;
         if (pcbPanel->isRouting())
@@ -14226,13 +14300,46 @@ ElectronicsWorkbench::ElectronicsWorkbench()
     dockManager->registerPanel("nodes", "Node Designer", std::move(nodeDesignerOwner), CreationDock::DockTargetZone::CenterTab);
     auto frustOwner = std::make_unique<FrustPanel>();
     frustPanel = frustOwner.get();
-    // Compile & Run in the Node Designer runs the generated program in the
-    // Frust panel, which shows the code and its output.
+    // Compile & Run in the Node Designer runs the generated program on the
+    // FRust worker; the Frust panel shows the code and its output.
     nodeDesignerPanel->onRunRequested = [this](const juce::String& script, const juce::String& label) {
-        const auto result = frustPanel->runNow(script);
-        appendLog("Node program " + label + (result.ok ? " ran." : " did not run: " + juce::String(result.report())));
+        std::string error;
+        if (!frustPanel->start(script, label, error))
+            appendLog("Node program " + label + " did not start: " + juce::String(error));
     };
+    nodeDesignerPanel->onDebugRequested = [this] {
+        const auto why = startNodeDebugging();
+        if (why.isNotEmpty())
+            appendLog("Start Debugging: " + why);
+    };
+    nodeDesignerPanel->onDebugMarkersChanged = [this] { syncDebugMarkers(); };
     dockManager->registerPanel("frust", "Frust", std::move(frustOwner), CreationDock::DockTargetZone::Bottom);
+    FrustDebuggerPanel::Actions debugActions;
+    debugActions.startDebugging = [this] { return startNodeDebugging(); };
+    debugActions.breakpoints = [this] {
+        std::vector<frust_exec::Breakpoint> list;
+        if (nodeDesignerPanel == nullptr)
+            return list;
+        juce::String ignored;
+        const auto lines = nodeDesignerPanel->nodeLines(ignored);
+        for (const auto& m : nodeDesignerPanel->breakpointMarkers())
+            list.push_back({ m.nodeId.toStdString(), lines.count(m.nodeId) != 0 ? lines.at(m.nodeId) : 0, m.enabled, 0 });
+        return list;
+    };
+    debugActions.setBreakpointEnabled = [this](const juce::String& nodeId, bool enabled) {
+        juce::String ignored;
+        if (nodeDesignerPanel != nullptr)
+            nodeDesignerPanel->setBreakpoint(nodeId, true, enabled, ignored);
+    };
+    debugActions.removeBreakpoint = [this](const juce::String& nodeId) {
+        juce::String ignored;
+        if (nodeDesignerPanel != nullptr)
+            nodeDesignerPanel->setBreakpoint(nodeId, false, true, ignored);
+    };
+    auto debuggerOwner = std::make_unique<FrustDebuggerPanel>(std::move(debugActions));
+    debuggerPanel = debuggerOwner.get();
+    dockManager->registerPanel("debugger", "Debugger", std::move(debuggerOwner), CreationDock::DockTargetZone::Right);
+    executionListener = frust_exec::Executor::instance().addListener([this](const frust_exec::Snapshot&) { executionChanged(); });
     dockManager->registerPanel("console", "Console", std::make_unique<ConsolePanel>(logConsole), CreationDock::DockTargetZone::Bottom);
     auto lp = std::make_unique<LogPanel>(); logPanel = lp.get(); dockManager->registerPanel("log", "Log", std::move(lp), CreationDock::DockTargetZone::Bottom);
     dockManager->registerPanel("agent", "BYOK Agent", std::move(agent), CreationDock::DockTargetZone::Right);
@@ -14277,6 +14384,7 @@ void ElectronicsWorkbench::showPreferences()
 
 ElectronicsWorkbench::~ElectronicsWorkbench()
 {
+    frust_exec::Executor::instance().removeListener(executionListener);
     prefs::removeListener(preferenceListener);
     preferencesWindow = nullptr;
     if (dockManager != nullptr)
@@ -16812,10 +16920,8 @@ juce::String ElectronicsWorkbench::frustTool(const juce::String& name, const juc
         return juce::JSON::toString(juce::var(root));
     }
     const auto source = args.getProperty("source", {}).toString();
-    const auto result = name == "frust_run" ? frustPanel->runNow(source) : frustPanel->checkNow(source);
+    const auto result = frustPanel->checkNow(source);
     root->setProperty("ok", result.ok);
-    if (name == "frust_run" && result.ok)
-        root->setProperty("output", juce::String(result.output));
     if (!result.error.empty())
         root->setProperty("error", juce::String(result.error));
     juce::Array<juce::var> diagnostics;
@@ -16830,8 +16936,310 @@ juce::String ElectronicsWorkbench::frustTool(const juce::String& name, const juc
     }
     root->setProperty("diagnostics", diagnostics);
     root->setProperty("compileMs", result.compileMs);
-    if (name == "frust_run") root->setProperty("runMs", result.runMs);
     return juce::JSON::toString(juce::var(root), true);
+}
+
+// ---------------------------------------------------------------------------
+// FRust execution and the debugger. Programs run on the FRust worker
+// (frust_exec::Executor); these tools start or steer one and reply (through
+// `done`, on the message thread) when it reaches the state asked for, so the
+// message thread never waits for a program.
+// ---------------------------------------------------------------------------
+
+juce::String ElectronicsWorkbench::startNodeDebugging()
+{
+    if (nodeDesignerPanel == nullptr)
+        return "The Node Designer is unavailable.";
+    frust_exec::Program program;
+    juce::String error;
+    if (!nodeDesignerPanel->buildDebugProgram(program, error))
+        return error;
+    const auto label = juce::String(program.label);
+    std::string startError;
+    if (!frust_exec::Executor::instance().start(std::move(program), startError))
+        return juce::String(startError);
+    appendLog("Debugging node program " + label + ".");
+    return {};
+}
+
+void ElectronicsWorkbench::syncDebugMarkers()
+{
+    if (nodeDesignerPanel == nullptr)
+        return;
+    std::vector<frust_exec::Breakpoint> breakpoints;
+    for (const auto& m : nodeDesignerPanel->breakpointMarkers())
+        breakpoints.push_back({ m.nodeId.toStdString(), 0, m.enabled, 0 });
+    std::vector<std::string> watches;
+    for (const auto& w : nodeDesignerPanel->watchedNodes())
+        watches.push_back(w.toStdString());
+    frust_exec::Executor::instance().updateMarkers(nodeDesignerPanel->programId().toStdString(), breakpoints, watches);
+    if (debuggerPanel != nullptr)
+        debuggerPanel->refreshBreakpoints();
+}
+
+void ElectronicsWorkbench::executionChanged()
+{
+    const auto snap = frust_exec::Executor::instance().snapshot();
+    if (nodeDesignerPanel != nullptr)
+        nodeDesignerPanel->setExecutionMarker(snap.state == frust_exec::State::Paused
+                                                      && snap.programId == nodeDesignerPanel->programId().toStdString()
+                                                  ? juce::String(snap.nodeId)
+                                                  : juce::String());
+    if (snap.session != 0 && !frust_exec::isActive(snap.state) && snap.session != lastReportedSession)
+    {
+        lastReportedSession = snap.session;
+        juce::String line = "FRust program " + juce::String(snap.label) + " " + frust_exec::stateName(snap.state);
+        if (snap.state == frust_exec::State::Failed)
+            line << ": " << juce::String(snap.result.report()).trim();
+        appendLog(line + ".");
+    }
+}
+
+bool ElectronicsWorkbench::frustExecutionTool(const juce::String& name, const juce::var& args, std::function<void(juce::String)> done)
+{
+    using frust_exec::State;
+    auto& executor = frust_exec::Executor::instance();
+    auto fail = [name, done](const juce::String& error) {
+        auto* o = new juce::DynamicObject();
+        o->setProperty("tool", name);
+        o->setProperty("ok", false);
+        o->setProperty("error", error);
+        done(juce::JSON::toString(juce::var(o), true));
+        return true;
+    };
+    auto reply = [name, done](juce::var state, bool timedOut) {
+        auto* o = state.getDynamicObject();
+        o->setProperty("tool", name);
+        // A program that failed to compile or run is a failed tool call;
+        // stopped, paused or still running is an answer.
+        o->setProperty("ok", state.getProperty("state", {}).toString() != "failed");
+        if (timedOut)
+            o->setProperty("note", "Still " + state.getProperty("state", {}).toString()
+                                       + " after wait_ms; node_debug_state reads it, node_debug_stop ends it.");
+        done(juce::JSON::toString(state, true));
+        return true;
+    };
+    const int waitMs = juce::jlimit(0, 100000, (int)args.getProperty("wait_ms", 10000));
+    // Replies once the session is no longer running (paused or ended); with
+    // `untilEnded`, only when it has ended.
+    auto replyWhenSettled = [&executor, reply, waitMs](juce::uint64 session, bool untilEnded) {
+        executor.whenState(
+            [session, untilEnded](const frust_exec::Snapshot& s) {
+                if (s.session != session)
+                    return true;
+                return untilEnded ? !frust_exec::isActive(s.state) : (s.state == State::Paused || !frust_exec::isActive(s.state));
+            },
+            waitMs,
+            [reply](const frust_exec::Snapshot& s, bool timedOut) { reply(frust_exec::toVar(s), timedOut); });
+        return true;
+    };
+    // frust_run / node_program_run: the earlier reply shape (output, error,
+    // diagnostics, runMs) plus the state.
+    auto replyWhenRunEnds = [&executor, name, done, waitMs](juce::uint64 session) {
+        executor.whenState(
+            [session](const frust_exec::Snapshot& s) { return s.session != session || !frust_exec::isActive(s.state); },
+            waitMs,
+            [name, done](const frust_exec::Snapshot& s, bool timedOut) {
+                auto* o = new juce::DynamicObject();
+                o->setProperty("tool", name);
+                o->setProperty("state", frust_exec::stateName(s.state));
+                if (timedOut)
+                {
+                    o->setProperty("ok", true);
+                    o->setProperty("note", "Still running after wait_ms; node_debug_state reads it, node_debug_stop ends it.");
+                }
+                else
+                {
+                    const auto& r = s.result;
+                    o->setProperty("ok", r.ok);
+                    if (r.ok || s.state == State::Cancelled)
+                        o->setProperty("output", juce::String(r.output));
+                    if (!r.error.empty())
+                        o->setProperty("error", juce::String(r.error));
+                    juce::Array<juce::var> diagnostics;
+                    for (const auto& d : r.diagnostics)
+                    {
+                        auto* dv = new juce::DynamicObject();
+                        dv->setProperty("severity", d.error ? "error" : "warning");
+                        dv->setProperty("line", d.line);
+                        dv->setProperty("column", d.column);
+                        dv->setProperty("message", juce::String(d.message));
+                        diagnostics.add(juce::var(dv));
+                    }
+                    if (!diagnostics.isEmpty())
+                        o->setProperty("diagnostics", diagnostics);
+                    o->setProperty("compileMs", r.compileMs);
+                    o->setProperty("runMs", r.runMs);
+                }
+                done(juce::JSON::toString(juce::var(o), true));
+            });
+        return true;
+    };
+
+    if (name == "frust_run")
+    {
+        if (frustPanel == nullptr)
+            return fail("The Frust panel is unavailable.");
+        std::string error;
+        if (!frustPanel->start(args.getProperty("source", {}).toString(), "frust_run", error))
+            return fail(juce::String(error));
+        return replyWhenRunEnds(frustPanel->lastSession());
+    }
+    if (nodeDesignerPanel == nullptr)
+        return fail("The Node Designer is unavailable.");
+    auto& panel = *nodeDesignerPanel;
+    if (name == "node_program_run")
+    {
+        juce::String message, script, error;
+        if (!panel.compileProgram(message))
+            return fail(message);
+        if (!panel.buildRunScript(script, error))
+            return fail(error);
+        if (frustPanel == nullptr)
+            return fail("The Frust panel is unavailable.");
+        std::string startError;
+        if (!frustPanel->start(script, panel.programLabel(), startError))
+            return fail(juce::String(startError));
+        return replyWhenRunEnds(frustPanel->lastSession());
+    }
+    if (name == "node_debug_start")
+    {
+        const auto why = startNodeDebugging();
+        if (why.isNotEmpty())
+            return fail(why);
+        return replyWhenSettled(executor.snapshot().session, false);
+    }
+    if (name == "node_debug_continue" || name == "node_debug_step_into" || name == "node_debug_step_over" || name == "node_debug_step_out")
+    {
+        const auto command = name == "node_debug_continue"    ? frust_exec::Command::Continue
+                           : name == "node_debug_step_into"  ? frust_exec::Command::StepInto
+                           : name == "node_debug_step_over"  ? frust_exec::Command::StepOver
+                                                             : frust_exec::Command::StepOut;
+        std::string error;
+        if (!executor.command(command, error))
+            return fail(juce::String(error));
+        return replyWhenSettled(executor.snapshot().session, false);
+    }
+    if (name == "node_debug_pause")
+    {
+        std::string error;
+        if (!executor.pause(error))
+            return fail(juce::String(error));
+        return replyWhenSettled(executor.snapshot().session, false);
+    }
+    if (name == "node_debug_stop")
+    {
+        std::string error;
+        if (!executor.stop(error))
+            return fail(juce::String(error));
+        return replyWhenSettled(executor.snapshot().session, true);
+    }
+
+    const auto snap = executor.snapshot();
+    auto state = frust_exec::toVar(snap);
+    if (name == "node_debug_state")
+        return reply(state, false);
+    if (name == "node_debug_stack" || name == "node_debug_variables")
+    {
+        if (snap.state != State::Paused)
+            return fail("The program is " + juce::String(frust_exec::stateName(snap.state)) + "; the stack and variables are read while it is paused.");
+        auto stack = state.getProperty("stack", {});
+        auto* o = new juce::DynamicObject();
+        o->setProperty("tool", name);
+        o->setProperty("ok", true);
+        o->setProperty("paused", state.getProperty("paused", {}));
+        if (name == "node_debug_stack")
+        {
+            juce::Array<juce::var> frames;
+            if (auto* list = stack.getArray())
+                for (const auto& f : *list)
+                {
+                    auto* fo = new juce::DynamicObject();
+                    for (const auto* key : { "index", "function", "functionNode", "line", "column", "node" })
+                        if (f.hasProperty(key))
+                            fo->setProperty(key, f.getProperty(key, {}));
+                    frames.add(juce::var(fo));
+                }
+            o->setProperty("stack", frames);
+        }
+        else
+        {
+            const int frame = (int)args.getProperty("frame", 0);
+            auto* list = stack.getArray();
+            if (list == nullptr || frame < 0 || frame >= list->size())
+                return fail("No frame " + juce::String(frame) + "; the stack has " + juce::String(list != nullptr ? list->size() : 0) + ".");
+            const auto& f = list->getReference(frame);
+            o->setProperty("frame", frame);
+            o->setProperty("function", f.getProperty("function", {}));
+            o->setProperty("line", f.getProperty("line", {}));
+            o->setProperty("variables", f.getProperty("variables", {}));
+        }
+        done(juce::JSON::toString(juce::var(o), true));
+        return true;
+    }
+    if (name == "node_debug_watches")
+    {
+        auto* o = new juce::DynamicObject();
+        o->setProperty("tool", name);
+        o->setProperty("ok", true);
+        o->setProperty("state", state.getProperty("state", {}));
+        if (snap.debug)
+            o->setProperty("watches", state.getProperty("watches", {}));
+        else
+        {
+            juce::Array<juce::var> list;
+            for (const auto& w : panel.watchedNodes())
+                list.add(w);
+            o->setProperty("watched", list);
+            o->setProperty("note", "No debug session has run since the app started; watch values are recorded while one runs (node_debug_start).");
+        }
+        done(juce::JSON::toString(juce::var(o), true));
+        return true;
+    }
+    if (name == "node_debug_breakpoint" || name == "node_debug_watch" || name == "node_debug_breakpoints")
+    {
+        juce::String error;
+        const auto node = args.getProperty("node", {}).toString().trim();
+        if (name == "node_debug_breakpoint"
+            && !panel.setBreakpoint(node, (bool)args.getProperty("set", true), (bool)args.getProperty("enabled", true), error))
+            return fail(error);
+        if (name == "node_debug_watch" && !panel.setWatch(node, (bool)args.getProperty("set", true), error))
+            return fail(error);
+        juce::String linesError;
+        const auto lines = panel.nodeLines(linesError);
+        const auto live = executor.snapshot();
+        const bool sessionOfThisProgram = frust_exec::isActive(live.state) && live.debug && live.programId == panel.programId().toStdString();
+        juce::Array<juce::var> list;
+        for (const auto& m : panel.breakpointMarkers())
+        {
+            auto* bo = new juce::DynamicObject();
+            bo->setProperty("node", m.nodeId);
+            bo->setProperty("enabled", m.enabled);
+            if (lines.count(m.nodeId) != 0)
+                bo->setProperty("line", lines.at(m.nodeId));
+            else if (linesError.isEmpty())
+                bo->setProperty("note", "This node has no code of its own in the generated program, so execution cannot stop at it.");
+            if (sessionOfThisProgram)
+                for (const auto& b : live.breakpoints)
+                    if (juce::String(b.nodeId) == m.nodeId)
+                        bo->setProperty("hits", b.hits);
+            list.add(juce::var(bo));
+        }
+        juce::Array<juce::var> watches;
+        for (const auto& w : panel.watchedNodes())
+            watches.add(w);
+        auto* o = new juce::DynamicObject();
+        o->setProperty("tool", name);
+        o->setProperty("ok", true);
+        o->setProperty("breakpoints", list);
+        o->setProperty("watches", watches);
+        if (linesError.isNotEmpty())
+            o->setProperty("linesUnavailable", linesError);
+        o->setProperty("liveSession", sessionOfThisProgram);
+        done(juce::JSON::toString(juce::var(o), true));
+        return true;
+    }
+    return fail("Unknown FRust execution tool.");
 }
 
 juce::String ElectronicsWorkbench::nodeProgramTool(const juce::String& name, const juce::var& args)
@@ -16965,19 +17373,6 @@ juce::String ElectronicsWorkbench::nodeProgramTool(const juce::String& name, con
             files.add(f.getRelativePathFrom(packageRoot).replaceCharacter('\\', '/'));
         root->setProperty("folder", packageRoot.getFullPathName());
         root->setProperty("files", files);
-    }
-    else if (name == "node_program_run")
-    {
-        juce::String message, script;
-        if (!panel.compileProgram(message))
-            return fail(message);
-        if (!panel.buildRunScript(script, error))
-            return fail(error);
-        const auto result = frustPanel != nullptr ? frustPanel->runNow(script) : frust_engine::runScript(script.toStdString());
-        if (!result.ok)
-            return fail("The compiled program did not run: " + juce::String(result.report()));
-        root->setProperty("output", juce::String(result.output));
-        root->setProperty("runMs", result.runMs);
     }
     else if (name == "node_program_validate")
     {

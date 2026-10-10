@@ -256,8 +256,8 @@ bool EmitNode(CodegenState& st, const NodeDef& n) {
 // embedded FRust compiler (frust::Compile through frust_engine, the same
 // compiler that runs it). The reference parsed it through frust_lang's
 // internal Lexer/Parser/Codegen.
-bool ValidateCompiles(const std::string& source, std::string& err) {
-    const auto checked = frust_engine::check("node_program.fr", source);
+bool ValidateCompiles(const std::string& source, std::string& err, bool debug = false) {
+    const auto checked = frust_engine::check("node_program.fr", debug ? DebugPrelude() + source : source);
     if (checked.ok)
         return true;
     std::ostringstream msg;
@@ -290,10 +290,59 @@ std::string PrintExterns(const std::set<std::string>& valueTypes) {
     return out;
 }
 
+// Workbench debugger instrumentation (see DebugInfo). Each call is one
+// statement put on the line it belongs to.
+std::string DebugEnter(int fn) { return "djehuti_dbg_enter(" + std::to_string(fn) + ");"; }
+std::string DebugLeave(int fn) { return "djehuti_dbg_leave(" + std::to_string(fn) + ");"; }
+
+// The type's record call, or "" for a type the debugger cannot show.
+std::string DebugRecord(int slot, const std::string& type, const std::string& expression) {
+    const auto n = std::to_string(slot);
+    if (type == "i64") return "djehuti_dbg_i64(" + n + ", " + expression + ");";
+    if (type == "f64") return "djehuti_dbg_f64(" + n + ", " + expression + ");";
+    if (type == "bool") return "djehuti_dbg_bool(" + n + ", if (" + expression + ") { 1 } else { 0 });";
+    if (type == "String" || type == "string") return "djehuti_dbg_str(" + n + ", " + expression + ");";
+    return {};
+}
+
+int AddFunction(DebugInfo& info, const std::string& name, const std::string& nodeId, int firstLine) {
+    info.functions.push_back({ name, nodeId, firstLine, 0 });
+    return (int)info.functions.size() - 1;
+}
+
+// Each function runs to the line before the next one starts (blank lines
+// between them have no code); the last to the end of the program.
+void FinishFunctionRanges(DebugInfo& info, int totalLines) {
+    for (auto& fn : info.functions) {
+        fn.lastLine = totalLines;
+        for (const auto& other : info.functions)
+            if (other.firstLine > fn.firstLine && other.firstLine - 1 < fn.lastLine)
+                fn.lastLine = other.firstLine - 1;
+    }
+}
+
+int AddSlot(DebugInfo& info, const std::string& name, const std::string& type,
+            std::vector<std::string> nodeIds, std::vector<std::string> valueNames = {}) {
+    info.slots.push_back({ name, type == "string" ? "String" : type, std::move(nodeIds), std::move(valueNames) });
+    return (int)info.slots.size() - 1;
+}
+
+int CountLines(const std::string& text) {
+    return (int)std::count(text.begin(), text.end(), '\n');
+}
+
 } // namespace
 
 CompileResult CompileGraphToSource(const std::string& graphJson) {
+    std::vector<SourceMapEntry> sourceMap;
+    DebugInfo debug;
+    return CompileGraphToSource(graphJson, {}, sourceMap, debug);
+}
+
+CompileResult CompileGraphToSource(const std::string& graphJson, const CompileOptions& options,
+                                   std::vector<SourceMapEntry>& sourceMap, DebugInfo& debug) {
     CompileResult result;
+    const bool instrument = options.debugInstrumentation;
 
     juce::var parsed;
     auto parseResult = juce::JSON::parse(juce::String(graphJson), parsed);
@@ -363,10 +412,24 @@ CompileResult CompileGraphToSource(const std::string& graphJson) {
     std::map<std::string, NodeDef*> byId;
     for (auto& n : nodes) byId[n.id] = &n;
 
+    // Each node's line in the body (and, debugging, its value recorded on it).
+    std::vector<std::pair<std::string, int>> nodeBodyLines;
     for (auto& id : order) {
+        const int bodyLine = CountLines(st.body.str());
         if (!EmitNode(st, *byId[id])) {
             result.errorMessage = genErr;
             return result;
+        }
+        nodeBodyLines.push_back({ id, bodyLine });
+        if (instrument && st.resultType.count(id)) {
+            const auto record = DebugRecord((int)debug.slots.size(), st.resultType[id], id);
+            if (!record.empty()) {
+                AddSlot(debug, id, st.resultType[id], { id });
+                auto text = st.body.str();
+                text.pop_back(); // the let's newline
+                st.body.str(text + " " + record + "\n");
+                st.body.seekp(0, std::ios_base::end);
+            }
         }
     }
 
@@ -379,15 +442,32 @@ CompileResult CompileGraphToSource(const std::string& graphJson) {
     std::ostringstream src;
     src << st.externs.str();
     if (!st.externs.str().empty()) src << "\n";
+    const int bodyStart = CountLines(src.str()) + 2; // the signature is the line before
     src << "pub fn " << functionName << "(";
     for (size_t i = 0; i < params.size(); ++i) { if (i) src << ", "; src << params[i].name << ": " << params[i].type; }
-    src << ") -> " << returnType << " = {\n";
+    src << ") -> " << returnType << " = {";
+    int fn = -1;
+    if (instrument) {
+        fn = AddFunction(debug, functionName, "", bodyStart - 1);
+        src << " " << DebugEnter(fn);
+        for (const auto& p : params) {
+            const auto record = DebugRecord((int)debug.slots.size(), p.type, p.name);
+            if (record.empty()) continue;
+            AddSlot(debug, p.name, p.type, {});
+            src << " " << record;
+        }
+    }
+    src << "\n";
     src << st.body.str();
-    src << "    " << outputId << "\n";
+    src << "    " << (instrument ? DebugLeave(fn) + " " : std::string()) << outputId << "\n";
     src << "}\n";
+    for (const auto& [id, bodyLine] : nodeBodyLines)
+        sourceMap.push_back({ id, "", bodyStart + bodyLine, 5 });
+    if (instrument)
+        FinishFunctionRanges(debug, CountLines(src.str()));
 
     std::string validateErr;
-    if (!ValidateCompiles(src.str(), validateErr)) {
+    if (!ValidateCompiles(src.str(), validateErr, instrument)) {
         result.errorMessage = "generated source does not compile: " + validateErr + "\n--- generated source ---\n" + src.str();
         return result;
     }
@@ -509,7 +589,7 @@ bool ResolveExecutableValue(const std::map<std::string, juce::var>& nodesById,
     return false;
 }
 
-bool CompileExecutablePod(const juce::var& parsed, SchematicCompileResult& result) {
+bool CompileExecutablePod(const juce::var& parsed, SchematicCompileResult& result, bool instrument) {
     auto* root = parsed.getDynamicObject();
     const auto diagramName = JsonString(root, "name", JsonString(root, "functionName", "node_program"));
     result.packageName = SanitizeIdentifier(diagramName, "node_program");
@@ -540,6 +620,7 @@ bool CompileExecutablePod(const juce::var& parsed, SchematicCompileResult& resul
     std::ostringstream body;
     std::set<std::string> printTypes;
     std::vector<std::string> printedNodes;
+    std::vector<std::string> valueNodes; // the node each Print prints
     bool emittedAction = false;
     for (auto& nodeVar : *root->getProperty("nodes").getArray()) {
         auto* node = nodeVar.getDynamicObject();
@@ -567,7 +648,21 @@ bool CompileExecutablePod(const juce::var& parsed, SchematicCompileResult& resul
             result.errorMessage = "print node '" + JsonString(node, "id") + "' has unsupported value type '" + valueType + "'";
             return false;
         }
-        body << "    " << PrintStatement(valueType, value.expression) << "\n";
+        body << "    ";
+        if (instrument) {
+            // The value the Print node prints, recorded for its node and the
+            // node it comes from.
+            const auto printId = JsonString(node, "id");
+            const auto record = DebugRecord((int)result.debug.slots.size(), valueType, value.expression);
+            if (!record.empty()) {
+                std::vector<std::string> ids { printId };
+                const auto source = JsonString(inputs.getArray()->getReference(valueIndex), "ref");
+                if (!source.empty() && source != printId) ids.push_back(source);
+                AddSlot(result.debug, source.empty() ? printId : source, valueType, ids);
+                body << record << " ";
+            }
+        }
+        body << PrintStatement(valueType, value.expression) << "\n";
         printTypes.insert(valueType);
         printedNodes.push_back(JsonString(node, "id"));
         emittedAction = true;
@@ -581,14 +676,17 @@ bool CompileExecutablePod(const juce::var& parsed, SchematicCompileResult& resul
     std::ostringstream src;
     const auto externs = PrintExterns(printTypes);
     src << externs << "\n";
-    src << "fn main() -> i64 = {\n";
+    const int mainFn = instrument ? AddFunction(result.debug, "main", "", CountLines(src.str()) + 1) : -1;
+    src << "fn main() -> i64 = {" << (instrument ? " " + DebugEnter(mainFn) : std::string()) << "\n";
     src << body.str();
-    src << "    0\n";
+    src << "    " << (instrument ? DebugLeave(mainFn) + " " : std::string()) << "0\n";
     src << "}\n";
     // Source map: each Print node's line in main().
     int line = (int)std::count(externs.begin(), externs.end(), '\n') + 3;
     for (const auto& id : printedNodes)
         result.sourceMap.push_back({ id, result.entryFile, line++, 5 });
+    if (instrument)
+        FinishFunctionRanges(result.debug, CountLines(src.str()));
 
     result.source = src.str();
     result.files.push_back({ result.entryFile, result.source });
@@ -606,7 +704,7 @@ bool CompileExecutablePod(const juce::var& parsed, SchematicCompileResult& resul
     result.files.push_back({ "frate.json", result.frateJson });
 
     std::string validateErr;
-    if (!ValidateCompiles(result.source, validateErr)) {
+    if (!ValidateCompiles(result.source, validateErr, instrument)) {
         result.errorMessage = "generated executable source does not compile: " + validateErr
             + "\n--- generated source ---\n" + result.source;
         return false;
@@ -747,7 +845,7 @@ bool ParseStateMachine(const juce::var& parsed,
     return true;
 }
 
-bool CompileStateMachinePod(const juce::var& parsed, SchematicCompileResult& result) {
+bool CompileStateMachinePod(const juce::var& parsed, SchematicCompileResult& result, bool instrument) {
     auto* root = parsed.getDynamicObject();
     const auto diagramName = JsonString(root, "name", "state_machine");
     auto targetOptions = root->getProperty("targetOptions");
@@ -768,67 +866,103 @@ bool CompileStateMachinePod(const juce::var& parsed, SchematicCompileResult& res
         return false;
     }
 
-    std::ostringstream src;
-    if (projectType == "bin")
-        src << PrintExterns({ "string" }) << "\n";
-    src << "// Generated from state-machine schematic '" << diagramName << "'.\n";
-    src << "// The schematic JSON remains authoritative; this is a lowerable Frust artifact.\n\n";
-
-    for (size_t i = 0; i < states.size(); ++i) {
-        src << "pub fn " << StateFnName(states[i].id) << "() -> i64 = { " << i << " }\n";
-    }
-    src << "\n";
-    for (size_t i = 0; i < events.size(); ++i) {
-        src << "pub fn " << EventFnName(events[i].id) << "() -> i64 = { " << i << " }\n";
-    }
-    src << "\n";
-
-    src << "pub fn initial_state() -> i64 = {\n";
-    src << "    " << StateFnName(initialState) << "()\n";
-    src << "}\n\n";
-
-    src << "pub fn state_name(state: i64) -> String = {\n";
-    for (size_t i = 0; i < states.size(); ++i) {
-        src << "    if (state == " << StateFnName(states[i].id) << "()) { "
-            << EscapeFrustString(juce::String(states[i].name)) << " } else {\n";
-    }
-    src << "    \"Unknown\"\n";
-    for (size_t i = 0; i < states.size(); ++i) {
-        src << "    }";
-        if (i + 1 < states.size()) src << "\n";
-    }
-    src << "\n}\n\n";
-
-    src << "pub fn step(current_state: i64, event: i64) -> i64 = {\n";
-    src << "    let mut next_state: i64 = current_state;\n";
-    for (const auto& transition : transitions) {
-        src << "    if (current_state == " << StateFnName(transition.from) << "()) {\n";
-        src << "        if (event == " << EventFnName(transition.event) << "()) {\n";
-        if (!transition.guard.empty())
-            src << "            // guard: " << transition.guard << "\n";
-        if (!transition.action.empty())
-            src << "            // action: " << transition.action << "\n";
-        src << "            next_state = " << StateFnName(transition.to) << "();\n";
-        src << "        } else { next_state = next_state; };\n";
-        src << "    } else { next_state = next_state; };\n";
-    }
-    src << "    next_state\n";
-    src << "}\n";
+    // The source line by line, so every state, event and transition node has
+    // its line (the source map) and, debugging, its calls on that line.
+    std::vector<std::string> out;
+    auto emit = [&out](const std::string& text) { out.push_back(text); return (int)out.size(); };
+    auto mapNode = [&result](const std::string& id, int line) { result.sourceMap.push_back({ id, result.entryFile, line, 1 }); };
+    std::vector<std::string> stateNames, eventNames;
+    for (const auto& state : states) stateNames.push_back(state.name);
+    for (const auto& event : events) eventNames.push_back(event.name);
+    // A value recorded for the debugger on the line it is computed on.
+    auto record = [&](const std::string& name, const std::vector<std::string>& valueNames) {
+        return instrument ? " " + DebugRecord(AddSlot(result.debug, name, "i64", {}, valueNames), "i64", name) : std::string();
+    };
+    auto enter = [&](const std::string& fnName, const std::string& nodeId, int& fn) {
+        if (!instrument) return std::string();
+        fn = AddFunction(result.debug, fnName, nodeId, (int)out.size() + 1); // the line about to be emitted
+        return " " + DebugEnter(fn);
+    };
+    auto leave = [&](int fn) { return instrument ? DebugLeave(fn) + " " : std::string(); };
 
     if (projectType == "bin") {
-        src << "\nfn main() -> i64 = {\n";
-        src << "    let state: i64 = initial_state();\n";
-        src << "    " << PrintStatement("string", "\"Initial state:\"") << "\n";
-        src << "    " << PrintStatement("string", "state_name(state)") << "\n";
+        std::istringstream externs(PrintExterns({ "string" }));
+        for (std::string line; std::getline(externs, line);) emit(line);
+        emit("");
+    }
+    emit("// Generated from state-machine schematic '" + diagramName + "'.");
+    emit("// The schematic JSON remains authoritative; this is a lowerable Frust artifact.");
+    emit("");
+
+    auto constantFn = [&](const std::string& name, size_t value, const std::string& nodeId) {
+        int fn = -1;
+        const auto entered = enter(name, nodeId, fn);
+        return emit("pub fn " + name + "() -> i64 = {" + entered + " " + leave(fn) + std::to_string(value) + " }");
+    };
+    for (size_t i = 0; i < states.size(); ++i)
+        mapNode(states[i].id, constantFn(StateFnName(states[i].id), i, states[i].id));
+    emit("");
+    for (size_t i = 0; i < events.size(); ++i)
+        mapNode(events[i].id, constantFn(EventFnName(events[i].id), i, events[i].id));
+    emit("");
+
+    int fn = -1;
+    emit("pub fn initial_state() -> i64 = {" + enter("initial_state", "", fn));
+    if (instrument)
+        emit("    let initial: i64 = " + StateFnName(initialState) + "();" + record("initial", stateNames) + " " + leave(fn) + "initial");
+    else
+        emit("    " + StateFnName(initialState) + "()");
+    emit("}");
+    emit("");
+
+    emit("pub fn state_name(state: i64) -> String = {" + enter("state_name", "", fn) + record("state", stateNames));
+    for (size_t i = 0; i < states.size(); ++i)
+        emit(std::string("    ") + (i == 0 && instrument ? "let name: String = " : "") + "if (state == " + StateFnName(states[i].id) + "()) { "
+             + EscapeFrustString(juce::String(states[i].name)) + " } else {");
+    emit("    \"Unknown\"");
+    for (size_t i = 0; i < states.size(); ++i)
+        emit(i + 1 < states.size() || !instrument ? "    }" : "    }; " + leave(fn) + "name");
+    emit("}");
+    emit("");
+
+    emit("pub fn step(current_state: i64, event: i64) -> i64 = {" + enter("step", "", fn)
+         + record("current_state", stateNames) + record("event", eventNames));
+    const auto nextRecord = record("next_state", stateNames);
+    emit("    let mut next_state: i64 = current_state;" + nextRecord);
+    for (const auto& transition : transitions) {
+        emit("    if (current_state == " + StateFnName(transition.from) + "()) {");
+        emit("        if (event == " + EventFnName(transition.event) + "()) {");
+        if (!transition.guard.empty())
+            emit("            // guard: " + transition.guard);
+        if (!transition.action.empty())
+            emit("            // action: " + transition.action);
+        mapNode(transition.id, emit("            next_state = " + StateFnName(transition.to) + "();" + nextRecord));
+        emit("        } else { next_state = next_state; };");
+        emit("    } else { next_state = next_state; };");
+    }
+    emit("    " + leave(fn) + "next_state");
+    emit("}");
+
+    if (projectType == "bin") {
+        emit("");
+        emit("fn main() -> i64 = {" + enter("main", "", fn));
+        emit("    let state: i64 = initial_state();" + record("state", stateNames));
+        emit("    " + PrintStatement("string", "\"Initial state:\""));
+        emit("    " + PrintStatement("string", "state_name(state)"));
         if (!transitions.empty()) {
-            src << "    let after: i64 = step(state, " << EventFnName(transitions.front().event) << "());\n";
-            src << "    " << PrintStatement("string", "\"After first transition event:\"") << "\n";
-            src << "    " << PrintStatement("string", "state_name(after)") << "\n";
+            emit("    let after: i64 = step(state, " + EventFnName(transitions.front().event) + "());" + record("after", stateNames));
+            emit("    " + PrintStatement("string", "\"After first transition event:\""));
+            emit("    " + PrintStatement("string", "state_name(after)"));
         }
-        src << "    0\n";
-        src << "}\n";
+        emit("    " + leave(fn) + "0");
+        emit("}");
     }
 
+    std::ostringstream src;
+    for (const auto& line : out)
+        src << line << "\n";
+    if (instrument)
+        FinishFunctionRanges(result.debug, (int)out.size());
     result.source = src.str();
     result.files.push_back({ result.entryFile, result.source });
 
@@ -844,14 +978,10 @@ bool CompileStateMachinePod(const juce::var& parsed, SchematicCompileResult& res
     result.frateJson = frate.str();
     result.files.push_back({ "frate.json", result.frateJson });
 
-    int line = 0;
-    for (const auto& transition : transitions) {
-        result.sourceMap.push_back({ transition.id, result.entryFile, ++line, 1 });
-    }
     result.diagnostics.push_back("state-machine lowering emitted integer-backed states/events; enum-backed lowering is the next compatibility step");
 
     std::string validateErr;
-    if (!ValidateCompiles(result.source, validateErr)) {
+    if (!ValidateCompiles(result.source, validateErr, instrument)) {
         result.errorMessage = "generated state-machine source does not compile: " + validateErr
             + "\n--- generated source ---\n" + result.source;
         return false;
@@ -863,8 +993,22 @@ bool CompileStateMachinePod(const juce::var& parsed, SchematicCompileResult& res
 
 } // namespace
 
+std::string DebugPrelude() {
+    return "extern fn djehuti_dbg_enter(function: i64) -> i64;\n"
+           "extern fn djehuti_dbg_leave(function: i64) -> i64;\n"
+           "extern fn djehuti_dbg_i64(slot: i64, value: i64) -> i64;\n"
+           "extern fn djehuti_dbg_f64(slot: i64, value: f64) -> i64;\n"
+           "extern fn djehuti_dbg_bool(slot: i64, value: i64) -> i64;\n"
+           "extern fn djehuti_dbg_str(slot: i64, value: String) -> i64;\n";
+}
+
 SchematicCompileResult CompileSchematic(const std::string& schematicJson) {
+    return CompileSchematic(schematicJson, {});
+}
+
+SchematicCompileResult CompileSchematic(const std::string& schematicJson, const CompileOptions& options) {
     SchematicCompileResult result;
+    const bool instrument = options.debugInstrumentation;
 
     juce::var parsed;
     auto parseResult = juce::JSON::parse(juce::String(schematicJson), parsed);
@@ -880,16 +1024,16 @@ SchematicCompileResult CompileSchematic(const std::string& schematicJson) {
     const auto projectType = JsonString(frustOptions, "projectType", "function");
 
     if (diagramType == "state_machine") {
-        CompileStateMachinePod(parsed, result);
+        CompileStateMachinePod(parsed, result, instrument);
         return result;
     }
 
     if (projectType == "bin") {
-        CompileExecutablePod(parsed, result);
+        CompileExecutablePod(parsed, result, instrument);
         return result;
     }
 
-    const auto functionResult = CompileGraphToSource(schematicJson);
+    const auto functionResult = CompileGraphToSource(schematicJson, options, result.sourceMap, result.debug);
     if (!functionResult.ok) {
         result.errorMessage = functionResult.errorMessage;
         return result;

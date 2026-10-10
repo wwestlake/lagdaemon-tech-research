@@ -11,9 +11,11 @@
 
 #include <JuceHeader.h>
 
+#include "FrustExecution.h"
 #include "NodeCompiler.h"
 
 #include <functional>
+#include <map>
 #include <memory>
 #include <vector>
 
@@ -82,6 +84,36 @@ public:
     std::function<void(const juce::String& script, const juce::String& label)> onRunRequested;
     juce::String statusText() const { return statusView.getText(); }
 
+    // Debugging, with the Workbench's FRust debugger (FrustExecution). A
+    // breakpoint or watch is a marker on a node, saved in the program's debug
+    // section; a breakpoint can be disabled without removing it.
+    struct BreakpointMarker
+    {
+        juce::String nodeId;
+        bool enabled = true;
+    };
+    std::vector<BreakpointMarker> breakpointMarkers() const;
+    juce::StringArray watchedNodes() const;
+    bool setBreakpoint(const juce::String& nodeId, bool present, bool enabled, juce::String& error);
+    bool setWatch(const juce::String& nodeId, bool watched, juce::String& error);
+    // The program breakpoints belong to: its file, or its name before it is saved.
+    juce::String programId() const;
+    juce::String programLabel() const;
+    // Compiles the graph with the debugger's instrumentation into a program
+    // for the executor: the run script, each node's line, the breakpoints and
+    // watches. Leaves Compile's result (Export) alone.
+    bool buildDebugProgram(frust_exec::Program& program, juce::String& error);
+    // Each node's line in the generated program (the node compiler's source
+    // map), compiled now; nodes with no code of their own are absent.
+    std::map<juce::String, int> nodeLines(juce::String& error);
+    // The node execution is stopped at (highlighted), or "" for none.
+    void setExecutionMarker(const juce::String& nodeId);
+    juce::String executionMarker() const { return executionNodeId; }
+    // A marker changed (so a running debug session can follow it).
+    std::function<void()> onDebugMarkersChanged;
+    // Start Debugging (toolbar and canvas menu).
+    std::function<void()> onDebugRequested;
+
 private:
     struct GraphNode
     {
@@ -107,6 +139,7 @@ private:
         bool initial = false;
         bool terminal = false;
         bool breakpoint = false;
+        bool breakpointEnabled = true;
         bool watched = false;
         std::vector<Pin> inputs;
         std::vector<Pin> outputs;
@@ -271,6 +304,9 @@ private:
     void compileGraph();
     void saveGeneratedSource();
     void compileAndRun();
+    void debugMarkersChanged();
+    static bool wrapForRun(const juce::String& source, juce::String& script, juce::String& error);
+    juce::String panelNodeIdFor(const std::string& compilerId) const;
     juce::String generatedSourcePathLabel() const;
     juce::File generatedSourceCacheFile() const;
     void showValidation();
@@ -312,6 +348,7 @@ private:
     juce::TextButton validateButton { "Validate" };
     juce::TextButton compileButton { "Compile" };
     juce::TextButton saveSourceButton { "Export .fr" };
+    juce::TextButton debugButton { "Debug" };
     juce::Label diagramTypeLabel { "DiagramTypeLabel", "Diagram" };
     juce::ComboBox diagramTypeSelector;
     juce::Label targetLabel { "TargetLabel", "Target" };
@@ -324,6 +361,7 @@ private:
 
     juce::File currentGraphFile;
     std::unique_ptr<juce::FileChooser> fileChooser;
+    juce::String executionNodeId;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(NodeDesignerPanel)
 };

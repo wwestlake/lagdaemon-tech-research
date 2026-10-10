@@ -145,6 +145,16 @@ private:
     juce::String pcbLayoutTool(const juce::String& name, const juce::var& args);
     juce::String frustTool(const juce::String& name, const juce::var& args);
     juce::String nodeProgramTool(const juce::String& name, const juce::var& args);
+    // FRust execution and the debugger (FrustExecution): frust_run,
+    // node_program_run and node_debug_* answer when the program reaches the
+    // state asked for, never blocking the message thread.
+    bool frustExecutionTool(const juce::String& name, const juce::var& args, std::function<void(juce::String)> done);
+    juce::String startNodeDebugging();
+    void syncDebugMarkers();
+    void executionChanged();
+    class FrustDebuggerPanel* debuggerPanel = nullptr;
+    int executionListener = 0;
+    juce::uint64 lastReportedSession = 0;
     juce::Component::SafePointer<CreationDock::DockPanel> analyticsDockPanel;
     void autoLayoutDiagram();
     void applySchematicZoom(float zoom);

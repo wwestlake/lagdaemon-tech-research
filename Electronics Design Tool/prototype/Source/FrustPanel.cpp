@@ -1,5 +1,7 @@
 #include "FrustPanel.h"
 
+#include "FrustExecution.h"
+
 namespace
 {
 juce::File sourceFile()
@@ -45,10 +47,17 @@ FrustPanel::FrustPanel()
     styleButton(checkButton, false);
     runButton.setTooltip("Compile with the embedded Frust compiler and run run()");
     checkButton.setTooltip("Compile only and list any errors");
-    runButton.onClick = [this] { runAsync(); };
+    runButton.onClick = [this] { runFromEditor(); };
     checkButton.onClick = [this] { show(checkNow(getSource()), false); };
+    styleButton(stopButton, false);
+    stopButton.setTooltip("End the running FRust program");
+    stopButton.onClick = [] {
+        std::string ignored;
+        frust_exec::Executor::instance().stop(ignored);
+    };
     addAndMakeVisible(runButton);
     addAndMakeVisible(checkButton);
+    addAndMakeVisible(stopButton);
 
     status.setColour(juce::Label::textColourId, juce::Colour(0xff93a7b0));
     status.setFont(juce::Font(12.5f));
@@ -63,13 +72,16 @@ FrustPanel::FrustPanel()
     output.setColour(juce::TextEditor::textColourId, juce::Colour(0xffdce9ee));
     output.setColour(juce::TextEditor::outlineColourId, juce::Colour(0xff33424d));
     addAndMakeVisible(output);
+
+    listener = frust_exec::Executor::instance().addListener([this](const frust_exec::Snapshot&) { executionChanged(); });
+    executionChanged();
 }
 
 FrustPanel::~FrustPanel()
 {
+    // A program still running goes on without the panel (Stop ends it).
+    frust_exec::Executor::instance().removeListener(listener);
     saveSource();
-    alive.reset();
-    pool.removeAllJobs(true, 30000);
 }
 
 void FrustPanel::setSource(const juce::String& source)
@@ -89,12 +101,24 @@ void FrustPanel::saveSource() const
     sourceFile().replaceWithText(document.getAllContent());
 }
 
-frust_engine::Result FrustPanel::runNow(const juce::String& script)
+bool FrustPanel::start(const juce::String& script, const juce::String& label, std::string& error)
 {
+    frust_exec::Program program;
+    program.label = label.toStdString();
+    program.programId = label.toStdString();
+    program.script = script.toStdString();
+    program.programLines = juce::StringArray::fromLines(script).size();
+    auto& executor = frust_exec::Executor::instance();
+    if (!executor.start(std::move(program), error))
+    {
+        status.setColour(juce::Label::textColourId, juce::Colour(0xffffb36b));
+        status.setText(juce::String(error), juce::dontSendNotification);
+        return false;
+    }
     setSource(script);
-    const auto result = frust_engine::runScript(script.toStdString());
-    show(result, true);
-    return result;
+    session = executor.snapshot().session;
+    executionChanged();
+    return true;
 }
 
 frust_engine::Result FrustPanel::checkNow(const juce::String& script)
@@ -109,25 +133,44 @@ frust_engine::Result FrustPanel::checkNow(const juce::String& script)
     return result;
 }
 
-void FrustPanel::runAsync()
+void FrustPanel::runFromEditor()
 {
-    if (running.load())
-        return;
     saveSource();
-    running = true;
-    runButton.setEnabled(false);
-    status.setText("Compiling and running...", juce::dontSendNotification);
-    const auto script = getSource().toStdString();
-    std::weak_ptr<bool> weak = alive;
-    pool.addJob([this, script, weak] {
-        auto result = frust_engine::runScript(script);
-        juce::MessageManager::callAsync([this, weak, result] {
-            if (weak.expired()) return;
-            running = false;
-            runButton.setEnabled(true);
-            show(result, true);
-        });
-    });
+    std::string error;
+    start(getSource(), "Frust panel", error);
+}
+
+void FrustPanel::executionChanged()
+{
+    const auto snap = frust_exec::Executor::instance().snapshot();
+    const bool active = frust_exec::isActive(snap.state);
+    runButton.setEnabled(!active);
+    stopButton.setEnabled(active);
+    if (session == 0 || snap.session != session)
+    {
+        if (active)
+        {
+            status.setColour(juce::Label::textColourId, juce::Colour(0xff93a7b0));
+            status.setText(juce::String(snap.label) + " is " + frust_exec::stateName(snap.state) + ".", juce::dontSendNotification);
+        }
+        return;
+    }
+    if (active)
+    {
+        status.setColour(juce::Label::textColourId, juce::Colour(0xff93a7b0));
+        status.setText(snap.state == frust_exec::State::Compiling ? "Compiling..." : "Running...", juce::dontSendNotification);
+        return;
+    }
+    if (snap.state == frust_exec::State::Cancelled)
+    {
+        output.setText(juce::String(snap.result.output) + (snap.result.output.empty() ? "" : "\n") + "(stopped)", false);
+        status.setColour(juce::Label::textColourId, juce::Colour(0xffffb36b));
+        status.setText("Stopped.", juce::dontSendNotification);
+        session = 0;
+        return;
+    }
+    show(snap.result, true);
+    session = 0;
 }
 
 void FrustPanel::show(const frust_engine::Result& result, bool ran)
@@ -170,6 +213,8 @@ void FrustPanel::resized()
     runButton.setBounds(bar.removeFromLeft(90).reduced(0, 2));
     bar.removeFromLeft(6);
     checkButton.setBounds(bar.removeFromLeft(90).reduced(0, 2));
+    bar.removeFromLeft(6);
+    stopButton.setBounds(bar.removeFromLeft(70).reduced(0, 2));
     bar.removeFromLeft(10);
     status.setBounds(bar);
     area.removeFromTop(4);
