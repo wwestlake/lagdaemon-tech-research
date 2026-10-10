@@ -730,6 +730,18 @@ int main()
                   describe(rows) == "Main:0 A:1 B:2 C:1 D:1! X:1! Y:2 ", describe(rows));
     }
 
+    std::printf("\n-- behavioral sources are refused, not mis-solved (Debug crash regression) --\n");
+    {
+        circuit_sim::Circuit c;
+        const auto n1 = c.addNode();
+        c.addCapacitor("C1", n1, 0, 10e-9);
+        c.addResistor("R1", n1, 0, 1e3);
+        c.addBehavioralCurrentSource("B1", n1, 0, "-0.000409*V(V1)");
+        const auto op = circuit_sim::solveOperatingPoint(c);
+        checkTrue("operating point refuses a behavioral source with a reason", !op.ok && op.error.find("Xyce") != std::string::npos, op.error);
+        const auto tr = circuit_sim::solveTransient(c, 1e-3, 1e-6);
+        checkTrue("transient refuses it too", !tr.ok && tr.error.find("Xyce") != std::string::npos, tr.error);
+    }
     std::printf("\n%s: %d failure(s)\n", failures == 0 ? "ALL PASSED" : "FAILED", failures);
     return failures == 0 ? 0 : 1;
 }

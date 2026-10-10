@@ -545,6 +545,8 @@ void stampNonlinear(System<double>& s, const Element& e, const std::vector<doubl
     if (memory != nullptr)
         limitJunctions(e, v, memory->voltages[index], memory->limited);
     const auto i0 = deviceCurrents(e, v);
+    if (i0.size() < e.nodes.size())
+        return; // no device model for this element type (refused before solving; never index past it)
     const auto j = deviceJacobian(e, v);
     for (size_t t = 0; t < e.nodes.size(); ++t)
     {
@@ -745,9 +747,21 @@ const ReactiveState& noReactiveState(const Circuit& c)
     return none;
 }
 
+// Elements this solver has no model for: equation-driven (behavioral)
+// sources are Xyce-only. Empty when the circuit can be solved here.
+std::string unsupportedElement(const Circuit& c)
+{
+    for (const auto& e : c.elements())
+        if (e.type == Element::Type::BehavioralVoltageSource || e.type == Element::Type::BehavioralCurrentSource)
+            return e.name + " is a behavioral (equation-driven) source, which only the Xyce engine simulates; the internal solver does not.";
+    return {};
+}
+
 bool solveDcState(const Circuit& c, const Layout& l, const Options& o, std::vector<double>& x, int& iterations,
                   std::string& error, bool warmStart = false)
 {
+    if (error = unsupportedElement(c); !error.empty())
+        return false;
     const auto& none = noReactiveState(c);
     if (warmStart && (int)x.size() == l.size)
     {
@@ -1519,6 +1533,8 @@ TransientResult solveTransient(const Circuit& circuit, const TransientSettings& 
         result.error = "Transient needs a positive stop time and step.";
         return result;
     }
+    if (result.error = unsupportedElement(circuit); !result.error.empty())
+        return result;
     if (settings.start < 0.0 || settings.start >= stopTime)
     {
         result.error = "Transient start time must be at least 0 and before the stop time.";
