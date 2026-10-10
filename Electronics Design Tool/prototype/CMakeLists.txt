@@ -306,6 +306,25 @@ set_target_properties(CircuitSolverTests PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/bin")
 add_test(NAME CircuitSolverTests COMMAND CircuitSolverTests)
 
+# System simulator foundation (architecture revision 3, phase P0): a headless
+# library, optimised inside Debug builds (libs/sim_core/CMakeLists.txt). The
+# P0 acceptance tests build twice, against the optimised and the unoptimised
+# library; `sim_core_tests --compare <outA> <outB>` checks they agree.
+add_subdirectory(libs/sim_core)
+foreach(variant IN ITEMS "SimCoreTests;sim_core;sim_core_tests;optimized" "SimCoreTestsUnopt;sim_core_unopt;sim_core_tests_unopt;unoptimized")
+    list(GET variant 0 test_target)
+    list(GET variant 1 test_library)
+    list(GET variant 2 test_output)
+    list(GET variant 3 test_config)
+    add_executable(${test_target} tools/sim_core_tests/SimCoreTests.cpp)
+    target_link_libraries(${test_target} PRIVATE ${test_library})
+    target_compile_definitions(${test_target} PRIVATE SIM_CORE_TESTS_CONFIG="${test_config}")
+    set_target_properties(${test_target} PROPERTIES
+        OUTPUT_NAME "${test_output}"
+        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/bin")
+    add_test(NAME ${test_target} COMMAND ${test_target} --out "${CMAKE_CURRENT_BINARY_DIR}/sim_core_test_out_${test_config}")
+endforeach()
+
 juce_add_console_app(AudioDspTests PRODUCT_NAME "Audio Dsp Tests")
 set_target_properties(AudioDspTests PROPERTIES 
     OUTPUT_NAME "audio_dsp_tests_3"
