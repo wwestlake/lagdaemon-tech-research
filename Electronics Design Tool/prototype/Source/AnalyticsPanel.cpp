@@ -1272,6 +1272,14 @@ juce::String programmableNote()
     return "This circuit has FRust programmable components, so the internal solver ran it: their programs run at "
            "every Newton iteration inside the app, which the external Xyce process cannot call.";
 }
+
+// The internal solver's result carries the circuit's own warnings (parts not
+// simulated, open Sub Diagram pins...); an Xyce result gets them too.
+void addCircuitWarnings(analytics::Result& result, const analytics::Netlist& netlist)
+{
+    for (const auto& w : netlist.warnings)
+        result.warnings.addIfNotAlreadyThere(w);
+}
 }
 
 AnalyticsPanel::AnalyticsPanel()
@@ -1574,6 +1582,8 @@ void AnalyticsPanel::runSelected()
                                      : comparisonFailure("Solver comparison is available for transient analysis only.", analysis, values, 0.0))
                               : engine == xyce_backend::Engine::Xyce ? xyce_backend::run(analysis, values, netlist, outRoot)
                                                                       : analytics::run(analysis, values, netlist);
+        if (!compare && engine == xyce_backend::Engine::Xyce)
+            addCircuitWarnings(result, netlist);
         if (programmable)
             result.warnings.add(programmableNote());
         juce::MessageManager::callAsync([this, weak, result]() mutable {
@@ -1612,6 +1622,8 @@ const AnalyticsPanel::Run& AnalyticsPanel::runNow(analytics::Analysis analysis, 
                                  : comparisonFailure("Solver comparison is available for transient analysis only.", analysis, values, 0.0))
                           : engine == xyce_backend::Engine::Xyce ? xyce_backend::run(analysis, values, netlist, outRoot)
                                                                   : analytics::run(analysis, values, netlist);
+    if (!compare && engine == xyce_backend::Engine::Xyce)
+        addCircuitWarnings(result, netlist);
     if (programmable)
         result.warnings.add(programmableNote());
     settings[analysis] = result.settings;

@@ -8786,6 +8786,16 @@ public:
         return false;
     }
 
+    juce::String pinClash(int block, const juce::String& name, int except) const
+    {
+        const auto& ports = instances[(size_t)block].ports;
+        for (int k = 0; k < (int)ports.size(); ++k)
+            if (k != except && ports[(size_t)k].name.equalsIgnoreCase(name.trim()))
+                return "Block " + instances[(size_t)block].refdes + " already has a pin named " + ports[(size_t)k].name
+                     + " (names are unique on a block, ignoring case).";
+        return {};
+    }
+
     static juce::String uniquePortName(const std::vector<schematic::BlockPort>& ports, const juce::String& base)
     {
         if (!portNameTaken(ports, base))
@@ -8982,7 +8992,7 @@ public:
         auto& ports = instances[(size_t)block].ports;
         if (portNameTaken(ports, name))
         {
-            error = "Block " + instances[(size_t)block].refdes + " already has a pin named " + name.trim() + "; pin names are unique on a block.";
+            error = pinClash(block, name, -1);
             return false;
         }
         pushUndoSnapshot();
@@ -9025,7 +9035,7 @@ public:
             return false;
         if (portNameTaken(ports, newName, k))
         {
-            error = "Block " + instances[(size_t)block].refdes + " already has a pin named " + newName.trim() + "; pin names are unique on a block.";
+            error = pinClash(block, newName, k);
             return false;
         }
         const auto bubbles = bubblesOfPort(block, k);
@@ -11320,7 +11330,7 @@ private:
             return false;
         if (portNameTaken(instances[(size_t)block].ports, portName))
         {
-            error = "Block " + instances[(size_t)block].refdes + " already has a pin named " + portName + "; pin names are unique on a block.";
+            error = pinClash(block, portName, -1);
             return false;
         }
         pushUndoSnapshot();
