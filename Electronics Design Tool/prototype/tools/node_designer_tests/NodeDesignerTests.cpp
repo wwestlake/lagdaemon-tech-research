@@ -258,6 +258,19 @@ int main()
               "each bad part is reported", problems);
     }
 
+    std::printf("-- rendering --\n");
+    {
+        // The editor drawn off screen at a typical tab size, saved for a look.
+        NodeDesignerPanel panel;
+        panel.setSize(1500, 820);
+        const auto image = panel.createComponentSnapshot(panel.getLocalBounds());
+        const auto png = tempFile("node_designer_snapshot.png");
+        png.deleteFile();
+        juce::FileOutputStream out(png);
+        const bool written = out.openedOk() && juce::PNGImageFormat().writeImageToStream(image, out);
+        check(image.isValid() && written, "the editor renders off screen", png.getFullPathName());
+    }
+
     std::printf("%d checks, %s\n", checks, failures == 0 ? "ALL PASSED" : (juce::String(failures) + " FAILED").toRawUTF8());
     return failures == 0 ? 0 : 1;
 }

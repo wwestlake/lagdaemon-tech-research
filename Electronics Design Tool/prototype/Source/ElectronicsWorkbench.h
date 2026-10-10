@@ -139,10 +139,12 @@ private:
     juce::String analyticsTool(const juce::String& name, const juce::var& args);
     class AnalyticsPanel* analyticsPanel = nullptr;
     class FrustPanel* frustPanel = nullptr;
+    class NodeDesignerPanel* nodeDesignerPanel = nullptr;
     class PcbPanel* pcbPanel = nullptr;
     juce::String pcbTool(const juce::String& name, const juce::var& args);
     juce::String pcbLayoutTool(const juce::String& name, const juce::var& args);
     juce::String frustTool(const juce::String& name, const juce::var& args);
+    juce::String nodeProgramTool(const juce::String& name, const juce::var& args);
     juce::Component::SafePointer<CreationDock::DockPanel> analyticsDockPanel;
     void autoLayoutDiagram();
     void applySchematicZoom(float zoom);

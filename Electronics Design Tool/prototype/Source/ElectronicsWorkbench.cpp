@@ -11,6 +11,7 @@
 #include "AnalyticsPanel.h"
 #include "FrustPanel.h"
 #include "PcbPanel.h"
+#include "NodeDesignerPanel.h"
 #include <djehuti_route/outline.h>
 #include "Preferences.h"
 #include "AudioPipeline.h"
@@ -420,6 +421,71 @@ const SchematicToolSpec schematicToolSpecs[] = {
         "frust_check",
         "Compile Frust source with the embedded compiler without running it and return any diagnostics (file, line, column, message). Same source rules as frust_run.",
         R"({"type":"object","properties":{"source":{"type":"string","description":"Frust source defining pub fn run() -> String."}},"required":["source"],"additionalProperties":false})"
+    },
+    {
+        "node_program_new",
+        "Start a new FRust node program in the Node Designer tab: a node graph (data and execution flow) or a state machine. starter true gives the editor's starter nodes; false an empty graph. Unsaved changes to the open program are discarded.",
+        R"({"type":"object","properties":{"diagramType":{"type":"string","enum":["node_graph","state_machine"]},"starter":{"type":"boolean","description":"Add the editor's starter nodes (default false)."}},"required":["diagramType"],"additionalProperties":false})"
+    },
+    {
+        "node_program_list",
+        "List the node programs saved in the open project's programs folder.",
+        R"({"type":"object","properties":{},"additionalProperties":false})"
+    },
+    {
+        "node_program_open",
+        "Open a saved node program in the Node Designer. Reports any part of the file that could not be restored (unknown node types are kept as placeholders, never converted).",
+        R"({"type":"object","properties":{"name":{"type":"string","description":"Program name in the project's programs folder (as node_program_list shows it)."}},"required":["name"],"additionalProperties":false})"
+    },
+    {
+        "node_program_save",
+        "Save the open node program in the project's programs folder as <name>.frnode.json (name defaults to the program's current file).",
+        R"({"type":"object","properties":{"name":{"type":"string","description":"Program name; letters, digits, spaces, - and _."}},"additionalProperties":false})"
+    },
+    {
+        "node_program_inspect",
+        "Read the open node program: nodes with ids, types, positions, parameters and pins, and connections with ids and pin names.",
+        R"({"type":"object","properties":{},"additionalProperties":false})"
+    },
+    {
+        "node_program_node_types",
+        "List the node types the Node Designer offers, with their input and output pins (name, type, flow: data/exec/stream/resource) and parameters.",
+        R"({"type":"object","properties":{},"additionalProperties":false})"
+    },
+    {
+        "node_program_add_node",
+        "Add a node of a listed type to the open node program at canvas position x, y. Returns its id.",
+        R"({"type":"object","properties":{"type":{"type":"string","description":"Node type from node_program_node_types, such as literal_i64, add, branch, print, sm_state."},"x":{"type":"number"},"y":{"type":"number"},"id":{"type":"string","description":"Optional id (letters, digits, underscores); generated when omitted."}},"required":["type","x","y"],"additionalProperties":false})"
+    },
+    {
+        "node_program_delete_node",
+        "Delete a node and its connections from the open node program.",
+        R"({"type":"object","properties":{"id":{"type":"string"}},"required":["id"],"additionalProperties":false})"
+    },
+    {
+        "node_program_move_node",
+        "Move a node to canvas position x, y.",
+        R"({"type":"object","properties":{"id":{"type":"string"},"x":{"type":"number"},"y":{"type":"number"}},"required":["id","x","y"],"additionalProperties":false})"
+    },
+    {
+        "node_program_connect",
+        "Wire an output pin of one node to an input pin of another. Pins must have the same flow (data, exec, stream, resource) and compatible types (equal, or either is any); an input takes one wire, except a State's enter pin. Wiring two States inserts a Transition node, whose id is returned. Returns the connection id.",
+        R"({"type":"object","properties":{"from":{"type":"string","description":"Source node id."},"fromPin":{"type":"string","description":"Output pin name, such as value, then, false, index."},"to":{"type":"string","description":"Destination node id."},"toPin":{"type":"string","description":"Input pin name."}},"required":["from","fromPin","to","toPin"],"additionalProperties":false})"
+    },
+    {
+        "node_program_disconnect",
+        "Remove a connection from the open node program by its id (from node_program_inspect).",
+        R"({"type":"object","properties":{"connection":{"type":"string"}},"required":["connection"],"additionalProperties":false})"
+    },
+    {
+        "node_program_set_parameter",
+        "Set a node parameter: value (Integer, Boolean), text, event, guard, action, payloadType, entryAction, updateAction, exitAction, accessibility, initial, terminal, machineRef, breakpoint, watched; or input.<pin> for an unwired data input's default value. node_program_node_types lists each type's parameters.",
+        R"({"type":"object","properties":{"id":{"type":"string"},"name":{"type":"string"},"value":{"type":"string","description":"The value as text: a number, true or false, or text."}},"required":["id","name","value"],"additionalProperties":false})"
+    },
+    {
+        "node_program_validate",
+        "Check the open node program's structure: duplicate ids, missing pins, incompatible wires, inputs driven twice, unknown node types, undefined functions and, for state machines, states, initial state and transitions. Reports problems without changing the program.",
+        R"({"type":"object","properties":{},"additionalProperties":false})"
     },
     {
         "workbench_capabilities",
@@ -14106,6 +14172,8 @@ ElectronicsWorkbench::ElectronicsWorkbench()
             return analyticsTool(name, args);
         if (name == "frust_check" || name == "frust_run")
             return frustTool(name, args);
+        if (name.startsWith("node_program_"))
+            return nodeProgramTool(name, args);
         if (name.startsWith("pcb_board_"))
             return pcbTool(name, args);
         if (name.startsWith("pcb_"))
@@ -14133,6 +14201,14 @@ ElectronicsWorkbench::ElectronicsWorkbench()
     dockManager->registerPanel("schematic", "Schematic", std::move(schematic), CreationDock::DockTargetZone::CenterTab);
     analyticsDockPanel = dockManager->registerPanel("analytics", "Analytics", std::move(analyticsOwner), CreationDock::DockTargetZone::CenterTab);
     dockManager->registerPanel("pcb", "PCB", std::move(pcbOwner), CreationDock::DockTargetZone::CenterTab);
+    // FRust node programs (the node-programming editor ported from FrustIDE),
+    // saved in the open project's programs folder.
+    auto nodeDesignerOwner = std::make_unique<NodeDesignerPanel>();
+    nodeDesignerPanel = nodeDesignerOwner.get();
+    nodeDesignerPanel->defaultFolder = [this] {
+        return project.folder != juce::File() ? project_store::programsDirectory(project) : project_store::defaultProjectsRoot();
+    };
+    dockManager->registerPanel("nodes", "Node Designer", std::move(nodeDesignerOwner), CreationDock::DockTargetZone::CenterTab);
     auto frustOwner = std::make_unique<FrustPanel>();
     frustPanel = frustOwner.get();
     dockManager->registerPanel("frust", "Frust", std::move(frustOwner), CreationDock::DockTargetZone::Bottom);
@@ -16734,6 +16810,133 @@ juce::String ElectronicsWorkbench::frustTool(const juce::String& name, const juc
     root->setProperty("diagnostics", diagnostics);
     root->setProperty("compileMs", result.compileMs);
     if (name == "frust_run") root->setProperty("runMs", result.runMs);
+    return juce::JSON::toString(juce::var(root), true);
+}
+
+juce::String ElectronicsWorkbench::nodeProgramTool(const juce::String& name, const juce::var& args)
+{
+    auto* root = new juce::DynamicObject();
+    root->setProperty("tool", name);
+    auto fail = [root](const juce::String& error) {
+        root->setProperty("ok", false);
+        root->setProperty("error", error);
+        return juce::JSON::toString(juce::var(root), true);
+    };
+    if (nodeDesignerPanel == nullptr)
+        return fail("The Node Designer is unavailable.");
+    auto& panel = *nodeDesignerPanel;
+    auto text = [&args](const char* key) { return args.getProperty(key, {}).toString().trim(); };
+    auto number = [&args](const char* key) { return (float)(double)args.getProperty(key, 0.0); };
+    auto programFile = [this](const juce::String& programName) {
+        const auto base = programName.endsWithIgnoreCase(".frnode.json") ? programName.dropLastCharacters(12) : programName;
+        return project_store::programsDirectory(project).getChildFile(base + ".frnode.json");
+    };
+    juce::String error;
+
+    if (name == "node_program_new")
+    {
+        const auto type = text("diagramType");
+        if (type != "node_graph" && type != "state_machine")
+            return fail("diagramType must be node_graph or state_machine.");
+        panel.newGraph(type, (bool)args.getProperty("starter", false));
+        root->setProperty("program", panel.describeGraph());
+    }
+    else if (name == "node_program_list")
+    {
+        if (project.folder == juce::File())
+            return fail("No project is open.");
+        juce::Array<juce::var> names;
+        for (const auto& f : project_store::programsDirectory(project).findChildFiles(juce::File::findFiles, false, "*.frnode.json"))
+            names.add(f.getFileName().dropLastCharacters(12));
+        root->setProperty("programs", names);
+    }
+    else if (name == "node_program_open")
+    {
+        if (project.folder == juce::File())
+            return fail("No project is open.");
+        if (!panel.openFile(programFile(text("name")), error))
+            return fail(error);
+        if (error.isNotEmpty())
+            root->setProperty("problems", error);
+        root->setProperty("program", panel.describeGraph());
+    }
+    else if (name == "node_program_save")
+    {
+        if (project.folder == juce::File())
+            return fail("No project is open.");
+        auto programName = text("name");
+        if (programName.isEmpty() && panel.currentFile() != juce::File()
+            && panel.currentFile().getParentDirectory() == project_store::programsDirectory(project))
+            programName = panel.currentFile().getFileName().dropLastCharacters(12);
+        if (programName.isEmpty())
+            return fail("name is required: this program has not been saved in the project yet.");
+        if (programName != programName.retainCharacters("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 -_"))
+            return fail("Program names use letters, digits, spaces, - and _.");
+        const auto file = programFile(programName);
+        if (!panel.saveToFile(file, error))
+            return fail(error);
+        root->setProperty("file", file.getFullPathName());
+    }
+    else if (name == "node_program_inspect")
+        root->setProperty("program", panel.describeGraph());
+    else if (name == "node_program_node_types")
+        root->setProperty("nodeTypes", panel.describeNodeTypes());
+    else if (name == "node_program_add_node")
+    {
+        const auto id = panel.addNodeOfType(text("type"), number("x"), number("y"), text("id"), error);
+        if (id.isEmpty())
+            return fail(error);
+        root->setProperty("id", id);
+    }
+    else if (name == "node_program_delete_node")
+    {
+        if (!panel.deleteNode(text("id"), error))
+            return fail(error);
+    }
+    else if (name == "node_program_move_node")
+    {
+        if (!panel.moveNode(text("id"), number("x"), number("y"), error))
+            return fail(error);
+    }
+    else if (name == "node_program_connect")
+    {
+        const auto id = panel.connect(text("from"), text("fromPin"), text("to"), text("toPin"), error);
+        if (id.isEmpty())
+            return fail(error);
+        root->setProperty("connection", id);
+    }
+    else if (name == "node_program_disconnect")
+    {
+        if (!panel.disconnect(text("connection"), error))
+            return fail(error);
+    }
+    else if (name == "node_program_set_parameter")
+    {
+        const auto raw = args.getProperty("value", {});
+        juce::var value = raw;
+        if (raw.isString())
+        {
+            const auto s = raw.toString().trim();
+            if (s.equalsIgnoreCase("true") || s.equalsIgnoreCase("false"))
+                value = s.equalsIgnoreCase("true");
+            else if (s.isNotEmpty() && s.retainCharacters("-0123456789") == s && s != "-")
+                value = s.getLargeIntValue();
+        }
+        if (!panel.setNodeParameter(text("id"), text("name"), value, error))
+            return fail(error);
+    }
+    else if (name == "node_program_validate")
+    {
+        juce::Array<juce::var> problems;
+        for (const auto& p : panel.validateGraph())
+            problems.add(p);
+        root->setProperty("valid", problems.isEmpty());
+        root->setProperty("problems", problems);
+    }
+    else
+        return fail("Unknown node program tool.");
+
+    root->setProperty("ok", true);
     return juce::JSON::toString(juce::var(root), true);
 }
 
