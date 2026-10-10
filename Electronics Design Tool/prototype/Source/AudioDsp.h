@@ -137,6 +137,11 @@ public:
     std::vector<double> baseK;       // (livePortCount + portCount) x (livePortCount + portCount)
     std::vector<double> baseStateQ;  // stateCount x (livePortCount + portCount)
     std::vector<double> baseOutQ;    // 1 x (livePortCount + portCount)
+    // The unreduced state and output affine rows (live ports open). Kept
+    // apart from stateAffine/outAffine, which hold the default reduction;
+    // reducing from those again applied the live-port correction twice.
+    std::vector<double> baseStateAffine; // stateCount x affineCols
+    std::vector<double> baseOutAffine;   // 1 x affineCols
     
     int coeffSize() const;
     

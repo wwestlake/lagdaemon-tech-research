@@ -338,6 +338,8 @@ Model build(const circuit_sim::Circuit& circuit, const Config& config)
     auto rowOut = getAffine(outN);
     for (int c = 0; c < affineCols; ++c) m.outAffine[c] = rowOut[c];
     for (int j = 0; j < totalPortCount; ++j) m.baseOutQ[j] = getVal(Q_port[j], outN);
+    m.baseStateAffine = m.stateAffine; // unreduced: the live-port reduction starts from these
+    m.baseOutAffine = m.outAffine;
     
     // Initialize reduced matrices with default params
     std::unordered_map<std::string, double> defaultParams;
@@ -729,9 +731,9 @@ std::vector<double> Model::computeLiveCoefficients(const std::unordered_map<std:
         auto ptr = out.begin();
         std::copy(baseAffine.begin(), baseAffine.begin() + N * affCols, ptr); ptr += N * affCols;
         std::copy(baseK.begin(), baseK.begin() + N * N, ptr); ptr += N * N;
-        std::copy(stateAffine.begin(), stateAffine.end(), ptr); ptr += stateCount * affCols;
+        std::copy(baseStateAffine.begin(), baseStateAffine.end(), ptr); ptr += stateCount * affCols;
         std::copy(baseStateQ.begin(), baseStateQ.begin() + stateCount * N, ptr); ptr += stateCount * N;
-        std::copy(outAffine.begin(), outAffine.end(), ptr); ptr += affCols;
+        std::copy(baseOutAffine.begin(), baseOutAffine.end(), ptr); ptr += affCols;
         std::copy(baseOutQ.begin(), baseOutQ.begin() + N, ptr);
         return out;
     }
@@ -821,7 +823,7 @@ std::vector<double> Model::computeLiveCoefficients(const std::unordered_map<std:
     // 3. stateAffine (A'_{S})
     for (int r = 0; r < stateCount; ++r) {
         for (int c = 0; c < affCols; ++c) {
-            double sum = stateAffine[r * affCols + c];
+            double sum = baseStateAffine[r * affCols + c];
             for (int k = 0; k < L; ++k) sum += baseStateQ[r * totalP + k] * M_P0L[k][c];
             *ptr++ = sum;
         }
@@ -838,7 +840,7 @@ std::vector<double> Model::computeLiveCoefficients(const std::unordered_map<std:
     
     // 5. outAffine (A'_{Y})
     for (int c = 0; c < affCols; ++c) {
-        double sum = outAffine[c];
+        double sum = baseOutAffine[c];
         for (int k = 0; k < L; ++k) sum += baseOutQ[k] * M_P0L[k][c];
         *ptr++ = sum;
     }

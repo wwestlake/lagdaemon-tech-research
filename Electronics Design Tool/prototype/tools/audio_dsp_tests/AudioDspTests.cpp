@@ -390,6 +390,64 @@ void testStateContinuity() {
     checkNear(out_after_open, last_out, 1e-3, "StateContinuity: Capacitor discharged while floating!");
 }
 
+// Regression: build() used to overwrite stateAffine/outAffine with the
+// default reduction, and computeLiveCoefficients() then reduced from them
+// again, applying the live-port correction twice (a constant offset in every
+// live-port model, wrong state updates with capacitors). A live pot must
+// behave exactly like a fixed resistor of the same value, including state.
+void testLivePortMatchesFixedEquivalent() {
+    auto buildModel = [](bool live, double fixedOhms) {
+        circuit_sim::Circuit c;
+        int in = c.addNode();
+        int out = c.addNode();
+        c.addVoltageSource("V1", in, 0, {circuit_sim::Waveform::Kind::Dc, 0.0});
+        if (live)
+            c.addVariableResistor("VR1", in, out, 10000.0, "vr_pos", false); // R = pos * 10k
+        else
+            c.addResistor("R1", in, out, fixedOhms);
+        c.addCapacitor("C1", out, 0, 1e-6);
+        c.addResistor("RL", out, 0, 20000.0);
+        audio_dsp::Config config;
+        config.audioInputElement = 0;
+        config.audioOutputNode = out;
+        config.sampleRate = 48000.0;
+        return audio_dsp::build(c, config);
+    };
+    auto live = buildModel(true, 0.0);
+    check(live.ok, "LiveVsFixed: live model build failed");
+    if (!live.ok) return;
+
+    // Live coefficients at the default (pos 0.5) equal the model's own default arrays.
+    std::unordered_map<std::string, double> none;
+    auto defaults = live.computeLiveCoefficients(none);
+    std::vector<double> stored;
+    stored.insert(stored.end(), live.portAffine.begin(), live.portAffine.end());
+    stored.insert(stored.end(), live.portK.begin(), live.portK.end());
+    stored.insert(stored.end(), live.stateAffine.begin(), live.stateAffine.end());
+    stored.insert(stored.end(), live.stateQ.begin(), live.stateQ.end());
+    stored.insert(stored.end(), live.outAffine.begin(), live.outAffine.end());
+    stored.insert(stored.end(), live.outQ.begin(), live.outQ.end());
+    bool same = defaults.size() == stored.size();
+    for (size_t i = 0; same && i < stored.size(); ++i) same = std::abs(defaults[i] - stored[i]) <= 1e-12 * (1.0 + std::abs(stored[i]));
+    check(same, "LiveVsFixed: default live coefficients equal the default model (no double application)");
+
+    for (double pos : {0.1, 0.5, 0.9}) {
+        auto fixed = buildModel(false, 10000.0 * pos);
+        std::unordered_map<std::string, double> params = {{"vr_pos", pos}};
+        auto coeffs = live.computeLiveCoefficients(params);
+        std::vector<double> wsLive(live.workspaceSize, 0.0), wsFixed(fixed.workspaceSize, 0.0);
+        for (int n = 0; n < 200; ++n) {
+            const double input = n < 100 ? 1.0 : -0.5; // a step, then a reversal: exercises the capacitor state
+            const double a = live.step(wsLive, coeffs.data(), input);
+            const double b = fixed.step(wsFixed, nullptr, input);
+            if (std::abs(a - b) > 1e-9) {
+                checkNear(a, b, 1e-9, "LiveVsFixed: live pot at " + std::to_string(pos) + " differs from a fixed resistor at sample " + std::to_string(n));
+                break;
+            }
+        }
+    }
+}
+
 int main() {
     std::cout << "Starting AudioDspTests..." << std::endl;
     testResistiveDivider(); std::cout << "testResistiveDivider finished." << std::endl;
@@ -402,6 +460,7 @@ int main() {
     testCoupledLivePorts(); std::cout << "testCoupledLivePorts finished." << std::endl;
     testContinuousSweep(); std::cout << "testContinuousSweep finished." << std::endl;
     testStateContinuity(); std::cout << "testStateContinuity finished." << std::endl;
+    testLivePortMatchesFixedEquivalent(); std::cout << "testLivePortMatchesFixedEquivalent finished." << std::endl;
 
     if (failures == 0) {
         std::cout << "All AudioDspTests passed." << std::endl;
