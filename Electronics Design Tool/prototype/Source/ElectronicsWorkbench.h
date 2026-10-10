@@ -138,6 +138,7 @@ private:
     void exportFrustRealtimePreview();
     void chooseAudioSourceFile();
     void showAnalytics();
+    void showNodeDesigner();
     juce::String analyticsTool(const juce::String& name, const juce::var& args);
     class AnalyticsPanel* analyticsPanel = nullptr;
     class FrustPanel* frustPanel = nullptr;
@@ -167,6 +168,7 @@ private:
     int executionListener = 0;
     juce::uint64 lastReportedSession = 0;
     juce::Component::SafePointer<CreationDock::DockPanel> analyticsDockPanel;
+    juce::Component::SafePointer<CreationDock::DockPanel> nodeDesignerDockPanel;
     void autoLayoutDiagram();
     void applySchematicZoom(float zoom);
     void adjustSchematicZoom(float factor);

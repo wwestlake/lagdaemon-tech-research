@@ -3223,6 +3223,11 @@ public:
                 openSheet(instance.childSheet);
                 return;
             }
+            if (instance.symbolId == "frust_component" && openComponentProgram != nullptr)
+            {
+                openComponentProgram(componentDefinitionOf(instance.refdes));
+                return;
+            }
             if (isInstrumentNode(instance.symbolId) && onInstrumentOpen)
             {
                 onInstrumentOpen(instance.refdes, instance.symbolId);
@@ -14633,7 +14638,7 @@ ElectronicsWorkbench::ElectronicsWorkbench()
     nodeDesignerPanel->defaultFolder = [this] {
         return project.folder != juce::File() ? project_store::programsDirectory(project) : project_store::defaultProjectsRoot();
     };
-    dockManager->registerPanel("nodes", "Node Designer", std::move(nodeDesignerOwner), CreationDock::DockTargetZone::CenterTab);
+    nodeDesignerDockPanel = dockManager->registerPanel("nodes", "Node Designer", std::move(nodeDesignerOwner), CreationDock::DockTargetZone::CenterTab);
     auto frustOwner = std::make_unique<FrustPanel>();
     frustPanel = frustOwner.get();
     // Compile & Run in the Node Designer runs the generated program on the
@@ -14689,7 +14694,11 @@ ElectronicsWorkbench::ElectronicsWorkbench()
     schematicPanel->openComponentProgram = [this](const juce::String& definition) {
         juce::String error;
         if (!openComponentProgram(definition, error))
+        {
             appendLog("Edit program: " + error);
+            juce::AlertWindow::showMessageBoxAsync(juce::MessageBoxIconType::WarningIcon, "Edit program",
+                                                   "Could not open the program of " + definition + ":\n" + error);
+        }
     };
     dockManager->registerPanel("frust", "Frust", std::move(frustOwner), CreationDock::DockTargetZone::Bottom);
     FrustDebuggerPanel::Actions debugActions;
@@ -18312,7 +18321,21 @@ bool ElectronicsWorkbench::openComponentProgram(const juce::String& componentNam
         return false;
     }
     nodeDesignerPanel->setComponentContext(d.compilerContext());
+    showNodeDesigner();
     return true;
+}
+
+// Brings the Node Designer forward: its tab becomes the visible one in its
+// dock zone, or its floating window comes to the front.
+void ElectronicsWorkbench::showNodeDesigner()
+{
+    auto* panel = nodeDesignerDockPanel.getComponent();
+    if (panel == nullptr)
+        return;
+    if (auto* zone = panel->findParentComponentOfClass<CreationDock::DockZone>())
+        zone->setActivePanel(panel);
+    if (auto* window = dynamic_cast<CreationDock::FloatingDockWindow*>(panel->getTopLevelComponent()))
+        window->toFront(true);
 }
 
 bool ElectronicsWorkbench::applyComponentLayout(const juce::String& componentName, const std::vector<ComponentPinPlacement>& layout,
