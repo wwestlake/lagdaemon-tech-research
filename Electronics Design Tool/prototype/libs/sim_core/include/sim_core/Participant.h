@@ -81,6 +81,9 @@ public:
     // A continuous input at time `at`: held, or extrapolated from its last
     // committed value with the source's derivatives (Taylor, up to 2nd order).
     double real(int port, Tick at) const;
+    // Its rate of change at `at` from the same extrapolation (0 when held);
+    // lets a participant supply its own output derivatives in a coupled loop.
+    double rate(int port, Tick at) const;
     // The committed value (discrete inputs; continuous inputs as held).
     Value value(int port) const { return slots[(std::size_t)port].value; }
     Tick committedAt(int port) const { return slots[(std::size_t)port].at; }

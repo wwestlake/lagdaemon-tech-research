@@ -69,6 +69,14 @@ double InputFrame::real(int port, Tick at) const
     return s.value.real + s.d1 * dt + 0.5 * s.d2 * dt * dt;
 }
 
+double InputFrame::rate(int port, Tick at) const
+{
+    const auto& s = slots[(std::size_t)port];
+    if (s.kind != SignalKind::Continuous || s.policy == InputPolicy::Hold || !s.bound)
+        return 0.0;
+    return s.d1 + s.d2 * ticksToSeconds(at - s.at);
+}
+
 class Simulation::Sink final : public EventSink
 {
 public:

@@ -143,6 +143,80 @@ struct Filter final : Participant
     Tick lastTo = 0;
 };
 
+// One half of a two-way coupled linear system: s' = -k s + g u(t), where u
+// is the partner's state read through the bus. It supplies s, s' and s''
+// (from the partner's extrapolated value and rate) so the partner can
+// extrapolate it in turn. RK4 over each step.
+struct CoupledHalf final : Participant
+{
+    std::string name;
+    double k = 1.0, g = 1.0, s0 = 0.0;
+    Tick step = ms(1);
+    double s = 0.0, trial = 0.0, d1 = 0.0, d2 = 0.0, trialD1 = 0.0, trialD2 = 0.0;
+    Tick lastTo = 0;
+    std::shared_ptr<std::vector<std::pair<Tick, double>>> trace;
+    ParticipantInfo describe() const override
+    {
+        ParticipantInfo i;
+        i.name = name;
+        i.inputs = { PortSpec::continuous("u", "1") };
+        i.outputs = { PortSpec::continuous("s", "1", 2) };
+        i.timing = { TimingKind::FixedStep, step };
+        i.caps.canRollback = true;
+        i.caps.stateSerializable = true;
+        return i;
+    }
+    void derivatives(double value, Tick at, const InputFrame& in, double& first, double& second) const
+    {
+        first = -k * value + g * in.real(0, at);
+        second = -k * first + g * in.rate(0, at);
+    }
+    Status initialize(Tick t0, int, const InputFrame& in) override
+    {
+        s = trial = s0;
+        derivatives(s, t0, in, d1, d2);
+        trialD1 = d1;
+        trialD2 = d2;
+        return {};
+    }
+    StepResult doStep(Tick from, Tick to, const InputFrame& in, EventSink&) override
+    {
+        const double h = ticksToSeconds(to - from);
+        const Tick mid = from + (to - from) / 2;
+        auto f = [&](double v, Tick t) { return -k * v + g * in.real(0, t); };
+        const double k1 = f(s, from), k2 = f(s + 0.5 * h * k1, mid), k3 = f(s + 0.5 * h * k2, mid), k4 = f(s + h * k3, to);
+        trial = s + h / 6.0 * (k1 + 2.0 * k2 + 2.0 * k3 + k4);
+        derivatives(trial, to, in, trialD1, trialD2);
+        lastTo = to;
+        return {};
+    }
+    void commit() override
+    {
+        s = trial;
+        d1 = trialD1;
+        d2 = trialD2;
+        if (trace) trace->push_back({ lastTo, s });
+    }
+    void rollback() override { trial = s; trialD1 = d1; trialD2 = d2; }
+    void getOutputs(OutputFrame& o) const override { o.setReal(0, trial, trialD1, trialD2); }
+    std::vector<std::uint8_t> saveState() const override
+    {
+        std::vector<std::uint8_t> b(24);
+        std::memcpy(b.data(), &s, 8);
+        std::memcpy(b.data() + 8, &d1, 8);
+        std::memcpy(b.data() + 16, &d2, 8);
+        return b;
+    }
+    Status restoreState(const std::vector<std::uint8_t>& b) override
+    {
+        std::memcpy(&s, b.data(), 8);
+        std::memcpy(&d1, b.data() + 8, 8);
+        std::memcpy(&d2, b.data() + 16, 8);
+        rollback();
+        return {};
+    }
+};
+
 // Emits scripted events exactly at their times (variable step + next event time).
 struct Script final : Participant
 {
@@ -684,6 +758,144 @@ void testCoupled()
     for (const auto& d : w->diagnostics().all())
         warned |= d.category == Category::Synchronisation && d.severity == Severity::Warning && contains(d.message, "ahead of its last value");
     check(warned, "reading an input beyond its extrapolation limit raises a synchronisation warning");
+}
+
+// ---- 3b. two-way coupling at different rates ----------------------------------
+//
+// x' = -a x + c y   (participant A, step H)
+// y' =  d x - b y   (participant B, step 0.1 ms)
+// a = 1, b = 3, c = 1, d = 2, x(0) = 1, y(0) = 0. With M = [[-a, c], [d, -b]]:
+// z(t) = e^{Mt} z0 = e^{mt} [cosh(mu t) I + sinh(mu t)/mu (M - m I)] z0,
+// m = trace/2 = -2, mu = sqrt(m^2 - det) = sqrt(4 - 1) = sqrt(3).
+
+struct CoupledRun
+{
+    std::shared_ptr<std::vector<std::pair<Tick, double>>> xs = std::make_shared<std::vector<std::pair<Tick, double>>>();
+    std::shared_ptr<std::vector<std::pair<Tick, double>>> ys = std::make_shared<std::vector<std::pair<Tick, double>>>();
+    std::uint64_t rounds = 0;
+    double worst = 0.0;      // largest |z - z_exact| / |z_exact| over the run
+    double xEnd = 0.0, yEnd = 0.0;
+};
+
+void exactCoupled(double t, double& x, double& y)
+{
+    const double m = -2.0, mu = std::sqrt(3.0);
+    const double e = std::exp(m * t), ch = std::cosh(mu * t), sh = std::sinh(mu * t) / mu;
+    // (M - mI) = [[-1+2, 1], [2, -3+2]] = [[1, 1], [2, -1]]; z0 = (1, 0)
+    x = e * (ch + sh * 1.0);
+    y = e * (sh * 2.0);
+}
+
+CoupledRun runCoupled(Tick stepA, double c, double d, const std::string& recordAs = {}, bool replayCheck = false)
+{
+    CoupledRun out;
+    auto build = [&](std::shared_ptr<std::vector<std::pair<Tick, double>>> xs, std::shared_ptr<std::vector<std::pair<Tick, double>>> ys) {
+        auto s = std::make_unique<Simulation>();
+        auto a = std::make_unique<CoupledHalf>();
+        a->name = "A";
+        a->k = 1.0;
+        a->g = c;
+        a->s0 = 1.0;
+        a->step = stepA;
+        a->trace = xs;
+        auto b = std::make_unique<CoupledHalf>();
+        b->name = "B";
+        b->k = 3.0;
+        b->g = d;
+        b->s0 = 0.0;
+        b->step = ms(0.1);
+        b->trace = ys;
+        s->addParticipant(std::move(a));
+        s->addParticipant(std::move(b));
+        s->connect("A.s", "B.u");
+        s->connect("B.s", "A.u");
+        return s;
+    };
+    auto s = build(out.xs, out.ys);
+    std::unique_ptr<RecordingWriter> rec;
+    if (!recordAs.empty())
+    {
+        rec = std::make_unique<RecordingWriter>(path(recordAs + ".simrec"), path(recordAs + ".manifest.json"));
+        s->setRecorder(rec.get());
+    }
+    s->configure();
+    s->initialize(0);
+    s->start();
+    s->runUntil(sec(2));
+    out.rounds = s->rounds();
+    out.xEnd = s->committedValue(s->signalId("A.s")).real;
+    out.yEnd = s->committedValue(s->signalId("B.s")).real;
+    s->terminate();
+    if (rec) rec->finish();
+    // Error against the closed form, at every 1 ms where both have committed.
+    std::size_t j = 0;
+    for (const auto& [t, x] : *out.xs)
+    {
+        while (j < out.ys->size() && (*out.ys)[j].first < t) ++j;
+        if (j >= out.ys->size() || (*out.ys)[j].first != t) continue;
+        double ex = 0.0, ey = 0.0;
+        exactCoupled(ticksToSeconds(t), ex, ey);
+        const double err = std::hypot(x - ex, (*out.ys)[j].second - ey) / std::hypot(ex, ey);
+        out.worst = std::max(out.worst, err);
+    }
+    if (replayCheck && !recordAs.empty())
+    {
+        auto again = build(nullptr, nullptr);
+        RecordingWriter rec2(path(recordAs + "_replay.simrec"), path(recordAs + "_replay.manifest.json"));
+        again->setRecorder(&rec2);
+        again->configure();
+        again->initialize(0);
+        again->start();
+        again->runUntil(sec(2));
+        again->terminate();
+        rec2.finish();
+    }
+    return out;
+}
+
+void testBidirectional()
+{
+    std::printf("-- two-way coupling at different rates (A 1 ms <-> B 0.1 ms) --\n");
+    const auto run = runCoupled(ms(1), 1.0, 2.0, "bidirectional", true);
+    char detail[200];
+    std::snprintf(detail, sizeof detail, "worst relative error %.3g over 2 s; x(2) = %.12f, y(2) = %.12f", run.worst, run.xEnd, run.yEnd);
+    std::printf("      %s\n", detail);
+    double ex = 0.0, ey = 0.0;
+    exactCoupled(2.0, ex, ey);
+    std::printf("      closed form: x(2) = %.12f, y(2) = %.12f\n", ex, ey);
+    check(run.worst < 1e-6, "coupled state matches the closed form e^{Mt} z0 within 1e-6 (relative to |z|)", detail);
+
+    // Each side genuinely drives the other: cutting either coupling changes the result.
+    const auto noBtoA = runCoupled(ms(1), 0.0, 2.0);   // A no longer hears B: x = e^-t
+    const auto noAtoB = runCoupled(ms(1), 1.0, 0.0);   // B no longer hears A: y stays 0
+    check(std::abs(noBtoA.xEnd - std::exp(-2.0)) < 1e-9 && std::abs(run.xEnd - noBtoA.xEnd) > 0.1,
+          "B influences A: without B's feedback x(2) = e^-2; with it x(2) differs by more than 0.1",
+          std::to_string(noBtoA.xEnd) + " vs " + std::to_string(run.xEnd));
+    check(noAtoB.yEnd == 0.0 && std::abs(run.yEnd) > 0.1, "A influences B: without A, y stays 0; with A, |y(2)| > 0.1", std::to_string(run.yEnd));
+
+    // Both advance on the master clock: B every 0.1 ms, A every 1 ms, at exact ticks.
+    bool aligned = run.xs->size() == 2000 && run.ys->size() == 20000 && run.rounds == 20000;
+    for (std::size_t i = 0; aligned && i < run.xs->size(); ++i) aligned = (*run.xs)[i].first == ms(1) * (Tick)(i + 1);
+    for (std::size_t i = 0; aligned && i < run.ys->size(); ++i) aligned = (*run.ys)[i].first == ms(0.1) * (Tick)(i + 1);
+    check(aligned, "A commits 2,000 times at exact 1 ms ticks and B 20,000 times at exact 0.1 ms ticks, in 20,000 rounds");
+
+    // Consistency: the coupling error comes from extrapolating the partner over
+    // A's step, so it shrinks about 8x (third order) when A's step halves.
+    const auto finer = runCoupled(ms(0.5), 1.0, 2.0);
+    const double ratio = finer.worst > 0.0 ? run.worst / finer.worst : 0.0;
+    std::snprintf(detail, sizeof detail, "error %.3g at 1 ms, %.3g at 0.5 ms: ratio %.2f", run.worst, finer.worst, ratio);
+    std::printf("      %s\n", detail);
+    check(ratio > 4.0, "halving A's step cuts the coupling error by more than 4x (consistent, at least second order)", detail);
+
+    // Recording and replay preserve the coupled behaviour.
+    Recording r;
+    readRecording(path("bidirectional.simrec"), r);
+    const auto& xRec = r.samples[0];
+    const auto& yRec = r.samples[1];
+    check(xRec.size() == 2001 && yRec.size() == 20001 && xRec.back().value.real == run.xEnd && yRec.back().value.real == run.yEnd,
+          "the recording holds every committed x and y; its final values equal the run's");
+    std::string diff;
+    check(filesIdentical(path("bidirectional.simrec"), path("bidirectional_replay.simrec"), diff), "a second run of the coupled system records bit for bit the same", diff);
 }
 
 // ---- 4. event ordering --------------------------------------------------------
@@ -1367,7 +1579,7 @@ int compareDirs(const std::string& a, const std::string& b)
         std::string diff;
         check(filesIdentical((fs::path(a) / f).string(), (fs::path(b) / f).string(), diff), std::string(f) + " identical across configurations", diff);
     }
-    for (const char* f : { "coupled.simrec", "replay_a.simrec", "mode_free.simrec", "locators.simrec" })
+    for (const char* f : { "coupled.simrec", "bidirectional.simrec", "replay_a.simrec", "mode_free.simrec", "locators.simrec" })
     {
         Recording x, y;
         const auto sa = readRecording((fs::path(a) / f).string(), x);
@@ -1416,6 +1628,7 @@ int main(int argc, char** argv)
     testTime();
     testUnits();
     testCoupled();
+    testBidirectional();
     testEvents();
     testReplay();
     testRecorder();
