@@ -136,6 +136,9 @@ target_sources(DjehutiElectronicsLab PRIVATE
     Source/PlotInstrumentView.cpp
     Source/CapabilityCatalog.h
     Source/CapabilityCatalog.cpp
+    Source/ErcAdvice.h
+    Source/ErcAdvice.cpp
+    Source/AgentProgress.h
     Source/AnalyticsPanel.h
     Source/AnalyticsPanel.cpp
     Source/CircuitHierarchy.cpp
@@ -394,6 +397,7 @@ target_sources(KnowledgeTests PRIVATE
     Source/CapabilityCatalog.cpp
     Source/PartCatalog.cpp
     Source/SchematicSymbols.cpp
+    Source/ErcAdvice.cpp
 )
 target_compile_definitions(KnowledgeTests PRIVATE
     JUCE_WEB_BROWSER=0

@@ -176,6 +176,7 @@ juce::Component* logPanel = nullptr;
     std::function<juce::String()> getCircuitJson;
     std::function<juce::String()> getXyceNetlist;
     std::function<juce::String()> getErcReport;
+    std::function<juce::var()> getErcFindings;
     std::function<bool(const juce::String&, juce::String&)> loadCircuitJson;
     std::function<juce::String(const juce::String&, float, float, const juce::String&,
                                const juce::String&, const juce::String&)> placeSymbolTool;

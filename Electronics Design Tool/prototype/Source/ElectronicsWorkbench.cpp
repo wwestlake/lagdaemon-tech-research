@@ -20,6 +20,8 @@
 #include "PlotInstrument.h"
 #include "PlotInstrumentView.h"
 #include "CapabilityCatalog.h"
+#include "ErcAdvice.h"
+#include "AgentProgress.h"
 #include "XyceBackend.h"
 #include <thread>
 
@@ -2455,8 +2457,17 @@ public:
         return netlist;
     }
 
-    juce::String buildErcReport() const
+    // Every rule check as structured findings (see ErcAdvice): the markdown
+    // report, the ERC tool result and the agent all read the same list.
+    struct ErcResult
     {
+        std::vector<erc_advice::Finding> findings;
+        int errors = 0, warnings = 0, infos = 0;
+    };
+
+    ErcResult runErcChecks() const
+    {
+        ErcResult result;
         const auto netNames = computeNetNames();
         const auto totalPins = pinCount();
         const auto totalNodes = totalPins + (int)junctions.size();
@@ -2470,19 +2481,6 @@ public:
             if (b >= 0 && b < totalNodes) ++nodeDegree[(size_t)b];
         }
 
-        int errors = 0;
-        int warnings = 0;
-        int infos = 0;
-        juce::String findings;
-
-        auto addFinding = [&](const juce::String& severity, const juce::String& message) {
-            if (severity == "ERROR") ++errors;
-            else if (severity == "WARN") ++warnings;
-            else ++infos;
-
-            findings << "- [" << severity << "] " << message << "\n";
-        };
-
         auto pinNet = [&](int instanceIndex, const juce::String& pinName) {
             const auto symbol = symbolForInstance(instances[(size_t)instanceIndex]);
             for (int p = 0; p < (int)symbol.pins.size(); ++p)
@@ -2490,13 +2488,64 @@ public:
                     return netFor({ instanceIndex, p }, netNames);
             return juce::String("floating");
         };
+        auto shownNet = [&](const juce::String& net) {
+            if (net == "0") return juce::String("GND");
+            if (net == "floating") return juce::String("nothing");
+            const auto name = netDisplayName(net, netNames).trim();
+            return name.isNotEmpty() ? name : net;
+        };
+        // The part's other pins and where they go, so a finding shows its surroundings.
+        auto connectionsOf = [&](int instanceIndex, int skipPin) {
+            juce::StringArray out;
+            const auto& inst = instances[(size_t)instanceIndex];
+            const auto symbol = symbolForInstance(inst);
+            for (int p = 0; p < (int)symbol.pins.size(); ++p)
+                if (p != skipPin)
+                {
+                    const auto ordinal = pinOrdinal({ instanceIndex, p });
+                    const bool wired = ordinal >= 0 && ordinal < (int)nodeDegree.size() && nodeDegree[(size_t)ordinal] > 0;
+                    out.add(inst.refdes + "." + symbol.pins[(size_t)p].name + (wired ? " on " + shownNet(netFor({ instanceIndex, p }, netNames)) : juce::String(" unwired")));
+                }
+            return out;
+        };
+
+        erc_advice::Context context;
+        for (int i = 0; i < (int)instances.size(); ++i)
+        {
+            const auto& inst = instances[(size_t)i];
+            if (inst.symbolId == "power_port" && inst.busName.trim().isNotEmpty())
+                context.supplyNets.addIfNotAlreadyThere(inst.busName.trim());
+            if (inst.symbolId == "ground" || inst.symbolId == "ground_bus")
+                context.groundNets.addIfNotAlreadyThere("GND");
+        }
+
+        auto add = [&](erc_advice::Finding f) {
+            if (f.severity == "ERROR") ++result.errors;
+            else if (f.severity == "WARN") ++result.warnings;
+            else ++result.infos;
+            erc_advice::suggest(f, context);
+            result.findings.push_back(std::move(f));
+        };
+        auto finding = [](const char* severity, const char* category, const juce::String& message) {
+            erc_advice::Finding f;
+            f.severity = severity;
+            f.category = category;
+            f.message = message;
+            return f;
+        };
+        auto partFinding = [&](const char* severity, const char* category, const juce::String& message, int i) {
+            auto f = finding(severity, category, message);
+            f.refdes = instances[(size_t)i].refdes;
+            f.symbolId = instances[(size_t)i].symbolId;
+            return f;
+        };
 
         auto unsupportedForXyce = [](const juce::String& symbolId) {
             return symbolId.startsWith("logic_");
         };
 
         if (instances.empty())
-            addFinding("ERROR", "No components are placed on the schematic.");
+            add(finding("ERROR", "empty_circuit", "No components are placed on the schematic."));
 
         bool hasGround = false;
         bool hasLoweredPrimitive = false;
@@ -2524,9 +2573,9 @@ public:
         }
 
         if (!hasGround)
-            addFinding("ERROR", "No ground reference is present. Add a ground or ground bus before running solver-backed analysis.");
+            add(finding("ERROR", "no_ground", "No ground reference is present. Add a ground or ground bus before running solver-backed analysis."));
         if (!hasLoweredPrimitive && !instances.empty())
-            addFinding("WARN", "No currently lowered Xyce primitive is present. The generated netlist will be mostly structural.");
+            add(finding("WARN", "no_simulated_primitive", "No currently lowered Xyce primitive is present. The generated netlist will be mostly structural."));
 
         std::set<juce::String> refdesSeen;
         for (int i = 0; i < (int)instances.size(); ++i)
@@ -2535,7 +2584,7 @@ public:
             const auto symbol = symbolForInstance(instance);
 
             if (refdesSeen.count(instance.refdes) != 0)
-                addFinding("ERROR", "Duplicate reference designator found: " + instance.refdes + ".");
+                add(partFinding("ERROR", "duplicate_refdes", "Duplicate reference designator found: " + instance.refdes + ".", i));
             refdesSeen.insert(instance.refdes);
 
             if (instance.value.trim().isEmpty()
@@ -2545,22 +2594,33 @@ public:
                 && instance.symbolId != "power_port"
                 && instance.symbolId != "net_label"
                 && instance.symbolId != "block_port")
-                addFinding("WARN", instance.refdes + " has no value or model text.");
+                add(partFinding("WARN", "missing_value", instance.refdes + " has no value or model text.", i));
 
             if (instance.symbolId == "net_label" && instance.busName.trim().isEmpty())
-                addFinding("ERROR", instance.refdes + " is a net label with no name.");
+                add(partFinding("ERROR", "unnamed_net_label", instance.refdes + " is a net label with no name.", i));
 
             if (instance.symbolId == "power_port" && instance.busName.trim().isEmpty())
-                addFinding("ERROR", instance.refdes + " is a supply port with no net name.");
+                add(partFinding("ERROR", "unnamed_supply_port", instance.refdes + " is a supply port with no net name.", i));
 
             if (unsupportedForXyce(instance.symbolId))
-                addFinding("INFO", instance.refdes + " (" + instance.symbolId + ") is captured in the model but not lowered to Xyce yet.");
+                add(partFinding("INFO", "not_simulated", instance.refdes + " (" + instance.symbolId + ") is captured in the model but not lowered to Xyce yet.", i));
 
             for (int p = 0; p < (int)symbol.pins.size(); ++p)
             {
                 const auto ordinal = pinOrdinal({ i, p });
-                if (ordinal >= 0 && ordinal < (int)nodeDegree.size() && nodeDegree[(size_t)ordinal] == 0 && instance.symbolId != "xyz_plotter")
-                    addFinding("WARN", instance.refdes + "." + symbol.pins[(size_t)p].name + " is not wired.");
+                if (ordinal < 0 || ordinal >= (int)nodeDegree.size() || nodeDegree[(size_t)ordinal] != 0 || instance.symbolId == "xyz_plotter")
+                    continue;
+                const auto& pinName = symbol.pins[(size_t)p].name;
+                const auto polarity = erc_advice::supplyPolarity(pinName);
+                // A supply pin left open leaves the part unpowered: an error, not a style warning.
+                auto f = polarity != 0
+                    ? partFinding("ERROR", "unconnected_supply_pin", instance.refdes + "." + pinName + " is a " + (polarity > 0 ? "positive" : "negative")
+                                                                         + " supply pin with no connection; " + instance.refdes + " is unpowered.", i)
+                    : partFinding("WARN", "unconnected_pin", instance.refdes + "." + pinName + " is not wired.", i);
+                f.pin = pinName;
+                f.pinIndex = p;
+                f.connections = connectionsOf(i, p);
+                add(std::move(f));
             }
 
             if (symbol.pins.size() == 2
@@ -2572,64 +2632,110 @@ public:
                 const auto a = netFor({ i, 0 }, netNames);
                 const auto b = netFor({ i, 1 }, netNames);
                 if (a == b)
-                    addFinding("WARN", instance.refdes + " has both pins on " + a + ".");
+                {
+                    auto f = partFinding("WARN", "shorted_part", instance.refdes + " has both pins on " + a + ".", i);
+                    f.net = shownNet(a);
+                    add(std::move(f));
+                }
             }
 
             if ((instance.symbolId == "voltage_source" || instance.symbolId == "battery" || instance.symbolId == "ac_voltage_source" || instance.symbolId == "audio_in")
                 && pinNet(i, "+") == pinNet(i, "-"))
-                addFinding("ERROR", instance.refdes + " has positive and negative terminals on the same net.");
+            {
+                auto f = partFinding("ERROR", "shorted_source", instance.refdes + " has positive and negative terminals on the same net.", i);
+                f.net = shownNet(pinNet(i, "+"));
+                add(std::move(f));
+            }
             if (instance.symbolId == "signal_source" && pinNet(i, "OUT") == pinNet(i, "REF"))
-                addFinding("ERROR", instance.refdes + " has OUT and REF on the same net.");
+            {
+                auto f = partFinding("ERROR", "shorted_source", instance.refdes + " has OUT and REF on the same net.", i);
+                f.net = shownNet(pinNet(i, "OUT"));
+                add(std::move(f));
+            }
         }
 
         // Values are resolved exactly as the simulator resolves them, so ERC
         // and simulation agree on what is invalid.
         for (const auto& valueError : buildSimNetlist().valueErrors)
-            addFinding("ERROR", valueError);
+        {
+            auto f = finding("ERROR", "invalid_value", valueError);
+            const auto refdes = valueError.upToFirstOccurrenceOf(":", false, false).trim();
+            for (const auto& inst : instances)
+                if (inst.refdes == refdes)
+                {
+                    f.refdes = refdes;
+                    f.symbolId = inst.symbolId;
+                }
+            add(std::move(f));
+        }
 
         for (const auto& wire : wires)
         {
             if (sameNode(wire.a, wire.b))
-                addFinding("WARN", "A wire loops back to " + nodeLabel(wire.a) + ".");
+                add(finding("WARN", "wire_loop", "A wire loops back to " + nodeLabel(wire.a) + "."));
         }
 
         // Every named supply net needs something that actually sets its voltage.
-        std::set<juce::String> supplyNets;
+        std::map<juce::String, juce::String> supplyNets; // net -> port name
         std::set<juce::String> drivenNets;
         for (int i = 0; i < (int)instances.size(); ++i)
         {
             const auto& instance = instances[(size_t)i];
             if (instance.symbolId == "power_port" && instance.busName.trim().isNotEmpty())
-                supplyNets.insert(pinNet(i, "1"));
+                supplyNets[pinNet(i, "1")] = instance.busName.trim();
             if (instance.symbolId == "voltage_source" || instance.symbolId == "battery")
             {
                 drivenNets.insert(pinNet(i, "+"));
                 drivenNets.insert(pinNet(i, "-"));
             }
         }
-        for (const auto& net : supplyNets)
+        for (const auto& [net, port] : supplyNets)
             if (drivenNets.count(net) == 0)
-                addFinding("ERROR", "Supply net " + net + " has ports but no voltage source or battery driving it.");
+            {
+                auto f = finding("ERROR", "undriven_supply_net", "Supply net " + net + " has ports but no voltage source or battery driving it.");
+                f.net = port;
+                add(std::move(f));
+            }
 
         if (probes.empty() && !instances.empty())
-            addFinding("INFO", "No lab probes are assigned yet, so instruments do not have schematic targets.");
+            add(finding("INFO", "no_probes", "No lab probes are assigned yet, so instruments do not have schematic targets."));
+        return result;
+    }
 
+    juce::String buildErcReport() const
+    {
+        const auto erc = runErcChecks();
         juce::String report;
         report << "# Electrical Rule Check\n\n";
         report << "- Components: " << (int)instances.size() << "\n";
         report << "- Wires: " << (int)wires.size() << "\n";
         report << "- Junctions: " << (int)junctions.size() << "\n";
         report << "- Probes: " << (int)probes.size() << "\n";
-        report << "- Errors: " << errors << "\n";
-        report << "- Warnings: " << warnings << "\n";
-        report << "- Info: " << infos << "\n\n";
+        report << "- Errors: " << erc.errors << "\n";
+        report << "- Warnings: " << erc.warnings << "\n";
+        report << "- Info: " << erc.infos << "\n\n";
 
-        if (findings.isEmpty())
+        if (erc.findings.empty())
             report << "No ERC findings.\n";
         else
-            report << "## Findings\n\n" << findings;
-
+        {
+            report << "## Findings\n\n";
+            for (const auto& f : erc.findings)
+                report << erc_advice::markdownLine(f);
+        }
         return report;
+    }
+
+    // The findings for the ERC tool result: errors first, then warnings, then info.
+    juce::var ercFindingsVar() const
+    {
+        auto erc = runErcChecks();
+        auto rank = [](const juce::String& s) { return s == "ERROR" ? 0 : s == "WARN" ? 1 : 2; };
+        std::stable_sort(erc.findings.begin(), erc.findings.end(), [&](const auto& a, const auto& b) { return rank(a.severity) < rank(b.severity); });
+        juce::Array<juce::var> list;
+        for (const auto& f : erc.findings)
+            list.add(erc_advice::toVar(f));
+        return list;
     }
 
     void paint(juce::Graphics& g) override
@@ -12852,6 +12958,12 @@ private:
                "Use amplifier_design_push_pull when asked for a push-pull, class B, class AB, or complementary emitter-follower audio output stage. "
                "Use schematic_auto_layout after creating or editing a diagram so the result is readable and spaced. "
                "After placing or connecting a generated circuit, use circuit_inspect and circuit_run_erc before claiming the circuit exists or is ready. "
+               "Work in a loop of observe, diagnose, correct, verify: run an operation, read its actual result, list what is still wrong or unmet, "
+               "choose a corrective operation, apply it, and check that the result or diagnostics changed. Never repeat a check without changing "
+               "something first; the run is stopped if the same call keeps returning the same result. Keep these apart: a tool returning ok:true only "
+               "means it ran; circuit_run_erc passed only when its 'passed' field is true (errors = 0), otherwise its findings list each problem with "
+               "the part, pin, net and suggestedActions to fix; a simulation that returns data is not proof the circuit works; the task is done only "
+               "when the circuit shows the required behaviour in its results. "
                "Discover parts, instruments, analyses and engines with workbench_capabilities (the application's own registry) before designing; "
                "look a part up by symbolId before setting its parameters. Use cookbook_lookup for engineering knowledge and reference designs. "
                "Never invent component types, model names or parameters; if what you need does not exist, say so or record it with capability_gap_record. "
@@ -13349,6 +13461,7 @@ private:
             // No cap on tool rounds: the agent runs until it answers, the
             // provider fails, the user stops it, or it keeps repeating one
             // failing call. (Each provider request keeps its own timeout.)
+            agent_progress::NoProgressGuard progress;
             constexpr int maxIdenticalFailures = 3;
             std::string lastFailedCall;
             int identicalFailures = 0;
@@ -13413,7 +13526,12 @@ private:
                     const auto signature = call.name + "\n" + call.argumentsJson;
                     identicalFailures = failed ? (signature == lastFailedCall ? identicalFailures + 1 : 1) : 0;
                     lastFailedCall = failed ? signature : std::string();
-                    if (identicalFailures >= maxIdenticalFailures)
+                    if (running && progress.record(juce::String(call.name), juce::String(call.argumentsJson), result))
+                    {
+                        response = { false, {}, progress.reason().toStdString() };
+                        running = false;
+                    }
+                    if (running && identicalFailures >= maxIdenticalFailures)
                     {
                         response = { false, {}, ("Stopped: " + juce::String(call.name) + " failed " + juce::String(identicalFailures)
                                                  + " times in a row with the same arguments ("
@@ -13629,6 +13747,7 @@ ElectronicsWorkbench::ElectronicsWorkbench()
     };
     getXyceNetlist = [panel = schematic.get()] { return panel->buildXyceNetlist(); };
     getErcReport = [panel = schematic.get()] { return panel->buildErcReport(); };
+    getErcFindings = [panel = schematic.get()] { return panel->ercFindingsVar(); };
     loadCircuitJson = [this, panel = schematic.get()](const juce::String& json, juce::String& error) {
         if (!panel->loadCircuitJson(json, error))
             return false;
@@ -15266,8 +15385,23 @@ juce::String ElectronicsWorkbench::runElectricalRuleCheckTool()
     result << "  \"tool\": \"circuit_run_erc\",\n";
     result << "  \"displayTool\": \"circuit.run_erc\",\n";
     result << "  \"status\": " << jsonQuote(errors == "0" ? "passed" : "failed") << ",\n";
+    result << "  \"passed\": " << (errors == "0" ? "true" : "false") << ",\n";
     result << "  \"errors\": " << errors << ",\n";
     result << "  \"warnings\": " << warnings << ",\n";
+    // "ok" says the check ran; "passed" says the circuit has no ERC errors.
+    // The findings say what to change: running ERC again changes nothing.
+    result << "  \"interpretation\": " << jsonQuote(errors == "0"
+        ? "ERC ran and found no errors (passed). Warnings may still need attention. Passing ERC does not show the circuit works: simulate it and check its behaviour."
+        : "ERC ran (ok means the check executed) and the circuit FAILED with " + errors + " error(s). Fix each finding using its suggestedActions, then run ERC again to verify; repeating ERC without changing the circuit gives the same result.") << ",\n";
+    if (getErcFindings != nullptr)
+    {
+        const auto all = getErcFindings();
+        juce::Array<juce::var> shown;
+        for (int i = 0; i < all.size() && i < 40; ++i)
+            shown.add(all[i]);
+        result << "  \"findingCount\": " << all.size() << ",\n";
+        result << "  \"findings\": " << juce::JSON::toString(juce::var(shown), true) << ",\n";
+    }
     result << "  \"reportPath\": " << jsonQuote(reportFile.getFullPathName()) << "\n";
     result << "}\n";
     resultFile.replaceWithText(result);

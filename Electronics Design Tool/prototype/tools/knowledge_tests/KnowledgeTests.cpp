@@ -8,6 +8,9 @@
 #include "../../Source/SpiceLibrary.h"
 #include "../../Source/ElectronicsKnowledge.h"
 #include "../../Source/CapabilityCatalog.h"
+#include "../../Source/ErcAdvice.h"
+#include "../../Source/AgentProgress.h"
+#include "../../Source/SchematicSymbols.h"
 
 #include <cstdio>
 #include <tuple>
@@ -321,6 +324,106 @@ int main(int argc, char** argv)
         double peak = 0.0;
         if (il != nullptr) for (auto y : il->y) peak = std::max(peak, std::abs(y));
         checkTrue("I(L1) is available as a plotted signal", r.ok && il != nullptr && peak > 1e-4, r.error + " peak=" + juce::String(peak));
+    }
+
+    std::printf("-- ERC advice: actionable findings --\n");
+    {
+        checkTrue("supply pins recognised by name", erc_advice::supplyPolarity("V+") == 1 && erc_advice::supplyPolarity("VEE") == -1
+                                                   && erc_advice::supplyPolarity("vdd") == 1 && erc_advice::supplyPolarity("IN+") == 0 && erc_advice::supplyPolarity("OUT") == 0);
+        erc_advice::Context ctx;
+        ctx.supplyNets = { "+12V", "-12V" };
+        ctx.groundNets = { "GND" };
+        erc_advice::Finding f;
+        f.severity = "ERROR";
+        f.category = "unconnected_supply_pin";
+        f.refdes = "U1";
+        f.symbolId = "opamp_generic";
+        f.pin = "V+";
+        f.pinIndex = 3;
+        f.connections = { "U1.IN+ on V1", "U1.OUT on n4" };
+        erc_advice::suggest(f, ctx);
+        const auto all = f.suggestions.joinIntoString(" ");
+        checkTrue("supply fix names the pin and an existing positive rail", all.contains("U1.V+") && all.contains("+12V"), all.substring(0, 140));
+        checkTrue("positive pin is not offered the negative rail", !f.suggestions[0].contains("-12V"), f.suggestions[0]);
+        checkTrue("supply voltage is not hardcoded", !all.contains("9 V") && !all.contains("9V") && all.contains("rating"));
+        // Every operation a suggestion names is a real tool, every part a real component type.
+        static const juce::StringArray tools { "schematic_connect", "schematic_place_symbol", "schematic_set_parameters", "schematic_delete_components",
+                                               "schematic_rename_component", "workbench_capabilities" };
+        bool real = true;
+        juce::String bad;
+        for (const auto& category : { "unconnected_supply_pin", "unconnected_pin", "no_ground", "undriven_supply_net", "shorted_source", "shorted_part",
+                                      "invalid_value", "missing_value", "duplicate_refdes", "unnamed_net_label" })
+        {
+            erc_advice::Finding g = f;
+            g.category = category;
+            g.suggestions.clear();
+            g.net = "n4";
+            erc_advice::suggest(g, ctx);
+            if (g.suggestions.isEmpty()) { real = false; bad << category << " has no suggestion; "; }
+            for (const auto& s : g.suggestions)
+                for (const auto& word : juce::StringArray::fromTokens(s, " ,;:()", ""))
+                {
+                    if (word.startsWith("schematic_") || word.startsWith("workbench_"))
+                        if (!tools.contains(word)) { real = false; bad << word << " "; }
+                    for (const auto part : { "power_port", "voltage_source", "ground" })
+                        if (word == part && !schematic::isSupportedSymbol(part)) { real = false; bad << part << " "; }
+                }
+        }
+        checkTrue("suggestions use only real tools and components", real, bad);
+        const auto v = erc_advice::toVar(f);
+        checkTrue("finding carries part, pin label, index and connections",
+                  v.getProperty("pinLabel", {}).toString() == "U1.V+" && (int)v.getProperty("pinIndex", -1) == 3
+                      && v.getProperty("existingConnections", {}).size() == 2 && v.getProperty("suggestedActions", {}).size() >= 2);
+        checkTrue("markdown line keeps the [SEVERITY] message format", erc_advice::markdownLine(f).startsWith("- [ERROR] "));
+    }
+
+    std::printf("-- no-progress guard --\n");
+    {
+        const juce::String erc = R"({"ok": true, "tool": "circuit_run_erc", "passed": false, "errors": 2, "findings": [{"pinLabel": "U1.V+"}], "reportPath": "C:/a/erc_report.md"})";
+        const juce::String ercOtherPath = R"({"ok": true, "tool": "circuit_run_erc", "passed": false, "errors": 2, "findings": [{"pinLabel": "U1.V+"}], "reportPath": "C:/b/erc_report.md"})";
+        {
+            agent_progress::NoProgressGuard g;
+            const bool s1 = g.record("circuit_run_erc", "{}", erc), s2 = g.record("circuit_run_erc", "{}", ercOtherPath), s3 = g.record("circuit_run_erc", "{}", erc);
+            checkTrue("unchanged successful ERC stops on the third call", !s1 && !s2 && s3);
+            checkTrue("reason names the tool and the lack of progress", g.reason().contains("circuit_run_erc") && g.reason().contains("lack of progress"));
+        }
+        {
+            agent_progress::NoProgressGuard g;
+            bool stopped = false;
+            for (int i = 0; i < 12 && !stopped; ++i)
+            {
+                stopped = stopped || g.record("schematic_connect", R"({"a": "R1.2", "b": "C1.1"})", R"({"ok": true, "wires": )" + juce::String(i) + "}");
+                stopped = stopped || g.record("circuit_run_erc", "{}", R"({"ok": true, "errors": )" + juce::String(12 - i) + "}");
+            }
+            checkTrue("repeated calls with changing results never stop", !stopped);
+        }
+        {
+            agent_progress::NoProgressGuard g;
+            bool stopped = false;
+            int calls = 0;
+            for (int i = 0; i < 6 && !stopped; ++i)
+            {
+                ++calls;
+                stopped = g.record(i % 2 == 0 ? "circuit_run_erc" : "circuit_inspect", "{}", i % 2 == 0 ? erc : R"({"ok": true, "parts": 8})");
+            }
+            checkTrue("alternating unchanged checks also stop", stopped && calls == 6, juce::String(calls));
+        }
+        {
+            agent_progress::NoProgressGuard g;
+            g.record("circuit_run_erc", "{}", erc);
+            g.record("circuit_run_erc", "{}", erc);
+            g.record("schematic_connect", R"({"a": "U1.V+", "b": "PWR1.1"})", R"({"ok": true})");
+            const bool after = g.record("circuit_run_erc", "{}", erc);
+            checkTrue("a new result in between resets the count", !after);
+        }
+        {
+            agent_progress::NoProgressGuard g;
+            const juce::String fail = R"({"ok": false, "error": "Unknown instance NOPE1."})";
+            const bool s = g.record("schematic_connect", R"({"a":"NOPE1.1","b":"R1.1"})", fail) || g.record("schematic_connect", R"({"a":"NOPE1.1","b":"R1.1"})", fail)
+                        || g.record("schematic_connect", R"({"a": "NOPE1.1", "b": "R1.1"})", fail);
+            checkTrue("identical failing calls (argument spacing aside) stop too", s);
+        }
+        checkTrue("volatile fields are ignored", agent_progress::normalise(erc) == agent_progress::normalise(ercOtherPath));
     }
 
     std::printf(failures == 0 ? "ALL PASSED\n" : "%d FAILURE(S)\n", failures);
