@@ -174,6 +174,8 @@ target_sources(DjehutiElectronicsLab PRIVATE
     Source/PcbPanel.cpp
     Source/NodeDesignerPanel.h
     Source/NodeDesignerPanel.cpp
+    Source/NodeCompiler.h
+    Source/NodeCompiler.cpp
     Source/AudioPipeline.h
     Source/AudioPipeline.cpp
     Source/FrustAudioGenerator.h
@@ -423,6 +425,8 @@ set_target_properties(NodeDesignerTests PROPERTIES
 target_sources(NodeDesignerTests PRIVATE
     tools/node_designer_tests/NodeDesignerTests.cpp
     Source/NodeDesignerPanel.cpp
+    Source/NodeCompiler.cpp
+    Source/FrustEngine.cpp
 )
 target_compile_definitions(NodeDesignerTests PRIVATE
     JUCE_WEB_BROWSER=0
@@ -430,6 +434,7 @@ target_compile_definitions(NodeDesignerTests PRIVATE
     NODE_DESIGNER_FIXTURES="${CMAKE_CURRENT_SOURCE_DIR}/tools/node_designer_tests/fixtures"
 )
 target_link_libraries(NodeDesignerTests PRIVATE
+    frust_plugin_host
     juce::juce_core
     juce::juce_events
     juce::juce_graphics
@@ -437,6 +442,14 @@ target_link_libraries(NodeDesignerTests PRIVATE
     juce::juce_gui_basics
 )
 juce_generate_juce_header(NodeDesignerTests)
+
+# Node programs (and their core pod) call the FRust runtime's exported C
+# functions (frust_format_i64, frust_str_concat, ...); the JIT finds them in
+# this program's export table, so the whole runtime library is linked in.
+foreach(runtime_user DjehutiElectronicsLab NodeDesignerTests)
+    target_link_libraries(${runtime_user} PRIVATE frust_runtime)
+    target_link_options(${runtime_user} PRIVATE "LINKER:/WHOLEARCHIVE:$<TARGET_FILE:frust_runtime>")
+endforeach()
 add_test(NAME NodeDesignerTests COMMAND NodeDesignerTests)
 
 find_program(POWERSHELL_EXECUTABLE

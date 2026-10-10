@@ -69,6 +69,8 @@ private:
 // A script: Frust defining `pub fn run() -> String`. The manifest line is
 // added in front (diagnostics are counted in the script as written); it is
 // compiled, run once, and unloaded. `print_line(text: String) -> i64` adds a
-// line to the output.
+// line to the output, and so does anything it prints through the FRust
+// runtime's frust_print_str (node programs' Print nodes; captured from
+// standard output while the script runs).
 Result runScript(const std::string& script);
 }

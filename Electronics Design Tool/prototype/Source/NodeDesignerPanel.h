@@ -3,12 +3,15 @@
 // The FRust graphical node-programming editor, ported from FrustIDE's
 // NodeDesignerPanel (commit 431543f). The node set, editor, state machines,
 // variables, types and schematic format are the reference implementation's;
-// this copy is adapted to the Workbench: it has no FRust compiler hook-up
-// (graph-to-FRust compilation is a later step), saves programs in the open
-// project, keeps every wire's output pin and every node it cannot show, and
-// can be driven by the Workbench agent through the public operations below.
+// this copy is adapted to the Workbench: Compile, Export and Compile & Run
+// use the Workbench's copy of the node compiler (NodeCompiler.cpp) and its
+// embedded FRust compiler; programs are saved in the open project; every
+// wire keeps its output pin and nodes it cannot show are kept; and the
+// Workbench agent drives it through the public operations below.
 
 #include <JuceHeader.h>
+
+#include "NodeCompiler.h"
 
 #include <functional>
 #include <memory>
@@ -63,6 +66,20 @@ public:
     juce::StringArray validateGraph() const;
     // The document Save writes.
     juce::String buildSavedDocument() const;
+
+    // Compile: the open graph through the node compiler. On success the
+    // generated FRust program is kept for Export and Run.
+    bool compileProgram(juce::String& message);
+    juce::String generatedProgramSource() const { return generatedSource; }
+    // Export: writes the generated package (source files and frate.json)
+    // next to the program, under .frust/generated/nodes/<name>/.
+    bool exportProgram(juce::File& packageRoot, juce::String& message);
+    // Run: the compiled program as a Workbench Frust script (its output is
+    // what `pub fn run() -> String` returns plus what the program prints).
+    bool buildRunScript(juce::String& script, juce::String& error) const;
+    // Compile & Run hands the script here (the Workbench runs it in the
+    // Frust panel).
+    std::function<void(const juce::String& script, const juce::String& label)> onRunRequested;
     juce::String statusText() const { return statusView.getText(); }
 
 private:
@@ -251,6 +268,11 @@ private:
     void refreshProperties();
     void saveGraph();
     void openGraph();
+    void compileGraph();
+    void saveGeneratedSource();
+    void compileAndRun();
+    juce::String generatedSourcePathLabel() const;
+    juce::File generatedSourceCacheFile() const;
     void showValidation();
     void setStatus(const juce::String& text, bool isError = false);
 
@@ -264,6 +286,10 @@ private:
     std::vector<StateDef> states;
     std::vector<EventDef> events;
     std::vector<TransitionDef> transitions;
+    std::vector<node_compiler::GeneratedFile> generatedFiles;
+    std::vector<node_compiler::SourceMapEntry> currentSourceMap;
+    juce::String generatedSource;
+    node_compiler::ArtifactKind generatedKind = node_compiler::ArtifactKind::FunctionSource;
     int nextNodeUid = 1;
     int selectedNodeUid = 0;
     int selectedConnectionIndex = -1;
@@ -284,6 +310,8 @@ private:
     juce::TextButton openButton { "Open" };
     juce::TextButton saveButton { "Save" };
     juce::TextButton validateButton { "Validate" };
+    juce::TextButton compileButton { "Compile" };
+    juce::TextButton saveSourceButton { "Export .fr" };
     juce::Label diagramTypeLabel { "DiagramTypeLabel", "Diagram" };
     juce::ComboBox diagramTypeSelector;
     juce::Label targetLabel { "TargetLabel", "Target" };

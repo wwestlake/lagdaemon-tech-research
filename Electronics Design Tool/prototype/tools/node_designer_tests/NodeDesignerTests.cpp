@@ -5,6 +5,7 @@
 #include <JuceHeader.h>
 
 #include "../../Source/NodeDesignerPanel.h"
+#include "../../Source/FrustEngine.h"
 
 #include <cstdio>
 
@@ -256,6 +257,77 @@ int main()
         check(problems.contains("has no id") && problems.contains("more than one node") && problems.contains("ghost")
                   && problems.contains("(that is an output)") && problems.contains("does not name both"),
               "each bad part is reported", problems);
+    }
+
+    std::printf("-- compile, export, run --\n");
+    {
+        // The starter program: Event Start -> Print "Hello from nodes" -> End,
+        // compiled as an executable pod (the editor's default Frate kind).
+        NodeDesignerPanel panel;
+        juce::String message, script, runError;
+        check(panel.compileProgram(message) && message.contains("executable pod"), "the starter program compiles", message);
+        check(panel.generatedProgramSource().contains("frust_print_str(\"Hello from nodes\")"), "it prints through the FRust runtime",
+              panel.generatedProgramSource());
+        check(panel.buildRunScript(script, runError), "it gets a run entry point", runError);
+        const auto ran = frust_engine::runScript(script.toStdString());
+        check(ran.ok && juce::String(ran.output).contains("Hello from nodes"), "it runs and its print reaches the output",
+              juce::String(ran.report()) + juce::String(ran.output));
+
+        juce::File packageRoot;
+        check(panel.exportProgram(packageRoot, message) && packageRoot.getChildFile("src/main.fr").existsAsFile()
+                  && packageRoot.getChildFile("frate.json").existsAsFile(),
+              "Export writes the generated package", message);
+        const auto frate = packageRoot.getChildFile("frate.json").loadFileAsString();
+        check(frate.contains("\"type\": \"bin\"") && frate.contains("\"dependencies\": []"),
+              "its frate.json describes a self-contained executable pod", frate);
+
+        // A pure function graph compiled as a library: compute() = 10 + 2.
+        const auto lib = R"({"schemaVersion": 2, "name": "Sum", "diagramType": "node_graph",
+            "targetOptions": {"frust": {"functionName": "compute", "projectType": "lib"}},
+            "functionName": "compute", "params": [], "output": "sum",
+            "nodes": [{"id": "ten", "type": "literal_i64", "value": 10, "x": 0, "y": 0},
+                      {"id": "two", "type": "literal_i64", "value": 2, "x": 0, "y": 100},
+                      {"id": "sum", "type": "add", "x": 200, "y": 50, "inputs": [{"ref": "ten"}, {"ref": "two"}]}]})";
+        NodeDesignerPanel libPanel;
+        juce::String problems;
+        libPanel.openFile(writeTemp("sum.frnode.json", lib), problems);
+        check(libPanel.compileProgram(message) && message.contains("library pod") && libPanel.generatedProgramSource().contains("pub fn compute()"),
+              "a function graph compiles to compute()", message + "\n" + libPanel.generatedProgramSource());
+        check(libPanel.buildRunScript(script, runError), "it gets a run entry point", runError);
+        const auto sum = frust_engine::runScript(script.toStdString());
+        check(sum.ok && juce::String(sum.output).trim() == "12", "compute() runs and returns 12", juce::String(sum.report()) + juce::String(sum.output));
+
+        // Errors: the node compiler's own, and the FRust compiler's.
+        NodeDesignerPanel bad;
+        bad.newGraph("node_graph", false);
+        bad.addNodeOfType("event_start", 0, 0, "start", error);
+        bad.addNodeOfType("add", 0, 100, "sum", error);
+        bad.addNodeOfType("print", 200, 0, "say", error);
+        bad.connect("start", "start", "say", "in", error);
+        bad.connect("sum", "sum", "say", "value", error);
+        check(!bad.compileProgram(message) && message.contains("executable print currently supports literal"),
+              "a node-compiler error is reported", message);
+        check(!bad.buildRunScript(script, runError), "nothing runs after a failed compile");
+
+        // Passes the editor's checks, but a node id that is a FRust keyword
+        // makes generated source the FRust compiler rejects.
+        const auto typeError = R"({"schemaVersion": 2, "name": "Keyword Id", "diagramType": "node_graph",
+            "targetOptions": {"frust": {"functionName": "compute", "projectType": "lib"}},
+            "functionName": "compute", "params": [], "output": "let",
+            "nodes": [{"id": "let", "type": "literal_i64", "value": 1, "x": 0, "y": 0}]})";
+        NodeDesignerPanel typed;
+        typed.openFile(writeTemp("bad_if.frnode.json", typeError), problems);
+        check(!typed.compileProgram(message) && message.contains("does not compile") && message.contains("node_program.fr:"),
+              "a FRust compile error comes back with the compiler's diagnostics", message);
+
+        // A state machine: integer-backed states, run through its main().
+        NodeDesignerPanel machine;
+        machine.newGraph("state_machine", true);
+        check(machine.compileProgram(message) && machine.generatedProgramSource().contains("pub fn step("), "the starter state machine compiles", message);
+        check(machine.buildRunScript(script, runError), "it gets a run entry point", runError);
+        const auto states = frust_engine::runScript(script.toStdString());
+        check(states.ok && juce::String(states.output).contains("Initial state:") && juce::String(states.output).contains("Idle"),
+              "it runs and reports its states", juce::String(states.report()) + juce::String(states.output));
     }
 
     std::printf("-- rendering --\n");

@@ -436,9 +436,9 @@ public:
                     m.addItem(1, n->breakpoint ? "Clear Breakpoint" : "Set Breakpoint");
                     m.addItem(2, n->watched ? "Clear Watch" : "Set Watch");
                 }
+            } else {
+                m.addItem(3, "Compile & Run Schematic");
             }
-            if (m.getNumItems() == 0)
-                return;
             m.showMenuAsync(juce::PopupMenu::Options(), [this, nodeUid](int result) {
                 if (result == 1) {
                     if (auto* n = owner.findNode(nodeUid)) {
@@ -452,6 +452,8 @@ public:
                         owner.refreshProperties();
                         repaint();
                     }
+                } else if (result == 3) {
+                    owner.compileAndRun();
                 }
             });
             return;
@@ -1717,7 +1719,7 @@ NodeDesignerPanel::NodeDesignerPanel()
     titleLabel.setColour(juce::Label::textColourId, juce::Colour(0xff7fffd4));
     addAndMakeVisible(titleLabel);
 
-    for (auto* button : { &newButton, &openButton, &saveButton, &validateButton })
+    for (auto* button : { &newButton, &openButton, &saveButton, &validateButton, &compileButton, &saveSourceButton })
     {
         button->setColour(juce::TextButton::buttonColourId, juce::Colour(0xff263942));
         button->setColour(juce::TextButton::textColourOffId, juce::Colour(0xfff0f6f8));
@@ -1731,6 +1733,8 @@ NodeDesignerPanel::NodeDesignerPanel()
     openButton.onClick = [this] { openGraph(); };
     saveButton.onClick = [this] { saveGraph(); };
     validateButton.onClick = [this] { showValidation(); };
+    compileButton.onClick = [this] { compileGraph(); };
+    saveSourceButton.onClick = [this] { saveGeneratedSource(); };
 
     diagramTypeLabel.setColour(juce::Label::textColourId, juce::Colour(0xffdce9ee));
     diagramTypeSelector.addItem("Node Graph", 1);
@@ -1814,10 +1818,10 @@ void NodeDesignerPanel::resized()
     auto b = getLocalBounds().reduced(8);
     auto header = b.removeFromTop(30);
     titleLabel.setBounds(header.removeFromLeft(230));
-    for (auto* button : { &newButton, &openButton, &saveButton, &validateButton })
+    for (auto* button : { &newButton, &openButton, &saveButton, &validateButton, &compileButton, &saveSourceButton })
     {
         header.removeFromLeft(5);
-        button->setBounds(header.removeFromLeft(button == &validateButton ? 78 : 60));
+        button->setBounds(header.removeFromLeft(button == &validateButton || button == &saveSourceButton ? 80 : (button == &compileButton ? 70 : 56)));
     }
     header.removeFromLeft(14);
     diagramTypeLabel.setBounds(header.removeFromLeft(58));
@@ -2198,6 +2202,9 @@ void NodeDesignerPanel::initializeNodeGraph()
 {
     currentGraphFile = {};
     loadedDocument = juce::var();
+    generatedSource.clear();
+    generatedFiles.clear();
+    currentSourceMap.clear();
     diagramType = "node_graph";
     diagramTypeSelector.setSelectedId(1, juce::dontSendNotification);
     diagramName = "Untitled Node Schematic";
@@ -2255,6 +2262,9 @@ void NodeDesignerPanel::initializeStateMachine()
 {
     currentGraphFile = {};
     loadedDocument = juce::var();
+    generatedSource.clear();
+    generatedFiles.clear();
+    currentSourceMap.clear();
     diagramType = "state_machine";
     diagramTypeSelector.setSelectedId(2, juce::dontSendNotification);
     diagramName = "Assistant State Machine";
@@ -3402,6 +3412,9 @@ void NodeDesignerPanel::clearGraph()
 {
     currentGraphFile = {};
     loadedDocument = juce::var();
+    generatedSource.clear();
+    generatedFiles.clear();
+    currentSourceMap.clear();
     nodes.clear();
     connections.clear();
     variables.clear();
@@ -3854,4 +3867,212 @@ juce::var NodeDesignerPanel::describeNodeTypes() const
         list.add(juce::var(o));
     }
     return list;
+}
+
+// ---------------------------------------------------------------------------
+// Compile, Export and Compile & Run: the reference's compile path, with the
+// node compiler copied into the Workbench (NodeCompiler.cpp). The IDE's
+// debugger hook-up (breakpoints at generated lines) is not part of the
+// Workbench; Compile & Run hands the program to the Workbench's Frust panel
+// instead of the IDE REPL.
+// ---------------------------------------------------------------------------
+
+void NodeDesignerPanel::compileGraph()
+{
+    juce::String message;
+    compileProgram(message);
+}
+
+bool NodeDesignerPanel::compileProgram(juce::String& message)
+{
+    generatedSource.clear();
+    generatedFiles.clear();
+    currentSourceMap.clear();
+    auto fail = [this, &message](const juce::String& text) {
+        message = text;
+        // The status line is one line; the full text (with the generated
+        // source the compiler rejected) is returned to the caller.
+        setStatus(text.upToFirstOccurrenceOf("\n", false, false), true);
+        return false;
+    };
+
+    if (diagramType == "state_machine")
+    {
+        const auto validation = validateStateMachine();
+        if (validation.isNotEmpty())
+            return fail("State-machine validation failed: " + validation);
+    }
+    else if (selectedTarget() != "frust")
+        return fail("GLSL is a production reference target. This research canvas currently compiles Frust.");
+
+    const auto result = node_compiler::CompileSchematic(buildSchematicJson(false).toStdString());
+    if (!result.ok)
+        return fail("Compilation failed: " + juce::String(result.errorMessage));
+
+    generatedSource = juce::String(result.source);
+    generatedFiles = result.files;
+    generatedKind = result.artifactKind;
+    currentSourceMap = result.sourceMap;
+
+    if (diagramType == "state_machine")
+        message = "Compiled state-machine schematic to Frust. JSON remains authoritative; generated files are build artifacts.";
+    else
+    {
+        juce::String artifact = "function source";
+        if (result.artifactKind == node_compiler::ArtifactKind::FrustExecutablePod)
+            artifact = "Frust executable pod";
+        else if (result.artifactKind == node_compiler::ArtifactKind::FrustLibraryPod)
+            artifact = "Frust library pod";
+        message = "Compiled node schematic as " + artifact + ". JSON remains authoritative; generated files are build artifacts.";
+    }
+    setStatus(message);
+    return true;
+}
+
+juce::String NodeDesignerPanel::generatedSourcePathLabel() const
+{
+    const auto base = currentGraphFile.existsAsFile()
+        ? currentGraphFile.getFileNameWithoutExtension()
+        : diagramName.retainCharacters("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-").toLowerCase();
+    const auto safe = base.isNotEmpty() ? base : juce::String("node_schematic");
+    return ".frust/generated/nodes/" + safe + "/" + (selectedFrustProjectType() == "lib" ? "lib.fr" : "main.fr");
+}
+
+juce::File NodeDesignerPanel::generatedSourceCacheFile() const
+{
+    // Next to the program; a program not saved yet exports into the
+    // project's programs folder (the reference used the working directory).
+    juce::File root;
+    if (currentGraphFile.existsAsFile())
+        root = currentGraphFile.getParentDirectory();
+    else if (defaultFolder != nullptr)
+        root = defaultFolder();
+    if (root == juce::File())
+        root = juce::File::getCurrentWorkingDirectory();
+    return root.getChildFile(generatedSourcePathLabel());
+}
+
+void NodeDesignerPanel::saveGeneratedSource()
+{
+    juce::File packageRoot;
+    juce::String message;
+    exportProgram(packageRoot, message);
+}
+
+bool NodeDesignerPanel::exportProgram(juce::File& packageRoot, juce::String& message)
+{
+    if (generatedSource.trim().isEmpty() && generatedFiles.empty())
+    {
+        message = "Compile the schematic before exporting generated Frust source.";
+        setStatus(message, true);
+        return false;
+    }
+
+    if (!generatedFiles.empty())
+    {
+        packageRoot = generatedSourceCacheFile().getParentDirectory();
+        for (const auto& generated : generatedFiles)
+        {
+            auto file = packageRoot.getChildFile(juce::String(generated.path));
+            file.getParentDirectory().createDirectory();
+            if (!file.replaceWithText(juce::String(generated.content)))
+            {
+                message = "Could not save " + file.getFullPathName();
+                setStatus(message, true);
+                return false;
+            }
+        }
+        message = "Exported generated artifact package to " + packageRoot.getFullPathName();
+        setStatus(message);
+        return true;
+    }
+
+    const auto sourceFile = generatedSourceCacheFile();
+    sourceFile.getParentDirectory().createDirectory();
+    packageRoot = sourceFile.getParentDirectory();
+    if (!sourceFile.replaceWithText(generatedSource))
+    {
+        message = "Could not save " + sourceFile.getFullPathName();
+        setStatus(message, true);
+        return false;
+    }
+    message = "Exported generated source artifact to " + sourceFile.getFullPathName();
+    setStatus(message);
+    return true;
+}
+
+bool NodeDesignerPanel::buildRunScript(juce::String& script, juce::String& error) const
+{
+    // The reference sent the program to the IDE REPL (adding `compute();`
+    // for function source). A Workbench script is a unit with
+    // `pub fn run() -> String`, so the program gets that entry point:
+    // executable pods run main(); function source returns compute()'s value;
+    // a state-machine library returns its initial state's name.
+    if (generatedSource.trim().isEmpty())
+    {
+        error = "Compile the schematic before running it.";
+        return false;
+    }
+    const auto& src = generatedSource;
+    if (src.contains("fn main() -> i64"))
+    {
+        script = src + "\npub fn run() -> String = {\n    main();\n    \"\"\n}\n";
+        return true;
+    }
+    if (src.contains("pub fn initial_state() -> i64"))
+    {
+        script = src + "\npub fn run() -> String = {\n    state_name(initial_state())\n}\n";
+        return true;
+    }
+    const auto signatureStart = src.indexOf("pub fn compute(");
+    if (signatureStart < 0)
+    {
+        error = "The generated program has no entry point to run (main, compute or a state machine).";
+        return false;
+    }
+    const auto params = src.substring(signatureStart + 15).upToFirstOccurrenceOf(")", false, false).trim();
+    if (params.isNotEmpty())
+    {
+        error = "Compile & Run calls compute() without arguments, and this program takes inputs (" + params
+            + "). Run it from another program, or replace the inputs with literals to try it.";
+        return false;
+    }
+    const auto returnType = src.substring(signatureStart).fromFirstOccurrenceOf("->", false, false)
+                               .upToFirstOccurrenceOf("=", false, false).trim();
+    juce::String externs, value;
+    auto needExtern = [&src, &externs](const juce::String& decl, const juce::String& name) {
+        if (!src.contains("extern fn " + name + "("))
+            externs << decl << "\n";
+    };
+    if (returnType == "String")
+        value = "compute()";
+    else if (returnType == "i64" || returnType == "f64" || returnType == "bool")
+    {
+        needExtern("extern fn frust_format_" + returnType + "(val: " + returnType + ") -> String;", "frust_format_" + returnType);
+        value = "frust_format_" + returnType + "(compute())";
+    }
+    else
+    {
+        error = "compute() returns " + returnType + ", which Compile & Run cannot show.";
+        return false;
+    }
+    script = src + "\n" + externs + "pub fn run() -> String = {\n    " + value + "\n}\n";
+    return true;
+}
+
+void NodeDesignerPanel::compileAndRun()
+{
+    juce::String message;
+    if (!compileProgram(message))
+        return;
+    juce::String script, error;
+    if (!buildRunScript(script, error))
+    {
+        setStatus(error, true);
+        return;
+    }
+    if (onRunRequested != nullptr)
+        onRunRequested(script, currentGraphFile.existsAsFile() ? currentGraphFile.getFileName() : diagramName);
+    else
+        setStatus("Compiled. Nothing is connected to run the program here.", true);
 }

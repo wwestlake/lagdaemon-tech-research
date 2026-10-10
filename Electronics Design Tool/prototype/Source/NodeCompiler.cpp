@@ -1,4 +1,5 @@
-#include "node_compiler/NodeCompiler.h"
+#include "NodeCompiler.h"
+#include "FrustEngine.h"
 
 #include <juce_core/juce_core.h>
 
@@ -10,11 +11,7 @@
 #include <algorithm>
 #include <vector>
 
-#include "AST.h"
-#include "Codegen.h"
-#include "Lexer.h"
-#include "ModuleLoader.h"
-#include "parser.hpp"
+#include <CompilerApi.h>
 
 using namespace frust;
 
@@ -255,50 +252,42 @@ bool EmitNode(CodegenState& st, const NodeDef& n) {
     return false;
 }
 
-// Parses the source through frust_lang's real pipeline (the same
-// Lexer/Parser/Codegen frust_compiler and frust_plugin_host use) to
-// confirm it actually compiles - not just "looks like valid text."
+// Workbench copy: the generated source is checked with the Workbench's
+// embedded FRust compiler (frust::Compile through frust_engine, the same
+// compiler that runs it). The reference parsed it through frust_lang's
+// internal Lexer/Parser/Codegen.
 bool ValidateCompiles(const std::string& source, std::string& err) {
-    std::istringstream input(source);
-    Lexer lexer(&input);
-    Program* result = nullptr;
-    std::vector<std::string> parseErrors;
-    std::vector<ParseError> structuredErrors;
-    // Was `new AstArena()`, deliberately never deleted, on the claim this
-    // was a "process-lifetime validation call" - false: ValidateCompiles
-    // runs once per CompileGraphToSource call, and that's the body of
-    // node_compiler_compile(), the library's actual per-request public
-    // API (a live graph editor calls this on every compile, not once at
-    // startup) - confirmed by tracing the call chain, not just an
-    // imprecise comment. Every node ID/type string parsed here also had
-    // nowhere else to live, so the leak grew without bound over a long
-    // editing session. AstArena only needs to outlive this function
-    // (compileProgram fully consumes `result` before returning) - a
-    // stack-local instance is all that was ever needed, matching how
-    // frust_plugin_host's own load path actually does it (the comment's
-    // claim of matching that pattern was itself wrong - that path never
-    // leaked its arena either).
-    AstArena arena;
-    Parser parser(lexer, arena, parseErrors, result, structuredErrors);
-    parser.parse();
-    parseErrors.insert(parseErrors.end(), lexer.errors.begin(), lexer.errors.end());
-    if (result) ResolveImports(result, arena, parseErrors);
+    const auto checked = frust_engine::check("node_program.fr", source);
+    if (checked.ok)
+        return true;
+    std::ostringstream msg;
+    for (const auto& d : checked.diagnostics)
+        if (d.error)
+            msg << d.text() << "\n";
+    if (!checked.error.empty())
+        msg << checked.error << "\n";
+    err = msg.str().empty() ? std::string("the FRust compiler rejected the generated source") : msg.str();
+    return false;
+}
 
-    if (!parseErrors.empty() || !result) {
-        std::ostringstream msg;
-        for (auto& e : parseErrors) msg << e << "\n";
-        err = msg.str();
-        return false;
-    }
+// Workbench copy: executable and state-machine programs print through the
+// FRust runtime's exported functions directly - the lowering the v1 `print`
+// node already uses, and exactly what core's println_* do. The reference
+// imported the core pod and called println_* unqualified, which the current
+// FRust compiler rejects (pod functions are called through the pod's
+// namespace) and which needs core's prebuilt object at run time, which an
+// in-process JIT load does not provide.
+std::string PrintStatement(const std::string& valueType, const std::string& expression) {
+    if (valueType == "string") return "frust_print_str(" + expression + ");";
+    return "frust_print_str(frust_format_" + valueType + "(" + expression + "));";
+}
 
-    auto context = std::make_unique<llvm::LLVMContext>();
-    auto module = std::make_unique<llvm::Module>("node_compiler_validate", *context);
-    Codegen codegen(*context, *module);
-    if (!codegen.compileProgram(*result)) {
-        err = "generated source failed codegen (see stderr for details)";
-        return false;
-    }
-    return true;
+std::string PrintExterns(const std::set<std::string>& valueTypes) {
+    std::string out = "extern fn frust_print_str(val: String);\n";
+    for (const auto& t : valueTypes)
+        if (t != "string")
+            out += "extern fn frust_format_" + t + "(val: " + t + ") -> String;\n";
+    return out;
 }
 
 } // namespace
@@ -527,7 +516,6 @@ bool CompileExecutablePod(const juce::var& parsed, SchematicCompileResult& resul
     result.namespaceName = JsonString(root, "namespace", result.packageName);
     result.artifactKind = ArtifactKind::FrustExecutablePod;
     result.entryFile = "src/main.fr";
-    result.requiredPods.push_back({ "core", "1.0.1" });
 
     if (!root->hasProperty("nodes") || !root->getProperty("nodes").isArray()) {
         result.errorMessage = "executable schematic needs a nodes array";
@@ -549,11 +537,9 @@ bool CompileExecutablePod(const juce::var& parsed, SchematicCompileResult& resul
         nodesById[id] = nodeVar;
     }
 
-    std::ostringstream src;
-    src << "import core, \"current\";\n\n";
-    src << "fn main() -> i64 = {\n";
-
-    int line = 4;
+    std::ostringstream body;
+    std::set<std::string> printTypes;
+    std::vector<std::string> printedNodes;
     bool emittedAction = false;
     for (auto& nodeVar : *root->getProperty("nodes").getArray()) {
         auto* node = nodeVar.getDynamicObject();
@@ -577,20 +563,13 @@ bool CompileExecutablePod(const juce::var& parsed, SchematicCompileResult& resul
         }
 
         const auto valueType = NormalizePrintValueType(value.type);
-        if (valueType == "string")
-            src << "    println_str(" << value.expression << ");\n";
-        else if (valueType == "i64")
-            src << "    println_i64(" << value.expression << ");\n";
-        else if (valueType == "f64")
-            src << "    println_f64(" << value.expression << ");\n";
-        else if (valueType == "bool")
-            src << "    println_bool(" << value.expression << ");\n";
-        else {
+        if (valueType != "string" && valueType != "i64" && valueType != "f64" && valueType != "bool") {
             result.errorMessage = "print node '" + JsonString(node, "id") + "' has unsupported value type '" + valueType + "'";
             return false;
         }
-
-        result.sourceMap.push_back({ JsonString(node, "id"), result.entryFile, line++, 5 });
+        body << "    " << PrintStatement(valueType, value.expression) << "\n";
+        printTypes.insert(valueType);
+        printedNodes.push_back(JsonString(node, "id"));
         emittedAction = true;
     }
 
@@ -599,8 +578,17 @@ bool CompileExecutablePod(const juce::var& parsed, SchematicCompileResult& resul
         return false;
     }
 
+    std::ostringstream src;
+    const auto externs = PrintExterns(printTypes);
+    src << externs << "\n";
+    src << "fn main() -> i64 = {\n";
+    src << body.str();
     src << "    0\n";
     src << "}\n";
+    // Source map: each Print node's line in main().
+    int line = (int)std::count(externs.begin(), externs.end(), '\n') + 3;
+    for (const auto& id : printedNodes)
+        result.sourceMap.push_back({ id, result.entryFile, line++, 5 });
 
     result.source = src.str();
     result.files.push_back({ result.entryFile, result.source });
@@ -612,9 +600,7 @@ bool CompileExecutablePod(const juce::var& parsed, SchematicCompileResult& resul
           << "  \"type\": \"bin\",\n"
           << "  \"description\": \"Generated from a node schematic. The schematic JSON is authoritative.\",\n"
           << "  \"exports\": [],\n"
-          << "  \"dependencies\": [\n"
-          << "    { \"name\": \"core\", \"version\": \"1.0.1\" }\n"
-          << "  ]\n"
+          << "  \"dependencies\": []\n"
           << "}\n";
     result.frateJson = frate.str();
     result.files.push_back({ "frate.json", result.frateJson });
@@ -771,7 +757,6 @@ bool CompileStateMachinePod(const juce::var& parsed, SchematicCompileResult& res
     result.namespaceName = JsonString(root, "namespace", result.packageName);
     result.artifactKind = projectType == "bin" ? ArtifactKind::FrustExecutablePod : ArtifactKind::FrustLibraryPod;
     result.entryFile = projectType == "bin" ? "src/main.fr" : "src/lib.fr";
-    result.requiredPods.push_back({ "core", "1.0.1" });
 
     std::vector<StateMachineState> states;
     std::vector<StateMachineEvent> events;
@@ -784,7 +769,8 @@ bool CompileStateMachinePod(const juce::var& parsed, SchematicCompileResult& res
     }
 
     std::ostringstream src;
-    src << "import core, \"current\";\n\n";
+    if (projectType == "bin")
+        src << PrintExterns({ "string" }) << "\n";
     src << "// Generated from state-machine schematic '" << diagramName << "'.\n";
     src << "// The schematic JSON remains authoritative; this is a lowerable Frust artifact.\n\n";
 
@@ -814,7 +800,7 @@ bool CompileStateMachinePod(const juce::var& parsed, SchematicCompileResult& res
     src << "\n}\n\n";
 
     src << "pub fn step(current_state: i64, event: i64) -> i64 = {\n";
-    src << "    let next_state: i64 = current_state;\n";
+    src << "    let mut next_state: i64 = current_state;\n";
     for (const auto& transition : transitions) {
         src << "    if (current_state == " << StateFnName(transition.from) << "()) {\n";
         src << "        if (event == " << EventFnName(transition.event) << "()) {\n";
@@ -832,12 +818,12 @@ bool CompileStateMachinePod(const juce::var& parsed, SchematicCompileResult& res
     if (projectType == "bin") {
         src << "\nfn main() -> i64 = {\n";
         src << "    let state: i64 = initial_state();\n";
-        src << "    println_str(\"Initial state:\");\n";
-        src << "    println_str(state_name(state));\n";
+        src << "    " << PrintStatement("string", "\"Initial state:\"") << "\n";
+        src << "    " << PrintStatement("string", "state_name(state)") << "\n";
         if (!transitions.empty()) {
             src << "    let after: i64 = step(state, " << EventFnName(transitions.front().event) << "());\n";
-            src << "    println_str(\"After first transition event:\");\n";
-            src << "    println_str(state_name(after));\n";
+            src << "    " << PrintStatement("string", "\"After first transition event:\"") << "\n";
+            src << "    " << PrintStatement("string", "state_name(after)") << "\n";
         }
         src << "    0\n";
         src << "}\n";
@@ -853,9 +839,7 @@ bool CompileStateMachinePod(const juce::var& parsed, SchematicCompileResult& res
           << "  \"type\": \"" << (projectType == "bin" ? "bin" : "lib") << "\",\n"
           << "  \"description\": \"Generated from a state-machine node schematic. The schematic JSON is authoritative.\",\n"
           << "  \"exports\": [],\n"
-          << "  \"dependencies\": [\n"
-          << "    { \"name\": \"core\", \"version\": \"1.0.1\" }\n"
-          << "  ]\n"
+          << "  \"dependencies\": []\n"
           << "}\n";
     result.frateJson = frate.str();
     result.files.push_back({ "frate.json", result.frateJson });
@@ -933,30 +917,3 @@ SchematicCompileResult CompileSchematic(const std::string& schematicJson) {
 }
 
 } // namespace node_compiler
-
-namespace {
-thread_local std::string g_lastError;
-} // namespace
-
-extern "C" {
-
-NODE_COMPILER_API char* node_compiler_compile(const char* graphJson) {
-    auto result = node_compiler::CompileGraphToSource(graphJson ? graphJson : "");
-    if (!result.ok) {
-        g_lastError = result.errorMessage;
-        return nullptr;
-    }
-    char* out = new char[result.source.size() + 1];
-    memcpy(out, result.source.c_str(), result.source.size() + 1);
-    return out;
-}
-
-NODE_COMPILER_API void node_compiler_free_string(char* s) {
-    delete[] s;
-}
-
-NODE_COMPILER_API const char* node_compiler_last_error() {
-    return g_lastError.c_str();
-}
-
-} // extern "C"

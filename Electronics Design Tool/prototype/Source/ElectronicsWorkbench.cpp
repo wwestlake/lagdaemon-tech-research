@@ -483,6 +483,21 @@ const SchematicToolSpec schematicToolSpecs[] = {
         R"({"type":"object","properties":{"id":{"type":"string"},"name":{"type":"string"},"value":{"type":"string","description":"The value as text: a number, true or false, or text."}},"required":["id","name","value"],"additionalProperties":false})"
     },
     {
+        "node_program_compile",
+        "Compile the open node program to FRust with the node compiler (the Node Designer's Compile button). A node graph compiles as the selected Frate kind (executable pod: its Print actions in main; library pod: a pure function compute); a state machine as integer-backed state functions. Returns the generated source, or the compile error (the FRust compiler's diagnostics and the generated source it rejected).",
+        R"({"type":"object","properties":{},"additionalProperties":false})"
+    },
+    {
+        "node_program_export",
+        "Write the last compiled program's generated package (source files and frate.json) next to the program, under .frust/generated/nodes/<name>/ (the Export .fr button). Compile first.",
+        R"({"type":"object","properties":{},"additionalProperties":false})"
+    },
+    {
+        "node_program_run",
+        "Compile the open node program and run it in the app with the embedded FRust compiler (Compile & Run). Returns what it printed and returned; the code and output are shown in the Frust panel. Function programs with inputs cannot be run this way (compute() is called without arguments).",
+        R"({"type":"object","properties":{},"additionalProperties":false})"
+    },
+    {
         "node_program_validate",
         "Check the open node program's structure: duplicate ids, missing pins, incompatible wires, inputs driven twice, unknown node types, undefined functions and, for state machines, states, initial state and transitions. Reports problems without changing the program.",
         R"({"type":"object","properties":{},"additionalProperties":false})"
@@ -14211,6 +14226,12 @@ ElectronicsWorkbench::ElectronicsWorkbench()
     dockManager->registerPanel("nodes", "Node Designer", std::move(nodeDesignerOwner), CreationDock::DockTargetZone::CenterTab);
     auto frustOwner = std::make_unique<FrustPanel>();
     frustPanel = frustOwner.get();
+    // Compile & Run in the Node Designer runs the generated program in the
+    // Frust panel, which shows the code and its output.
+    nodeDesignerPanel->onRunRequested = [this](const juce::String& script, const juce::String& label) {
+        const auto result = frustPanel->runNow(script);
+        appendLog("Node program " + label + (result.ok ? " ran." : " did not run: " + juce::String(result.report())));
+    };
     dockManager->registerPanel("frust", "Frust", std::move(frustOwner), CreationDock::DockTargetZone::Bottom);
     dockManager->registerPanel("console", "Console", std::make_unique<ConsolePanel>(logConsole), CreationDock::DockTargetZone::Bottom);
     auto lp = std::make_unique<LogPanel>(); logPanel = lp.get(); dockManager->registerPanel("log", "Log", std::move(lp), CreationDock::DockTargetZone::Bottom);
@@ -16924,6 +16945,39 @@ juce::String ElectronicsWorkbench::nodeProgramTool(const juce::String& name, con
         }
         if (!panel.setNodeParameter(text("id"), text("name"), value, error))
             return fail(error);
+    }
+    else if (name == "node_program_compile")
+    {
+        juce::String message;
+        if (!panel.compileProgram(message))
+            return fail(message);
+        root->setProperty("message", message);
+        root->setProperty("source", panel.generatedProgramSource());
+    }
+    else if (name == "node_program_export")
+    {
+        juce::File packageRoot;
+        juce::String message;
+        if (!panel.exportProgram(packageRoot, message))
+            return fail(message);
+        juce::Array<juce::var> files;
+        for (const auto& f : packageRoot.findChildFiles(juce::File::findFiles, true))
+            files.add(f.getRelativePathFrom(packageRoot).replaceCharacter('\\', '/'));
+        root->setProperty("folder", packageRoot.getFullPathName());
+        root->setProperty("files", files);
+    }
+    else if (name == "node_program_run")
+    {
+        juce::String message, script;
+        if (!panel.compileProgram(message))
+            return fail(message);
+        if (!panel.buildRunScript(script, error))
+            return fail(error);
+        const auto result = frustPanel != nullptr ? frustPanel->runNow(script) : frust_engine::runScript(script.toStdString());
+        if (!result.ok)
+            return fail("The compiled program did not run: " + juce::String(result.report()));
+        root->setProperty("output", juce::String(result.output));
+        root->setProperty("runMs", result.runMs);
     }
     else if (name == "node_program_validate")
     {

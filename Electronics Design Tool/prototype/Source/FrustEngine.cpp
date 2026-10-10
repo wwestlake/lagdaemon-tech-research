@@ -6,6 +6,8 @@
 
 #include <chrono>
 #include <cmath>
+#include <iostream>
+#include <sstream>
 
 namespace frust_engine
 {
@@ -62,7 +64,7 @@ thread_local std::vector<std::string>* scriptLog = nullptr;
 extern "C" std::int64_t djehuti_frust_log(const char* text)
 {
     if (scriptLog != nullptr)
-        scriptLog->push_back(text != nullptr ? text : "");
+        std::cout << (text != nullptr ? text : "") << "\n";   // into the captured output, in order
     return 0;
 }
 
@@ -252,14 +254,19 @@ Result runScript(const std::string& script)
         frust_plugin_unload(handle);
         return result;
     }
+    // The FRust runtime prints (frust_print_str, which node programs' Print
+    // nodes call) to standard output; while the script runs that is captured,
+    // with its print_line lines in order, as the script's output.
     std::vector<std::string> lines;
+    std::ostringstream printed;
+    auto* consoleBuffer = std::cout.rdbuf(printed.rdbuf());
     scriptLog = &lines;
     const auto runStart = std::chrono::steady_clock::now();
     const char* returned = run();
     result.runMs = millisecondsSince(runStart);
     scriptLog = nullptr;
-    for (const auto& line : lines)
-        result.output += line + "\n";
+    std::cout.rdbuf(consoleBuffer);
+    result.output += printed.str();
     if (returned != nullptr)
         result.output += returned;
     frust_plugin_unload(handle);

@@ -66,6 +66,10 @@
 
 #pragma once
 
+// Workbench copy of FrustLang projects/10_node_compiler (1b95d9f), adapted:
+// generated source is validated with the app's embedded compiler, core is
+// the locally cached version, and the standalone library's C ABI is omitted.
+
 #include <stdint.h>
 
 #ifdef __cplusplus
@@ -120,9 +124,9 @@ struct SchematicCompileResult {
 };
 
 // Parses graphJson, topologically sorts the nodes, emits .frust source,
-// then VALIDATES that source actually parses and compiles (via
-// frust_lang's real Lexer/Parser/Codegen - the same pipeline
-// frust_compiler/frust_plugin_host use) before returning success. A
+// then VALIDATES that source actually parses and compiles (Workbench
+// copy: with the app's embedded FRust compiler, frust_engine::check, pods
+// from the local Frate cache) before returning success. A
 // syntactically-valid-looking graph that produces source with a real
 // type error comes back as ok=false with that error, not silently
 // handed to the caller as if it were fine.
@@ -140,26 +144,4 @@ SchematicCompileResult CompileSchematic(const std::string& schematicJson);
 
 } // namespace node_compiler
 
-extern "C" {
-#endif
-
-#if defined(_WIN32)
-#define NODE_COMPILER_API __declspec(dllexport)
-#else
-#define NODE_COMPILER_API __attribute__((visibility("default")))
-#endif
-
-// Returns a heap-allocated, null-terminated .frust source string on
-// success, NULL on failure (call node_compiler_last_error() for why).
-// Free the returned string with node_compiler_free_string().
-NODE_COMPILER_API char* node_compiler_compile(const char* graphJson);
-NODE_COMPILER_API void node_compiler_free_string(char* s);
-// Valid only immediately after a node_compiler_compile() call that
-// returned NULL - not thread-safe/reentrant beyond that single-caller
-// use, same "process-wide, not a real session concept" scope as
-// frust_plugin_host's own error reporting.
-NODE_COMPILER_API const char* node_compiler_last_error();
-
-#ifdef __cplusplus
-}
 #endif
