@@ -172,6 +172,8 @@ target_sources(DjehutiElectronicsLab PRIVATE
     Source/PcbFab.cpp
     Source/PcbPanel.h
     Source/PcbPanel.cpp
+    Source/NodeDesignerPanel.h
+    Source/NodeDesignerPanel.cpp
     Source/AudioPipeline.h
     Source/AudioPipeline.cpp
     Source/FrustAudioGenerator.h
@@ -411,6 +413,31 @@ target_link_libraries(KnowledgeTests PRIVATE
 )
 juce_generate_juce_header(KnowledgeTests)
 add_test(NAME KnowledgeTests COMMAND KnowledgeTests)
+
+# Node Designer (the FRust node-programming editor ported from FrustIDE):
+# nodes, wiring rules, save/open round trips, unknown and malformed documents.
+juce_add_console_app(NodeDesignerTests PRODUCT_NAME "Node Designer Tests")
+set_target_properties(NodeDesignerTests PROPERTIES
+    OUTPUT_NAME "node_designer_tests"
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/bin")
+target_sources(NodeDesignerTests PRIVATE
+    tools/node_designer_tests/NodeDesignerTests.cpp
+    Source/NodeDesignerPanel.cpp
+)
+target_compile_definitions(NodeDesignerTests PRIVATE
+    JUCE_WEB_BROWSER=0
+    JUCE_USE_CURL=0
+    NODE_DESIGNER_FIXTURES="${CMAKE_CURRENT_SOURCE_DIR}/tools/node_designer_tests/fixtures"
+)
+target_link_libraries(NodeDesignerTests PRIVATE
+    juce::juce_core
+    juce::juce_events
+    juce::juce_graphics
+    juce::juce_data_structures
+    juce::juce_gui_basics
+)
+juce_generate_juce_header(NodeDesignerTests)
+add_test(NAME NodeDesignerTests COMMAND NodeDesignerTests)
 
 find_program(POWERSHELL_EXECUTABLE
     NAMES pwsh powershell

@@ -1,8 +1,5 @@
 #include "NodeDesignerPanel.h"
 
-#include <node_compiler/NodeCompiler.h>
-#include "DebuggerController.h"
-
 #include <algorithm>
 #include <cmath>
 #include <map>
@@ -18,6 +15,37 @@ constexpr float pinRadius = 5.0f;
 constexpr float minZoom = 0.35f;
 constexpr float maxZoom = 2.5f;
 constexpr float rerouteSize = 24.0f;
+// The reference wrote schemaVersion 2. This copy writes 3: the same document
+// plus a connections section naming both pins of every wire, and each
+// input reference's output pin. It reads 1 to 3.
+constexpr int schematicFormatVersion = 3;
+
+// Copies into `written` the top-level sections, and the keys of each node
+// (matched by id), that `previous` has and this editor does not write, so
+// saving never drops what the editor does not show. Keys in `clearable` are
+// written only when they have a value; their absence means they were
+// cleared here, so they are never copied back.
+void carryForwardUnmanaged(juce::var& written, const juce::var& previous, const juce::StringArray& clearable)
+{
+    auto* out = written.getDynamicObject();
+    auto* old = previous.getDynamicObject();
+    if (out == nullptr || old == nullptr) return;
+    for (const auto& prop : old->getProperties())
+        if (prop.name.toString() != "kind" && !out->hasProperty(prop.name))
+            out->setProperty(prop.name, prop.value.clone());
+    std::map<juce::String, juce::DynamicObject*> oldNodes;
+    if (auto* arr = old->getProperty("nodes").getArray())
+        for (const auto& n : *arr)
+            if (auto* o = n.getDynamicObject())
+                oldNodes[o->getProperty("id").toString()] = o;
+    if (auto* arr = out->getProperty("nodes").getArray())
+        for (auto& n : *arr)
+            if (auto* o = n.getDynamicObject())
+                if (auto it = oldNodes.find(o->getProperty("id").toString()); it != oldNodes.end())
+                    for (const auto& prop : it->second->getProperties())
+                        if (!clearable.contains(prop.name.toString()) && !o->hasProperty(prop.name))
+                            o->setProperty(prop.name, prop.value.clone());
+}
 
 juce::String propertyText(const juce::var& object, const juce::Identifier& property, const juce::String& fallback = {})
 {
@@ -400,24 +428,21 @@ public:
         if (event.mods.isPopupMenu()) {
             const int nodeUid = hitTestNode(event.position);
             juce::PopupMenu m;
+            // Breakpoint and watch markers are saved with the schematic (its
+            // debug section). The Workbench has no FRust debugger attached to
+            // node programs yet, so nothing else happens when they change.
             if (nodeUid > 0) {
                 if (auto* n = owner.findNode(nodeUid)) {
                     m.addItem(1, n->breakpoint ? "Clear Breakpoint" : "Set Breakpoint");
                     m.addItem(2, n->watched ? "Clear Watch" : "Set Watch");
                 }
-            } else {
-                m.addItem(3, "Compile & Run Schematic");
             }
+            if (m.getNumItems() == 0)
+                return;
             m.showMenuAsync(juce::PopupMenu::Options(), [this, nodeUid](int result) {
                 if (result == 1) {
                     if (auto* n = owner.findNode(nodeUid)) {
                         n->breakpoint = !n->breakpoint;
-                        if (n->generatedLine > 0) {
-                            if (auto* ctrl = DebuggerController::getInstanceWithoutCreating()) {
-                                if (n->breakpoint) ctrl->addBreakpoint(n->generatedLine);
-                                else ctrl->removeBreakpoint(n->generatedLine);
-                            }
-                        }
                         owner.refreshProperties();
                         repaint();
                     }
@@ -427,7 +452,7 @@ public:
                         owner.refreshProperties();
                         repaint();
                     }
-                } else if (result == 3) { owner.compileGraph(); if (owner.onRunRequested) { if (owner.generatedSource.isNotEmpty()) { juce::String src = owner.generatedSource; if (owner.diagramType == "node_graph") src << "\ncompute();\n"; owner.onRunRequested(src, owner.currentGraphFile.getFileName()); } else { owner.onRunRequested("// Error:\n" + owner.statusView.getText(), "Error"); } } }
+                }
             });
             return;
         }
@@ -458,9 +483,12 @@ public:
             const auto connection = owner.connections[(size_t)conn];
             auto& reroute = owner.addRerouteNode(connection, screenToWorld(event.position) - juce::Point<float> { rerouteSize * 0.5f, rerouteSize * 0.5f });
             owner.connections.erase(owner.connections.begin() + conn);
-            owner.connections.push_back({ connection.fromNode, connection.fromPin, reroute.uid, 0 });
-            owner.connections.push_back({ reroute.uid, 0, connection.toNode, connection.toPin });
-            owner.selectedNodeUid = reroute.uid;
+            const auto rerouteUid = reroute.uid;
+            owner.connections.push_back({ connection.fromNode, connection.fromPin, rerouteUid, 0,
+                                          owner.connectionIdFor(connection.fromNode, connection.fromPin, rerouteUid, 0) });
+            owner.connections.push_back({ rerouteUid, 0, connection.toNode, connection.toPin,
+                                          owner.connectionIdFor(rerouteUid, 0, connection.toNode, connection.toPin) });
+            owner.selectedNodeUid = rerouteUid;
             owner.selectedConnectionIndex = -1;
             owner.refreshProperties();
             repaint();
@@ -472,13 +500,7 @@ public:
         {
             if (n->type == "reroute")
                 return;
-                        n->breakpoint = !n->breakpoint;
-            if (n->generatedLine > 0) {
-                if (auto* ctrl = DebuggerController::getInstanceWithoutCreating()) {
-                    if (n->breakpoint) ctrl->addBreakpoint(n->generatedLine);
-                    else ctrl->removeBreakpoint(n->generatedLine);
-                }
-            }
+            n->breakpoint = !n->breakpoint;
             owner.refreshProperties();
             repaint();
         }
@@ -1695,15 +1717,20 @@ NodeDesignerPanel::NodeDesignerPanel()
     titleLabel.setColour(juce::Label::textColourId, juce::Colour(0xff7fffd4));
     addAndMakeVisible(titleLabel);
 
-    for (auto* button : { &saveButton, &compileButton, &saveSourceButton })
+    for (auto* button : { &newButton, &openButton, &saveButton, &validateButton })
     {
         button->setColour(juce::TextButton::buttonColourId, juce::Colour(0xff263942));
         button->setColour(juce::TextButton::textColourOffId, juce::Colour(0xfff0f6f8));
         addAndMakeVisible(*button);
     }
+    newButton.onClick = [this] {
+        newGraph(selectedDiagramType(), true);
+        resized();
+        repaint();
+    };
+    openButton.onClick = [this] { openGraph(); };
     saveButton.onClick = [this] { saveGraph(); };
-    compileButton.onClick = [this] { compileGraph(); };
-    saveSourceButton.onClick = [this] { saveGeneratedSource(); };
+    validateButton.onClick = [this] { showValidation(); };
 
     diagramTypeLabel.setColour(juce::Label::textColourId, juce::Colour(0xffdce9ee));
     diagramTypeSelector.addItem("Node Graph", 1);
@@ -1787,10 +1814,10 @@ void NodeDesignerPanel::resized()
     auto b = getLocalBounds().reduced(8);
     auto header = b.removeFromTop(30);
     titleLabel.setBounds(header.removeFromLeft(230));
-    for (auto* button : { &saveButton, &compileButton, &saveSourceButton })
+    for (auto* button : { &newButton, &openButton, &saveButton, &validateButton })
     {
         header.removeFromLeft(5);
-        button->setBounds(header.removeFromLeft(button == &saveSourceButton ? 82 : 72));
+        button->setBounds(header.removeFromLeft(button == &validateButton ? 78 : 60));
     }
     header.removeFromLeft(14);
     diagramTypeLabel.setBounds(header.removeFromLeft(58));
@@ -2040,64 +2067,6 @@ bool NodeDesignerPanel::pinsCompatible(const Pin& from, const Pin& to) const
     return from.type == to.type || from.type == "any" || to.type == "any";
 }
 
-bool NodeDesignerPanel::isCompileableFrustDataNode(const GraphNode& node) const
-{
-    static const juce::StringArray supported {
-        "param_i64", "literal_i64", "add", "sub", "mul", "div", "mod", "eq", "lt", "gt", "if"
-    };
-    return supported.contains(node.type);
-}
-
-bool NodeDesignerPanel::hasExecutableGraph() const
-{
-    const bool hasStart = std::any_of(nodes.begin(), nodes.end(), [](const GraphNode& n) { return n.type == "event_start"; });
-    const bool hasTerminal = std::any_of(nodes.begin(), nodes.end(), [](const GraphNode& n) { return n.type == "end" || n.type == "return"; });
-    return hasStart && hasTerminal;
-}
-
-juce::String NodeDesignerPanel::validateFrustCompileable() const
-{
-    if (hasExecutableGraph())
-        return {};
-
-    for (const auto& node : nodes)
-    {
-        if (node.type == "reroute")
-            continue;
-        if (!isCompileableFrustDataNode(node))
-            return "The Frust backend currently lowers pure data-flow expression nodes only. '" + node.title
-                + "' is authored in the graph model but not wired to Frust codegen yet.";
-
-        for (const auto& pin : node.inputs)
-            if (pin.flow != PinFlow::Data)
-                return "The Frust backend currently lowers data pins only. '" + node.title
-                    + "' has a " + flowName(pin.flow) + " input pin.";
-        for (const auto& pin : node.outputs)
-            if (pin.flow != PinFlow::Data)
-                return "The Frust backend currently lowers data pins only. '" + node.title
-                    + "' has a " + flowName(pin.flow) + " output pin.";
-    }
-
-    for (const auto& node : nodes)
-    {
-        if (node.type == "param_i64" || node.type == "literal_i64")
-            continue;
-        for (int i = 0; i < (int)node.inputs.size(); ++i)
-        {
-            const bool hasInput = std::any_of(connections.begin(), connections.end(), [&node, i](const Connection& c) {
-                return c.toNode == node.uid && c.toPin == i;
-            });
-            if (!hasInput)
-                return "Missing input '" + node.inputs[(size_t)i].name + "' on node '" + node.title + "'.";
-        }
-    }
-
-    if (outputNodeId().isEmpty())
-        return "The graph needs an output node before it can compile.";
-
-    return {};
-}
-
 juce::String NodeDesignerPanel::validateStateMachine() const
 {
     int stateCount = 0;
@@ -2151,56 +2120,6 @@ juce::String NodeDesignerPanel::validateStateMachine() const
     return {};
 }
 
-juce::String NodeDesignerPanel::expressionForInput(const GraphNode& node, int inputIndex) const
-{
-    if (const auto* wire = connectionToInput(node.uid, inputIndex))
-    {
-        if (const auto* source = findNode(wire->fromNode))
-        {
-            std::set<int> visited;
-            while (source != nullptr && source->type == "reroute" && visited.count(source->uid) == 0)
-            {
-                visited.insert(source->uid);
-                const auto* upstream = connectionToInput(source->uid, 0);
-                source = upstream != nullptr ? findNode(upstream->fromNode) : nullptr;
-            }
-            if (source == nullptr)
-                return "0";
-            if (source->type == "literal_i64") return juce::String(source->literalValue);
-            if (source->type == "literal_string") return quoted(source->textValue);
-            if (source->type == "const_bool") return source->literalValue != 0 ? "true" : "false";
-            if (source->type == "param_i64") return source->id;
-            return source->id;
-        }
-    }
-
-    if (inputIndex >= 0 && inputIndex < (int)node.inputDefaults.size())
-    {
-        const auto value = node.inputDefaults[(size_t)inputIndex];
-        if (value.isNotEmpty()) return value;
-    }
-    return "0";
-}
-
-juce::String NodeDesignerPanel::buildExecutableFrustSource() const
-{
-    juce::String source;
-    if (selectedFrustProjectType() == "lib")
-        source << "pub fn run_nodes() -> i64 = {\n";
-    else
-        source << "fn main() -> i64 = {\n";
-
-    for (const auto& node : nodes)
-    {
-        if (node.type == "print")
-            source << "    println(" << expressionForInput(node, 1) << ");\n";
-    }
-
-    source << "    0\n";
-    source << "}\n";
-    return source;
-}
-
 void NodeDesignerPanel::connectPins(int fromNode, int fromPin, int toNode, int toPin)
 {
     auto* a = findNode(fromNode);
@@ -2230,8 +2149,8 @@ void NodeDesignerPanel::connectPins(int fromNode, int fromPin, int toNode, int t
         transition.eventName = transitionId;
         const auto transitionUid = transition.uid;
 
-        connections.push_back({ fromStateUid, fromPin, transitionUid, 0 });
-        connections.push_back({ transitionUid, 0, toStateUid, toPin });
+        connections.push_back({ fromStateUid, fromPin, transitionUid, 0, connectionIdFor(fromStateUid, fromPin, transitionUid, 0) });
+        connections.push_back({ transitionUid, 0, toStateUid, toPin, connectionIdFor(transitionUid, 0, toStateUid, toPin) });
         selectedNodeUid = transitionUid;
         refreshProperties();
         setStatus("Created transition " + transition.textValue + ". Edit its event and guard in Properties.");
@@ -2245,9 +2164,29 @@ void NodeDesignerPanel::connectPins(int fromNode, int fromPin, int toNode, int t
             return c.toNode == toNode && c.toPin == toPin;
         }), connections.end());
     }
-    connections.push_back({ fromNode, fromPin, toNode, toPin });
+    connections.push_back({ fromNode, fromPin, toNode, toPin, connectionIdFor(fromNode, fromPin, toNode, toPin) });
     refreshProperties();
     setStatus("Connected " + a->title + " to " + b->title + ".");
+}
+
+juce::String NodeDesignerPanel::connectionIdFor(int fromNode, int fromPin, int toNode, int toPin) const
+{
+    // Stable, readable ids from the wire's ends: the same wiring gets the
+    // same id, and a saved id is kept when the schematic is opened again.
+    const auto* a = findNode(fromNode);
+    const auto* b = findNode(toNode);
+    auto pinName = [](const std::vector<Pin>& pins, int index) {
+        return index >= 0 && index < (int)pins.size() ? pins[(size_t)index].name : juce::String(index);
+    };
+    const auto base = (a != nullptr ? a->id + "." + pinName(a->outputs, fromPin) : juce::String("?"))
+        + "->" + (b != nullptr ? b->id + "." + pinName(b->inputs, toPin) : juce::String("?"));
+    auto taken = [this](const juce::String& id) {
+        return std::any_of(connections.begin(), connections.end(), [&id](const Connection& c) { return c.id == id; });
+    };
+    auto id = base;
+    for (int n = 2; taken(id); ++n)
+        id = base + "#" + juce::String(n);
+    return id;
 }
 
 void NodeDesignerPanel::initializeUntitled()
@@ -2258,9 +2197,7 @@ void NodeDesignerPanel::initializeUntitled()
 void NodeDesignerPanel::initializeNodeGraph()
 {
     currentGraphFile = {};
-    currentSourceFile = {};
-    generatedSource.clear();
-    generatedFiles.clear();
+    loadedDocument = juce::var();
     diagramType = "node_graph";
     diagramTypeSelector.setSelectedId(1, juce::dontSendNotification);
     diagramName = "Untitled Node Schematic";
@@ -2296,16 +2233,20 @@ void NodeDesignerPanel::initializeNodeGraph()
     diagramName = "Hello Nodes";
     titleLabel.setText(diagramName, juce::dontSendNotification);
 
-    auto& start = addNode("event_start", { 40.0f, 155.0f });
-    auto& text = addNode("literal_string", { 40.0f, 260.0f });
-    text.textValue = "Hello from nodes";
-    auto& print = addNode("print", { 300.0f, 175.0f });
-    auto& end = addNode("end", { 560.0f, 175.0f });
+    // Keep uids, not references: each addNode may reallocate the node list
+    // (the reference kept references here, so its starter wires went to
+    // whatever the stale references held).
+    const auto start = addNode("event_start", { 40.0f, 155.0f }).uid;
+    auto& textNode = addNode("literal_string", { 40.0f, 260.0f });
+    textNode.textValue = "Hello from nodes";
+    const auto text = textNode.uid;
+    const auto print = addNode("print", { 300.0f, 175.0f }).uid;
+    const auto end = addNode("end", { 560.0f, 175.0f }).uid;
 
-    connectPins(start.uid, 0, print.uid, 0);
-    connectPins(text.uid, 0, print.uid, 1);
-    connectPins(print.uid, 0, end.uid, 0);
-    selectedNodeUid = print.uid;
+    connectPins(start, 0, print, 0);
+    connectPins(text, 0, print, 1);
+    connectPins(print, 0, end, 0);
+    selectedNodeUid = print;
     refreshProperties();
     setStatus("Hello Nodes: execution starts at Start, Print writes a value, End terminates the diagram.");
 }
@@ -2313,9 +2254,7 @@ void NodeDesignerPanel::initializeNodeGraph()
 void NodeDesignerPanel::initializeStateMachine()
 {
     currentGraphFile = {};
-    currentSourceFile = {};
-    generatedSource.clear();
-    generatedFiles.clear();
+    loadedDocument = juce::var();
     diagramType = "state_machine";
     diagramTypeSelector.setSelectedId(2, juce::dontSendNotification);
     diagramName = "Assistant State Machine";
@@ -2412,21 +2351,41 @@ void NodeDesignerPanel::loadGraphFile(const juce::File& file)
         setStatus("Node schematic does not exist: " + file.getFullPathName(), true);
         return;
     }
+    juce::String problems;
+    if (!loadFromJson(file.loadFileAsString(), problems))
+        return;   // the status says why; the open graph is unchanged
     currentGraphFile = file;
-    currentSourceFile = file.withFileExtension(".fr");
     titleLabel.setText(file.getFileName(), juce::dontSendNotification);
-    loadFromJson(file.loadFileAsString());
-    setStatus("Opened " + file.getFullPathName());
+    if (problems.isEmpty())
+        setStatus("Opened " + file.getFullPathName());
+    else
+        setStatus("Opened " + file.getFileName() + " with problems: " + problems, true);
 }
 
-void NodeDesignerPanel::loadFromJson(const juce::String& text)
+bool NodeDesignerPanel::loadFromJson(const juce::String& text, juce::String& problemSummary)
 {
-    const auto root = juce::JSON::parse(text);
-    if (!root.isObject())
+    // Documents that cannot be read are refused before anything changes.
+    juce::var root;
+    const auto parseResult = juce::JSON::parse(text, root);
+    juce::String refusal;
+    if (parseResult.failed())
+        refusal = "the file is not valid JSON (" + parseResult.getErrorMessage() + ")";
+    else if (root.getDynamicObject() == nullptr)
+        refusal = "the file is not a JSON object";
+    else if (root.hasProperty("schemaVersion") && (int)root.getProperty("schemaVersion", 0) > schematicFormatVersion)
+        refusal = "schemaVersion " + root.getProperty("schemaVersion", {}).toString() + " is newer than this editor reads (up to "
+            + juce::String(schematicFormatVersion) + ")";
+    else if (root.hasProperty("nodes") && !root.getProperty("nodes", {}).isArray())
+        refusal = "its nodes section is not a list";
+    else if (root.hasProperty("connections") && !root.getProperty("connections", {}).isArray())
+        refusal = "its connections section is not a list";
+    if (refusal.isNotEmpty())
     {
-        setStatus("Invalid schematic JSON.", true);
-        return;
+        setStatus("Cannot open schematic: " + refusal + ".", true);
+        return false;
     }
+    juce::StringArray problems;
+    loadedDocument = root;
 
     nodes.clear();
     connections.clear();
@@ -2546,9 +2505,39 @@ void NodeDesignerPanel::loadFromJson(const juce::String& text)
     auto nodesVar = root.getProperty("nodes", {});
     if (auto* arr = nodesVar.getArray())
     {
+        // Output pin names other nodes use on each node, for placeholders.
+        std::map<juce::String, juce::StringArray> referencedOutputs, referencedInputs;
+        if (auto* list = root.getProperty("connections", {}).getArray())
+            for (const auto& c : *list)
+            {
+                referencedOutputs[propertyText(c.getProperty("from", {}), "node")].addIfNotAlreadyThere(propertyText(c.getProperty("from", {}), "pin"));
+                referencedInputs[propertyText(c.getProperty("to", {}), "node")].addIfNotAlreadyThere(propertyText(c.getProperty("to", {}), "pin"));
+            }
         for (const auto& n : *arr)
+            if (auto* in = n.getProperty("inputs", {}).getArray())
+                for (const auto& entry : *in)
+                    if (entry.hasProperty("ref"))
+                        referencedOutputs[propertyText(entry, "ref")].addIfNotAlreadyThere(propertyText(entry, "pin", "out"));
+
+        for (int nodeIndex = 0; nodeIndex < arr->size(); ++nodeIndex)
         {
-            const auto type = propertyText(n, "type", "literal_i64");
+            const auto& n = arr->getReference(nodeIndex);
+            if (!n.isObject())
+            {
+                problems.add("Node #" + juce::String(nodeIndex + 1) + " is not an object and was not loaded.");
+                continue;
+            }
+            const auto type = propertyText(n, "type");
+            const auto storedId = propertyText(n, "id");
+            if (storedId.isEmpty() || type.isEmpty())
+            {
+                problems.add("Node #" + juce::String(nodeIndex + 1) + (storedId.isNotEmpty() ? " ('" + storedId + "')" : juce::String())
+                    + (type.isNotEmpty() ? " (" + type + ")" : juce::String()) + " has no " + (storedId.isEmpty() ? "id" : "type")
+                    + " and was not loaded.");
+                continue;
+            }
+            if (ids.count(storedId) != 0)
+                problems.add("Node id '" + storedId + "' is used by more than one node; wires naming it go to the last one.");
             juce::String templateType = type;
             if (type == "call_function")
             {
@@ -2589,9 +2578,35 @@ void NodeDesignerPanel::loadFromJson(const juce::String& text)
                 }
                 templateType = "call_function:" + functionId;
             }
+            const bool knownType = findTemplate(templateType) != nullptr;
             auto& node = addNode(templateType, { propertyFloat(n, "x", 220.0f), propertyFloat(n, "y", 120.0f) });
-            node.id = propertyText(n, "id", uniqueNodeId(baseIdForType(type)));
+            node.id = storedId;
             node.type = type == "call_function" ? templateType : node.type;
+            if (!knownType)
+            {
+                // No template for this type: a placeholder that keeps the type,
+                // the pins its wires use, and everything stored on the node.
+                node.type = type;
+                node.title = type + " (unsupported)";
+                node.category = "Unsupported";
+                node.colour = juce::Colour(0xff6a6a6a);
+                node.inputs.clear();
+                node.outputs.clear();
+                node.inputDefaults.clear();
+                node.unsupportedSource = n;
+                juce::StringArray inputNames;
+                if (auto* in = n.getProperty("inputs", {}).getArray())
+                    for (int i = 0; i < in->size(); ++i)
+                        inputNames.add("in " + juce::String(i + 1));
+                for (const auto& name : referencedInputs[storedId])
+                    if (name.isNotEmpty()) inputNames.addIfNotAlreadyThere(name);
+                for (const auto& name : inputNames)
+                    node.inputs.push_back({ name, "any", PinFlow::Data, true });
+                for (const auto& name : referencedOutputs[storedId])
+                    if (name.isNotEmpty()) node.outputs.push_back({ name, "any", PinFlow::Data, false });
+                node.inputDefaults.resize(node.inputs.size());
+                problems.add("Node '" + storedId + "' has type '" + type + "', which this editor does not define; it is kept as it is.");
+            }
             node.literalValue = propertyInt(n, "value", node.literalValue);
             node.textValue = propertyText(n, "text", node.textValue);
             node.accessibility = propertyText(n, "accessibility", node.accessibility);
@@ -2634,24 +2649,92 @@ void NodeDesignerPanel::loadFromJson(const juce::String& text)
             }
             ids[node.id] = node.uid;
         }
+    }
 
+    // Wires. The connections section (written by this editor) names both
+    // pins; older files only list each input's source node, optionally with
+    // its output pin. A wire that cannot be restored is reported, not dropped.
+    auto pinIndex = [](const std::vector<Pin>& pins, const juce::String& name) {
+        for (int i = 0; i < (int)pins.size(); ++i)
+            if (pins[(size_t)i].name == name) return i;
+        return -1;
+    };
+    auto restore = [&](const juce::String& label, const juce::String& fromId, const juce::String& fromPinName, int fromFallback,
+                       const juce::String& toId, const juce::String& toPinName, int toFallback, const juce::String& savedId) {
+        const auto fromIt = ids.find(fromId);
+        const auto toIt = ids.find(toId);
+        if (fromIt == ids.end() || toIt == ids.end())
+        {
+            problems.add(label + " names node '" + (fromIt == ids.end() ? fromId : toId) + "', which is not in the file; not restored.");
+            return;
+        }
+        const auto* a = findNode(fromIt->second);
+        const auto* b = findNode(toIt->second);
+        int fromPin = fromPinName.isNotEmpty() ? pinIndex(a->outputs, fromPinName) : fromFallback;
+        int toPin = toPinName.isNotEmpty() ? pinIndex(b->inputs, toPinName) : toFallback;
+        if (fromPin < 0 || fromPin >= (int)a->outputs.size())
+        {
+            problems.add(label + ": '" + fromId + "' has no output '" + (fromPinName.isNotEmpty() ? fromPinName : juce::String(fromFallback))
+                + (pinIndex(a->inputs, fromPinName) >= 0 ? "' (that is an input)" : "'") + "; not restored.");
+            return;
+        }
+        if (toPin < 0 || toPin >= (int)b->inputs.size())
+        {
+            problems.add(label + ": '" + toId + "' has no input '" + (toPinName.isNotEmpty() ? toPinName : juce::String(toFallback))
+                + (pinIndex(b->outputs, toPinName) >= 0 ? "' (that is an output)" : "'") + "; not restored.");
+            return;
+        }
+        const bool multiDrive = b->type == "sm_state" && b->inputs[(size_t)toPin].flow == PinFlow::Exec;
+        if (!multiDrive && connectionToInput(b->uid, toPin) != nullptr)
+        {
+            problems.add(label + ": input '" + toId + "." + b->inputs[(size_t)toPin].name + "' is already wired; the first wire was kept.");
+            return;
+        }
+        if (!pinsCompatible(a->outputs[(size_t)fromPin], b->inputs[(size_t)toPin]))
+        {
+            problems.add(label + " joins " + a->outputs[(size_t)fromPin].type + " to " + b->inputs[(size_t)toPin].type
+                + " (incompatible pins); not restored.");
+            return;
+        }
+        const int fromUid = a->uid, toUid = b->uid;
+        connectPins(fromUid, fromPin, toUid, toPin);
+        if (savedId.isNotEmpty())
+            for (auto& c : connections)
+                if (c.fromNode == fromUid && c.fromPin == fromPin && c.toNode == toUid && c.toPin == toPin)
+                    c.id = savedId;
+    };
+    if (auto* list = root.getProperty("connections", {}).getArray())
+    {
+        for (int i = 0; i < list->size(); ++i)
+        {
+            const auto& c = list->getReference(i);
+            const auto savedId = propertyText(c, "id");
+            const auto label = "Connection " + (savedId.isNotEmpty() ? "'" + savedId + "'" : "#" + juce::String(i + 1));
+            const auto from = c.getProperty("from", {});
+            const auto to = c.getProperty("to", {});
+            if (propertyText(from, "node").isEmpty() || propertyText(from, "pin").isEmpty()
+                || propertyText(to, "node").isEmpty() || propertyText(to, "pin").isEmpty())
+            {
+                problems.add(label + " does not name both nodes and pins; not restored.");
+                continue;
+            }
+            restore(label, propertyText(from, "node"), propertyText(from, "pin"), -1, propertyText(to, "node"), propertyText(to, "pin"), -1, savedId);
+        }
+    }
+    else if (auto* arr = root.getProperty("nodes", {}).getArray())
+    {
         for (const auto& n : *arr)
         {
             const auto toId = propertyText(n, "id");
-            const auto toIt = ids.find(toId);
-            if (toIt == ids.end()) continue;
-            auto inputsVar = n.getProperty("inputs", {});
-            auto* inputs = inputsVar.getArray();
-            if (inputs == nullptr) continue;
+            auto* inputs = n.getProperty("inputs", {}).getArray();
+            if (toId.isEmpty() || inputs == nullptr) continue;
             for (int i = 0; i < inputs->size(); ++i)
             {
                 const auto& input = inputs->getReference(i);
                 auto sourceId = propertyText(input, "ref");
                 if (sourceId.isEmpty()) sourceId = propertyText(input, "param");
                 if (sourceId.isEmpty()) continue;
-                auto fromIt = ids.find(sourceId);
-                if (fromIt == ids.end()) continue;
-                connectPins(fromIt->second, 0, toIt->second, i);
+                restore("The wire into " + toId + " input " + juce::String(i + 1), sourceId, propertyText(input, "pin"), 0, toId, {}, i, {});
             }
         }
     }
@@ -2759,6 +2842,11 @@ void NodeDesignerPanel::loadFromJson(const juce::String& text)
     if (canvas != nullptr) canvas->repaint();
     if (variablesPanel != nullptr) variablesPanel->repaint();
     if (typesPanel != nullptr) typesPanel->repaint();
+
+    for (const auto& p : validateGraph())
+        problems.addIfNotAlreadyThere(p);
+    problemSummary = problems.joinIntoString(" ");
+    return true;
 }
 
 juce::String NodeDesignerPanel::quoted(const juce::String& text)
@@ -2824,6 +2912,8 @@ juce::String NodeDesignerPanel::buildCompilerJson(bool includeRoutingNodes) cons
         }
         if (n.type == "literal_i64")
             text << ", \"value\": " << n.literalValue;
+        else if (n.type == "const_bool")
+            text << ", \"value\": " << (n.literalValue != 0 ? "true" : "false");
         if (n.type == "literal_string" || n.type.startsWith("sm_") || n.type == "state_machine_instance")
             text << ", \"text\": " << quoted(n.textValue);
         if (n.type == "sm_state")
@@ -2875,17 +2965,26 @@ juce::String NodeDesignerPanel::buildCompilerJson(bool includeRoutingNodes) cons
                 else
                 {
                     auto* source = findNode(connIt->fromNode);
+                    int sourcePin = connIt->fromPin;
                     std::set<int> visited;
                     while (!includeRoutingNodes && source != nullptr && source->type == "reroute" && visited.count(source->uid) == 0)
                     {
                         visited.insert(source->uid);
                         const auto* upstream = connectionToInput(source->uid, 0);
                         source = upstream != nullptr ? findNode(upstream->fromNode) : nullptr;
+                        sourcePin = upstream != nullptr ? upstream->fromPin : 0;
                     }
                     if (source != nullptr && source->type == "param_i64")
                         text << "{ \"param\": " << quoted(source->id) << " }";
                     else if (source != nullptr)
-                        text << "{ \"ref\": " << quoted(source->id) << " }";
+                    {
+                        // The output pin, so a wire from a node's second or third
+                        // output returns to it (the reference wrote only the node).
+                        text << "{ \"ref\": " << quoted(source->id);
+                        if (sourcePin >= 0 && sourcePin < (int)source->outputs.size())
+                            text << ", \"pin\": " << quoted(source->outputs[(size_t)sourcePin].name);
+                        text << " }";
+                    }
                     else
                         text << "{ \"ref\": \"__missing_input__\" }";
                 }
@@ -2901,7 +3000,7 @@ juce::String NodeDesignerPanel::buildCompilerJson(bool includeRoutingNodes) cons
 juce::String NodeDesignerPanel::buildSchematicJson(bool includeRoutingNodes) const
 {
     auto text = buildCompilerJson(includeRoutingNodes);
-    auto insert = juce::String("  \"schemaVersion\": 2,\n")
+    auto insert = juce::String("  \"schemaVersion\": ") + juce::String(schematicFormatVersion) + ",\n"
         + "  \"name\": " + quoted(diagramName) + ",\n"
         + "  \"diagramType\": " + quoted(diagramType) + ",\n"
         + "  \"targets\": [ \"frust\" ],\n"
@@ -3162,6 +3261,27 @@ juce::String NodeDesignerPanel::buildSchematicJson(bool includeRoutingNodes) con
     }
     exports << "] }";
 
+    // Every wire with both of its pins: an input may take several wires (a
+    // state entered by several transitions), which the inputs refs cannot say.
+    juce::String connectionJson;
+    connectionJson << ",\n  \"connections\": [";
+    bool firstConnection = true;
+    for (const auto& c : connections)
+    {
+        const auto* a = findNode(c.fromNode);
+        const auto* b = findNode(c.toNode);
+        if (a == nullptr || b == nullptr || c.fromPin < 0 || c.fromPin >= (int)a->outputs.size() || c.toPin < 0 || c.toPin >= (int)b->inputs.size())
+            continue;
+        if (!includeRoutingNodes && (a->type == "reroute" || b->type == "reroute"))
+            continue;
+        if (!firstConnection) connectionJson << ", ";
+        firstConnection = false;
+        connectionJson << "{ \"id\": " << quoted(c.id)
+                       << ", \"from\": { \"node\": " << quoted(a->id) << ", \"pin\": " << quoted(a->outputs[(size_t)c.fromPin].name) << " }"
+                       << ", \"to\": { \"node\": " << quoted(b->id) << ", \"pin\": " << quoted(b->inputs[(size_t)c.toPin].name) << " } }";
+    }
+    connectionJson << "]";
+
     juce::String debug;
     debug << ",\n  \"debug\": {\n";
     debug << "    \"breakpoints\": [";
@@ -3187,31 +3307,23 @@ juce::String NodeDesignerPanel::buildSchematicJson(bool includeRoutingNodes) con
     }
     debug << "]\n  }";
     text = text.upToLastOccurrenceOf("\n}", false, false) + vars + typeJson + functionJson + resourceJson
-        + eventJson + stateJson + transitionJson + exports + debug + "\n}";
+        + eventJson + stateJson + transitionJson + connectionJson + exports + debug + "\n}";
 
     auto root = juce::JSON::parse(text);
-    return root.isObject() ? juce::JSON::toString(root, true) : text;
-}
-
-juce::String NodeDesignerPanel::generatedSourcePathLabel() const
-{
-    const auto base = currentGraphFile.existsAsFile()
-        ? currentGraphFile.getFileNameWithoutExtension()
-        : diagramName.retainCharacters("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-").toLowerCase();
-    const auto safe = base.isNotEmpty() ? base : juce::String("node_schematic");
-    return ".frust/generated/nodes/" + safe + "/" + (selectedFrustProjectType() == "lib" ? "lib.fr" : "main.fr");
-}
-
-juce::File NodeDesignerPanel::generatedSourceCacheFile() const
-{
-    juce::File root;
-    if (currentGraphFile.existsAsFile())
-        root = currentGraphFile.getParentDirectory();
-    else
-        root = juce::File::getCurrentWorkingDirectory();
-
-    const auto label = generatedSourcePathLabel();
-    return root.getChildFile(label);
+    if (!root.isObject())
+        return text;
+    static const juce::StringArray clearable { "entryAction", "updateAction", "exitAction", "guard", "action", "payloadType" };
+    carryForwardUnmanaged(root, loadedDocument, clearable);
+    // Placeholders for unsupported types are saved with everything they had.
+    if (auto* saved = root.getProperty("nodes", {}).getArray())
+        for (auto& v : *saved)
+            if (auto* o = v.getDynamicObject())
+                for (const auto& n : nodes)
+                    if (n.unsupportedSource.isObject() && n.id == o->getProperty("id").toString())
+                        for (const auto& p : n.unsupportedSource.getDynamicObject()->getProperties())
+                            if (!o->hasProperty(p.name))
+                                o->setProperty(p.name, p.value.clone());
+    return juce::JSON::toString(root, true);
 }
 
 juce::String NodeDesignerPanel::selectedDiagramType() const
@@ -3235,146 +3347,511 @@ void NodeDesignerPanel::refreshProperties()
         inspector->refreshFromModel();
 }
 
-void NodeDesignerPanel::saveGraph()
-{
-    if (currentGraphFile == juce::File())
-    {
-        fileChooser = std::make_unique<juce::FileChooser>("Save Node Schematic", juce::File::getCurrentWorkingDirectory().getChildFile("graph.frnode.json"), "*.frnode.json;*.json");
-        fileChooser->launchAsync(juce::FileBrowserComponent::saveMode | juce::FileBrowserComponent::warnAboutOverwriting,
-            [this](const juce::FileChooser& chooser) {
-                currentGraphFile = chooser.getResult();
-                if (currentGraphFile != juce::File()) saveGraph();
-                fileChooser = nullptr;
-            });
-        return;
-    }
-    if (!currentGraphFile.replaceWithText(buildSchematicJson()))
-    {
-        setStatus("Could not save " + currentGraphFile.getFullPathName(), true);
-        return;
-    }
-    currentSourceFile = currentGraphFile.withFileExtension(".fr");
-    titleLabel.setText(currentGraphFile.getFileName(), juce::dontSendNotification);
-    setStatus("Saved schematic.");
-}
-
-void NodeDesignerPanel::compileGraph()
-{
-    if (diagramType == "state_machine")
-    {
-        generatedSource.clear();
-        generatedFiles.clear();
-        const auto validation = validateStateMachine();
-        if (validation.isNotEmpty())
-        {
-            setStatus("State-machine validation failed: " + validation, true);
-            return;
-        }
-
-        const auto schematicJson = buildSchematicJson(false);
-        const auto result = node_compiler::CompileSchematic(schematicJson.toStdString());
-        if (!result.ok)
-        { setStatus("Compilation failed. See REPL console.", true); if (onRunRequested) onRunRequested("// Error:\n" + juce::String(result.errorMessage), "Error"); return;
-        }
-
-        generatedSource = juce::String(result.source);
-        generatedFiles = result.files;
-        currentSourceMap = result.sourceMap;
-                for (auto& entry : currentSourceMap) { 
-            auto it = std::find_if(nodes.begin(), nodes.end(), [&entry](const GraphNode& gn) { return gn.id.toStdString() == entry.nodeId; });
-            if (it != nodes.end()) {
-                auto* n = &*it;
-                n->generatedLine = entry.line; 
-                if (n->breakpoint) {
-                    if (auto* ctrl = DebuggerController::getInstanceWithoutCreating()) ctrl->addBreakpoint(entry.line);
-                }
-            }
-        }
-        setStatus("Compiled state-machine schematic to Frust. JSON remains authoritative; generated files are build artifacts.");
-        return;
-    }
-
-    if (selectedTarget() != "frust")
-    {
-        generatedSource.clear();
-        generatedFiles.clear();
-        setStatus("GLSL is a production reference target. This research canvas currently compiles Frust.", true);
-        return;
-    }
-
-    const auto schematicJson = buildSchematicJson(false);
-    const auto result = node_compiler::CompileSchematic(schematicJson.toStdString());
-    if (!result.ok)
-    {
-        generatedSource.clear(); generatedFiles.clear(); setStatus("Compilation failed. See REPL console.", true); if (onRunRequested) onRunRequested("// Error:\n" + juce::String(result.errorMessage), "Error"); return;
-    }
-
-    generatedSource = juce::String(result.source);
-    generatedFiles = result.files;
-    currentSourceMap = result.sourceMap;
-    for (auto& entry : currentSourceMap) { 
-        auto it = std::find_if(nodes.begin(), nodes.end(), [&entry](const GraphNode& gn) { return gn.id.toStdString() == entry.nodeId; });
-        if (it != nodes.end()) {
-            auto* n = &*it;
-            n->generatedLine = entry.line; 
-            if (n->breakpoint) {
-                if (auto* ctrl = DebuggerController::getInstanceWithoutCreating()) ctrl->addBreakpoint(entry.line);
-            }
-        }
-    }
-
-    juce::String artifact = "function source";
-    if (result.artifactKind == node_compiler::ArtifactKind::FrustExecutablePod)
-        artifact = "Frust executable pod";
-    else if (result.artifactKind == node_compiler::ArtifactKind::FrustLibraryPod)
-        artifact = "Frust library pod";
-
-    setStatus("Compiled node schematic as " + artifact + ". JSON remains authoritative; generated files are build artifacts.");
-}
-
-void NodeDesignerPanel::saveGeneratedSource()
-{
-    if (generatedSource.trim().isEmpty() && generatedFiles.empty())
-    {
-        setStatus("Compile the schematic before exporting generated Frust source.", true);
-        return;
-    }
-
-    if (!generatedFiles.empty())
-    {
-        const auto packageRoot = generatedSourceCacheFile().getParentDirectory();
-        for (const auto& generated : generatedFiles)
-        {
-            auto file = packageRoot.getChildFile(juce::String(generated.path));
-            file.getParentDirectory().createDirectory();
-            if (!file.replaceWithText(juce::String(generated.content)))
-            {
-                setStatus("Could not save " + file.getFullPathName(), true);
-                return;
-            }
-            if (generated.path == "src/main.fr" || generated.path == "src/lib.fr")
-                currentSourceFile = file;
-        }
-        setStatus("Exported generated artifact package to " + packageRoot.getFullPathName());
-        return;
-    }
-
-    currentSourceFile = generatedSourceCacheFile();
-    currentSourceFile.getParentDirectory().createDirectory();
-
-    if (!currentSourceFile.replaceWithText(generatedSource))
-    {
-        setStatus("Could not save " + currentSourceFile.getFullPathName(), true);
-        return;
-    }
-    setStatus("Exported generated source artifact to " + currentSourceFile.getFullPathName());
-}
-
 void NodeDesignerPanel::setStatus(const juce::String& text, bool isError)
 {
     statusView.setColour(juce::TextEditor::textColourId, isError ? juce::Colour(0xffff8b8b) : juce::Colour(0xffdce9ee));
     statusView.setText(text, juce::dontSendNotification);
 }
 
+// ---------------------------------------------------------------------------
+// Workbench integration: project folder, open/save/validate buttons, and the
+// operations the Workbench agent (node_program_* tools) and tests use.
+// ---------------------------------------------------------------------------
 
+namespace
+{
+// The values each node type carries besides its wires, by the names the
+// schematic stores them under.
+juce::StringArray parameterNamesFor(const juce::String& type)
+{
+    juce::StringArray names;
+    if (type == "literal_i64" || type == "const_bool") names.add("value");
+    if (type == "literal_string" || type.startsWith("sm_") || type == "state_machine_instance") names.add("text");
+    if (type == "sm_state") names.addArray(juce::StringArray { "accessibility", "initial", "terminal", "entryAction", "updateAction", "exitAction" });
+    if (type == "sm_transition") names.addArray(juce::StringArray { "event", "guard", "action" });
+    if (type == "sm_event") names.addArray(juce::StringArray { "event", "payloadType" });
+    if (type == "state_machine_instance") names.add("machineRef");
+    names.addArray(juce::StringArray { "breakpoint", "watched" });
+    return names;
+}
 
+juce::var pinsVar(const std::vector<NodeDesignerPanel::Pin>& pins)
+{
+    juce::Array<juce::var> list;
+    for (const auto& p : pins)
+    {
+        auto* o = new juce::DynamicObject();
+        o->setProperty("name", p.name);
+        o->setProperty("type", p.type);
+        o->setProperty("flow", flowName(p.flow));
+        list.add(juce::var(o));
+    }
+    return list;
+}
+}
+
+NodeDesignerPanel::~NodeDesignerPanel() = default;
+
+const NodeDesignerPanel::GraphNode* NodeDesignerPanel::findNodeById(const juce::String& id) const
+{
+    auto it = std::find_if(nodes.begin(), nodes.end(), [&id](const GraphNode& n) { return n.id == id; });
+    return it == nodes.end() ? nullptr : &*it;
+}
+
+void NodeDesignerPanel::clearGraph()
+{
+    currentGraphFile = {};
+    loadedDocument = juce::var();
+    nodes.clear();
+    connections.clear();
+    variables.clear();
+    types.clear();
+    functions.clear();
+    resources.clear();
+    states.clear();
+    events.clear();
+    transitions.clear();
+    nextNodeUid = 1;
+    selectedNodeUid = 0;
+    selectedConnectionIndex = -1;
+    diagramName = "Untitled Node Schematic";
+    titleLabel.setText(diagramName, juce::dontSendNotification);
+    refreshTemplatesWithFunctions();
+}
+
+void NodeDesignerPanel::newGraph(const juce::String& type, bool withStarterNodes)
+{
+    const bool stateMachine = type == "state_machine";
+    if (withStarterNodes)
+    {
+        if (stateMachine) initializeStateMachine();
+        else initializeNodeGraph();
+    }
+    else
+    {
+        clearGraph();
+        diagramType = stateMachine ? "state_machine" : "node_graph";
+        diagramTypeSelector.setSelectedId(stateMachine ? 2 : 1, juce::dontSendNotification);
+        setStatus(stateMachine ? "New empty state machine." : "New empty node graph.");
+    }
+    refreshProperties();
+    if (canvas != nullptr) canvas->repaint();
+    if (variablesPanel != nullptr) variablesPanel->repaint();
+    if (typesPanel != nullptr) typesPanel->repaint();
+}
+
+void NodeDesignerPanel::openGraph()
+{
+    const auto folder = defaultFolder != nullptr ? defaultFolder() : juce::File();
+    fileChooser = std::make_unique<juce::FileChooser>("Open Node Program", folder, "*.frnode.json;*.json");
+    fileChooser->launchAsync(juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectFiles,
+        [this](const juce::FileChooser& chooser) {
+            const auto file = chooser.getResult();
+            if (file != juce::File()) loadGraphFile(file);
+            fileChooser = nullptr;
+        });
+}
+
+void NodeDesignerPanel::saveGraph()
+{
+    if (currentGraphFile == juce::File())
+    {
+        auto folder = defaultFolder != nullptr ? defaultFolder() : juce::File();
+        if (folder != juce::File()) folder.createDirectory();
+        const auto base = diagramName.retainCharacters("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_- ").trim();
+        fileChooser = std::make_unique<juce::FileChooser>("Save Node Program",
+            folder.getChildFile((base.isNotEmpty() ? base : juce::String("program")) + ".frnode.json"), "*.frnode.json;*.json");
+        fileChooser->launchAsync(juce::FileBrowserComponent::saveMode | juce::FileBrowserComponent::warnAboutOverwriting,
+            [this](const juce::FileChooser& chooser) {
+                const auto file = chooser.getResult();
+                fileChooser = nullptr;
+                juce::String error;
+                if (file != juce::File() && !saveToFile(file, error))
+                    setStatus(error, true);
+            });
+        return;
+    }
+    juce::String error;
+    if (!saveToFile(currentGraphFile, error))
+        setStatus(error, true);
+}
+
+bool NodeDesignerPanel::openFile(const juce::File& file, juce::String& error)
+{
+    if (!file.existsAsFile())
+    {
+        error = "No such node program: " + file.getFullPathName();
+        return false;
+    }
+    juce::String problems;
+    if (!loadFromJson(file.loadFileAsString(), problems))
+    {
+        error = statusText();
+        return false;
+    }
+    currentGraphFile = file;
+    titleLabel.setText(file.getFileName(), juce::dontSendNotification);
+    setStatus(problems.isEmpty() ? "Opened " + file.getFullPathName() : "Opened " + file.getFileName() + " with problems: " + problems,
+              problems.isNotEmpty());
+    error = problems;   // empty when it opened cleanly
+    return true;
+}
+
+bool NodeDesignerPanel::saveToFile(const juce::File& file, juce::String& error)
+{
+    const auto result = file.getParentDirectory().createDirectory();
+    if (result.failed() || !file.replaceWithText(buildSavedDocument()))
+    {
+        error = "Could not save " + file.getFullPathName();
+        return false;
+    }
+    currentGraphFile = file;
+    loadedDocument = juce::JSON::parse(file.loadFileAsString());
+    titleLabel.setText(file.getFileName(), juce::dontSendNotification);
+    setStatus("Saved " + file.getFullPathName());
+    return true;
+}
+
+juce::String NodeDesignerPanel::buildSavedDocument() const
+{
+    return buildSchematicJson();
+}
+
+void NodeDesignerPanel::showValidation()
+{
+    const auto problems = validateGraph();
+    if (problems.isEmpty())
+        setStatus("No structural problems.");
+    else
+        setStatus(juce::String(problems.size()) + " problem(s): " + problems.joinIntoString(" "), true);
+}
+
+juce::StringArray NodeDesignerPanel::validateGraph() const
+{
+    juce::StringArray problems;
+    std::map<juce::String, int> idCount;
+    for (const auto& n : nodes)
+        if (++idCount[n.id] == 2)
+            problems.add("Node id '" + n.id + "' is used by more than one node.");
+    for (const auto& n : nodes)
+    {
+        if (n.unsupportedSource.isObject())
+            problems.add("Node '" + n.id + "' has type '" + n.type + "', which this editor does not define; it is kept as it is.");
+        if (n.type.startsWith("call_function:") && findFunction(n.functionRef) == nullptr)
+            problems.add("Node '" + n.id + "' calls function '" + n.functionRef + "', which is not defined.");
+    }
+    std::map<std::pair<int, int>, int> drivers;
+    for (const auto& c : connections)
+    {
+        const auto* a = findNode(c.fromNode);
+        const auto* b = findNode(c.toNode);
+        if (a == nullptr || b == nullptr)
+        {
+            problems.add("Connection '" + c.id + "' refers to a node that no longer exists.");
+            continue;
+        }
+        if (c.fromPin < 0 || c.fromPin >= (int)a->outputs.size() || c.toPin < 0 || c.toPin >= (int)b->inputs.size())
+        {
+            problems.add("Connection '" + c.id + "' refers to a pin that does not exist.");
+            continue;
+        }
+        const auto& from = a->outputs[(size_t)c.fromPin];
+        const auto& to = b->inputs[(size_t)c.toPin];
+        if (!pinsCompatible(from, to))
+            problems.add("Connection '" + c.id + "' joins " + flowName(from.flow) + " " + from.type + " to " + flowName(to.flow) + " " + to.type + ".");
+        const bool multiDrive = b->type == "sm_state" && to.flow == PinFlow::Exec;
+        if (++drivers[{ c.toNode, c.toPin }] == 2 && !multiDrive)
+            problems.add("Input '" + b->id + "." + to.name + "' is driven by more than one connection.");
+    }
+    if (diagramType == "state_machine")
+        if (const auto sm = validateStateMachine(); sm.isNotEmpty())
+            problems.add(sm);
+    return problems;
+}
+
+juce::String NodeDesignerPanel::addNodeOfType(const juce::String& type, float x, float y, const juce::String& requestedId, juce::String& error)
+{
+    if (findTemplate(type) == nullptr)
+    {
+        error = "Unknown node type '" + type + "'. node_program_node_types lists the types.";
+        return {};
+    }
+    if (requestedId.isNotEmpty())
+    {
+        if (requestedId != requestedId.retainCharacters("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_"))
+        {
+            error = "Node ids use letters, digits and underscores only.";
+            return {};
+        }
+        if (findNodeById(requestedId) != nullptr)
+        {
+            error = "A node with id '" + requestedId + "' already exists.";
+            return {};
+        }
+    }
+    auto& node = addNode(type, { x, y });
+    if (requestedId.isNotEmpty())
+        node.id = requestedId;
+    const auto id = node.id;
+    if (canvas != nullptr) canvas->repaint();
+    return id;
+}
+
+bool NodeDesignerPanel::deleteNode(const juce::String& nodeId, juce::String& error)
+{
+    const auto* n = findNodeById(nodeId);
+    if (n == nullptr)
+    {
+        error = "No node '" + nodeId + "'.";
+        return false;
+    }
+    const auto uid = n->uid;
+    removeNode(uid);
+    if (selectedNodeUid == uid) selectedNodeUid = 0;
+    selectedConnectionIndex = -1;
+    refreshProperties();
+    if (canvas != nullptr) canvas->repaint();
+    setStatus("Deleted node " + nodeId + ".");
+    return true;
+}
+
+bool NodeDesignerPanel::moveNode(const juce::String& nodeId, float x, float y, juce::String& error)
+{
+    const auto* n = findNodeById(nodeId);
+    if (n == nullptr)
+    {
+        error = "No node '" + nodeId + "'.";
+        return false;
+    }
+    auto* node = findNode(n->uid);
+    node->x = x;
+    node->y = y;
+    if (canvas != nullptr) canvas->repaint();
+    return true;
+}
+
+juce::String NodeDesignerPanel::connect(const juce::String& fromNode, const juce::String& fromPin,
+                                        const juce::String& toNode, const juce::String& toPin, juce::String& error)
+{
+    const auto* a = findNodeById(fromNode);
+    const auto* b = findNodeById(toNode);
+    if (a == nullptr || b == nullptr)
+    {
+        error = "No node '" + (a == nullptr ? fromNode : toNode) + "'.";
+        return {};
+    }
+    if (a == b)
+    {
+        error = "A node cannot be wired to itself.";
+        return {};
+    }
+    auto indexOf = [](const std::vector<Pin>& pins, const juce::String& name) {
+        for (int i = 0; i < (int)pins.size(); ++i)
+            if (pins[(size_t)i].name == name) return i;
+        return -1;
+    };
+    auto names = [](const std::vector<Pin>& pins) {
+        juce::StringArray s;
+        for (const auto& p : pins) s.add(p.name);
+        return s.joinIntoString(", ");
+    };
+    const int fp = indexOf(a->outputs, fromPin);
+    const int tp = indexOf(b->inputs, toPin);
+    if (fp < 0)
+    {
+        error = indexOf(a->inputs, fromPin) >= 0
+            ? "'" + fromNode + "." + fromPin + "' is an input; wires go from an output to an input."
+            : "'" + fromNode + "' has no output '" + fromPin + "' (outputs: " + names(a->outputs) + ").";
+        return {};
+    }
+    if (tp < 0)
+    {
+        error = indexOf(b->outputs, toPin) >= 0
+            ? "'" + toNode + "." + toPin + "' is an output; wires go from an output to an input."
+            : "'" + toNode + "' has no input '" + toPin + "' (inputs: " + names(b->inputs) + ").";
+        return {};
+    }
+    const auto out = a->outputs[(size_t)fp];
+    const auto in = b->inputs[(size_t)tp];
+    if (!pinsCompatible(out, in))
+    {
+        error = "Incompatible pins: " + flowName(out.flow) + " " + out.type + " cannot drive " + flowName(in.flow) + " " + in.type + ".";
+        return {};
+    }
+    const bool stateToState = a->type == "sm_state" && b->type == "sm_state" && out.flow == PinFlow::Exec;
+    const bool multiDrive = b->type == "sm_state" && in.flow == PinFlow::Exec;
+    if (!multiDrive)
+        if (const auto* existing = connectionToInput(b->uid, tp))
+        {
+            error = "'" + toNode + "." + toPin + "' is already wired by '" + existing->id + "'; disconnect it first.";
+            return {};
+        }
+    const int fromUid = a->uid, toUid = b->uid;
+    connectPins(fromUid, fp, toUid, tp);
+    if (canvas != nullptr) canvas->repaint();
+    if (stateToState)
+        if (const auto* t = findNode(selectedNodeUid))
+            return t->id;   // the Transition node the editor inserts between two states
+    for (const auto& c : connections)
+        if (c.fromNode == fromUid && c.fromPin == fp && c.toNode == toUid && c.toPin == tp)
+            return c.id;
+    error = "The editor did not make the connection.";
+    return {};
+}
+
+bool NodeDesignerPanel::disconnect(const juce::String& connectionId, juce::String& error)
+{
+    auto it = std::find_if(connections.begin(), connections.end(), [&connectionId](const Connection& c) { return c.id == connectionId; });
+    if (it == connections.end())
+    {
+        error = "No connection '" + connectionId + "'.";
+        return false;
+    }
+    connections.erase(it);
+    selectedConnectionIndex = -1;
+    refreshProperties();
+    if (canvas != nullptr) canvas->repaint();
+    return true;
+}
+
+bool NodeDesignerPanel::setNodeParameter(const juce::String& nodeId, const juce::String& name, const juce::var& value, juce::String& error)
+{
+    const auto* found = findNodeById(nodeId);
+    if (found == nullptr)
+    {
+        error = "No node '" + nodeId + "'.";
+        return false;
+    }
+    auto* n = findNode(found->uid);
+    if (n->unsupportedSource.isObject())
+    {
+        error = "Node '" + nodeId + "' has an unsupported type and is kept unchanged.";
+        return false;
+    }
+    if (name.startsWith("input."))
+    {
+        const auto pin = name.fromFirstOccurrenceOf(".", false, false);
+        for (int i = 0; i < (int)n->inputs.size(); ++i)
+            if (n->inputs[(size_t)i].name == pin)
+            {
+                if (n->inputs[(size_t)i].flow != PinFlow::Data)
+                {
+                    error = "Only data inputs have a default value.";
+                    return false;
+                }
+                if (i >= (int)n->inputDefaults.size()) n->inputDefaults.resize((size_t)i + 1);
+                n->inputDefaults[(size_t)i] = value.toString();
+                refreshProperties();
+                return true;
+            }
+        error = "'" + nodeId + "' has no input '" + pin + "'.";
+        return false;
+    }
+    const auto allowed = parameterNamesFor(n->type);
+    if (!allowed.contains(name))
+    {
+        error = "'" + name + "' is not a parameter of " + n->title + " nodes. Parameters: " + allowed.joinIntoString(", ")
+            + ", or input.<pin> for a data input's default value.";
+        return false;
+    }
+    if (name == "value") n->literalValue = n->type == "const_bool" ? ((bool)value ? 1 : 0) : (int)value;
+    else if (name == "text") n->textValue = value.toString();
+    else if (name == "accessibility") n->accessibility = value.toString();
+    else if (name == "initial") n->initial = (bool)value;
+    else if (name == "terminal") n->terminal = (bool)value;
+    else if (name == "entryAction") n->entryAction = value.toString();
+    else if (name == "updateAction") n->updateAction = value.toString();
+    else if (name == "exitAction") n->exitAction = value.toString();
+    else if (name == "event") n->eventName = value.toString();
+    else if (name == "guard") n->guardExpression = value.toString();
+    else if (name == "action") n->transitionAction = value.toString();
+    else if (name == "payloadType") n->payloadType = value.toString();
+    else if (name == "machineRef") n->machineRef = value.toString();
+    else if (name == "breakpoint") n->breakpoint = (bool)value;
+    else if (name == "watched") n->watched = (bool)value;
+    refreshProperties();
+    if (canvas != nullptr) canvas->repaint();
+    return true;
+}
+
+juce::var NodeDesignerPanel::describeGraph() const
+{
+    auto* root = new juce::DynamicObject();
+    root->setProperty("name", diagramName);
+    root->setProperty("diagramType", diagramType);
+    root->setProperty("file", currentGraphFile.getFullPathName());
+    juce::Array<juce::var> nodeList;
+    for (const auto& n : nodes)
+    {
+        auto* o = new juce::DynamicObject();
+        o->setProperty("id", n.id);
+        o->setProperty("type", n.type);
+        o->setProperty("title", n.title);
+        o->setProperty("x", n.x);
+        o->setProperty("y", n.y);
+        if (n.unsupportedSource.isObject())
+            o->setProperty("unsupported", true);
+        auto* params = new juce::DynamicObject();
+        for (const auto& p : parameterNamesFor(n.type))
+        {
+            if (p == "value") params->setProperty("value", n.type == "const_bool" ? juce::var(n.literalValue != 0) : juce::var(n.literalValue));
+            else if (p == "text") params->setProperty("text", n.textValue);
+            else if (p == "accessibility") params->setProperty("accessibility", n.accessibility);
+            else if (p == "initial") params->setProperty("initial", n.initial);
+            else if (p == "terminal") params->setProperty("terminal", n.terminal);
+            else if (p == "entryAction") params->setProperty("entryAction", n.entryAction);
+            else if (p == "updateAction") params->setProperty("updateAction", n.updateAction);
+            else if (p == "exitAction") params->setProperty("exitAction", n.exitAction);
+            else if (p == "event") params->setProperty("event", n.eventName);
+            else if (p == "guard") params->setProperty("guard", n.guardExpression);
+            else if (p == "action") params->setProperty("action", n.transitionAction);
+            else if (p == "payloadType") params->setProperty("payloadType", n.payloadType);
+            else if (p == "machineRef") params->setProperty("machineRef", n.machineRef);
+            else if (p == "breakpoint") params->setProperty("breakpoint", n.breakpoint);
+            else if (p == "watched") params->setProperty("watched", n.watched);
+        }
+        for (int i = 0; i < (int)n.inputs.size() && i < (int)n.inputDefaults.size(); ++i)
+            if (n.inputs[(size_t)i].flow == PinFlow::Data && n.inputDefaults[(size_t)i].isNotEmpty() && connectionToInput(n.uid, i) == nullptr)
+                params->setProperty("input." + n.inputs[(size_t)i].name, n.inputDefaults[(size_t)i]);
+        o->setProperty("parameters", juce::var(params));
+        o->setProperty("inputs", pinsVar(n.inputs));
+        o->setProperty("outputs", pinsVar(n.outputs));
+        nodeList.add(juce::var(o));
+    }
+    root->setProperty("nodes", nodeList);
+    juce::Array<juce::var> wireList;
+    for (const auto& c : connections)
+    {
+        const auto* a = findNode(c.fromNode);
+        const auto* b = findNode(c.toNode);
+        if (a == nullptr || b == nullptr) continue;
+        auto* o = new juce::DynamicObject();
+        o->setProperty("id", c.id);
+        o->setProperty("from", a->id);
+        o->setProperty("fromPin", c.fromPin < (int)a->outputs.size() ? a->outputs[(size_t)c.fromPin].name : juce::String());
+        o->setProperty("to", b->id);
+        o->setProperty("toPin", c.toPin < (int)b->inputs.size() ? b->inputs[(size_t)c.toPin].name : juce::String());
+        wireList.add(juce::var(o));
+    }
+    root->setProperty("connections", wireList);
+    return juce::var(root);
+}
+
+juce::var NodeDesignerPanel::describeNodeTypes() const
+{
+    juce::Array<juce::var> list;
+    for (const auto& t : templates)
+    {
+        auto* o = new juce::DynamicObject();
+        o->setProperty("type", t.type);
+        o->setProperty("title", t.title);
+        o->setProperty("category", t.category);
+        o->setProperty("inputs", pinsVar(t.inputs));
+        o->setProperty("outputs", pinsVar(t.outputs));
+        juce::Array<juce::var> params;
+        for (const auto& p : parameterNamesFor(t.type)) params.add(p);
+        o->setProperty("parameters", params);
+        list.add(juce::var(o));
+    }
+    return list;
+}

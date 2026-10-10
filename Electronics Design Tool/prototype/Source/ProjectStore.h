@@ -11,6 +11,7 @@
 //     diagrams\<Diagram Name>.diagram.json
 //     outputs\<Diagram Name>\          netlists, ERC, simulations, images
 //     memory\                          the agent's notes for this project
+//     programs\<Name>.frnode.json      node programs (Node Designer)
 //     deleted\                         diagrams removed from the project
 //
 // File operations only; the workbench owns the UI and the open diagram.
@@ -40,6 +41,8 @@ juce::File manifestFile(const Project& project);
 juce::File diagramFile(const Project& project, const juce::String& diagramName);
 juce::File outputsDirectory(const Project& project, const juce::String& diagramName);
 juce::File memoryDirectory(const Project& project);
+// Node programs (FRust node schematics) of the project: programs\<Name>.frnode.json.
+juce::File programsDirectory(const Project& project);
 
 // Creates <location>\<name>\ with an empty diagram list. Fails if that
 // folder already holds a project.
