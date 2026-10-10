@@ -7433,6 +7433,11 @@ public:
         auto number = [&](const Instance& inst, const juce::String& key, double fallback) {
             bool ok = true;
             juce::String val = partValue(inst, key);
+            // A parameter this part type does not define (an op amp model read
+            // through shared code, say) takes the model default; it is not a
+            // user value that could be invalid.
+            if (val.trim().isEmpty() && parts::findParam(inst.symbolId, key) == nullptr)
+                return fallback;
             double v = parseQuantity(val, fallback, &ok);
             if (ok) return v;
             std::string exprError;
