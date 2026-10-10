@@ -13516,9 +13516,10 @@ private:
                         continue;
                     }
 
-                    juce::MessageManager::callAsync([safeThis, name = juce::String(call.name)] {
+                    // The arguments are shown too, so every operation the agent performs is visible.
+                    juce::MessageManager::callAsync([safeThis, name = juce::String(call.name), args = juce::String(call.argumentsJson)] {
                         if (safeThis != nullptr)
-                            safeThis->appendTranscript("tool", "Running " + name + "...");
+                            safeThis->appendTranscript("tool", "Running " + name + "... `" + (args.length() > 400 ? args.substring(0, 400) + "..." : args) + "`");
                     });
 
                     const auto result = safeThis->executeToolFromWorker(call);
