@@ -108,7 +108,15 @@ SignalSpec resolve(const analytics::Netlist& n, const std::vector<Channel>& chan
         const auto minus = names.size() == 2 ? nodeNamed(n, names[1]) : 0;
         if (plus < 0 || minus < 0)
         {
-            s.problem = "no net named " + (plus < 0 ? names[0] : names[1]);
+            const auto missing = plus < 0 ? names[0] : names[1];
+            s.problem = "no net named " + missing;
+            // A pin label (C1.1) where a net name belongs: say which net that pin is on.
+            for (const auto& net : n.nets)
+                if (juce::StringArray::fromTokens(net.pins, " ", "").contains(missing, true))
+                {
+                    s.problem << "; " << missing << " is a pin, not a net. It is on net " << net.name << ": write V(" << net.name << ")";
+                    break;
+                }
             return s;
         }
         voltageBetween(n, plus, minus, s);

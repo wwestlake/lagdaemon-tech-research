@@ -1489,7 +1489,12 @@ analytics::Result run(analytics::Analysis analysis, const analytics::Settings& s
     const auto exitCode = process.getExitCode();
     if (exitCode != 0)
     {
-        failed.error = "Xyce failed with exit code " + juce::String(exitCode) + ". See " + runDir.getChildFile("xyce_stdout.txt").getFullPathName();
+        // Give the reason itself, in Xyce's words, not only a log the agent cannot open.
+        const auto lines = diagnosticLines(stdoutText, 8);
+        failed.error = "Xyce failed (exit code " + juce::String(exitCode) + "): " + lines.joinIntoString(" | ");
+        if (const auto why = explainFailure(lines, netlist); why.isNotEmpty())
+            failed.error << " Explanation: " << why;
+        failed.error << " Full log: " << runDir.getChildFile("xyce_stdout.txt").getFullPathName();
         return failed;
     }
 
@@ -1509,5 +1514,103 @@ analytics::Result run(analytics::Analysis analysis, const analytics::Settings& s
     result.warnings.add("Backend: Xyce external process (" + configuredExecutable().getFullPathName() + ")");
     result.warnings.add("Netlist: " + cir.getFullPathName());
     return result;
+}
+
+juce::StringArray diagnosticLines(const juce::String& output, int maxLines)
+{
+    juce::StringArray out;
+    for (auto line : juce::StringArray::fromLines(output))
+    {
+        line = line.trim();
+        if (line.isEmpty())
+            continue;
+        const auto lower = line.toLowerCase();
+        // The summary line ("There are 0 MSG_FATAL errors and 1 MSG_ERROR errors")
+        // repeats what the real messages already say.
+        if (lower.contains("msg_fatal errors and") || lower.startsWith("simulation aborted due to error") || lower == "errors")
+            continue;
+        const bool relevant = lower.contains("error") || lower.contains("fatal") || lower.contains("warning") || lower.contains("unknown")
+                           || lower.contains("undefined") || lower.contains("not found") || lower.contains("singular")
+                           || lower.contains("timestep too small") || lower.contains("failed") || lower.contains("cannot");
+        if (relevant && !out.contains(line))
+            out.add(line.length() > 300 ? line.substring(0, 300) + "..." : line);
+        if (out.size() >= maxLines)
+            break;
+    }
+    if (out.isEmpty())
+    {
+        // Nothing matched: give the end of the log, where Xyce reports why it stopped.
+        auto lines = juce::StringArray::fromLines(output.trim());
+        for (int i = std::max(0, lines.size() - 3); i < lines.size(); ++i)
+            if (lines[i].trim().isNotEmpty())
+                out.add(lines[i].trim().substring(0, 300));
+    }
+    return out;
+}
+
+juce::StringArray nodeNames(const analytics::Netlist& n)
+{
+    juce::StringArray names;
+    for (int node = 1; node < n.circuit.nodeCount(); ++node)
+        names.addIfNotAlreadyThere(nodeName(n, node));
+    return names;
+}
+
+juce::StringArray unresolvedNodes(const juce::String& expression, const analytics::Netlist& n)
+{
+    const auto known = nodeNames(n);
+    juce::StringArray missing;
+    auto check = [&](juce::String name) {
+        name = name.trim();
+        if (name.isEmpty() || name == "0" || name.equalsIgnoreCase("GND"))
+            return;
+        for (const auto& k : known)
+            if (k.equalsIgnoreCase(name))
+                return;
+        missing.addIfNotAlreadyThere(name);
+    };
+    const auto text = expression.toUpperCase();
+    for (int at = 0; (at = text.indexOf(at, "V(")) >= 0; at += 2)
+    {
+        // V( must start a token, not end a name such as DEV(.
+        if (at > 0 && (juce::CharacterFunctions::isLetterOrDigit(text[at - 1]) || text[at - 1] == '_'))
+            continue;
+        const auto close = text.indexOfChar(at, ')');
+        if (close < 0)
+            break;
+        const auto inside = expression.substring(at + 2, close);
+        for (const auto& part : juce::StringArray::fromTokens(inside, ",", ""))
+            check(part);
+    }
+    return missing;
+}
+
+juce::String explainFailure(const juce::StringArray& lines, const analytics::Netlist& n)
+{
+    for (const auto& line : lines)
+    {
+        const auto lower = line.toLowerCase();
+        const auto unknownNode = lower.indexOf("unknown solution node");
+        if (unknownNode >= 0)
+        {
+            const auto node = line.substring(unknownNode + juce::String("unknown solution node").length()).trim();
+            return node + " is not a node of this circuit. Behavioral expressions must use node names as the netlist writes them: "
+                 + nodeNames(n).joinIntoString(", ") + ". Rename the reference, or give the intended node that name with a net_label.";
+        }
+        if (lower.contains("timestep too small"))
+            return "Xyce could not take a small enough time step: the circuit is numerically stiff or discontinuous, or a source or expression jumps; "
+                   "check expressions, initial conditions and the max time step.";
+        if (lower.contains("singular"))
+            return "The circuit matrix is singular: usually a node with no DC path to ground, a loop of voltage sources, or a floating part.";
+    }
+    return {};
+}
+
+juce::String netlistProblem(const analytics::Netlist& n)
+{
+    juce::String error;
+    if (netlistFor(analytics::Analysis::Transient, { { "stop", "1m" }, { "step", "1u" } }, n, error).isEmpty())
+        return error.isNotEmpty() ? error : juce::String("The circuit cannot be written as a Xyce netlist.");
+    return {};
 }
 }

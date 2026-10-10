@@ -2675,6 +2675,54 @@ public:
                 add(finding("WARN", "wire_loop", "A wire loops back to " + nodeLabel(wire.a) + "."));
         }
 
+        // Behavioral expressions, model names and Xyce bindings, checked with
+        // the netlist generator's own node naming and model rules.
+        const auto simNetlist = analyticsNetlist();
+        context.nodeNames = xyce_backend::nodeNames(simNetlist);
+
+        for (int i = 0; i < (int)instances.size(); ++i)
+        {
+            const auto& inst = instances[(size_t)i];
+            if (inst.symbolId == "behavioral_voltage_source" || inst.symbolId == "behavioral_current_source")
+            {
+                const auto missing = xyce_backend::unresolvedNodes(partValue(inst, "value"), simNetlist);
+                if (!missing.isEmpty())
+                {
+                    auto f = partFinding("ERROR", "unresolved_expression_node", inst.refdes + "'s expression refers to V(" + missing.joinIntoString("), V(")
+                                                                                  + "), but the circuit has no node named " + missing.joinIntoString(" or ") + ".", i);
+                    f.net = missing.joinIntoString(", ");
+                    f.connections = connectionsOf(i, -1);
+                    add(std::move(f));
+                }
+            }
+            // Parts whose value is a simulation model name (the catalog labels it "Model").
+            const auto* modelSpec = parts::findParam(inst.symbolId, "value");
+            const auto model = inst.value.trim();
+            if (modelSpec != nullptr && modelSpec->label == "Model" && model.isNotEmpty() && !model.startsWithIgnoreCase("generic_") && model != modelSpec->defaultValue
+                && spice_library::findModel(model) == nullptr)
+            {
+                bool isRefdes = false;
+                for (const auto& other : instances)
+                    isRefdes = isRefdes || other.refdes.equalsIgnoreCase(model);
+                auto f = partFinding("WARN", "unknown_model", inst.refdes + " names model '" + model + "', which is not in the model library"
+                                     + (isRefdes ? juce::String(" ('" + model + "' is a reference designator, not a model; the value field names the simulation model)") : juce::String())
+                                     + ". The default for this part is '" + modelSpec->defaultValue + "'.", i);
+                add(std::move(f));
+            }
+        }
+        if (const auto problem = xyce_backend::netlistProblem(simNetlist); problem.isNotEmpty())
+        {
+            auto f = finding("WARN", "xyce_unavailable", "The Xyce engine cannot run this circuit: " + problem + " The internal solver uses its built-in models.");
+            const auto first = problem.upToFirstOccurrenceOf(" ", false, false);
+            for (int i = 0; i < (int)instances.size(); ++i)
+                if (instances[(size_t)i].refdes.equalsIgnoreCase(first))
+                {
+                    f.refdes = instances[(size_t)i].refdes;
+                    f.symbolId = instances[(size_t)i].symbolId;
+                }
+            add(std::move(f));
+        }
+
         // Every named supply net needs something that actually sets its voltage.
         std::map<juce::String, juce::String> supplyNets; // net -> port name
         std::set<juce::String> drivenNets;
@@ -7846,7 +7894,7 @@ public:
             if (name.isEmpty() || used.count(name.toLowerCase()) != 0)
                 name = net;
             used.insert(name.toLowerCase());
-            n.nets.push_back({ name, node, pinsOnNet(net, netNames).joinIntoString(" ") });
+            n.nets.push_back({ name, node, pinsOnNet(net, netNames, 64).joinIntoString(" ") });
         }
         std::sort(n.nets.begin(), n.nets.end(), [](const analytics::NetInfo& a, const analytics::NetInfo& b) {
             const bool aRaw = a.name.startsWith("n") && a.name.substring(1).containsOnly("0123456789");
@@ -12969,6 +13017,7 @@ private:
                "means it ran; circuit_run_erc passed only when its 'passed' field is true (errors = 0), otherwise its findings list each problem with "
                "the part, pin, net and suggestedActions to fix; a simulation that returns data is not proof the circuit works; the task is done only "
                "when the circuit shows the required behaviour in its results. "
+               "When a task is finished, end it with agent_report_outcome (completed with evidence, failed, or blocked); a reply that only says what you will do next keeps the task open. "
                "Discover parts, instruments, analyses and engines with workbench_capabilities (the application's own registry) before designing; "
                "look a part up by symbolId before setting its parameters. Use cookbook_lookup for engineering knowledge and reference designs. "
                "Never invent component types, model names or parameters; if what you need does not exist, say so or record it with capability_gap_record. "
@@ -13030,6 +13079,11 @@ private:
                 "cookbook_acceptance_record",
                 "Append structured evidence to an acceptance report created by cookbook_acceptance_start.",
                 R"({"type":"object","properties":{"reportPath":{"type":"string","description":"Path returned as jsonReport by cookbook_acceptance_start."},"evidenceType":{"type":"string","description":"retrieved_card, tool_call, artifact, capability_gap, criterion, or note."},"label":{"type":"string","description":"Short evidence label."},"detail":{"type":"string","description":"Evidence details."},"pathOrValue":{"type":"string","description":"Artifact path, tool result path, card id, or measured value."},"status":{"type":"string","description":"observed, passed, failed, gap, unverified, or not_started."}},"required":["reportPath","evidenceType","label"],"additionalProperties":false})"
+            },
+            {
+                "agent_report_outcome",
+                "End a task by reporting its outcome. Call it once the work is finished: status completed (the objective is met; give the evidence from tool results), failed (it could not be met; say what failed and why) or blocked (a missing capability or decision stops you; say which). Until you call it, the task stays open. Do not end with a plan for what you will do next; do it.",
+                R"({"type":"object","properties":{"status":{"type":"string","enum":["completed","failed","blocked"]},"summary":{"type":"string","description":"What was done and found."},"evidence":{"type":"string","description":"For completed: the tool results that show the objective is met (ERC passed, simulation values, plot readings)."},"unresolved":{"type":"string","description":"Anything still wrong or unverified."}},"required":["status","summary"],"additionalProperties":false})"
             },
             {
                 "capability_gap_record",
@@ -13467,6 +13521,8 @@ private:
             // provider fails, the user stops it, or it keeps repeating one
             // failing call. (Each provider request keeps its own timeout.)
             agent_progress::NoProgressGuard progress;
+            agent_progress::CompletionTracker tracker;
+            bool finished = false;
             constexpr int maxIdenticalFailures = 3;
             std::string lastFailedCall;
             int identicalFailures = 0;
@@ -13494,10 +13550,37 @@ private:
 
                 if (response.toolCalls.empty())
                 {
+                    const auto action = tracker.onTextReply();
+                    if (action == agent_progress::CompletionTracker::TextReply::AskForOutcome)
+                    {
+                        // Text after tool work is not an outcome (it is often a plan for
+                        // the next step): show it, and ask the agent to act or report.
+                        juce::String request = "[Workbench] That reply did not report an outcome, so the task is still open. Continue working with tools now, "
+                                               "or, if you have finished, call agent_report_outcome (status completed with the evidence, or failed or blocked with "
+                                               "the reason). Describing what you will do next is not an outcome: do it.";
+                        const auto open = tracker.openFailures();
+                        if (!open.isEmpty())
+                            request << " Latest results still failing: " << open.joinIntoString("; ");
+                        ai_provider::ChatMessage nudge;
+                        nudge.role = "user";
+                        nudge.content = request.toStdString();
+                        messages.push_back(nudge);
+                        juce::MessageManager::callAsync([safeThis, text = juce::String(response.content)] {
+                            if (safeThis != nullptr)
+                            {
+                                safeThis->appendTranscript("assistant", text);
+                                safeThis->appendTranscript("system", "No outcome reported; asked the agent to continue or report completed, failed or blocked.");
+                            }
+                        });
+                        continue;
+                    }
                     ok = true;
                     finalText = juce::String(response.content);
+                    if (action == agent_progress::CompletionTracker::TextReply::FinalWithoutOutcome)
+                        finalText << "\n\n_Ended without a reported outcome: the agent replied again without doing more work or reporting completed, failed or blocked._";
                     break;
                 }
+                tracker.onToolRound();
 
                 for (const auto& call : response.toolCalls)
                 {
@@ -13517,6 +13600,50 @@ private:
                     }
 
                     // The arguments are shown too, so every operation the agent performs is visible.
+                    if (call.name == "agent_report_outcome")
+                    {
+                        const auto args = juce::JSON::parse(juce::String(call.argumentsJson));
+                        auto text = [&args](const char* key) {
+                            const auto v = args.getProperty(key, {});
+                            if (auto* list = v.getArray())
+                            {
+                                juce::StringArray items;
+                                for (const auto& item : *list) items.add(item.toString());
+                                return items.joinIntoString("; ");
+                            }
+                            return v.toString().trim();
+                        };
+                        const auto status = text("status").toLowerCase();
+                        const auto review = tracker.reviewOutcome(status, text("summary"), text("evidence"));
+                        const auto reply = review.accepted ? juce::String(R"({"ok": true, "recorded": true})")
+                                                           : "{\"ok\": false, \"error\": " + juce::JSON::toString(review.message) + "}";
+                        toolMessage.content = reply.toStdString();
+                        messages.push_back(toolMessage);
+                        juce::MessageManager::callAsync([safeThis, args = juce::String(call.argumentsJson), reply] {
+                            if (safeThis != nullptr)
+                            {
+                                safeThis->appendTranscript("tool", "Running agent_report_outcome... `" + args.substring(0, 400) + "`");
+                                if (!reply.contains("\"recorded\""))
+                                    safeThis->appendTranscript("tool", reply);
+                            }
+                        });
+                        if (review.accepted)
+                        {
+                            ok = true;
+                            finished = true;
+                            finalText = "**Outcome: " + status + "**\n\n" + text("summary");
+                            if (text("evidence").isNotEmpty()) finalText << "\n\n**Evidence:** " << text("evidence");
+                            if (text("unresolved").isNotEmpty()) finalText << "\n\n**Unresolved:** " << text("unresolved");
+                            if (review.message.isNotEmpty()) finalText << "\n\n_Note: " << review.message << "_";
+                        }
+                        else if (running && progress.record(juce::String(call.name), juce::String(call.argumentsJson), reply))
+                        {
+                            response = { false, {}, progress.reason().toStdString() };
+                            running = false;
+                        }
+                        continue;
+                    }
+
                     juce::MessageManager::callAsync([safeThis, name = juce::String(call.name), args = juce::String(call.argumentsJson)] {
                         if (safeThis != nullptr)
                             safeThis->appendTranscript("tool", "Running " + name + "... `" + (args.length() > 400 ? args.substring(0, 400) + "..." : args) + "`");
@@ -13526,6 +13653,7 @@ private:
                     ++toolCalls;
                     toolMessage.content = result.toStdString();
                     messages.push_back(toolMessage);
+                    tracker.recordToolResult(juce::String(call.name), result);
 
                     const auto parsed = juce::JSON::parse(result);
                     const bool failed = parsed.isObject() && parsed.hasProperty("ok") && !(bool)parsed.getProperty("ok", true);
@@ -13545,7 +13673,7 @@ private:
                         running = false;
                     }
                 }
-                if (!running)
+                if (!running || finished)
                     break;
             }
 

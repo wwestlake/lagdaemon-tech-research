@@ -426,6 +426,114 @@ int main(int argc, char** argv)
         checkTrue("volatile fields are ignored", agent_progress::normalise(erc) == agent_progress::normalise(ercOtherPath));
     }
 
+    std::printf("-- simulator diagnostics reach the agent --\n");
+    {
+        // The exact failure from the GPT-4o run: a behavioral source naming a node that does not exist.
+        chua_reference::Values v;
+        auto bad = chua_reference::core(v);
+        bad.netlist.circuit.addBehavioralCurrentSource("B1", bad.v1, 0, "-0.000409*V(NOPE)");
+        if (xyce)
+        {
+            const auto out = juce::File::getSpecialLocation(juce::File::tempDirectory).getChildFile("djehuti_knowledge_tests");
+            out.createDirectory();
+            const auto r = xyce_backend::run(analytics::Analysis::Transient, { { "outputs", "V(V1)" }, { "stop", "1m" }, { "step", "1u" } }, bad.netlist, out);
+            checkTrue("Xyce failure carries Xyce's own message", !r.ok && r.error.containsIgnoreCase("unknown solution node"), r.error.substring(0, 220));
+            checkTrue("Xyce failure explains it with the circuit's node names", r.error.contains("Explanation:") && r.error.contains("V1") && r.error.contains("V2"));
+            checkTrue("Xyce failure keeps the log path for more detail", r.error.contains("Full log:"));
+            checkTrue("Xyce failure stays bounded", r.error.length() < 3000, juce::String(r.error.length()));
+        }
+        else
+            std::printf("SKIP  Xyce not configured: %s\n", detail.toRawUTF8());
+
+        juce::String log;
+        for (int i = 0; i < 2000; ++i)
+            log << "Processing step " << i << " of the netlist\n";
+        log << "Netlist error: Device B1 refers to unknown solution node V1\n";
+        for (int i = 0; i < 50; ++i)
+            log << "Netlist error in file generated.cir at or near line " << i << ": " << juce::String::repeatedString("x", 600) << "\n";
+        log << "Simulation aborted due to error.  There are 0 MSG_FATAL errors and 1 MSG_ERROR errors\n";
+        const auto lines = xyce_backend::diagnosticLines(log, 8);
+        checkTrue("diagnostics are bounded to the requested lines", lines.size() == 8, juce::String(lines.size()));
+        bool shortLines = true;
+        for (const auto& l : lines) shortLines = shortLines && l.length() <= 303;
+        checkTrue("each diagnostic line is bounded", shortLines);
+        checkTrue("original wording kept, first error first", lines[0] == "Netlist error: Device B1 refers to unknown solution node V1", lines[0]);
+        checkTrue("the redundant summary line is dropped", !lines.joinIntoString("|").contains("MSG_FATAL"));
+        checkTrue("an unmatched log still yields its last lines", !xyce_backend::diagnosticLines("line one\nline two\nthe end", 8).isEmpty());
+
+        const auto internal = analytics::run(analytics::Analysis::Transient, { { "outputs", "V(V1)" }, { "stop", "1m" }, { "step", "1u" } }, bad.netlist);
+        checkTrue("internal-solver refusal reaches the result", !internal.ok && internal.error.contains("Xyce"), internal.error);
+        auto stuck = chua_reference::opAmpRealization(chua_reference::Values {}); // C1 initial voltage: first step does not converge
+        const auto newton = analytics::run(analytics::Analysis::Transient, { { "outputs", "V(V1)" }, { "stop", "1m" }, { "step", "1u" } }, stuck.netlist);
+        checkTrue("internal-solver convergence failure reaches the result", !newton.ok && newton.error.containsIgnoreCase("converge"), newton.error);
+    }
+
+    std::printf("-- behavioral expression references --\n");
+    {
+        const auto good = chua_reference::core(chua_reference::Values {});
+        checkTrue("existing node accepted", xyce_backend::unresolvedNodes("-0.000409*V(V1)+0.5*(-0.000348)*(abs(V(V1)+1)-abs(V(V1)-1))", good.netlist).isEmpty());
+        checkTrue("node names are case-insensitive, ground accepted", xyce_backend::unresolvedNodes("V(v1)-V(0)+V(GND)", good.netlist).isEmpty());
+        const auto missing = xyce_backend::unresolvedNodes("V(C1)*(-0.409k)", good.netlist);
+        checkTrue("missing node reported", missing.size() == 1 && missing[0] == "C1", missing.joinIntoString(","));
+        checkTrue("differential V(a,b) checks both", xyce_backend::unresolvedNodes("V(V1, NOPE)", good.netlist) == juce::StringArray { "NOPE" });
+        checkTrue("names ending in v( are not voltage references", xyce_backend::unresolvedNodes("DEV(3)+abs(V(V2))", good.netlist).isEmpty());
+        checkTrue("node list uses the netlist's names", xyce_backend::nodeNames(good.netlist).contains("V1") && xyce_backend::nodeNames(good.netlist).contains("V2"));
+    }
+
+    std::printf("-- model availability --\n");
+    {
+        checkTrue("an RLC circuit is writable for Xyce", xyce_backend::netlistProblem(chua_reference::core(chua_reference::Values {}).netlist).isEmpty());
+        checkTrue("a behavioral circuit is writable for Xyce", xyce_backend::netlistProblem(chua_reference::behavioralRealization(chua_reference::Values {}).netlist).isEmpty());
+        const auto opamp = xyce_backend::netlistProblem(chua_reference::opAmpRealization(chua_reference::Values {}).netlist);
+        checkTrue("an op amp without a Xyce model is reported", opamp.containsIgnoreCase("model"), opamp);
+        spice_library::initialize();
+        checkTrue("library models remain available (UA741)", spice_library::findModel("UA741") != nullptr);
+    }
+
+    std::printf("-- task completion protocol --\n");
+    {
+        using T = agent_progress::CompletionTracker;
+        {
+            T t;
+            checkTrue("a question answered without tools ends normally", t.onTextReply() == T::TextReply::Final);
+        }
+        {
+            T t;
+            t.onToolRound();
+            t.recordToolResult("analytics_transient", R"({"ok": false, "error": "Xyce failed (exit code 1): Netlist error: Device B1 refers to unknown solution node V1"})");
+            checkTrue("'I'll review the connections next' does not end the run", t.onTextReply() == T::TextReply::AskForOutcome);
+            checkTrue("open failures are listed for the request", t.openFailures().joinIntoString("").contains("unknown solution node"));
+            checkTrue("a second reply with no work in between ends it, unreported", t.onTextReply() == T::TextReply::FinalWithoutOutcome);
+        }
+        {
+            T t;
+            t.onToolRound();
+            checkTrue("first text after work asks", t.onTextReply() == T::TextReply::AskForOutcome);
+            t.onToolRound();
+            checkTrue("after more work, text asks again (no fixed cap)", t.onTextReply() == T::TextReply::AskForOutcome);
+        }
+        {
+            T t;
+            t.onToolRound();
+            t.recordToolResult("circuit_run_erc", R"({"ok": true, "passed": false, "interpretation": "ERC ran and the circuit FAILED with 2 error(s)."})");
+            const auto r1 = t.reviewOutcome("completed", "Built it.", "ERC ran");
+            checkTrue("completed is pushed back while ERC fails", !r1.accepted && r1.message.contains("circuit_run_erc"), r1.message);
+            t.recordToolResult("circuit_run_erc", R"({"ok": true, "passed": true})");
+            t.recordToolResult("analytics_transient", R"({"ok": true})");
+            checkTrue("completed with evidence and no open failures is accepted", t.reviewOutcome("completed", "Built and simulated.", "ERC passed; double scroll in V(V1) vs V(V2)").accepted);
+        }
+        {
+            T t;
+            t.recordToolResult("analytics_transient", R"({"ok": false, "error": "singular matrix"})");
+            checkTrue("an explicit failure report ends the run", t.reviewOutcome("failed", "Simulation fails: singular matrix.", "").accepted);
+            checkTrue("blocked is accepted", t.reviewOutcome("blocked", "No suitable part.", "").accepted);
+            checkTrue("unknown status rejected", !t.reviewOutcome("done", "x", "y").accepted);
+            const auto first = t.reviewOutcome("completed", "Looks fine.", "");
+            const auto again = t.reviewOutcome("completed", "Looks fine.", "");
+            checkTrue("a repeated unverified claim is accepted once, with a caveat (no endless pushback)", !first.accepted && again.accepted && again.message.contains("singular"));
+        }
+    }
+
     std::printf(failures == 0 ? "ALL PASSED\n" : "%d FAILURE(S)\n", failures);
     return failures == 0 ? 0 : 1;
 }

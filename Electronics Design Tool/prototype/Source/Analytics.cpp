@@ -1859,6 +1859,7 @@ juce::String toJson(const Result& r, const juce::StringArray& files)
     root->setProperty("ok", r.ok);
     root->setProperty("analysis", infoFor(r.analysis).key);
     root->setProperty("title", r.title);
+    root->setProperty("engine", r.title.endsWith("- Xyce") ? "Xyce" : "Internal solver");
     if (!r.ok) root->setProperty("error", r.error);
     root->setProperty("summary", r.summary);
     root->setProperty("seconds", r.seconds);

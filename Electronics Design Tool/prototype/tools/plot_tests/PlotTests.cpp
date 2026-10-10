@@ -219,6 +219,20 @@ int main()
         checkTrue("no element or node added by any mode", x.n.circuit.elements().size() == elements && x.n.circuit.nodeCount() == nodes);
     }
 
+    std::printf("-- pin label where a net name belongs --\n");
+    {
+        // As in the GPT-4o run: V(C1.1) asked for, C1.1 being a pin on net c.
+        auto x = makeBench();
+        for (auto& net : x.n.nets)
+            if (net.name == "c")
+                net.pins = "R2.2 R3.1 C1.1";
+        const auto plan = pi::plan(x.n, channels, pi::Mode::XY, { "V(C1.1)", "A" });
+        checkTrue("pin label refused", !plan.canRun());
+        checkTrue("the pin's actual net is suggested", plan.problems[0].contains("C1.1 is a pin") && plan.problems[0].contains("write V(c)"), plan.problems[0]);
+        const auto none = pi::plan(x.n, channels, pi::Mode::XY, { "V(Q9.1)", "A" });
+        checkTrue("no net invented for an unknown pin", !none.problems[0].contains("write V("), none.problems[0]);
+    }
+
     std::printf("-- 10. display data for a large dataset --\n");
     {
         const int n = 1000000;

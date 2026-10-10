@@ -78,6 +78,26 @@ void suggest(Finding& f, const Context& context)
         s.add("schematic_set_parameters " + f.refdes + " busName to the net name it should join.");
         return;
     }
+    if (f.category == "unresolved_expression_node")
+    {
+        s.add("Write V(...) with one of this circuit's node names: " + (context.nodeNames.isEmpty() ? juce::String("(none yet)") : context.nodeNames.joinIntoString(", "))
+              + "; change the expression with schematic_set_parameters " + f.refdes + " value.");
+        s.add("Or give the node you mean the name " + f.net.upToFirstOccurrenceOf(",", false, false)
+              + ": schematic_place_symbol net_label with that busName and schematic_connect its pin 1 to the node.");
+        return;
+    }
+    if (f.category == "unknown_model")
+    {
+        s.add("schematic_set_parameters " + f.refdes + " value to a model the library has, or back to the part's default (workbench_capabilities symbolId "
+              + f.symbolId + " shows it).");
+        return;
+    }
+    if (f.category == "xyce_unavailable")
+    {
+        s.add("Simulate on the internal solver (it has built-in models for these parts), or replace the part with one the Xyce engine supports "
+              "(workbench_capabilities lists each part's simulationFidelity).");
+        return;
+    }
     if (f.category == "not_simulated")
     {
         s.add("Expect " + f.refdes + " to be absent from Xyce runs; use a simulated part or the internal solver if it matters.");

@@ -32,6 +32,7 @@ struct Context
 {
     juce::StringArray supplyNets; // named supply nets in the circuit, "+12V"
     juce::StringArray groundNets; // usually "GND"
+    juce::StringArray nodeNames;  // node names as the simulator's netlist writes them
 };
 
 // Fills `suggestions` from the finding's category and the circuit context.
