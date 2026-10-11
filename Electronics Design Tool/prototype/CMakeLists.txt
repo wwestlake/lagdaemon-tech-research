@@ -197,6 +197,8 @@ target_sources(DjehutiElectronicsLab PRIVATE
     Source/ControlPanelModel.cpp
     Source/ControlPanelComponent.h
     Source/ControlPanelComponent.cpp
+    Source/SystemAssembly.h
+    Source/SystemAssembly.cpp
 )
 
 target_compile_definitions(DjehutiElectronicsLab PRIVATE
@@ -421,10 +423,18 @@ target_sources(ControlPanelTests PRIVATE
     tools/control_panel_tests/ControlPanelTests.cpp
     Source/SystemSimulationSession.cpp
     Source/ControlPanelModel.cpp
+    Source/SystemAssembly.cpp
 )
 target_include_directories(ControlPanelTests PRIVATE Source)
 target_compile_definitions(ControlPanelTests PRIVATE JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0)
-target_link_libraries(ControlPanelTests PRIVATE circuit_sim juce::juce_core)
+target_link_libraries(ControlPanelTests PRIVATE 
+    circuit_sim 
+    juce::juce_core
+    juce::juce_events
+    juce::juce_graphics
+    juce::juce_data_structures
+    juce::juce_gui_basics
+)
 juce_generate_juce_header(ControlPanelTests)
 add_test(NAME ControlPanelTests COMMAND ControlPanelTests)
 

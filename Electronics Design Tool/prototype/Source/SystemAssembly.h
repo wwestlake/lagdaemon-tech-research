@@ -1,0 +1,211 @@
+#pragma once
+
+#include "CircuitSolver.h"
+#include "Mechanical.h"
+#include "FrustComponent.h"
+
+#include <juce_core/juce_core.h>
+
+#include <map>
+#include <memory>
+#include <string>
+#include <vector>
+
+namespace sim_panel
+{
+
+// -----------------------------------------------------------------------------
+// Subsystem Types & Ports
+// -----------------------------------------------------------------------------
+
+enum class PortDirection
+{
+    Input,
+    Output,
+    Bidirectional
+};
+
+enum class PortDomain
+{
+    Electrical,     // Volts / Amps node
+    Mechanical,     // Shaft speed / torque or angle
+    SignalControl   // 0-5V logical or continuous analog control
+};
+
+struct SubsystemPort
+{
+    std::string name;
+    PortDirection direction = PortDirection::Input;
+    PortDomain domain = PortDomain::Electrical;
+    std::string unit;
+    std::string description;
+
+    juce::var toJson() const;
+    static SubsystemPort fromJson(const juce::var& json);
+};
+
+enum class SubsystemKind
+{
+    DCMotor,                    // Built-in physical electromechanical motor module
+    MotorSpeedController,       // Built-in closed-loop PID controller with interlocks & anti-windup
+    CoordinatedSequencer,       // Built-in multi-device startup & interlock coordinator
+    SchematicReference,         // User-defined schematic diagram (Sub-diagram / .diagram.json)
+    ProgrammableComponent,      // User-defined Node Designer / FRust programmable component (.frcomp.json)
+    NestedAssembly              // Another complete SystemAssembly (.assembly.json)
+};
+
+// Definition of a reusable subsystem module
+struct SubsystemDefinition
+{
+    std::string id;             // e.g. "dc_motor_module", "pid_speed_controller", "custom_circuit_block"
+    std::string displayName;
+    SubsystemKind kind = SubsystemKind::DCMotor;
+    std::string description;
+
+    // External ports exposed by this subsystem
+    std::vector<SubsystemPort> ports;
+
+    // Default parameters for this subsystem
+    std::map<std::string, double> defaultNumericParams;
+    std::map<std::string, std::string> defaultTextParams;
+
+    // For User-defined references:
+    std::string referenceFile;  // diagram path, frcomp name, or assembly file
+    std::string diagramSheet;   // sub-diagram sheet name if applicable
+
+    const SubsystemPort* findPort(const std::string& portName) const;
+
+    juce::var toJson() const;
+    static SubsystemDefinition fromJson(const juce::var& json);
+};
+
+// An instance of a subsystem inside an assembly
+struct SubsystemInstance
+{
+    std::string instanceId;         // e.g. "motorA", "motorB", "controllerA", "sequencer"
+    std::string definitionId;       // e.g. "dc_motor_module"
+    std::string title;              // e.g. "Drive Motor A"
+
+    // Instance-specific parameter overrides
+    std::map<std::string, double> numericParams;
+    std::map<std::string, std::string> textParams;
+
+    double getParam(const std::string& name, double fallback = 0.0) const
+    {
+        auto it = numericParams.find(name);
+        return it != numericParams.end() ? it->second : fallback;
+    }
+
+    std::string getTextParam(const std::string& name, const std::string& fallback = "") const
+    {
+        auto it = textParams.find(name);
+        return it != textParams.end() ? it->second : fallback;
+    }
+
+    juce::var toJson() const;
+    static SubsystemInstance fromJson(const juce::var& json);
+};
+
+// A connection connecting an output/bidirectional port of one subsystem to an input port of another
+struct SignalConnection
+{
+    // Source endpoint (e.g. "controllerA.drive" or "system.power")
+    std::string fromInstance;
+    std::string fromPort;
+
+    // Destination endpoint (e.g. "motorA.voltage_in")
+    std::string toInstance;
+    std::string toPort;
+
+    std::string netName;            // Optional shared net/bus name
+
+    std::string sourcePath() const { return fromInstance + "." + fromPort; }
+    std::string destPath() const { return toInstance + "." + toPort; }
+
+    juce::var toJson() const;
+    static SignalConnection fromJson(const juce::var& json);
+};
+
+// -----------------------------------------------------------------------------
+// SystemAssembly Document
+// -----------------------------------------------------------------------------
+
+struct SystemAssembly
+{
+    std::string name = "System Assembly";
+    std::string description;
+    std::string version = "1.0";
+
+    // Reusable subsystem definitions included or defined in this assembly
+    std::vector<SubsystemDefinition> definitions;
+
+    // Placed instances
+    std::vector<SubsystemInstance> instances;
+
+    // Interconnections between instance ports
+    std::vector<SignalConnection> connections;
+
+    // External system-level ports/signals (exposed for operator panels or higher-level nesting)
+    std::vector<SubsystemPort> systemPorts;
+
+    // Helper queries
+    const SubsystemDefinition* findDefinition(const std::string& defId) const;
+    const SubsystemInstance* findInstance(const std::string& instId) const;
+
+    // Pre-built definitions factory
+    static SubsystemDefinition makeDCMotorDefinition();
+    static SubsystemDefinition makeMotorControllerDefinition();
+    static SubsystemDefinition makeCoordinatedSequencerDefinition();
+
+    // Standard Dual-Motor Coordinated System assembly factory
+    static SystemAssembly createDualMotorSystem();
+
+    // JSON serialization
+    juce::var toJson() const;
+    static SystemAssembly fromJson(const juce::var& json);
+
+    bool saveToFile(const juce::File& file, juce::String& error) const;
+    static bool loadFromFile(const juce::File& file, SystemAssembly& out, juce::String& error);
+};
+
+// -----------------------------------------------------------------------------
+// Assembly Simulation Builder
+// -----------------------------------------------------------------------------
+
+// Result of compiling an assembly into an MNA simulation circuit and signal bindings
+struct CompiledAssemblyCircuit
+{
+    circuit_sim::Circuit circuit;
+
+    // Map from hierarchical signal path (e.g. "motorA.speed", "system.power")
+    // to corresponding circuit Node or Branch element
+    std::map<std::string, circuit_sim::Node> signalNodes;
+    std::map<std::string, int> signalBranches;
+
+    // Input elements that can be driven by operator controls (e.g. "system.power", "motorA.load_torque")
+    std::map<std::string, int> inputElements;
+
+    // Signal metadata (units, range, direction)
+    struct SignalMeta
+    {
+        std::string path;
+        PortDomain domain = PortDomain::Electrical;
+        std::string unit;
+        double minVal = 0.0;
+        double maxVal = 100.0;
+        bool isInput = false;
+    };
+    std::vector<SignalMeta> metadata;
+
+    std::string error;
+    bool success = false;
+};
+
+// Compiler that compiles a SystemAssembly into an executable MNA Circuit
+class AssemblyCompiler
+{
+public:
+    static CompiledAssemblyCircuit compile(const SystemAssembly& assembly);
+};
+
+} // namespace sim_panel

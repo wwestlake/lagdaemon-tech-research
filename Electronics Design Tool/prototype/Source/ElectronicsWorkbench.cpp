@@ -16,6 +16,7 @@
 #include "NodeDesignerPanel.h"
 #include "ControlPanelComponent.h"
 #include "SystemSimulationSession.h"
+#include "SystemAssembly.h"
 #include "FrustExecution.h"
 #include "FrustDebuggerPanel.h"
 #include "FrustComponent.h"
@@ -915,6 +916,26 @@ const std::vector<ToolSpecText>& controlPanelToolSpecs()
             "control_panel_open",
             "Open or bring to front the operator control panel dock panel.",
             R"({"type":"object","properties":{},"additionalProperties":false})"
+        },
+        {
+            "assembly_list_subsystems",
+            "List available subsystem definitions and placed instances in the current system assembly.",
+            R"({"type":"object","properties":{},"additionalProperties":false})"
+        },
+        {
+            "assembly_list_signals",
+            "List all discoverable hierarchical input/output signals available for panel bindings or monitoring.",
+            R"({"type":"object","properties":{},"additionalProperties":false})"
+        },
+        {
+            "assembly_load",
+            "Load and compile a system assembly document into the interactive simulation runtime (e.g. 'dual_motor_coordinated' or project assembly file).",
+            R"({"type":"object","properties":{"name":{"type":"string","description":"Assembly name or predefined assembly ('dual_motor_coordinated')."}},"required":["name"],"additionalProperties":false})"
+        },
+        {
+            "assembly_operate",
+            "Send a coordinated system-level command to the active assembly (e.g. 'power_on', 'start', 'stop', 'estop', 'reset').",
+            R"({"type":"object","properties":{"command":{"type":"string","description":"Coordinated command: power_on, power_off, start, stop, estop, reset."}},"required":["command"],"additionalProperties":false})"
         }
     };
     return specs;
@@ -15711,6 +15732,8 @@ ElectronicsWorkbench::ElectronicsWorkbench()
             return pcbLayoutTool(name, args);
         if (name.startsWith("simulation_") || name.startsWith("control_panel_"))
             return controlPanelTool(name, args);
+        if (name.startsWith("assembly_"))
+            return assemblyTool(name, args);
         return schematicPanel->runSchematicTool(name, args);
     };
     schematicPanel->outputDirectory = [this] { return generatedRunDirectory(); };
@@ -18258,6 +18281,135 @@ juce::String ElectronicsWorkbench::controlPanelTool(const juce::String& name, co
     }
 
     return "{ \"ok\": false, \"error\": \"Unknown control panel tool: " + name + "\" }";
+}
+
+juce::String ElectronicsWorkbench::assemblyTool(const juce::String& name, const juce::var& args)
+{
+    if (controlPanel == nullptr)
+        return R"({"ok": false, "error": "Control panel component is unavailable."})";
+
+    auto* session = controlPanel->getSession();
+    if (session == nullptr)
+        return R"({"ok": false, "error": "Simulation session is unavailable."})";
+
+    if (name == "assembly_load")
+    {
+        const auto asmName = args.getProperty("name", "dual_motor_coordinated").toString().trim();
+        sim_panel::SystemAssembly assembly;
+
+        if (asmName == "dual_motor_coordinated" || asmName.isEmpty())
+        {
+            assembly = sim_panel::SystemAssembly::createDualMotorSystem();
+        }
+        else if (project.isOpen())
+        {
+            const auto asmFile = project.folder.getChildFile("assemblies").getChildFile(asmName + ".assembly.json");
+            juce::String err;
+            if (!sim_panel::SystemAssembly::loadFromFile(asmFile, assembly, err))
+                return "{ \"ok\": false, \"error\": \"Could not load assembly file: " + err + "\" }";
+        }
+        else
+        {
+            assembly = sim_panel::SystemAssembly::createDualMotorSystem();
+        }
+
+        if (!session->setupAssembly(assembly))
+            return R"({"ok": false, "error": "Failed to compile and configure system assembly in simulation session."})";
+
+        // Update control panel layout to match the loaded assembly
+        controlPanel->setLayout(sim_panel::ControlPanelLayout::createDualMotorCoordinatedPanel());
+
+        juce::DynamicObject::Ptr res = new juce::DynamicObject();
+        res->setProperty("ok", true);
+        res->setProperty("tool", "assembly_load");
+        res->setProperty("assembly", juce::String(assembly.name));
+        res->setProperty("subsystems", (int)assembly.instances.size());
+        res->setProperty("connections", (int)assembly.connections.size());
+        return juce::JSON::toString(juce::var(res.get()));
+    }
+
+    if (name == "assembly_list_subsystems")
+    {
+        auto assembly = sim_panel::SystemAssembly::createDualMotorSystem();
+        juce::DynamicObject::Ptr root = new juce::DynamicObject();
+        root->setProperty("ok", true);
+        root->setProperty("tool", "assembly_list_subsystems");
+
+        juce::Array<juce::var> defs;
+        for (const auto& d : assembly.definitions)
+            defs.add(d.toJson());
+        root->setProperty("definitions", juce::var(defs));
+
+        juce::Array<juce::var> insts;
+        for (const auto& inst : assembly.instances)
+            insts.add(inst.toJson());
+        root->setProperty("instances", juce::var(insts));
+
+        return juce::JSON::toString(juce::var(root.get()));
+    }
+
+    if (name == "assembly_list_signals")
+    {
+        const auto snap = session->getSnapshot();
+        juce::DynamicObject::Ptr root = new juce::DynamicObject();
+        root->setProperty("ok", true);
+        root->setProperty("tool", "assembly_list_signals");
+
+        juce::Array<juce::var> numericList;
+        for (const auto& pair : snap.numericSignals)
+            numericList.add(juce::String(pair.first));
+        root->setProperty("numericSignals", juce::var(numericList));
+
+        juce::Array<juce::var> booleanList;
+        for (const auto& pair : snap.booleanSignals)
+            booleanList.add(juce::String(pair.first));
+        root->setProperty("booleanSignals", juce::var(booleanList));
+
+        return juce::JSON::toString(juce::var(root.get()));
+    }
+
+    if (name == "assembly_operate")
+    {
+        const auto cmd = args.getProperty("command", {}).toString().trim().toLowerCase();
+        if (cmd == "power_on")
+        {
+            session->setBooleanInput("system.power", true);
+            session->setBooleanInput("power_switch", true);
+        }
+        else if (cmd == "power_off")
+        {
+            session->setBooleanInput("system.power", false);
+            session->setBooleanInput("power_switch", false);
+        }
+        else if (cmd == "start")
+        {
+            session->setBooleanInput("system.start", true);
+            session->setBooleanInput("start_button", true);
+        }
+        else if (cmd == "stop")
+        {
+            session->setBooleanInput("system.stop", true);
+            session->setBooleanInput("stop_button", true);
+        }
+        else if (cmd == "estop")
+        {
+            session->setBooleanInput("system.estop", true);
+            session->setBooleanInput("estop_button", true);
+        }
+        else if (cmd == "reset")
+        {
+            session->setBooleanInput("system.reset", true);
+            session->setBooleanInput("reset_button", true);
+        }
+        else
+        {
+            return "{ \"ok\": false, \"error\": \"Unknown command: " + cmd + "\" }";
+        }
+
+        return "{ \"ok\": true, \"tool\": \"assembly_operate\", \"command\": \"" + cmd + "\" }";
+    }
+
+    return "{ \"ok\": false, \"error\": \"Unknown assembly tool: " + name + "\" }";
 }
 
 analytics::Settings ElectronicsWorkbench::analyticsToolSettings(const juce::var& args) const

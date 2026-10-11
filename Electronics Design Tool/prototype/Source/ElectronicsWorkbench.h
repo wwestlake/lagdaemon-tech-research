@@ -156,6 +156,7 @@ private:
     juce::String frustTool(const juce::String& name, const juce::var& args);
     juce::String nodeProgramTool(const juce::String& name, const juce::var& args);
     juce::String controlPanelTool(const juce::String& name, const juce::var& args);
+    juce::String assemblyTool(const juce::String& name, const juce::var& args);
     // FRust execution and the debugger (FrustExecution): frust_run,
     // node_program_run and node_debug_* answer when the program reaches the
     // state asked for, never blocking the message thread.

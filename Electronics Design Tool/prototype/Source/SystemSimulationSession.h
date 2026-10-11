@@ -81,6 +81,9 @@ public:
     // Setup the closed-loop motor testbench directly
     void setupDefaultMotorSystem();
 
+    // Setup from a user-defined or hierarchical SystemAssembly
+    bool setupAssembly(const class SystemAssembly& assembly);
+
     // Simulation lifecycle commands
     bool start();
     void pause();

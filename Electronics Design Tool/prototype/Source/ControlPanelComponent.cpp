@@ -563,8 +563,20 @@ void ControlPanelComponent::timerCallback()
     }
 
     // Append to trend history
-    const double targetSpeed = snap.numericSignals.count("controller.setpoint") ? snap.numericSignals.at("controller.setpoint") : 300.0;
-    const double actualSpeed = snap.numericSignals.count("motor.speed") ? snap.numericSignals.at("motor.speed") : 0.0;
+    double targetSpeed = 0.0;
+    if (snap.numericSignals.count("motorA.speed"))
+        targetSpeed = snap.numericSignals.at("motorA.speed");
+    else if (snap.numericSignals.count("controller.setpoint"))
+        targetSpeed = snap.numericSignals.at("controller.setpoint");
+    else
+        targetSpeed = 300.0;
+
+    double actualSpeed = 0.0;
+    if (snap.numericSignals.count("motorB.speed"))
+        actualSpeed = snap.numericSignals.at("motorB.speed");
+    else if (snap.numericSignals.count("motor.speed"))
+        actualSpeed = snap.numericSignals.at("motor.speed");
+
     trendHistory_.push_back({ snap.simTime, targetSpeed, actualSpeed });
     while (trendHistory_.size() > 400 || (trendHistory_.size() > 50 && (trendHistory_.back().time - trendHistory_.front().time) > 10.0))
         trendHistory_.pop_front();

@@ -4,6 +4,7 @@
 
 #include "../../Source/SystemSimulationSession.h"
 #include "../../Source/ControlPanelModel.h"
+#include "../../Source/SystemAssembly.h"
 
 #include <algorithm>
 #include <cmath>
@@ -190,18 +191,144 @@ void testControlPanelModelPersistence()
           + std::to_string(restored.widgets.size()) + " widgets)");
 }
 
+void testAssemblyPersistence()
+{
+    std::printf("-- P4 System Assembly & JSON Persistence --\n");
+
+    const auto assembly = sim_panel::SystemAssembly::createDualMotorSystem();
+    check(!assembly.instances.empty(), "Dual-motor assembly created with subsystem instances");
+    check(assembly.instances.size() >= 5, "Subsystem instance count >= 5 (sequencer, 2 controllers, 2 motors)");
+
+    const auto json = assembly.toJson();
+    check(json.isObject(), "Assembly serialized to JSON");
+
+    const auto restored = sim_panel::SystemAssembly::fromJson(json);
+    check(restored.name == assembly.name, "Assembly name restored correctly");
+    check(restored.instances.size() == assembly.instances.size(), "Subsystem instance count preserved");
+    check(restored.connections.size() == assembly.connections.size(), "Signal connections count preserved");
+
+    // Also check dual-motor panel layout serialization
+    const auto dualPanel = sim_panel::ControlPanelLayout::createDualMotorCoordinatedPanel();
+    check(dualPanel.widgets.size() >= 12, "Dual-motor panel layout created with widgets");
+    const auto panelJson = dualPanel.toJson();
+    const auto restoredPanel = sim_panel::ControlPanelLayout::fromJson(panelJson);
+    check(restoredPanel.widgets.size() == dualPanel.widgets.size(), "Dual-motor panel round-tripped through JSON");
+}
+
+void testDualMotorCoordinatedSystem()
+{
+    std::printf("-- P4 Dual-Motor Coordinated System Simulation Demonstration --\n");
+
+    auto session = std::make_shared<sim_panel::SystemSimulationSession>();
+    const auto assembly = sim_panel::SystemAssembly::createDualMotorSystem();
+    check(session->setupAssembly(assembly), "1. SystemAssembly successfully compiled and loaded into simulation runtime");
+
+    session->setExecutionRate(0.0); // Free run for fastest test execution
+    check(session->start(), "2. Simulation session started in free-run mode");
+
+    // Advance 50 ms to establish initial operating point
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    auto snap = session->getSnapshot();
+    check(!snap.faulted && snap.simTime > 0.01, "3. Initial ready state established (unfaulted, t > 0)");
+
+    // Step 1 & 2: Operator powers on the system
+    session->setBooleanInput("system.power", true);
+    std::this_thread::sleep_for(std::chrono::milliseconds(40));
+    snap = session->getSnapshot();
+    check(snap.booleanSignals["system.power"] || snap.booleanSignals["power_switch"],
+          "4. System power switch set ON; sequencer initialized");
+
+    // Step 3: Motor A starts and reaches its operating speed (300 rad/s)
+    // Wait for Motor A to accelerate and stabilize
+    std::this_thread::sleep_for(std::chrono::milliseconds(150));
+    snap = session->getSnapshot();
+    const double wA_3 = snap.numericSignals["motorA.speed"];
+    check(std::abs(wA_3 - 300.0) < 5.0,
+          "5. Motor A started and stabilized at operating setpoint (300 rad/s): measured "
+          + std::to_string(wA_3) + " rad/s");
+
+    // Step 4: Motor B starts after programmed delay (150 ms) and reaches 200 rad/s
+    std::this_thread::sleep_for(std::chrono::milliseconds(200));
+    snap = session->getSnapshot();
+    const double wB_4 = snap.numericSignals["motorB.speed"];
+    check(std::abs(wB_4 - 200.0) < 5.0,
+          "6. Motor B started after programmed delay and stabilized at 200 rad/s: measured "
+          + std::to_string(wB_4) + " rad/s");
+
+    // Step 5: Operator changes Motor A's load to 0.03 N*m
+    session->setNumericInput("motorA.load_torque", 0.03);
+    std::this_thread::sleep_for(std::chrono::milliseconds(150));
+
+    // Step 6: Motor A's controller compensates independently while Motor B is undisturbed
+    snap = session->getSnapshot();
+    const double wA_6 = snap.numericSignals["motorA.speed"];
+    const double wB_6 = snap.numericSignals["motorB.speed"];
+    check(std::abs(wA_6 - 300.0) < 5.0 && std::abs(wB_6 - 200.0) < 5.0,
+          "7. Motor A compensated 0.03 N*m load step (" + std::to_string(wA_6)
+          + " rad/s) while Motor B remained undisturbed (" + std::to_string(wB_6) + " rad/s)");
+
+    // Step 7: Operator changes Motor B's speed command to 400 rad/s
+    session->setNumericInput("motorB.speed_setpoint", 400.0);
+    std::this_thread::sleep_for(std::chrono::milliseconds(220));
+
+    // Step 8: Motor B responds to 400 rad/s without disturbing Motor A
+    snap = session->getSnapshot();
+    const double wA_8 = snap.numericSignals["motorA.speed"];
+    const double wB_8 = snap.numericSignals["motorB.speed"];
+    check(std::abs(wB_8 - 400.0) < 5.0 && std::abs(wA_8 - 300.0) < 5.0,
+          "8. Motor B stepped to 400 rad/s (" + std::to_string(wB_8)
+          + " rad/s) without disturbing Motor A (" + std::to_string(wA_8) + " rad/s)");
+
+    // Step 9: Emergency Stop disables both drives
+    session->setBooleanInput("system.estop", true);
+    std::this_thread::sleep_for(std::chrono::milliseconds(60));
+    snap = session->getSnapshot();
+    const double driveA_9 = snap.numericSignals["controllerA.drive"];
+    const double driveB_9 = snap.numericSignals["controllerB.drive"];
+    const bool fault_9 = snap.booleanSignals["system.fault"];
+    check(driveA_9 < 0.1 && driveB_9 < 0.1 && fault_9,
+          "9. Emergency Stop activated: both drives killed (A: " + std::to_string(driveA_9)
+          + " V, B: " + std::to_string(driveB_9) + " V), system fault lamp ON");
+
+    // Allow motors to spin down under friction
+    std::this_thread::sleep_for(std::chrono::milliseconds(150));
+    snap = session->getSnapshot();
+    const double wA_9_down = snap.numericSignals["motorA.speed"];
+    const double wB_9_down = snap.numericSignals["motorB.speed"];
+    check(wA_9_down < 50.0 && wB_9_down < 50.0,
+          "10. Both motors decelerating to stop under E-stop (wA: " + std::to_string(wA_9_down)
+          + ", wB: " + std::to_string(wB_9_down) + " rad/s)");
+
+    // Step 10: Fault reset restores the system to its initial ready state
+    session->setBooleanInput("system.estop", false);
+    session->setBooleanInput("system.reset", true);
+    std::this_thread::sleep_for(std::chrono::milliseconds(30));
+    session->setBooleanInput("system.reset", false);
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+
+    snap = session->getSnapshot();
+    check(!snap.booleanSignals["system.fault"],
+          "11. Fault Reset pressed: fault cleared, dual-motor system restored to Ready");
+
+    session->stop();
+    check(!session->isRunning(), "Dual-motor simulation session stopped cleanly");
+}
+
 } // namespace
 
 int main()
 {
     std::printf("====================================================\n");
-    std::printf("  Control Panel & Interactive Simulation Tests (P3) \n");
+    std::printf("  Control Panel & Interactive Simulation Tests (P3/P4) \n");
     std::printf("====================================================\n");
 
     testOperatingSequence();
     testSingleStepAndRates();
     testControlPanelModelPersistence();
+    testAssemblyPersistence();
+    testDualMotorCoordinatedSystem();
 
     std::printf("\n%d passed, %d failed\n", passes, failures);
     return failures == 0 ? 0 : 1;
 }
+

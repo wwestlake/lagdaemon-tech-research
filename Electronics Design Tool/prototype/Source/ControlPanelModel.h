@@ -55,6 +55,7 @@ struct ControlPanelLayout
     std::vector<WidgetConfig> widgets;
 
     static ControlPanelLayout createDefaultMotorPanel();
+    static ControlPanelLayout createDualMotorCoordinatedPanel();
     juce::var toJson() const;
     static ControlPanelLayout fromJson(const juce::var& json);
 };
