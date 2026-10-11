@@ -2861,7 +2861,8 @@ public:
                 && instance.symbolId != "power_bus"
                 && instance.symbolId != "power_port"
                 && instance.symbolId != "net_label"
-                && instance.symbolId != "block_port")
+                && instance.symbolId != "block_port"
+                && !schematic::isLogicGate(instance.symbolId)) // a gate's model is its parameters
                 add(partFinding("WARN", "missing_value", instance.refdes + " has no value or model text.", i));
 
             if (instance.symbolId == "net_label" && instance.busName.trim().isEmpty())
@@ -2870,7 +2871,9 @@ public:
             if (instance.symbolId == "power_port" && instance.busName.trim().isEmpty())
                 add(partFinding("ERROR", "unnamed_supply_port", instance.refdes + " is a supply port with no net name.", i));
 
-            if (unsupportedForXyce(instance.symbolId))
+            // Logic gates are simulated by the internal solver (Xyce falls back,
+            // and says why); "not lowered to Xyce yet" would suggest otherwise.
+            if (unsupportedForXyce(instance.symbolId) && !schematic::isLogicGate(instance.symbolId))
                 add(partFinding("INFO", "not_simulated", instance.refdes + " (" + instance.symbolId + ") is captured in the model but not lowered to Xyce yet.", i));
 
             for (int p = 0; p < (int)symbol.pins.size(); ++p)

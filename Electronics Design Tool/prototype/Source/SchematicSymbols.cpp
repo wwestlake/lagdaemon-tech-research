@@ -244,13 +244,14 @@ void gateInputs(juce::Graphics& g, const std::vector<PinDef>& pins, float bodyLe
             line(g, pin.offset, { bodyLeft, pin.offset.y });
 }
 
-// h: half the body height (30 for two inputs, taller for more).
+// h: half the body height (30 for two inputs, taller for more): a flat
+// back and an elliptical front 30 deep (a semicircle at h = 30).
 void andShape(juce::Graphics& g, float h = 30.0f)
 {
     juce::Path p;
     p.startNewSubPath(-30.0f, -h);
-    p.lineTo(30.0f - h, -h);
-    p.addCentredArc(30.0f - h, 0.0f, h, h, 0.0f, 0.0f, juce::MathConstants<float>::pi, false);
+    p.lineTo(0.0f, -h);
+    p.addCentredArc(0.0f, 0.0f, 30.0f, h, 0.0f, 0.0f, juce::MathConstants<float>::pi, false);
     p.lineTo(-30.0f, h);
     p.closeSubPath();
     strokePath(g, p);

@@ -410,7 +410,8 @@ juce::var logicSection()
     o->setProperty("workflow", juce::StringArray {
         "1. schematic_place_symbol with the gate's symbolId (workbench_capabilities symbolId gives its pins and parameters).",
         "2. schematic_set_parameters for inputs (2..8), levels, threshold, hysteresis, rout, tpd, tr; lowering inputs removes wires on removed inputs (reported).",
-        "3. schematic_connect the inputs (U1.A, U1.B...) and the output (U1.Y); an unwired input reads LOW (the result warns).",
+        "3. schematic_connect the inputs (U1.A, U1.B...) and the output (U1.Y); an unwired input reads LOW (the result warns). Gate levels are "
+        "referred to ground (no supply pins): place a ground and wire every source's - or REF terminal to it, then run circuit_run_erc and fix what it reports.",
         "4. Truth table: a voltage_source (0 V or the HIGH level) on each input, analytics_operating_point per combination, read Y.",
         "5. Timing, latches, clocks: signal_source inputs (Pulse/PWL), analytics_transient, read Y over time (edges are sampled at their exact times).",
         "6. Compare every result with the expected logic level and timing; a mismatch means the circuit is not done." });
