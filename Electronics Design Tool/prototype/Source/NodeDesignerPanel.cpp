@@ -3945,8 +3945,21 @@ juce::StringArray NodeDesignerPanel::validateGraph() const
             problems.add("Input '" + b->id + "." + to.name + "' is driven by more than one connection.");
     }
     if (diagramType == "state_machine")
+    {
         if (const auto sm = validateStateMachine(); sm.isNotEmpty())
             problems.add(sm);
+    }
+    else if (componentInfo.isObject())
+    {
+        // A component program compiles as a pure function (compute()), whose
+        // nodes take every input from a wire: an unwired one fails
+        // compilation ("input ref must have 'ref' or 'param'"), so say which.
+        for (const auto& n : nodes)
+            for (int i = 0; i < (int)n.inputs.size(); ++i)
+                if (drivers.count({ n.uid, i }) == 0)
+                    problems.add("Input '" + n.id + "." + n.inputs[(size_t)i].name + "' is not wired: every input needs a wire "
+                                 "(connect a value to it, or delete the node).");
+    }
     return problems;
 }
 
@@ -4276,6 +4289,15 @@ bool NodeDesignerPanel::compileProgram(juce::String& message)
     }
     else if (selectedTarget() != "frust")
         return fail("GLSL is a production reference target. This research canvas currently compiles Frust.");
+    else
+    {
+        juce::StringArray unwired;
+        for (const auto& p : validateGraph())
+            if (p.contains("is not wired"))
+                unwired.add(p);
+        if (!unwired.isEmpty())
+            return fail("Compilation failed: " + unwired.joinIntoString(" "));
+    }
 
     const auto result = node_compiler::CompileSchematic(buildSchematicJson(false).toStdString());
     if (!result.ok)

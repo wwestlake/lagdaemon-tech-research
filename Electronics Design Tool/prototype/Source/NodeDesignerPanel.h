@@ -65,8 +65,9 @@ public:
     // The node types this editor offers, with their pins.
     juce::var describeNodeTypes() const;
     // Structural problems: duplicate ids, missing or wrong-direction pins,
-    // incompatible wires, inputs driven twice, unknown node types, and the
-    // state-machine rules. Empty when the graph is sound. Never changes it.
+    // incompatible wires, inputs driven twice, unknown node types, the
+    // state-machine rules, and in a component program (a function graph)
+    // every unwired input. Empty when the graph is sound. Never changes it.
     juce::StringArray validateGraph() const;
     // The document Save writes.
     juce::String buildSavedDocument() const;

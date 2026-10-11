@@ -380,6 +380,37 @@ int main()
         auto removed = juce::JSON::parse(juce::JSON::toString(panel.componentDefinition()));
         removed.getProperty("pins", {}).getArray()->remove(1);
         check(panel.editComponent(removed, message) && textOf("drive") == "OUT", "removing a pin renames nothing", message);
+
+        // A component program compiles as a function, whose every input needs
+        // a wire: validation names an unwired one, and compile says the same
+        // instead of the node compiler's "input ref must have 'ref' or 'param'".
+        NodeDesignerPanel prog;
+        prog.newGraph("node_graph", false);
+        prog.setComponentContext(juce::JSON::parse(R"({"pins":[{"name":"IN"},{"name":"OUT"}],"parameters":[],"state":[]})"));
+        prog.addNodeOfType("pc_pin_voltage", 0, 0, "vin", error);
+        prog.setNodeParameter("vin", "text", "IN", error);
+        prog.addNodeOfType("literal_f64", 0, 100, "five", error);
+        prog.addNodeOfType("gt", 200, 0, "above", error);
+        prog.addNodeOfType("if", 400, 0, "pick", error);
+        prog.addNodeOfType("pc_drive", 600, 0, "drive", error);
+        prog.setNodeParameter("drive", "text", "OUT", error);
+        prog.connect("vin", "volts", "above", "a", error);
+        prog.connect("five", "value", "above", "b", error);
+        prog.connect("above", "is greater", "pick", "cond", error);
+        prog.connect("five", "value", "pick", "then", error);
+        prog.connect("pick", "value", "drive", "value", error);
+        const auto unwired = prog.validateGraph().joinIntoString(" ");
+        check(unwired.contains("Input 'pick.else' is not wired") && !unwired.contains("pick.then"),
+              "a component program: validation names the unwired input (pick.else) and only it", unwired + " " + error);
+        check(!prog.compileProgram(message) && message.contains("pick.else") && !message.contains("'ref' or 'param'"),
+              "and compile reports it by name", message);
+        prog.connect("vin", "volts", "pick", "else", error);
+        check(!prog.validateGraph().joinIntoString(" ").contains("is not wired"), "wired: no such problem", error);
+        // An ordinary (executable) program is not held to it: its compiler takes other paths.
+        NodeDesignerPanel plain;
+        plain.newGraph("node_graph", false);
+        plain.addNodeOfType("if", 0, 0, "pick", error);
+        check(!plain.validateGraph().joinIntoString(" ").contains("is not wired"), "an ordinary program is not checked for unwired inputs");
         // A new graph is not a component's program any more.
         panel.newGraph("node_graph", false);
         check(!panel.componentDefinition().isObject() && !panel.componentContext().isObject(), "a new program clears the component definition");
