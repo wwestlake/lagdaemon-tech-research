@@ -15477,7 +15477,8 @@ ElectronicsWorkbench::ElectronicsWorkbench()
         if (nodeDesignerPanel != nullptr)
         {
             juce::Array<juce::var> types;
-            if (const auto* all = nodeDesignerPanel->describeNodeTypes().getArray())
+            const auto described = nodeDesignerPanel->describeNodeTypes(); // kept alive while its array is read
+            if (const auto* all = described.getArray())
                 for (const auto& t : *all)
                     if (t.getProperty("category", {}).toString() == "Component")
                         types.add(t);
@@ -15489,10 +15490,10 @@ ElectronicsWorkbench::ElectronicsWorkbench()
         frust_component::Definition d;
         if (!frust_component::fromVar(edited, d, message))
             return false;
-        juce::StringArray warnings;
-        if (!storeComponentDefinition(oldName, d, warnings, message))
+        lastComponentWarnings.clear();
+        if (!storeComponentDefinition(oldName, d, lastComponentWarnings, message))
             return false;
-        message = warnings.joinIntoString("\n");
+        message = lastComponentWarnings.joinIntoString("\n");
         return true;
     };
     schematicPanel->openComponentProgram = [this](const juce::String& definition) {
@@ -19404,8 +19405,9 @@ juce::String ElectronicsWorkbench::componentTool(const juce::String& name, const
             juce::String message;
             if (!nodeDesignerPanel->editComponent(frust_component::toVar(d), message))
                 return fail(message);
+            moved = lastComponentWarnings; // wires and probes removed with pins; the rest is information
             if (message.isNotEmpty())
-                moved.add(message);
+                root->setProperty("message", message);
         }
         else
         {
@@ -19686,7 +19688,11 @@ bool ElectronicsWorkbench::renameComponent(const juce::String& from, const juce:
     if (!frust_component::save(componentFile(newName), d, error))
         return false;
     if (openHere)
+    {
         nodeDesignerPanel->setCurrentFile(newProgram);
+        nodeDesignerPanel->setComponentContext(d.compilerContext());
+        nodeDesignerPanel->setComponentDefinition(frust_component::toVar(d));
+    }
     canvas->renameComponentInstances(from, newName);
     // Instances in the project's other diagrams (the open one is in memory).
     for (const auto& entry : project.diagrams)

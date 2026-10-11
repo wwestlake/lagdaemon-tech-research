@@ -172,6 +172,7 @@ private:
     void refreshComponentPalette();
     std::function<void(const std::vector<std::pair<juce::String, int>>&)> setLibraryComponents;
     juce::String paletteSignature;
+    juce::StringArray lastComponentWarnings; // from the last definition edit: wires and probes removed with pins
     // A new definition with no pins (Component1, Component2...) and its empty
     // program; returns its name, or "" with `error`.
     juce::String createBlankComponent(juce::String& error);

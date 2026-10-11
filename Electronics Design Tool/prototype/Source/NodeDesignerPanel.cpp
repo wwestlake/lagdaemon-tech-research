@@ -1633,7 +1633,19 @@ public:
             role->onChange = [this, k, roleRaw] {
                 const auto id = roleRaw->getSelectedId();
                 const juce::String value = id == 2 ? "voltage_output" : id == 3 ? "current_output" : "input";
-                change([k, value](juce::var& e) { e.getProperty("pins", {})[k].getDynamicObject()->setProperty("role", value); });
+                change([k, value](juce::var& e) {
+                    auto* pin = e.getProperty("pins", {})[k].getDynamicObject();
+                    pin->setProperty("role", value);
+                    // A pin on its role's default side moves to the new role's
+                    // (inputs left, outputs right); one placed elsewhere stays.
+                    const auto side = pin->getProperty("side").toString();
+                    const bool output = value != "input";
+                    if (side.isEmpty() || side == (output ? "left" : "right"))
+                    {
+                        pin->setProperty("side", output ? "right" : "left");
+                        pin->setProperty("order", -1);
+                    }
+                });
             };
             r.cells.push_back({ std::move(role), 92 });
             auto reference = std::make_unique<juce::ComboBox>();

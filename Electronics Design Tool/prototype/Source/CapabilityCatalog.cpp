@@ -309,7 +309,10 @@ juce::var programmableSection(const Request& request)
                                    "resistances, controlled sources) is solved with the circuit. A state read gives the value at the last "
                                    "accepted step; state writes and pin settings are kept when the step is accepted. Outside a simulation "
                                    "pin reads are 0. Ordinary nodes (arithmetic, comparisons gt/lt, if, literal_f64...) build the logic: "
-                                   "node_program_node_types lists every node type with its pins.");
+                                   "node_program_node_types lists every node type with its pins. There is no boolean and/or node: "
+                                   "combine conditions by chaining if nodes, one if's value feeding the then or else input of the next "
+                                   "(a value inside a range: if below the low limit then A, else (if above the high limit then A, "
+                                   "else B)). Every condition the requirement names must appear in the graph.");
     if (request.componentNodeTypes.isArray())
         o->setProperty("componentNodeTypes", request.componentNodeTypes);
     o->setProperty("simulation", "Programmable components run on the internal solver (operating point, DC sweep, transient: the analytics_* "
@@ -342,8 +345,8 @@ juce::var programmableSection(const Request& request)
                                                    "3. component_open_program, then node_program_* to build the behaviour: component nodes read pins, time, parameters and state, and drive pins.",
                                                    "4. node_program_validate and component_compile; fix what they report.",
                                                    "5. component_place the instance; schematic_connect its pins into a test circuit.",
-                                                   "6. Simulate (analytics_operating_point / analytics_transient) and compare with the expected behaviour.",
-                                                   "7. If it is wrong, change the program or definition, compile, simulate again.",
+                                                   "6. Simulate (analytics_operating_point / analytics_transient) and compare every result with the value the requirement asks for at that input.",
+                                                   "7. If any result differs from the requirement, it is not done: change the program or definition, compile, simulate again. Report success only when every checked value matches.",
                                                    "For the user to finish by hand: component_place with no name places a blank component; they double-click it to design it." });
     juce::Array<juce::var> defs;
     for (const auto& d : request.programmable)
