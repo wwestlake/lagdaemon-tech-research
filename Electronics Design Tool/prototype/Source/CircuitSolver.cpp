@@ -1854,6 +1854,19 @@ TransientResult runTransient(const Circuit& circuit, const TransientSettings& se
     for (size_t n = 0; n < grid.size(); ++n)
     {
         const auto t = grid[n];
+        // Device events between grid points: the step lands on each, and
+        // its sample (the left limit of the change) is always kept, so an
+        // edge shows at its own time, not at the next grid point.
+        for (auto e = stepper.nextDeviceEvent(); e < t - 1e-9 * (t - stepper.time()); e = stepper.nextDeviceEvent())
+        {
+            if (!stepper.step(e))
+            {
+                result.error = "Transient failed at t = " + formatValue(e, "s") + ": " + stepper.error();
+                return result;
+            }
+            if (stepper.time() >= settings.start)
+                record(stepper.time());
+        }
         if (!stepper.step(t))
         {
             result.error = "Transient failed at t = " + formatValue(t, "s") + ": " + stepper.error();
@@ -2017,6 +2030,8 @@ struct TransientStepper::Impl
     std::vector<int> rhsElements;      // the elements a linear step's right-hand side has terms from, ascending
     std::vector<signed char> quietSwitches;            // per element: 1 = its changes do not stop advance()
     bool hasProgrammable = false;
+    std::vector<int> eventDevices;     // programmable elements whose devices schedule events, ascending
+    int zeroTimeEvents = 0;            // events in a row that fell due with no time between them
 
     // Scratch reused from step to step.
     // Location re-steps from the step's start: the evolving state only (live
@@ -2029,7 +2044,7 @@ struct TransientStepper::Impl
         bool restartPending = false;
         std::vector<std::vector<std::uint8_t>> devices;
     };
-    Snapshot start, atB;
+    Snapshot start, atB, beforeEvent;
     static void copyInto(std::vector<double>& to, const std::vector<double>& from)
     {
         to.resize(from.size());
@@ -2112,6 +2127,7 @@ struct TransientStepper::Impl
         switchElements.clear();
         sourceElements.clear();
         rhsElements.clear();
+        eventDevices.clear();
         hasProgrammable = false;
         const auto& parts = circuit.elements();
         for (size_t i = 0; i < parts.size(); ++i)
@@ -2122,8 +2138,32 @@ struct TransientStepper::Impl
             if (isIndependentSourceType(t)) sourceElements.push_back((int)i);
             if (isIndependentSourceType(t) || t == Element::Type::Capacitor || t == Element::Type::Inductor) rhsElements.push_back((int)i);
             if (t == Element::Type::Programmable) hasProgrammable = true;
+            if (t == Element::Type::Programmable && parts[i].device != nullptr && parts[i].device->schedulesEvents())
+                eventDevices.push_back((int)i);
         }
     }
+    // Device events (ProgrammableDevice::nextEventTime): the earliest after
+    // `after` over every device, rounded up to the time quantum.
+    double nextDeviceEvent(double after) const
+    {
+        auto e = std::numeric_limits<double>::infinity();
+        const auto* parts = circuit.elements().data();
+        for (size_t k = 0; k < eventDevices.size(); ++k)
+            e = std::min(e, parts[eventDevices[k]].device->nextEventTime(after));
+        if (perSecond > 0.0 && std::isfinite(e))
+        {
+            e = std::ceil(e * perSecond - 1e-6) / perSecond;
+            if (!(e > after))
+                e = (std::round(after * perSecond) + 1.0) / perSecond;
+        }
+        return e;
+    }
+    // The resolution below which events are simultaneous (a zero-time step).
+    double eventResolution() const { return perSecond > 0.0 ? 0.5 / perSecond : std::max(1e-15, 1e-12 * std::abs(time)); }
+    // An event at or within a hair of `to` (1e-9 of the step) is taken as at `to`.
+    static bool eventBefore(double e, double from, double to) { return e < to - 1e-9 * (to - from); }
+    bool plainStep(double to);
+    bool landedOnEvent(double t0);
     bool stepOnce(double from, double to, int depth);
     bool stepPiece(double from, double to, int depth);
     bool solveLinear(double t, double h, const StepControl& control);
@@ -2134,6 +2174,80 @@ struct TransientStepper::Impl
     void values(std::vector<double>& g) const;
     bool locatedStep(const Landing& landing, std::vector<Event>* events, bool& stopped, TransientStepper& owner);
 };
+
+// From time to `to` (time == to after it): one step, or with devices that
+// schedule events, one step per event in between, each ending exactly on its
+// event. A step whose accept() schedules an event inside the step itself (an
+// input crossing interpolated inside it, followed by a delay shorter than the
+// step) is rolled back to its start and taken again to that event, so the
+// event is neither late nor applied twice.
+bool TransientStepper::Impl::plainStep(double to)
+{
+    if (eventDevices.empty())
+    {
+        if (!stepOnce(time, to, 0))
+            return false;
+        time = to;
+        return true;
+    }
+    while (time < to)
+    {
+        const auto t0 = time;
+        const auto e = nextDeviceEvent(t0);
+        auto end = eventBefore(e, t0, to) ? e : to;
+        if (!snap(beforeEvent))
+            return false;
+        for (int retry = 0;; ++retry)
+        {
+            if (!stepOnce(t0, end, 0))
+                return false;
+            time = end;
+            const auto created = nextDeviceEvent(t0);
+            if (!eventBefore(created, t0, end) || retry >= 32)
+                break;
+            if (!unsnap(beforeEvent))
+                return false;
+            ++stats.eventRetries;
+            end = created;
+        }
+        if (!landedOnEvent(t0))
+            return false;
+    }
+    return true;
+}
+
+// After a step from t0 to time: when an event falls due at time (the step's
+// end, or within 1e-9 of the step before it), the integration restarts there
+// (the device's output changes from here on) and the event is counted. Events
+// that keep falling due with no time between them (zero-delay feedback that
+// never settles) are an error, not an endless loop.
+bool TransientStepper::Impl::landedOnEvent(double t0)
+{
+    const auto due = nextDeviceEvent(t0);
+    if (eventBefore(due, t0, time) || due > time)
+    {
+        zeroTimeEvents = 0;
+        return true;
+    }
+    ++stats.deviceEvents;
+    if (settings.restartAfterDiscontinuity)
+        restartPending = true;
+    if (time - t0 > eventResolution())
+    {
+        zeroTimeEvents = 0;
+        return true;
+    }
+    if (++zeroTimeEvents <= 64)
+        return true;
+    std::string who;
+    const auto* parts = circuit.elements().data();
+    for (size_t k = 0; k < eventDevices.size(); ++k)
+        if (parts[eventDevices[k]].device->nextEventTime(t0) <= time + eventResolution())
+            who += (who.empty() ? "" : ", ") + parts[eventDevices[k]].name;
+    error = "Device events keep falling due with no time between them at t = " + formatValue(time, "s") + " (" + who
+          + "): feedback with no propagation delay that does not settle.";
+    return false;
+}
 
 // One step from -> to. After a discontinuity (a pending restart) the step is
 // taken as two backward-Euler half steps: the first absorbs the jump, the
@@ -2666,6 +2780,7 @@ bool TransientStepper::init()
     m.fastLinear = m.settings.locateEvents && !m.heldLayout.nonlinear;
     m.perSecond = m.settings.timeQuantum > 0.0 ? std::round(1.0 / m.settings.timeQuantum) : 0.0;
     m.restartPieces = 0;
+    m.zeroTimeEvents = 0;
     m.indexElements();
     const auto& parts = circuit.elements();
     resetProgrammable(circuit);
@@ -2764,10 +2879,7 @@ bool TransientStepper::step(double to)
         m.error = "A step must end after the current time.";
         return false;
     }
-    if (!m.stepOnce(m.time, to, 0))
-        return false;
-    m.time = to;
-    return true;
+    return m.plainStep(to);
 }
 
 bool TransientStepper::advance(double to, std::vector<Event>* events)
@@ -2838,9 +2950,8 @@ bool TransientStepper::advance(double to, std::vector<Event>* events)
         const auto landing = points[k];
         if (!m.settings.locateEvents)
         {
-            if (!m.stepOnce(m.time, landing.end, 0))
+            if (!m.plainStep(landing.end))
                 return false;
-            m.time = landing.end;
             continue;
         }
         // Leaving a source corner: a step of one location tolerance applies
@@ -2863,7 +2974,39 @@ bool TransientStepper::advance(double to, std::vector<Event>* events)
         while (m.time < landing.end)
         {
             bool stopped = false;
-            if (!m.locatedStep(landing, events, stopped, *this))
+            if (m.eventDevices.empty())
+            {
+                if (!m.locatedStep(landing, events, stopped, *this))
+                    return false;
+                if (stopped)
+                    return true;
+                continue;
+            }
+            // Device events end a located step like landing points, and a
+            // step that schedules one inside itself is taken again to it
+            // (from its start, which locatedStep() kept in `start`): any
+            // switch events of the discarded attempt are dropped with it.
+            const auto t0 = m.time;
+            const auto e = m.nextDeviceEvent(t0);
+            auto piece = Impl::eventBefore(e, t0, landing.end) ? Impl::Landing { e, -1.0, false } : landing;
+            const auto mark = events != nullptr ? events->size() : 0;
+            const auto counted = m.stats.events;
+            for (int retry = 0;; ++retry)
+            {
+                if (!m.locatedStep(piece, events, stopped, *this))
+                    return false;
+                const auto created = m.nextDeviceEvent(t0);
+                if (!Impl::eventBefore(created, t0, m.time) || retry >= 32)
+                    break;
+                if (!m.unsnap(m.start))
+                    return false;
+                if (events != nullptr)
+                    events->resize(mark);
+                m.stats.events = counted;
+                ++m.stats.eventRetries;
+                piece = { created, -1.0, false };
+            }
+            if (!m.landedOnEvent(t0))
                 return false;
             if (stopped)
                 return true;
@@ -2873,6 +3016,7 @@ bool TransientStepper::advance(double to, std::vector<Event>* events)
 }
 
 void TransientStepper::requestRestart() { impl->restartPending = true; }
+double TransientStepper::nextDeviceEvent() const { return impl->nextDeviceEvent(impl->time); }
 double TransientStepper::time() const { return impl->time; }
 
 double TransientStepper::voltage(Node node) const
@@ -2980,6 +3124,7 @@ bool TransientStepper::restoreState(const State& s)
     m.switches = s.switches;
     m.restartPending = s.restartPending;
     m.restartPieces = 0;
+    m.zeroTimeEvents = 0;
     for (size_t i = 0; i < n; ++i)
         if (!(m.inputs[i] == s.inputs[i]))
         {

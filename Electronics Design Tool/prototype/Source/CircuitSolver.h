@@ -23,6 +23,7 @@
 
 #include <complex>
 #include <cstdint>
+#include <limits>
 #include <map>
 #include <memory>
 #include <string>
@@ -131,6 +132,25 @@ public:
     // that the circuit cannot roll back.
     virtual bool saveState(std::vector<std::uint8_t>& out) const { (void)out; return false; }
     virtual bool restoreState(const std::vector<std::uint8_t>& in) { (void)in; return false; }
+
+    // Optional: device events (timed changes the device schedules itself,
+    // such as a logic output that follows its input after a propagation
+    // delay). A device that schedules events returns true from
+    // schedulesEvents() and reports, from its committed state, the earliest
+    // scheduled time strictly after `after` (+infinity: none). The transient
+    // stepper ends a step exactly at each such time (rounded up to its time
+    // quantum, when it has one) and restarts the integration there. The
+    // contract for a change scheduled at time e: it applies to every step
+    // that starts at or after e, never to a step that ends at e, so the
+    // solution at e is the left limit and the change shows from there on.
+    // Evaluating a step from t - h to t, the device takes a change at e as
+    // applied when e <= t - h/2 (a step never straddles an event, so e is
+    // either at its start or at or after its end). Scheduling happens in
+    // accept(), like any committed state, and must be part of saveState(),
+    // so a rejected or rolled-back step neither consumes nor duplicates an
+    // event. Devices that do not schedule events need neither method.
+    virtual bool schedulesEvents() const { return false; }
+    virtual double nextEventTime(double after) const { (void)after; return std::numeric_limits<double>::infinity(); }
 };
 
 struct Element
@@ -419,6 +439,16 @@ TransientResult solveTransient(const Circuit& circuit, const TransientSettings& 
 // - and restoreState() puts it all back, so a rolled-back or re-run step
 // leaves no trace. A circuit whose programmable devices cannot save state
 // cannot save state (or locate events, which re-steps from a saved state).
+//
+// Device events (ProgrammableDevice::nextEventTime): step() and advance()
+// end a step exactly on every event a device schedules (rounded up to the
+// time quantum when there is one), restart the integration there, and go on;
+// events of several devices at one time share one landing (devices in
+// element order). A step whose own accept() schedules an event inside it is
+// rolled back to its start and taken again to that event. Events that keep
+// falling due with no time between them (zero-delay feedback) fail the step
+// with an error naming the devices. A circuit without event devices steps
+// exactly as before, bit for bit.
 class TransientStepper
 {
 public:
@@ -479,6 +509,8 @@ public:
         std::uint64_t locationSteps = 0;    // extra steps taken while locating events
         std::uint64_t events = 0;
         std::uint64_t factorisations = 0;   // linear fast path: matrices factorised (the rest reused a cached one)
+        std::uint64_t deviceEvents = 0;     // steps ended on a device event time
+        std::uint64_t eventRetries = 0;     // steps rolled back to land on an event the step itself scheduled
     };
 
     TransientStepper(const Circuit& circuit, const Options& options = {}, const Settings& settings = {});
@@ -516,6 +548,12 @@ public:
     bool advance(double to, std::vector<Event>* events = nullptr);
     // The next step is backward Euler.
     void requestRestart();
+    // The earliest device event after time() (see ProgrammableDevice::
+    // nextEventTime), on the stepper's clock; +infinity when none is
+    // scheduled. step() and advance() land on device events by themselves;
+    // a caller that records samples steps to this time to record the left
+    // limit of the change.
+    double nextDeviceEvent() const;
 
     double time() const;
     double voltage(Node node) const;

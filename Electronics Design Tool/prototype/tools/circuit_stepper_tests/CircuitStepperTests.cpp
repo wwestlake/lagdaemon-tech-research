@@ -22,6 +22,7 @@
 #include <filesystem>
 #include <fstream>
 #include <functional>
+#include <limits>
 #include <map>
 #include <memory>
 #include <sstream>
@@ -1099,12 +1100,417 @@ void testRealTimeBudget()
         std::printf("      (the 1.0x requirement applies to the optimised build; reported only)\n");
 }
 
+// ---- device events (P1 extension: device event timing) ---------------------------
+
+// A logic stage that schedules its own events: pin 0 is the input (1e12 ohm to
+// ground), pin 1 the output (a level behind rOut to ground). When the input
+// crosses `threshold` (the crossing time interpolated linearly inside the
+// accepted step), the output starts a linear transition `tr` long at the
+// crossing + tpd. Inertial delay: a new input transition cancels every
+// pending change, so a pulse shorter than tpd never reaches the output.
+// Transport delay: changes at or after the new one are replaced, earlier
+// ones stay. Pending changes and the current transition are committed state
+// (accept()), saved and restored whole.
+class EventStage final : public ProgrammableDevice
+{
+public:
+    struct Config
+    {
+        double threshold = 2.5, high = 5.0, tpd = 1e-6, tr = 0.0, rOut = 10.0;
+        bool invert = true, inertial = true;
+    };
+    explicit EventStage(Config c) : cfg(c) {}
+
+    void reset() override { committed = State {}; trial = State {}; }
+    bool schedulesEvents() const override { return true; }
+    double nextEventTime(double after) const override
+    {
+        auto e = std::numeric_limits<double>::infinity();
+        for (const auto& p : committed.pending)
+            if (p.first > after) { e = std::min(e, p.first); break; }
+        if (committed.rampStart >= 0.0 && cfg.tr > 0.0 && committed.rampStart + cfg.tr > after)
+            e = std::min(e, committed.rampStart + cfg.tr);
+        // A pending change also ends its own transition tr later.
+        for (const auto& p : committed.pending)
+            if (cfg.tr > 0.0 && p.first + cfg.tr > after) { e = std::min(e, p.first + cfg.tr); break; }
+        return e;
+    }
+    bool evaluate(double t, double h, const std::vector<double>& v, std::vector<double>& currents, std::string&) override
+    {
+        trial = committed;
+        if (trial.t < 0.0) // the initial operating point: the output follows the input with no delay
+            trial.target = cfg.invert ? !(v[0] > cfg.threshold) : v[0] > cfg.threshold;
+        apply(trial, t - 0.5 * h);
+        const auto level = levelAt(trial, t);
+        trial.t = t;
+        trial.vin = v[0];
+        currents = { -v[0] / 1e12, (level - v[1]) / cfg.rOut };
+        return true;
+    }
+    void accept(double t) override
+    {
+        auto next = trial;
+        const bool in = next.vin > cfg.threshold;
+        if (committed.t < 0.0)
+            next.in = in, next.target = cfg.invert ? !in : in, next.from = next.target ? cfg.high : 0.0;
+        else if (in != committed.in)
+        {
+            const auto dv = next.vin - committed.vin;
+            const auto tc = dv != 0.0 ? std::clamp(committed.t + (t - committed.t) * (cfg.threshold - committed.vin) / dv, committed.t, t) : t;
+            const bool target = cfg.invert ? !in : in;
+            const auto e = tc + cfg.tpd;
+            if (cfg.inertial)
+                next.pending.clear();
+            else
+                while (!next.pending.empty() && next.pending.back().first >= e)
+                    next.pending.pop_back();
+            const bool before = next.pending.empty() ? next.target : next.pending.back().second;
+            if (target != before)
+                next.pending.push_back({ e, target });
+            next.in = in;
+        }
+        next.t = t;
+        committed = next;
+    }
+    bool saveState(std::vector<std::uint8_t>& out) const override
+    {
+        std::vector<double> v { committed.t, committed.vin, committed.in ? 1.0 : 0.0, committed.target ? 1.0 : 0.0,
+                                committed.rampStart, committed.from, (double)committed.pending.size() };
+        for (const auto& p : committed.pending) { v.push_back(p.first); v.push_back(p.second ? 1.0 : 0.0); }
+        out.resize(v.size() * sizeof(double));
+        std::memcpy(out.data(), v.data(), out.size());
+        return true;
+    }
+    bool restoreState(const std::vector<std::uint8_t>& in) override
+    {
+        if (in.size() < 7 * sizeof(double)) return false;
+        std::vector<double> v(in.size() / sizeof(double));
+        std::memcpy(v.data(), in.data(), v.size() * sizeof(double));
+        State s;
+        s.t = v[0]; s.vin = v[1]; s.in = v[2] != 0.0; s.target = v[3] != 0.0; s.rampStart = v[4]; s.from = v[5];
+        for (size_t k = 0; k < (size_t)v[6]; ++k) s.pending.push_back({ v[7 + 2 * k], v[8 + 2 * k] != 0.0 });
+        committed = trial = s;
+        return true;
+    }
+    double output() const { return levelAt(committed, committed.t); }
+    size_t pendingCount() const { return committed.pending.size(); }
+
+private:
+    struct State
+    {
+        double t = -1.0, vin = 0.0;
+        bool in = false, target = false;
+        double rampStart = -1.0, from = 0.0; // the transition to `target` started at rampStart, from `from`
+        std::vector<std::pair<double, bool>> pending;
+    };
+    // Starts every pending change that is due for a step starting at `start`.
+    void apply(State& s, double start) const
+    {
+        size_t k = 0;
+        for (; k < s.pending.size() && s.pending[k].first <= start; ++k)
+        {
+            s.from = levelAt(s, s.pending[k].first);
+            s.rampStart = s.pending[k].first;
+            s.target = s.pending[k].second;
+        }
+        s.pending.erase(s.pending.begin(), s.pending.begin() + (std::ptrdiff_t)k);
+    }
+    double levelAt(const State& s, double t) const
+    {
+        const auto to = s.target ? cfg.high : 0.0;
+        if (s.rampStart < 0.0 || cfg.tr <= 0.0 || t >= s.rampStart + cfg.tr)
+            return to;
+        const auto a = std::clamp((t - s.rampStart) / cfg.tr, 0.0, 1.0);
+        return s.from + (to - s.from) * a;
+    }
+    Config cfg;
+    State committed, trial;
+};
+
+// Never settles: always another event a hair (1e-20 s) after any time.
+class ZenoDevice final : public ProgrammableDevice
+{
+public:
+    void reset() override {}
+    bool schedulesEvents() const override { return true; }
+    double nextEventTime(double after) const override { return after + 1e-20; }
+    bool evaluate(double, double, const std::vector<double>& v, std::vector<double>& currents, std::string&) override
+    {
+        currents = { -v[0] / 1e3 };
+        return true;
+    }
+    void accept(double) override {}
+    bool saveState(std::vector<std::uint8_t>& out) const override { out.clear(); return true; }
+    bool restoreState(const std::vector<std::uint8_t>&) override { return true; }
+};
+
+// The input: 0 -> 5 V ramp over 1 us starting at `at` (crosses 2.5 V at at + 0.5 us).
+Waveform rampAt(double at, double width = 1e3)
+{
+    Waveform w;
+    w.kind = Waveform::Kind::Pulse;
+    w.offset = 0.0; w.pulsed = 5.0; w.delay = at; w.rise = 1e-6; w.width = width; w.fall = 1e-6;
+    return w;
+}
+
+struct EventRig
+{
+    Circuit circuit;
+    std::vector<std::shared_ptr<EventStage>> stages;
+    std::vector<Node> outs;
+};
+
+// A source driving `count` stages in a chain (each stage's output is the next one's input).
+EventRig chainRig(int count, EventStage::Config cfg, Waveform input)
+{
+    EventRig r;
+    auto in = r.circuit.addNode();
+    r.circuit.addVoltageSource("V1", in, 0, input);
+    for (int k = 0; k < count; ++k)
+    {
+        const auto out = r.circuit.addNode();
+        r.stages.push_back(std::make_shared<EventStage>(cfg));
+        r.circuit.addProgrammable("U" + std::to_string(k + 1), { in, out }, r.stages.back());
+        r.outs.push_back(out);
+        in = out;
+    }
+    return r;
+}
+
+// The sample index whose time is `t` to within `tol`, or -1.
+long sampleAt(const TransientResult& r, double t, double tol = 1e-15)
+{
+    for (size_t i = 0; i < r.time.size(); ++i)
+        if (std::abs(r.time[i] - t) <= tol)
+            return (long)i;
+    return -1;
+}
+
+void testDeviceEvents()
+{
+    std::printf("-- device events: exact times, retries, chains, rollback, delay semantics --\n");
+    std::vector<double> record;
+    {
+        // tpd 3.3 us, grid step 10 us: the input crosses at 10.5 us, so the
+        // output changes at 13.8 us, between grid points 11 us (the ramp's
+        // end corner) and 20 us.
+        EventStage::Config cfg;
+        cfg.tpd = 3.3e-6;
+        auto rig = chainRig(1, cfg, rampAt(10e-6));
+        const auto r = solveTransient(rig.circuit, 60e-6, 10e-6, {}, 1 << 20);
+        const auto e = 10.5e-6 + 3.3e-6;
+        const auto i = sampleAt(r, e, 1e-18);
+        const bool exact = r.ok && i > 0 && (size_t)i + 1 < r.time.size();
+        check(exact, "an event between grid steps (13.8 us, grid 10 us) gets a sample at its exact time",
+              r.error + " samples " + std::to_string(r.time.size()));
+        if (exact)
+        {
+            const auto out = (size_t)rig.outs[0];
+            const auto before = r.voltages[(size_t)i][out], after = r.voltages[(size_t)i + 1][out];
+            check(std::abs(before - 5.0) < 1e-3 && std::abs(after) < 1e-3,
+                  "the sample at the event is the left limit (5 V); the change shows from the next sample (0 V)",
+                  fmt("%.6g", before) + " then " + fmt("%.6g", after));
+            check(std::abs(r.voltages[(size_t)i - 1][out] - 5.0) < 1e-3, "no change before the event time");
+            for (size_t k = 0; k < r.time.size(); ++k) { record.push_back(r.time[k]); record.push_back(r.voltages[k][out]); }
+        }
+    }
+    {
+        // tpd 0.2 us, shorter than the step: the crossing (10.5 us) is seen
+        // at the end of the 10 -> 11 us step, whose accept schedules 10.7 us,
+        // inside that step. The stepper rolls it back and lands on 10.7 us.
+        // With a 1 us output transition starting there, the output at 11 us
+        // is exactly 5 V - 0.3 x 5 V = 3.5 V (5 V if the change were late,
+        // 0 V if it were applied at the crossing).
+        EventStage::Config cfg;
+        cfg.tpd = 0.2e-6;
+        cfg.tr = 1e-6;
+        auto rig = chainRig(1, cfg, rampAt(10e-6));
+        TransientStepper s(rig.circuit);
+        bool ok = s.init();
+        double at11 = -1.0;
+        for (const auto t : TransientStepper::timeGrid(rig.circuit, 30e-6, 10e-6))
+        {
+            ok = ok && s.step(t);
+            if (std::abs(t - 11e-6) < 1e-15) at11 = s.voltage(rig.outs[0]);
+        }
+        check(ok && s.stats().eventRetries >= 1 && std::abs(at11 - 3.5) < 1e-9,
+              "a delay shorter than the step: the step is rolled back and the change starts exactly at 10.7 us (3.5 V at 11 us)",
+              s.error() + " retries " + std::to_string(s.stats().eventRetries) + fmt(" V(11 us) %.12g", at11));
+        // solveTransient lands on it too (the retry inside its grid step), and nothing is applied twice.
+        const auto r = solveTransient(rig.circuit, 30e-6, 10e-6, {}, 1 << 20);
+        const auto out = (size_t)rig.outs[0];
+        int edges = 0;
+        for (size_t k = 1; k < r.time.size(); ++k)
+            edges += (r.voltages[k - 1][out] > 2.5) != (r.voltages[k][out] > 2.5);
+        check(r.ok && edges == 1, "solveTransient: exactly one output edge (a retried step neither duplicates nor loses it)",
+              r.error + " edges " + std::to_string(edges));
+    }
+    {
+        // Three stages in a chain with 50 ns transitions: each stage's input
+        // is the previous output's linear transition, which crosses 2.5 V half
+        // way, so the k-th output starts at 10.5 us + k tpd + (k - 1) tr / 2.
+        EventStage::Config cfg;
+        cfg.tpd = 1.25e-6;
+        cfg.tr = 50e-9;
+        auto rig = chainRig(3, cfg, rampAt(10e-6));
+        const auto r = solveTransient(rig.circuit, 30e-6, 2e-6, {}, 1 << 20);
+        bool ok = r.ok;
+        std::string detail = r.error;
+        for (int k = 1; k <= 3; ++k)
+        {
+            const auto start = 10.5e-6 + k * cfg.tpd + (k - 1) * cfg.tr / 2.0;
+            const auto i = sampleAt(r, start, 1e-15), j = sampleAt(r, start + cfg.tr, 1e-15);
+            ok = ok && i > 0 && j == i + 1;
+            if (i > 0 && j == i + 1)
+            {
+                const auto o = (size_t)rig.outs[(size_t)k - 1];
+                const bool rising = k % 2 == 0;
+                ok = ok && std::abs(r.voltages[(size_t)i][o] - (rising ? 0.0 : 5.0)) < 1e-3
+                        && std::abs(r.voltages[(size_t)j][o] - (rising ? 5.0 : 0.0)) < 1e-3;
+            }
+            else
+                detail += " stage " + std::to_string(k) + " missing at " + fmt("%.17g", start);
+        }
+        check(ok, "three stages in a chain (several devices scheduling): each transition starts and ends at its exact time", detail);
+    }
+    {
+        // Two stages on one input with the same delay: one landing for both
+        // (simultaneous events), and both change in the same step.
+        EventStage::Config cfg;
+        cfg.tpd = 2e-6;
+        Circuit c;
+        const auto in = c.addNode(), a = c.addNode(), b = c.addNode();
+        c.addVoltageSource("V1", in, 0, rampAt(10e-6));
+        auto sa = std::make_shared<EventStage>(cfg), sb = std::make_shared<EventStage>(cfg);
+        c.addProgrammable("UA", { in, a }, sa);
+        c.addProgrammable("UB", { in, b }, sb);
+        TransientStepper s(c);
+        bool ok = s.init() && s.advance(30e-6);
+        const auto landings = s.stats().deviceEvents;
+        const auto r = solveTransient(c, 30e-6, 5e-6, {}, 1 << 20);
+        const auto i = sampleAt(r, 12.5e-6, 1e-18);
+        ok = ok && r.ok && i > 0 && r.voltages[(size_t)i + 1][(size_t)a] < 1e-3 && r.voltages[(size_t)i + 1][(size_t)b] < 1e-3;
+        check(ok && landings == 1, "simultaneous events of two devices: one landing at 12.5 us, both outputs change together",
+              s.error() + r.error + " landings " + std::to_string(landings));
+    }
+    {
+        // Save while a change is pending, run through it, restore, run again:
+        // bit-identical, and the event is neither lost nor applied twice.
+        EventStage::Config cfg;
+        cfg.tpd = 3.3e-6;
+        cfg.tr = 0.1e-6;
+        auto rig = chainRig(2, cfg, rampAt(10e-6));
+        TransientStepper s(rig.circuit);
+        bool ok = s.init() && s.advance(12e-6);
+        TransientStepper::State saved;
+        ok = ok && s.saveState(saved) && rig.stages[0]->pendingCount() == 1;
+        auto run = [&](std::vector<double>& out, std::uint64_t& landings) {
+            const auto before = s.stats().deviceEvents;
+            for (double t = 13e-6; ok && t <= 40e-6 + 1e-12; t += 1e-6)
+            {
+                ok = s.advance(t);
+                for (auto n : s.nodeVoltages()) out.push_back(n);
+            }
+            landings = s.stats().deviceEvents - before;
+        };
+        std::vector<double> first, second;
+        std::uint64_t l1 = 0, l2 = 0;
+        run(first, l1);
+        ok = ok && s.restoreState(saved) && rig.stages[0]->pendingCount() == 1;
+        run(second, l2);
+        check(ok && sameBits(first, second) && l1 == l2 && l1 == 4,
+              "save with a change pending, run through it, restore, re-run: bit for bit the same, the same 4 event landings",
+              s.error() + " landings " + std::to_string(l1) + " / " + std::to_string(l2));
+    }
+    {
+        // Delay semantics: a 1 us input pulse into a 3 us delay. Inertial: the
+        // pulse is shorter than the delay, so it never reaches the output.
+        // Transport: the output repeats it 3 us later.
+        auto pulse = rampAt(10e-6, 0.5e-6); // 0 -> 5 V at 10..11 us, held 0.5 us, back to 0 by 12.5 us
+        for (const bool inertial : { true, false })
+        {
+            EventStage::Config cfg;
+            cfg.tpd = 3e-6;
+            cfg.inertial = inertial;
+            auto rig = chainRig(1, cfg, pulse);
+            const auto r = solveTransient(rig.circuit, 40e-6, 1e-6, {}, 1 << 20);
+            const auto out = (size_t)rig.outs[0];
+            double low = 5.0;
+            for (size_t k = 0; k < r.time.size(); ++k) low = std::min(low, r.voltages[k][out]);
+            if (inertial)
+                check(r.ok && low > 4.999, "inertial delay: a pulse shorter than tpd is cancelled (output stays high)", fmt("%.6g", low));
+            else
+            {
+                const auto i = sampleAt(r, 13.5e-6, 1e-18), j = sampleAt(r, 15.0e-6, 1e-18);
+                check(r.ok && low < 1e-3 && i > 0 && j > i, "transport delay: the same pulse reaches the output, 13.5 to 15.0 us",
+                      r.error + fmt(" low %.6g", low));
+            }
+        }
+    }
+    {
+        // Input transitions in turn: each schedules exactly one pending change
+        // at its own crossing + tpd.
+        EventStage::Config cfg;
+        cfg.tpd = 3e-6;
+        auto rig = chainRig(1, cfg, rampAt(10e-6, 4e-6)); // high 11..15 us: a 2nd crossing at 15.5 us while 13.5 is done
+        TransientStepper s(rig.circuit);
+        bool ok = s.init() && s.advance(14e-6);
+        const bool lowAfterFirst = ok && s.voltage(rig.outs[0]) < 1e-3;
+        ok = ok && s.advance(16e-6);
+        const bool pendingSecond = rig.stages[0]->pendingCount() == 1 && std::abs(s.nextDeviceEvent() - 18.5e-6) < 1e-18;
+        ok = ok && s.advance(20e-6);
+        check(ok && lowAfterFirst && pendingSecond && s.voltage(rig.outs[0]) > 4.999,
+              "transitions in turn: each schedules exactly one pending change at its own crossing + tpd", s.error());
+    }
+    {
+        // Zero-time events that never settle: reported, not an endless loop.
+        Circuit c;
+        const auto a = c.addNode();
+        c.addVoltageSource("V1", a, 0, dc(1.0));
+        c.addProgrammable("UZ", { a }, std::make_shared<ZenoDevice>());
+        TransientStepper s(c);
+        const auto t0 = std::chrono::steady_clock::now();
+        const bool failed = s.init() && !s.step(1e-6);
+        const auto ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+        check(failed && s.error().find("no time between") != std::string::npos && s.error().find("UZ") != std::string::npos && ms < 5000.0,
+              "zero-time event feedback is reported (naming the device) instead of hanging", s.error() + fmt(" %.0f ms", ms));
+        const auto r = solveTransient(c, 1e-6, 1e-7);
+        check(!r.ok && r.error.find("no time between") != std::string::npos, "and solveTransient fails with that message", r.error);
+    }
+    {
+        // Located mode on a time quantum (the participant's clock): an event
+        // time is rounded up to the quantum (1 ns), never before its time.
+        TransientStepper::Settings located;
+        located.locateEvents = true;
+        located.timeQuantum = 1e-9;
+        EventStage::Config cfg;
+        cfg.tpd = 3.3333e-6; // 10.5 us + 3.3333 us = 13.8333 us -> 13.834 us on a 1 ns clock
+        auto rig = chainRig(1, cfg, rampAt(10e-6));
+        TransientStepper s(rig.circuit, {}, located);
+        bool ok = s.init();
+        double edge = -1.0;
+        for (double t = 1e-6; ok && t <= 20e-6 + 1e-12; t += 1e-6)
+        {
+            for (auto e = s.nextDeviceEvent(); ok && e < t; e = s.nextDeviceEvent())
+            {
+                ok = s.advance(e);
+                if (edge < 0.0) edge = s.time();
+            }
+            ok = ok && s.advance(t);
+        }
+        check(ok && std::abs(edge - 13.834e-6) < 1e-15 && s.voltage(rig.outs[0]) < 1e-3,
+              "located mode, 1 ns quantum: the event lands on 13.834 us (13.8333 us rounded up to the clock)",
+              s.error() + fmt(" edge %.17g", edge));
+    }
+    writeValues("device_events", record);
+}
+
 // ---- comparison of two configurations -------------------------------------------
 
 int compareDirs(const std::string& a, const std::string& b)
 {
     std::printf("-- optimised vs unoptimised (%s vs %s) --\n", a.c_str(), b.c_str());
-    const char* names[] { "rc_step", "rlc_ring", "comparator_times", "rl_restart", "save_restore", "participant_run" };
+    const char* names[] { "rc_step", "rlc_ring", "comparator_times", "rl_restart", "save_restore", "participant_run", "device_events" };
     for (const char* name : names)
     {
         std::ifstream fa(fs::path(a) / (std::string(name) + ".txt")), fb(fs::path(b) / (std::string(name) + ".txt"));
@@ -1144,6 +1550,7 @@ int main(int argc, char** argv)
     testRestartRemovesRinging();
     testSaveRestore();
     testRollback();
+    testDeviceEvents();
     testParticipant();
     testRealTimeBudget();
     std::printf("\n%d passed, %d failed\n", passes, failures);
