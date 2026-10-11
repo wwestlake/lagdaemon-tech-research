@@ -420,6 +420,74 @@ juce::var logicSection()
     return juce::var(o);
 }
 
+// Electromechanical parts: the DC motor's model, units, quantities, workflow.
+juce::var motorSection()
+{
+    auto* o = new Obj();
+    o->setProperty("what", "dc_motor (pins +, -) and dc_motor_tach (+, -, and a tachogenerator T+, T-) are brushed DC motors simulated by "
+                           "the internal solver: electrical current produces torque and motion, and the motion produces back EMF in "
+                           "the circuit. The mechanical state is part of the same circuit solution and time steps (no separate "
+                           "mechanical simulator, no animation).");
+    o->setProperty("model", "Armature: V(+,-) = ra * I + la * dI/dt + ke * speed. Shaft: (j + load_inertia) * d(speed)/dt = kt * I "
+                            "- (b + load_damping) * speed - load torque - Coulomb friction; angle = integral of speed. Current "
+                            "positive into +; forward rotation positive. Motoring, braking, plugging and generating (back EMF above "
+                            "the supply, current reversed, power returned) all follow from these equations.");
+    o->setProperty("units", "SI: ohm, H, N*m/A (kt), V*s/rad (ke; equal to kt for an ideal motor - the Workbench warns when they "
+                            "differ by more than 1 %), kg*m^2, N*m*s/rad, N*m, rad/s, rad, A. rpm = rad/s * 60 / (2 pi).");
+    o->setProperty("defaults", "A small 12 V motor: ra 2 ohm, la 1 mH, kt = ke 20 mN*m/A, j 10 ug*m^2 (1e-5 kg*m^2), b 1e-6 N*m*s/rad. "
+                               "At 12 V: no-load about 597 rad/s (5700 rpm) at 30 mA, stall 6 A and 0.12 N*m, mechanical time constant "
+                               "about 50 ms, electrical 0.5 ms. Transient steps of 10 us to 100 us suit it.");
+    o->setProperty("load", "load_torque (constant N*m; positive opposes forward rotation, negative drives the shaft), "
+                           "load_torque_pwl (time-varying, 'time torque' pairs such as '0 0, 200m 0, 201m 0.05' for a load step), "
+                           "load_inertia, load_damping, friction (Coulomb, opposes motion either way, friction_smoothing rad/s), "
+                           "end stops min_angle / max_angle (empty = continuous rotation; stop_stiffness, stop_damping).");
+    o->setProperty("initialState", "initial_speed (rad/s), initial_position (rad), initial_current (A): every transient starts the motor "
+                                   "there (default at rest) with the rest of the circuit consistent with it. The operating point "
+                                   "analysis gives the steady state (steady speed and current; the angle is reported at its initial value).");
+    o->setProperty("quantities", juce::StringArray {
+        "<refdes>.speed (rad/s), <refdes>.rpm, <refdes>.position (rad), <refdes>.current (A, also I(<refdes>)), <refdes>.voltage (V),",
+        "<refdes>.backemf (V), <refdes>.torque (N*m, electromagnetic kt * I), <refdes>.power_in (W, electrical in),",
+        "<refdes>.power_copper (ra * I^2), <refdes>.power_converted (torque * speed; negative when generating),",
+        "<refdes>.power_damping (viscous loss), <refdes>.power_load (into the load torque), <refdes>.energy_kinetic (J)." });
+    o->setProperty("measuring", "Use the quantity names as analytics outputs, e.g. analytics_transient outputs 'M1.speed, M1.current, "
+                                "M1.torque' (each plot is in its own unit), analytics_operating_point (a table of every quantity), "
+                                "and measurement targets. With no outputs listed, a transient plots each motor's speed and current first. "
+                                "Report the numbers the analysis returns (its tables and files), never estimates.");
+    o->setProperty("control", "Drive the motor through its terminals like any load: voltage or current sources (Pulse/PWL for timed "
+                              "commands), switches with a freewheeling diode for PWM, logic gate outputs (set voh and rout), or a FRust "
+                              "programmable component driving a voltage. For feedback, use dc_motor_tach: T+ - T- = tach_constant * "
+                              "speed behind tach_rout, an ordinary voltage a controller or gate can read. There is no other path to the "
+                              "motor's internals.");
+    o->setProperty("simulation", "Internal solver only (analytics_operating_point, analytics_transient, analytics_dc_sweep; AC for the "
+                                 "linear quantities). With Xyce selected the run falls back to the internal solver and the result says "
+                                 "so; there is no co-simulation. A run that cannot converge fails with an error; there is no partial result.");
+    o->setProperty("workflow", juce::StringArray {
+        "1. schematic_place_symbol symbolId dc_motor (or dc_motor_tach); workbench_capabilities symbolId dc_motor lists every parameter with units.",
+        "2. schematic_set_parameters for the motor (ra, la, kt, ke, j, b) and its load (load_torque or load_torque_pwl, load_inertia, friction).",
+        "3. Wire a drive to + and - (a voltage_source, signal_source, switch, gate or programmable component); place a ground and connect the "
+        "supply's - to it; run circuit_run_erc.",
+        "4. analytics_transient with stop long enough for the mechanical time constant (j * ra / (kt * ke), about 50 ms by default: run 5 or more) "
+        "and outputs such as 'M1.speed, M1.current, M1.torque, M1.power_in'; or analytics_operating_point for the steady state.",
+        "5. Read each value at the time asked for: the csv row whose time is nearest it (just before an event: the last row before it), not a "
+        "statistic of the whole trace. Compare them with what was asked: steady speed ~ (kt V - ra T) / (ra b + kt ke), stall current V / ra. "
+        "A mismatch means the circuit or the reading is wrong.",
+        "6. A motor circuit takes about 0.15 s per 1000 time steps in the app (0.4 s at 10 us steps: about 6 s); 10 us to 100 us steps suit the default motor." });
+    o->setProperty("limitations", "One shaft per motor (no gears, couplings or shared shafts yet); no stiction (friction is smooth through "
+                                  "zero), no cogging, brush drop, armature reaction or saturation; no thermal model; no position encoder "
+                                  "part (the tachometer gives speed); no animation.");
+    return juce::var(o);
+}
+
+bool asksAboutMotor(const juce::StringArray& query)
+{
+    static const juce::StringArray topics { "motor", "motors", "dcmotor", "electromechanical", "mechanical", "shaft", "torque", "rpm",
+                                            "speed", "tachometer", "tach", "backemf", "emf", "inertia", "rotor", "actuator" };
+    for (const auto& t : query)
+        if (topics.contains(t))
+            return true;
+    return false;
+}
+
 bool asksAboutLogic(const juce::StringArray& query)
 {
     static const juce::StringArray topics { "logic", "gate", "gates", "nand", "nor", "xor", "xnor", "inverter", "buffer", "latch",
@@ -466,6 +534,8 @@ juce::String toJson(const Request& request)
             root->setProperty("programmableComponents", programmableSection(request));
         if (schematic::isLogicGate(id))
             root->setProperty("logicGates", logicSection());
+        if (id == "dc_motor" || id == "dc_motor_tach")
+            root->setProperty("electromechanical", motorSection());
         return juce::JSON::toString(juce::var(root), true);
     }
 
@@ -557,6 +627,8 @@ juce::String toJson(const Request& request)
         root->setProperty("programmableComponents", programmableSection(request));
     if (all || section == "logic" || asksAboutLogic(query))
         root->setProperty("logicGates", logicSection());
+    if (all || section == "electromechanical" || section == "motor" || asksAboutMotor(query))
+        root->setProperty("electromechanical", motorSection());
     if (all || section == "analyses")
         root->setProperty("analyses", analysesList(section == "analyses" ? query : juce::StringArray()));
     if (all || section == "engines")

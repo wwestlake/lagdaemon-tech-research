@@ -51,6 +51,8 @@
     { "id": "logic_nor", "name": "NOR Gate", "category": "Digital" },
     { "id": "logic_xor", "name": "XOR Gate", "category": "Digital" },
     { "id": "logic_xnor", "name": "XNOR Gate", "category": "Digital" },
+    { "id": "dc_motor", "name": "DC Motor (brushed)", "category": "Electromechanical" },
+    { "id": "dc_motor_tach", "name": "DC Motor with Tachometer", "category": "Electromechanical" },
     { "id": "oscilloscope_2ch", "name": "2-Channel Oscilloscope", "category": "Instrument" },
     { "id": "digital_multimeter", "name": "Digital Multimeter", "category": "Instrument" },
     { "id": "annotation_text", "name": "Text Note", "category": "Annotation" }

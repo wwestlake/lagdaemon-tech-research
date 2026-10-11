@@ -3,6 +3,7 @@
 #include <JuceHeader.h>
 
 #include "CircuitSolver.h"
+#include "Mechanical.h"
 #include "SignalMeasure.h"
 
 #include <complex>
@@ -109,6 +110,9 @@ struct Netlist
         juce::String step;
     };
     std::vector<ParameterSweep> sweeps;
+    // Derived quantities of electromechanical parts (Mechanical.h): motor
+    // speed, angle, torque, powers... usable as outputs by name ("M1.speed").
+    std::vector<mech::Quantity> quantities;
 };
 
 // Choices for Net / Source / Target fields.

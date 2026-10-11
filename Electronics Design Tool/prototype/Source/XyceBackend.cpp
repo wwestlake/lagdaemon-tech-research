@@ -570,6 +570,9 @@ bool appendElement(const analytics::Netlist& n, juce::String& netlist, std::map<
         error = juce::String(e.modelName).startsWith("LOGIC_")
             ? juce::String(e.name) + " is a logic gate: its thresholds and propagation delays run on the internal solver's device "
               "events, which the external Xyce engine does not have. Simulate this circuit with the internal solver engine."
+            : e.modelName == "MECH_SHAFT"
+            ? juce::String(e.name) + " is a DC motor's shaft: its angle, friction and end stops are computed inside the app with "
+              "the electrical solution, which the external Xyce engine cannot call. Simulate this circuit with the internal solver engine."
             : juce::String(e.name) + " is a FRust programmable component: its program runs inside the app at every solver "
               "iteration, which the external Xyce engine cannot call. Simulate this circuit with the internal solver engine.";
         return false;

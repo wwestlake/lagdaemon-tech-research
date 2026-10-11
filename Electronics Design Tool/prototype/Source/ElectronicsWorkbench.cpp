@@ -8,6 +8,7 @@
 #include "PartCatalog.h"
 #include "CircuitSolver.h"
 #include "LogicGates.h"
+#include "Mechanical.h"
 #include "Analytics.h"
 #include "AnalyticsPanel.h"
 #include "FrustPanel.h"
@@ -644,8 +645,8 @@ const SchematicToolSpec schematicToolSpecs[] = {
     },
     {
         "workbench_capabilities",
-        "Discover what this Workbench actually has, from its live registries: component types (pins, parameters with units, choices, defaults and help, simulation fidelity), virtual instruments and their modes, analyses (analytics_* tools and their settings) and simulation engines. Omit query to list every registered component. A query's terms are matched separately (any term matches; most matches first) and each term's matches are reported. Look a part up by symbolId before setting its parameters. Use only listed ids; an empty search is not proof a part is missing - list all or look up by symbolId first. Programmable components (reusable parts whose behaviour is a FRust node program, backed by project definitions) are covered in programmableComponents: what they are, the open project's definitions, the component node types, the tools and the workflow to create, design, compile, place and test one; section programmable returns just that. Logic gates (NOT, BUFFER, AND, NAND, OR, NOR, XOR, XNOR) are covered in logicGates: their electrical model, parameters, exact propagation timing, latches built from them, and how to test them; section logic returns just that.",
-        R"({"type":"object","properties":{"section":{"type":"string","description":"components, instruments, analyses, engines, programmable or logic; omit for a summary of all."},"query":{"type":"string","description":"Optional search terms separated by spaces or commas, such as 'opamp resistor capacitor ground diode' or 'behavioral current source'. Each term is matched on its own against ids, display names and common synonyms (op-amp, gnd, supply...)."},"symbolId":{"type":"string","description":"Optional component id for full detail, such as behavioral_current_source. Unknown ids are reported with close matches."}},"additionalProperties":false})"
+        "Discover what this Workbench actually has, from its live registries: component types (pins, parameters with units, choices, defaults and help, simulation fidelity), virtual instruments and their modes, analyses (analytics_* tools and their settings) and simulation engines. Omit query to list every registered component. A query's terms are matched separately (any term matches; most matches first) and each term's matches are reported. Look a part up by symbolId before setting its parameters. Use only listed ids; an empty search is not proof a part is missing - list all or look up by symbolId first. Programmable components (reusable parts whose behaviour is a FRust node program, backed by project definitions) are covered in programmableComponents: what they are, the open project's definitions, the component node types, the tools and the workflow to create, design, compile, place and test one; section programmable returns just that. Logic gates (NOT, BUFFER, AND, NAND, OR, NOR, XOR, XNOR) are covered in logicGates: their electrical model, parameters, exact propagation timing, latches built from them, and how to test them; section logic returns just that. DC motors (dc_motor, dc_motor_tach) are covered in electromechanical: the coupled electrical and mechanical model, units, load settings, the measurable quantities (M1.speed, M1.torque...), control and feedback, and the workflow; section electromechanical returns just that.",
+        R"({"type":"object","properties":{"section":{"type":"string","description":"components, instruments, analyses, engines, programmable, logic or electromechanical; omit for a summary of all."},"query":{"type":"string","description":"Optional search terms separated by spaces or commas, such as 'opamp resistor capacitor ground diode' or 'behavioral current source'. Each term is matched on its own against ids, display names and common synonyms (op-amp, gnd, supply...)."},"symbolId":{"type":"string","description":"Optional component id for full detail, such as behavioral_current_source. Unknown ids are reported with close matches."}},"additionalProperties":false})"
     },
     {
         "instrument_read",
@@ -1883,6 +1884,8 @@ private:
         add({ "logic_nor", "NOR Gate", "Digital" });
         add({ "logic_xor", "XOR Gate", "Digital" });
         add({ "logic_xnor", "XNOR Gate", "Digital" });
+        add({ "dc_motor", "DC Motor (brushed)", "Electromechanical" });
+        add({ "dc_motor_tach", "DC Motor with Tachometer", "Electromechanical" });
         add({ "oscilloscope_2ch", "2-Channel Oscilloscope", "Instrument" });
         add({ "digital_multimeter", "Digital Multimeter", "Instrument" });
         add({ "bode_analyzer", "Frequency Analyzer (Bode)", "Instrument" });
@@ -2862,7 +2865,8 @@ public:
                 && instance.symbolId != "power_port"
                 && instance.symbolId != "net_label"
                 && instance.symbolId != "block_port"
-                && !schematic::isLogicGate(instance.symbolId)) // a gate's model is its parameters
+                && !schematic::isLogicGate(instance.symbolId) // a gate's model is its parameters
+                && instance.symbolId != "dc_motor" && instance.symbolId != "dc_motor_tach") // so is a motor's
                 add(partFinding("WARN", "missing_value", instance.refdes + " has no value or model text.", i));
 
             if (instance.symbolId == "net_label" && instance.busName.trim().isEmpty())
@@ -5230,6 +5234,8 @@ private:
         if (symbolId == "logic_nand") return "digital.logic.nand";
         if (symbolId == "logic_nor") return "digital.logic.nor";
         if (symbolId == "logic_xor") return "digital.logic.xor";
+        if (symbolId == "dc_motor") return "electromechanical.motor.dc_brushed";
+        if (symbolId == "dc_motor_tach") return "electromechanical.motor.dc_brushed.tachometer";
         if (symbolId == "oscilloscope_2ch") return "instrument.oscilloscope";
         if (symbolId == "digital_multimeter") return "instrument.multimeter";
         if (symbolId == "xyz_plotter") return "instrument.plotter";
@@ -7852,6 +7858,7 @@ private:
         juce::StringArray warnings;
         juce::String error;            // first value/parameter error; nothing may simulate
         juce::StringArray valueErrors; // every value/parameter error, for ERC
+        std::vector<mech::Quantity> quantities; // motor speed, angle, torque, powers (Mechanical.h)
         int audioInputBranch = -1;
         int audioOutputNode = -1;
     };
@@ -8307,6 +8314,77 @@ public:
                                          + " not wired; an open input reads LOW (its input resistance to ground).");
                 }
             }
+            else if (id == "dc_motor" || id == "dc_motor_tach")
+            {
+                // A brushed DC motor (Mechanical.h): the armature and the shaft
+                // are elements of this circuit (the shaft is a node: speed in
+                // rad/s, torque as current). Speed, angle, torque and powers
+                // are quantities of the result: <refdes>.speed and so on.
+                mech::DcMotorModel m;
+                m.ra = number(inst, "ra", m.ra);
+                m.la = number(inst, "la", m.la);
+                m.kt = number(inst, "kt", m.kt);
+                m.ke = number(inst, "ke", m.ke);
+                m.j = number(inst, "j", m.j);
+                m.b = number(inst, "b", m.b);
+                m.i0 = number(inst, "initial_current", 0.0);
+                mech::MotorLoad load;
+                load.inertia = number(inst, "load_inertia", 0.0);
+                load.damping = number(inst, "load_damping", 0.0);
+                load.torque.offset = number(inst, "load_torque", 0.0);
+                juce::StringArray problems;
+                if (const auto profile = partValue(inst, "load_torque_pwl").trim(); profile.isNotEmpty())
+                {
+                    load.torque = {};
+                    load.torque.kind = circuit_sim::Waveform::Kind::Pwl;
+                    for (const auto& pair : juce::StringArray::fromTokens(profile, ",;", ""))
+                    {
+                        const auto parts = juce::StringArray::fromTokens(pair.trim(), " \t", "");
+                        double t = 0.0, v = 0.0;
+                        if (parts.size() != 2 || !circuit_sim::parseValue(parts[0].toStdString(), t) || !circuit_sim::parseValue(parts[1].toStdString(), v)
+                            || (!load.torque.points.empty() && t <= load.torque.points.back().first))
+                        {
+                            problems.add("the load torque profile needs time torque pairs with rising times, like 0 0, 100m 0, 101m 0.05 (\"" + pair.trim() + "\" is not one).");
+                            break;
+                        }
+                        load.torque.points.push_back({ t, v });
+                    }
+                }
+                mech::ShaftModel s;
+                s.omega0 = number(inst, "initial_speed", 0.0);
+                s.theta0 = number(inst, "initial_position", 0.0);
+                s.coulomb = number(inst, "friction", 0.0);
+                s.smoothing = number(inst, "friction_smoothing", s.smoothing);
+                double angle = 0.0;
+                if (parseOptionalQuantity(partValue(inst, "min_angle"), angle)) { s.hasMin = true; s.minAngle = angle; }
+                if (parseOptionalQuantity(partValue(inst, "max_angle"), angle)) { s.hasMax = true; s.maxAngle = angle; }
+                s.stopStiffness = number(inst, "stop_stiffness", s.stopStiffness);
+                s.stopDamping = number(inst, "stop_damping", s.stopDamping);
+                const bool tach = id == "dc_motor_tach";
+                const auto tachK = tach ? number(inst, "tach_constant", 10e-3) : 0.0;
+                const auto tachR = tach ? number(inst, "tach_rout", 100.0) : 0.0;
+                if (const auto p = mech::problemsWith(m, load); !p.empty()) problems.add(p);
+                if (const auto p = mech::problemsWith(s); !p.empty()) problems.add(p);
+                if (tach && !(tachR >= 0.0)) problems.add("Tachometer output resistance must be 0 or more (ohm).");
+                if (!problems.isEmpty())
+                {
+                    const auto message = inst.refdes + " (" + parts::displayName(id) + "): " + problems.joinIntoString(" ");
+                    sim.valueErrors.add(message);
+                    if (sim.error.isEmpty()) sim.error = message;
+                }
+                else
+                {
+                    const auto motor = mech::addDcMotor(c, name, node(i, "+"), node(i, "-"), m, load, s);
+                    element = motor.armature;
+                    sim.quantities.insert(sim.quantities.end(), motor.quantities.begin(), motor.quantities.end());
+                    if (tach)
+                        mech::addTachometer(c, name + ".tg", motor.shaft, node(i, "T+"), node(i, "T-"), tachK, tachR);
+                    if (std::abs(m.kt - m.ke) > 0.01 * std::max(m.kt, m.ke))
+                        sim.warnings.add(inst.refdes + " (" + parts::displayName(id) + "): Kt " + juce::String(m.kt) + " N*m/A and Ke "
+                                         + juce::String(m.ke) + " V*s/rad differ; in SI units they are equal for an ideal motor, so this "
+                                         "model's power conversion does not conserve energy (Kt * I * speed vs Ke * speed * I).");
+                }
+            }
             else if (id == "frust_component" && inst.ports.empty())
                 sim.warnings.add(inst.refdes + " (" + inst.value + ") has no pins yet, so it is not simulated.");
             else if (id == "frust_component")
@@ -8367,6 +8445,7 @@ public:
         n.circuit = sim.circuit;
         n.warnings = sim.warnings;
         n.error = sim.error;
+        n.quantities = sim.quantities;
         std::map<std::string, double> emitted;
         std::vector<bool> done(circuitParameters.size(), false);
         for (size_t pass = 0; pass < circuitParameters.size(); ++pass)
@@ -14436,6 +14515,10 @@ private:
                "Logic gates (logic_not, logic_buffer, logic_and, logic_nand, logic_or, logic_nor, logic_xor, logic_xnor; 2..8 inputs) are "
                "electrical parts with levels, thresholds, hysteresis, output resistance and exact propagation delay on the internal solver; "
                "workbench_capabilities with section logic gives the model, timing, how to test truth tables and build latches. "
+               "DC motors (dc_motor; dc_motor_tach adds a tachometer output) are electromechanical parts: current makes torque and "
+               "motion, motion makes back EMF, all in the same solution. Their speed, angle, current, torque and powers are analysis "
+               "outputs named <refdes>.speed, <refdes>.torque and so on; workbench_capabilities with section electromechanical gives the "
+               "model, units, loads, quantities and workflow. "
                "Use cookbook_lookup for engineering knowledge and reference designs. "
                "Never invent component types, model names or parameters; if what you need does not exist, say so or record it with capability_gap_record. "
                "If a schematic_connect call fails, correct the pin labels using the available-labels error; do not continue as if it succeeded. "
@@ -15453,6 +15536,17 @@ ElectronicsWorkbench::ElectronicsWorkbench()
     agentTools.longTool = [this](const juce::String& name, const juce::var& args, std::function<void(juce::String)> done) {
         if (name == "frust_run" || name == "node_program_run" || name.startsWith("node_debug_"))
             return frustExecutionTool(name, args, std::move(done));
+        // Analyses solve on the Analytics panel's worker, never on the
+        // message thread, so a long run never freezes the window.
+        if (name.startsWith("analytics_") && analyticsPanel != nullptr)
+            if (const auto* info = analytics::findAnalysis(name.fromFirstOccurrenceOf("analytics_", false, false)))
+            {
+                analyticsPanel->runAsync(info->id, analyticsToolSettings(args),
+                                         [done](const analytics::Result& result, const juce::StringArray& files) {
+                                             done(analytics::toJson(result, files));
+                                         });
+                return true;
+            }
         if (name != "pcb_route" || pcbPanel == nullptr)
             return false;
         if (pcbPanel->isRouting())
@@ -17891,6 +17985,35 @@ void ElectronicsWorkbench::showAnalytics()
         zone->setActivePanel(panel);
 }
 
+analytics::Settings ElectronicsWorkbench::analyticsToolSettings(const juce::var& args) const
+{
+    analytics::Settings s;
+    if (const auto* o = args.getDynamicObject())
+        for (const auto& p : o->getProperties())
+            s[p.name.toString()] = p.value.toString();
+    std::map<juce::String, juce::String> targets;
+    if (getCircuitJson != nullptr)
+    {
+        const auto parsed = juce::JSON::parse(getCircuitJson());
+        if (const auto* root = parsed.getDynamicObject())
+            if (const auto* params = root->getProperty("simulationParameters").getArray())
+                for (const auto& item : *params)
+                    if (const auto* p = item.getDynamicObject())
+                    {
+                        const auto id = p->getProperty("id").toString();
+                        const auto refdes = p->getProperty("refdes").toString();
+                        const auto property = p->getProperty("property").toString();
+                        if (id.isNotEmpty() && refdes.isNotEmpty() && property.isNotEmpty())
+                            targets["param:" + id] = refdes + "." + property;
+                    }
+    }
+    for (auto& [key, value] : s)
+        if (value.startsWithIgnoreCase("param:"))
+            if (const auto found = targets.find(value); found != targets.end())
+                value = found->second;
+    return s;
+}
+
 juce::String ElectronicsWorkbench::analyticsTool(const juce::String& name, const juce::var& args)
 {
     auto quoteJson = [](const juce::String& t) { return juce::JSON::toString(juce::var(t)); };
@@ -18068,7 +18191,7 @@ juce::String ElectronicsWorkbench::analyticsTool(const juce::String& name, const
     const auto* info = analytics::findAnalysis(name.fromFirstOccurrenceOf("analytics_", false, false));
     if (info == nullptr)
         return fail("Unknown analytics tool.");
-    const auto& run = analyticsPanel->runNow(info->id, translateCanonicalParameters(settingsFrom(args)));
+    const auto& run = analyticsPanel->runNow(info->id, analyticsToolSettings(args));
     return analytics::toJson(run.result, run.files);
 }
 

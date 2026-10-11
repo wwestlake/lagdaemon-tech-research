@@ -272,11 +272,25 @@ juce::String suffix(const Variant& v) { return v.label.isEmpty() ? juce::String(
 
 struct Output
 {
-    juce::String label;   // V(out), I(R1)
+    juce::String label;   // V(out), I(R1), M1.speed
     bool current = false;
     int node = 0;
     int element = -1;
+    const mech::Quantity* quantity = nullptr; // a derived quantity of the netlist (its unit)
 };
+
+juce::String unitOf(const Output& o)
+{
+    return o.quantity != nullptr ? juce::String(o.quantity->unit) : o.current ? juce::String("A") : juce::String("V");
+}
+
+const mech::Quantity* quantityNamed(const Netlist& n, const juce::String& name)
+{
+    for (const auto& q : n.quantities)
+        if (name.trim().equalsIgnoreCase(juce::String(q.name)))
+            return &q;
+    return nullptr;
+}
 
 std::vector<Output> outputsOf(const Netlist& n, const juce::String& spec, juce::String& error, juce::StringArray& warnings)
 {
@@ -291,6 +305,10 @@ std::vector<Output> outputsOf(const Netlist& n, const juce::String& spec, juce::
     }
     if (tokens.isEmpty())
     {
+        // Each motor's speed and current first, then the nets.
+        for (const auto& q : n.quantities)
+            if (juce::String(q.name).endsWith(".speed") || juce::String(q.name).endsWith(".current"))
+                outs.push_back({ juce::String(q.name), false, 0, -1, &q });
         for (const auto& net : n.nets)
         {
             if (outs.size() >= 16) { warnings.add("Showing the first 16 nets; list outputs to choose others."); break; }
@@ -300,6 +318,11 @@ std::vector<Output> outputsOf(const Netlist& n, const juce::String& spec, juce::
     }
     for (const auto& token : tokens)
     {
+        if (const auto* q = quantityNamed(n, token))
+        {
+            outs.push_back({ juce::String(q->name), false, 0, -1, q });
+            continue;
+        }
         if (token.startsWithIgnoreCase("I(") && token.endsWith(")"))
         {
             const auto part = token.substring(2, token.length() - 1).trim();
@@ -347,6 +370,8 @@ void includeMeasurementOutputs(const Netlist& n, std::vector<Output>& outs, juce
 
 double dcValue(const circuit_sim::Circuit& c, const circuit_sim::OperatingPoint& op, const Output& o)
 {
+    if (o.quantity != nullptr)
+        return mech::valueOf(*o.quantity, c, op, 0.0);
     if (!o.current)
         return op.voltages[(size_t)o.node];
     const auto currents = circuit_sim::terminalCurrents(c, op, o.element);
@@ -356,6 +381,29 @@ double dcValue(const circuit_sim::Circuit& c, const circuit_sim::OperatingPoint&
 bool acValue(const circuit_sim::Circuit& c, const circuit_sim::AcResult& ac, size_t point, const Output& o, Complex& out)
 {
     const auto& v = ac.voltages[point];
+    if (o.quantity != nullptr)
+    {
+        // Only a linear quantity (one solved factor) has a small-signal value.
+        if (!o.quantity->linear())
+            return false;
+        Complex value(o.quantity->gain, 0.0);
+        for (const auto& f : o.quantity->factors)
+        {
+            if (f.kind == mech::Factor::Kind::Value)
+                value *= c.elements()[(size_t)f.element].value;
+            else if (f.kind == mech::Factor::Kind::Voltage)
+                value *= v[(size_t)f.node] - v[(size_t)f.node2];
+            else
+            {
+                Complex i;
+                if (!acValue(c, ac, point, Output { {}, true, 0, f.element }, i))
+                    return false;
+                value *= i;
+            }
+        }
+        out = value;
+        return true;
+    }
     if (!o.current)
     {
         out = v[(size_t)o.node];
@@ -381,6 +429,18 @@ bool acValue(const circuit_sim::Circuit& c, const circuit_sim::AcResult& ac, siz
 std::vector<double> transientValues(const circuit_sim::Circuit& c, const circuit_sim::TransientResult& tr, const Output& o)
 {
     std::vector<double> y(tr.time.size());
+    if (o.quantity != nullptr)
+    {
+        circuit_sim::OperatingPoint op;
+        op.ok = true;
+        for (size_t s = 0; s < y.size(); ++s)
+        {
+            op.voltages = tr.voltages[s];
+            op.sourceCurrents = tr.sourceCurrents[s];
+            y[s] = mech::valueOf(*o.quantity, c, op, tr.time[s]);
+        }
+        return y;
+    }
     if (!o.current)
     {
         for (size_t s = 0; s < y.size(); ++s) y[s] = tr.voltages[s][(size_t)o.node];
@@ -640,6 +700,16 @@ bool runOperatingPoint(const Netlist& n, const Settings& s, Result& r)
     sources.rows.push_back({ "Total", "", "", formatNumber(delivered, "W", 4) });
     r.tables.push_back(sources);
     r.tables.push_back(currents);
+    if (!n.quantities.empty())
+    {
+        // Steady state of each motor (the angle is held at its initial value).
+        Table mech;
+        mech.title = "Electromechanical quantities (steady state)";
+        mech.columns = { "Quantity", "Value", "Meaning" };
+        for (const auto& q : n.quantities)
+            mech.rows.push_back({ juce::String(q.name), formatNumber(mech::valueOf(q, c, op, 0.0), juce::String(q.unit), 6), juce::String(q.description) });
+        r.tables.push_back(mech);
+    }
 
     for (size_t i = 0; i < parts.size(); ++i)
     {
@@ -693,7 +763,7 @@ bool runDcSweep(const Netlist& n, const Settings& s, Result& r)
         {
             Trace t;
             t.name = out.label + (outer.none ? juce::String() : "  [" + outer.label + " = " + formatNumber(sweep.outer[o], outer.unit, 4) + "]");
-            t.unit = out.current ? "A" : "V";
+            t.unit = unitOf(out);
             t.x = sweep.inner;
             for (size_t k = 0; k < sweep.inner.size(); ++k)
             {
@@ -787,7 +857,12 @@ bool runAc(const Netlist& n, const Settings& s, Result& r)
                 available = acValue(c, ac, k, out, value);
                 h.push_back(value);
             }
-            if (!available) { r.warnings.add(out.label + " has no small-signal current model; left out."); continue; }
+            if (!available)
+            {
+                r.warnings.add(out.label + (out.quantity != nullptr ? juce::String(" is not linear in the solution (a power or energy), so it has no small-signal value; left out.")
+                                                                    : juce::String(" has no small-signal current model; left out.")));
+                continue;
+            }
             Trace m, p, d;
             m.name = p.name = d.name = out.label + suffix(v);
             m.x = p.x = d.x = ac.frequency;
@@ -807,7 +882,7 @@ bool runAc(const Netlist& n, const Settings& s, Result& r)
             }
             auto& magPlot = out.current ? imag : mag;
             auto& phasePlot = out.current ? iphase : phase;
-            m.unit = out.current ? "A" : decibels ? "dB" : "V";
+            m.unit = out.current ? "A" : decibels ? "dB" : unitOf(out);
             p.unit = degree;
             d.unit = "s";
             m.partnerPlot = 1; // patched below once plot order is known
@@ -899,7 +974,7 @@ bool runTransient(const Netlist& n, const Settings& s, Result& r)
         {
             Trace t;
             t.name = out.label + suffix(v);
-            t.unit = out.current ? "A" : "V";
+            t.unit = unitOf(out);
             t.x = tr.time;
             t.y = transientValues(v.circuit, tr, out);
             traces.push_back(std::move(t));
@@ -1241,7 +1316,7 @@ bool runTemperature(const Netlist& n, const Settings& s, Result& r)
     {
         Trace tr;
         tr.name = out.label;
-        tr.unit = out.current ? "A" : "V";
+        tr.unit = unitOf(out);
         tr.x = a.values;
         for (size_t k = 0; k < a.values.size(); ++k)
             tr.y.push_back(dcValue(circuit_sim::atTemperature(n.circuit, a.values[k]), sweep.points[0][k], out));

@@ -157,6 +157,43 @@ std::map<juce::String, std::vector<ParamSpec>> buildCatalog()
         gate.push_back(quantity("tr", "Output transition time", "s", "4n", Storage::Param, "Time the output takes to move between levels."));
         c[id] = gate;
     }
+    // Brushed DC motor (Mechanical.h): V = Ra I + La dI/dt + Ke w, J dw/dt =
+    // Kt I - B w - Tload, SI units. Defaults: a small 12 V motor (no-load
+    // ~597 rad/s, stall 6 A / 0.12 N*m, mechanical time constant ~50 ms).
+    for (const auto* id : { "dc_motor", "dc_motor_tach" })
+    {
+        std::vector<ParamSpec> m {
+            quantity("ra", "Armature resistance", "ohm", "2"),
+            quantity("la", "Armature inductance", "H", "1m", Storage::Param, "0 is allowed (no electrical time constant)."),
+            quantity("kt", "Torque constant Kt", "N*m/A", "20m", Storage::Param, "Torque per ampere. Equal to Ke in SI units for an ideal motor."),
+            quantity("ke", "Back-EMF constant Ke", "V*s/rad", "20m", Storage::Param, "Volts per rad/s. Equal to Kt in SI units for an ideal motor."),
+            quantity("j", "Rotor inertia", "kg*m^2", "10u"),
+            quantity("b", "Rotor viscous damping", "N*m*s/rad", "1u"),
+            quantity("load_torque", "Load torque", "N*m", "0", Storage::Param,
+                     "Constant torque on the shaft; positive opposes forward rotation, negative drives the shaft (an overhauling load)."),
+            text("load_torque_pwl", "Load torque profile (PWL)", "", Storage::Param,
+                 "Optional time-varying load torque in N*m as time value pairs, e.g. 0 0, 100m 0, 101m 0.05; replaces Load torque when set."),
+            quantity("load_inertia", "Load inertia", "kg*m^2", "0", Storage::Param, "Added to the rotor inertia."),
+            quantity("load_damping", "Load viscous damping", "N*m*s/rad", "0", Storage::Param, "Added to the rotor damping."),
+            quantity("friction", "Coulomb friction torque", "N*m", "0", Storage::Param,
+                     "Opposes rotation in either direction: friction * tanh(speed / smoothing). No stiction."),
+            quantity("friction_smoothing", "Friction smoothing speed", "rad/s", "0.1"),
+            quantity("initial_speed", "Initial speed", "rad/s", "0", Storage::Param, "Every transient starts from it (0: at rest)."),
+            quantity("initial_position", "Initial angle", "rad", "0"),
+            quantity("initial_current", "Initial armature current", "A", "0", Storage::Param, "With inductance > 0; every transient starts from it."),
+            quantity("min_angle", "End stop, minimum angle", "rad", "", Storage::Param, "Empty: no stop (continuous rotation)."),
+            quantity("max_angle", "End stop, maximum angle", "rad", "", Storage::Param, "Empty: no stop (continuous rotation)."),
+            quantity("stop_stiffness", "End-stop stiffness", "N*m/rad", "100"),
+            quantity("stop_damping", "End-stop damping", "N*m*s/rad", "10m"),
+        };
+        if (juce::String(id) == "dc_motor_tach")
+        {
+            m.push_back(quantity("tach_constant", "Tachometer constant", "V/(rad/s)", "10m", Storage::Param,
+                                 "T+ - T- = constant * speed (10m: 10 V at 1000 rad/s)."));
+            m.push_back(quantity("tach_rout", "Tachometer output resistance", "ohm", "100"));
+        }
+        c[id] = m;
+    }
     for (const auto* id : { "npn", "pnp" })
         c[id] = { text("value", "Model", juce::String(id) == "npn" ? "generic_npn" : "generic_pnp", Storage::Value),
                   quantity("beta", "Current gain (beta)", "", "100"),
@@ -288,7 +325,8 @@ juce::String displayName(const juce::String& id)
         { "frust_component", "FRust Programmable Component" },
         { "annotation_text", "Text Note" },
         { "logic_not", "Inverter" }, { "logic_buffer", "Buffer" }, { "logic_and", "AND Gate" }, { "logic_or", "OR Gate" },
-        { "logic_nand", "NAND Gate" }, { "logic_nor", "NOR Gate" }, { "logic_xor", "XOR Gate" }, { "logic_xnor", "XNOR Gate" } };
+        { "logic_nand", "NAND Gate" }, { "logic_nor", "NOR Gate" }, { "logic_xor", "XOR Gate" }, { "logic_xnor", "XNOR Gate" },
+        { "dc_motor", "DC Motor" }, { "dc_motor_tach", "DC Motor with Tachometer" } };
     const auto found = names.find(id);
     return found != names.end() ? found->second : id;
 }
@@ -307,6 +345,9 @@ juce::String simulationFidelity(const juce::String& id)
         return "generic_model";
     // Logic gates: levels, thresholds, drive and delay (internal solver).
     if (id.startsWith("logic_"))
+        return "generic_model";
+    // Electromechanical: the motor's equations on the internal solver.
+    if (id == "dc_motor" || id == "dc_motor_tach")
         return "generic_model";
     if (id == "switch_spst" || id == "switch_spdt" || id == "fuse")
         return "ideal";

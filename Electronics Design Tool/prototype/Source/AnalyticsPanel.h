@@ -16,7 +16,10 @@
 // built from analytics::fieldsFor), run it on the open diagram, and read the
 // result as plots (cursors, zoom, legend), tables and measurements. Every run
 // is kept in the history and written to CSV. The agent's analytics_* tools
-// drive the same panel through runNow(), so both see the same results.
+// drive the same panel through runAsync(), so both see the same results.
+// The solve and the files are never on the message thread (the Run button
+// and runAsync both use the panel's worker), so a long analysis never
+// freezes the window.
 class AnalyticsPanel final : public juce::Component
 {
 public:
@@ -43,6 +46,12 @@ public:
 
     // Runs on the calling thread, shows the result, returns the stored run.
     const Run& runNow(analytics::Analysis analysis, const analytics::Settings& settings);
+    // Call on the message thread. Solves and writes the files on the panel's
+    // worker, then (on the message thread) shows the result and calls done
+    // with the stored run. While another run is in progress it does not
+    // start, and done gets a failed result saying so.
+    void runAsync(analytics::Analysis analysis, const analytics::Settings& settings,
+                  std::function<void(const analytics::Result&, const juce::StringArray& files)> done);
     // Measures a trace of the latest run and lists it in the window.
     signal_measure::Result measureLatest(const juce::String& trace, const signal_measure::Request& request, juce::String& label);
 
@@ -59,8 +68,24 @@ private:
     class AnalysisList;
 
     void runSelected();
-    void deliver(analytics::Result result);
+    void deliver(analytics::Result result, juce::StringArray files);
     void storeRun(analytics::Result result);
+    void storeRun(analytics::Result result, juce::StringArray files);
+    // What a run needs from the message thread, gathered there; compute()
+    // then runs anywhere.
+    struct Job
+    {
+        analytics::Analysis analysis;
+        analytics::Settings values;
+        analytics::Netlist netlist;
+        xyce_backend::Engine engine;
+        bool compare = false, programmable = false;
+        juce::File outRoot;
+    };
+    Job prepare(analytics::Analysis analysis, const analytics::Settings& values) const;
+    static analytics::Result compute(const Job& job);
+    static juce::StringArray writeFilesTo(const juce::File& outRoot, const analytics::Result& result);
+    void finishRun(analytics::Analysis analysis, const analytics::Netlist& netlist, analytics::Result result, juce::StringArray files);
     void showRun(int index);
     void showPlot(int index);
     void refreshChoices();

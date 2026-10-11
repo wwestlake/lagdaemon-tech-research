@@ -356,7 +356,7 @@ const juce::StringArray& supportedSymbolIds()
         "nmos", "pmos", "njfet", "pjfet", "switch_spst", "switch_spdt",
         "voltage_controlled_switch", "current_controlled_switch", "relay_spst",
         "fuse", "connector_2", "connector_3", "test_point", "logic_not", "logic_buffer", "logic_and",
-        "logic_or", "logic_nand", "logic_nor", "logic_xor", "logic_xnor", "oscilloscope_2ch",
+        "logic_or", "logic_nand", "logic_nor", "logic_xor", "logic_xnor", "dc_motor", "dc_motor_tach", "oscilloscope_2ch",
         "digital_multimeter", "bode_analyzer", "xyz_plotter", "annotation_text"
     };
     return ids;
@@ -434,6 +434,11 @@ SymbolDef symbolFor(const juce::String& id)
     if (id == "connector_3")         return make(id, "J3", { -24, -42, 36, 84 }, { { "1", { -48, -24 } }, { "2", { -48, 0 } }, { "3", { -48, 24 } } }, true);
     if (id == "test_point")          return make(id, "TP", { -12, -12, 24, 24 }, { { "1", { -24, 0 } } });
     if (isLogicGate(id))             return logicGateSymbol(id, defaultGateInputs(id));
+    // Brushed DC motor; the shaft is drawn, not a pin (Mechanical.h).
+    if (id == "dc_motor")            return make(id, "M", { -30, -30, 72, 60 }, { { "+", { 0, -48 } }, { "-", { 0, 48 } } });
+    // With a tachogenerator on its shaft: T+ - T- = k * speed.
+    if (id == "dc_motor_tach")       return make(id, "M TG", { -30, -30, 126, 60 }, { { "+", { 0, -48 } }, { "-", { 0, 48 } },
+                                                                                   { "T+", { 72, -48 } }, { "T-", { 72, 48 } } }, true);
     if (id == "oscilloscope_2ch")    return make(id, "SCOPE", { -60, -48, 120, 96 }, { { "CH1", { -72, -24 } }, { "CH2", { -72, 24 } }, { "REF", { 0, 72 } } }, true);
     if (id == "bode_analyzer")       return make(id, "BODE", { -60, -48, 120, 96 }, { { "IN", { -72, -24 } }, { "OUT", { -72, 24 } }, { "REF", { 0, 72 } } }, true);
     if (id == "digital_multimeter")  return make(id, "DMM", { -48, -36, 96, 72 }, { { "HI", { -72, -24 } }, { "LO", { -72, 24 } } }, true);
@@ -464,6 +469,7 @@ juce::String refdesPrefixFor(const juce::String& id)
     if (id == "npn" || id == "pnp" || id == "nmos" || id == "pmos" || id == "njfet" || id == "pjfet") return "Q";
     if (id.startsWith("switch_")) return "SW";
     if (id.startsWith("relay_")) return "K";
+    if (id == "dc_motor" || id == "dc_motor_tach") return "M";
     if (id == "fuse") return "F";
     if (id.startsWith("connector_")) return "J";
     if (id == "test_point") return "TP";
@@ -1046,6 +1052,22 @@ void drawSymbolArt(juce::Graphics& g, const SymbolDef& symbol, const juce::Strin
         contact(g, { 21, -24 });
         contact(g, { 21, 24 });
         line(g, { -19, -2 }, { 18, -20 });
+    }
+    else if (id == "dc_motor" || id == "dc_motor_tach")
+    {
+        circleSource(g);
+        text(g, "M", { -16, -16, 32, 32 }, 18.0f);
+        text(g, "+", { 6, -40, 14, 14 });
+        // The shaft, and the tachogenerator on it.
+        const auto shaftEnd = id == "dc_motor" ? 42.0f : 54.0f;
+        g.fillRect(24.0f, -3.0f, shaftEnd - 24.0f, 6.0f);
+        if (id == "dc_motor_tach")
+        {
+            g.drawEllipse(54.0f, -18.0f, 36.0f, 36.0f, stroke);
+            text(g, "TG", { 56, -10, 32, 20 }, 11.0f);
+            line(g, { 72, -48 }, { 72, -18 });
+            line(g, { 72, 18 }, { 72, 48 });
+        }
     }
     else if (id == "relay_spst")
     {

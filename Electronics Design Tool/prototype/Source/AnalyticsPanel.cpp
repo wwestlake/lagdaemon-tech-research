@@ -1272,15 +1272,17 @@ bool hasProgrammableComponent(const analytics::Netlist& netlist)
 // stepper), or both.
 juce::String programmableNote(const analytics::Netlist& netlist)
 {
-    bool gates = false, programs = false;
+    bool gates = false, programs = false, motors = false;
     for (const auto& e : netlist.circuit.elements())
         if (e.type == circuit_sim::Element::Type::Programmable)
-            (juce::String(e.modelName).startsWith("LOGIC_") ? gates : programs) = true;
+            (juce::String(e.modelName).startsWith("LOGIC_") ? gates : e.modelName == "MECH_SHAFT" ? motors : programs) = true;
     juce::StringArray why;
     if (programs)
         why.add("FRust programmable components (their programs run at every Newton iteration inside the app)");
     if (gates)
         why.add("logic gates (their thresholds and propagation delays run on the internal solver's device events)");
+    if (motors)
+        why.add("DC motors (their shaft angle, friction and end stops are computed inside the app with the electrical solution)");
     return "This circuit has " + why.joinIntoString(" and ")
          + ", so the internal solver ran it: the external Xyce process cannot call them.";
 }
@@ -1587,57 +1589,95 @@ void AnalyticsPanel::runSelected()
                          || (requestedEngine != values.end() && requestedEngine->second.containsIgnoreCase("internal")))
         ? xyce_backend::Engine::InternalSolver : xyce_backend::Engine::Xyce;
     const auto outRoot = outputFolder != nullptr ? outputFolder() : juce::File {};
+    const Job job { analysis, values, netlist, engine, compare, programmable, outRoot };
     std::weak_ptr<bool> weak = alive;
-    pool.addJob([this, analysis, values, netlist, weak, engine, compare, outRoot, programmable] {
-        auto result = compare ? (analysis == analytics::Analysis::Transient
-                                     ? compareTransientSolvers(values, netlist, outRoot)
-                                     : comparisonFailure("Solver comparison is available for transient analysis only.", analysis, values, 0.0))
-                              : engine == xyce_backend::Engine::Xyce ? xyce_backend::run(analysis, values, netlist, outRoot)
-                                                                      : analytics::run(analysis, values, netlist);
-        if (!compare && engine == xyce_backend::Engine::Xyce)
-            addCircuitWarnings(result, netlist);
-        if (programmable)
-            result.warnings.add(programmableNote(netlist));
-        juce::MessageManager::callAsync([this, weak, result]() mutable {
+    pool.addJob([this, job, weak] {
+        auto result = compute(job);
+        auto files = writeFilesTo(job.outRoot, result);
+        juce::MessageManager::callAsync([this, weak, result, files]() mutable {
             if (weak.expired()) return;
-            deliver(std::move(result));
+            deliver(std::move(result), std::move(files));
         });
     });
 }
 
-void AnalyticsPanel::deliver(analytics::Result result)
+void AnalyticsPanel::deliver(analytics::Result result, juce::StringArray files)
 {
     running = false;
     runButton.setEnabled(true);
     runButton.setButtonText("Run");
-    storeRun(std::move(result));
+    storeRun(std::move(result), std::move(files));
     showRun((int)runs.size() - 1);
 }
 
-const AnalyticsPanel::Run& AnalyticsPanel::runNow(analytics::Analysis analysis, const analytics::Settings& values)
+AnalyticsPanel::Job AnalyticsPanel::prepare(analytics::Analysis analysis, const analytics::Settings& values) const
 {
-    // Exactly what was asked for, on top of the defaults (not what an earlier run left behind).
-    const auto netlist = getNetlist != nullptr ? getNetlist() : analytics::Netlist {};
+    Job job;
+    job.analysis = analysis;
+    job.values = values;
+    job.netlist = getNetlist != nullptr ? getNetlist() : analytics::Netlist {};
     const auto requestedEngine = values.find("engine");
-    const auto compare = engineBox.getSelectedId() == 3
+    job.compare = engineBox.getSelectedId() == 3
         || (requestedEngine != values.end() && requestedEngine->second.containsIgnoreCase("compare"));
     // A FRust programmable component runs at every Newton iteration inside
     // the app, which the external Xyce engine cannot call: such a circuit
     // runs on the internal solver (the result says so).
-    const bool programmable = hasProgrammableComponent(netlist);
-    const auto engine = (programmable || engineBox.getSelectedId() == 2
-                         || (requestedEngine != values.end() && requestedEngine->second.containsIgnoreCase("internal")))
+    job.programmable = hasProgrammableComponent(job.netlist);
+    job.engine = (job.programmable || engineBox.getSelectedId() == 2
+                  || (requestedEngine != values.end() && requestedEngine->second.containsIgnoreCase("internal")))
         ? xyce_backend::Engine::InternalSolver : xyce_backend::Engine::Xyce;
-    const auto outRoot = outputFolder != nullptr ? outputFolder() : juce::File {};
-    auto result = compare ? (analysis == analytics::Analysis::Transient
-                                 ? compareTransientSolvers(values, netlist, outRoot)
-                                 : comparisonFailure("Solver comparison is available for transient analysis only.", analysis, values, 0.0))
-                          : engine == xyce_backend::Engine::Xyce ? xyce_backend::run(analysis, values, netlist, outRoot)
-                                                                  : analytics::run(analysis, values, netlist);
-    if (!compare && engine == xyce_backend::Engine::Xyce)
-        addCircuitWarnings(result, netlist);
-    if (programmable)
-        result.warnings.add(programmableNote(netlist));
+    job.outRoot = outputFolder != nullptr ? outputFolder() : juce::File {};
+    return job;
+}
+
+analytics::Result AnalyticsPanel::compute(const Job& job)
+{
+    auto result = job.compare ? (job.analysis == analytics::Analysis::Transient
+                                     ? compareTransientSolvers(job.values, job.netlist, job.outRoot)
+                                     : comparisonFailure("Solver comparison is available for transient analysis only.", job.analysis, job.values, 0.0))
+                              : job.engine == xyce_backend::Engine::Xyce ? xyce_backend::run(job.analysis, job.values, job.netlist, job.outRoot)
+                                                                          : analytics::run(job.analysis, job.values, job.netlist);
+    if (!job.compare && job.engine == xyce_backend::Engine::Xyce)
+        addCircuitWarnings(result, job.netlist);
+    if (job.programmable)
+        result.warnings.add(programmableNote(job.netlist));
+    return result;
+}
+
+void AnalyticsPanel::runAsync(analytics::Analysis analysis, const analytics::Settings& values,
+                              std::function<void(const analytics::Result&, const juce::StringArray&)> done)
+{
+    if (running.exchange(true))
+    {
+        analytics::Result busy;
+        busy.analysis = analysis;
+        busy.ok = false;
+        busy.error = "Another analysis is still running; try again when it finishes.";
+        done(busy, {});
+        return;
+    }
+    runButton.setEnabled(false);
+    runButton.setButtonText("Running...");
+    statusLabel.setText("Running " + analytics::infoFor(analysis).title + " on the open diagram...", juce::dontSendNotification);
+    const auto job = prepare(analysis, values);
+    std::weak_ptr<bool> weak = alive;
+    pool.addJob([this, job, weak, done] {
+        auto result = compute(job);
+        auto files = writeFilesTo(job.outRoot, result);
+        juce::MessageManager::callAsync([this, weak, job, result, files, done]() mutable {
+            if (weak.expired())
+                return;
+            running = false;
+            runButton.setEnabled(true);
+            runButton.setButtonText("Run");
+            finishRun(job.analysis, job.netlist, std::move(result), std::move(files));
+            done(runs.back().result, runs.back().files);
+        });
+    });
+}
+
+void AnalyticsPanel::finishRun(analytics::Analysis analysis, const analytics::Netlist& netlist, analytics::Result result, juce::StringArray files)
+{
     settings[analysis] = result.settings;
     saveSettings();
     if (analysis != current)
@@ -1647,16 +1687,31 @@ const AnalyticsPanel::Run& AnalyticsPanel::runNow(analytics::Analysis analysis, 
         choicesNetlist = netlist;
         form->build(current, settings[current], choicesNetlist);
     }
-    storeRun(std::move(result));
+    storeRun(std::move(result), std::move(files));
     showRun((int)runs.size() - 1);
     if (bringToFront != nullptr) bringToFront();
+}
+
+const AnalyticsPanel::Run& AnalyticsPanel::runNow(analytics::Analysis analysis, const analytics::Settings& values)
+{
+    // Exactly what was asked for, on top of the defaults (not what an earlier run left behind).
+    const auto job = prepare(analysis, values);
+    auto result = compute(job);
+    auto files = writeFilesTo(job.outRoot, result);
+    finishRun(analysis, job.netlist, std::move(result), std::move(files));
     return runs.back();
 }
 
 void AnalyticsPanel::storeRun(analytics::Result result)
 {
+    auto files = writeFiles(result);
+    storeRun(std::move(result), std::move(files));
+}
+
+void AnalyticsPanel::storeRun(analytics::Result result, juce::StringArray files)
+{
     Run run;
-    run.files = writeFiles(result);
+    run.files = std::move(files);
     run.result = std::move(result);
     run.measurements.title = "Measurements";
     run.measurements.columns = { "Trace", "Measurement", "Window", "Value" };
@@ -1795,10 +1850,15 @@ void AnalyticsPanel::addMeasurement()
 
 juce::StringArray AnalyticsPanel::writeFiles(const analytics::Result& result) const
 {
+    return outputFolder != nullptr ? writeFilesTo(outputFolder(), result) : juce::StringArray {};
+}
+
+juce::StringArray AnalyticsPanel::writeFilesTo(const juce::File& outRoot, const analytics::Result& result)
+{
     juce::StringArray files;
-    if (outputFolder == nullptr || !result.ok)
+    if (outRoot == juce::File {} || !result.ok)
         return files;
-    const auto folder = outputFolder().getChildFile("analytics")
+    const auto folder = outRoot.getChildFile("analytics")
         .getChildFile(result.when.formatted("%Y-%m-%d_%H-%M-%S") + "_" + analytics::infoFor(result.analysis).key);
     if (!folder.createDirectory())
         return files;

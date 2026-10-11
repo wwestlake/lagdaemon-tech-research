@@ -72,6 +72,8 @@ std::vector<Footprint> makeFootprints()
         { tht("1", 0, 1.27, 1.7, 1.0), tht("2", 0, -1.27, 1.7, 1.0) }, 3.0, 5.6);
     add("Header-1x3-P2.54", "Pin header 1x3", "2.54 mm pin header.",
         { tht("1", 0, 2.54, 1.7, 1.0), tht("2", 0, 0, 1.7, 1.0), tht("3", 0, -2.54, 1.7, 1.0) }, 3.0, 8.1);
+    add("Header-1x4-P2.54", "Pin header 1x4", "2.54 mm pin header.",
+        { tht("1", 0, 3.81, 1.7, 1.0), tht("2", 0, 1.27, 1.7, 1.0), tht("3", 0, -1.27, 1.7, 1.0), tht("4", 0, -3.81, 1.7, 1.0) }, 3.0, 10.6);
     add("Trimmer-3296W", "Trimmer, 3296W", "Through-hole multiturn trimmer, pins 1, wiper, 3 in line.",
         { tht("1", -2.54, 0, 1.6, 0.8), tht("2", 0, 0, 1.6, 0.8), tht("3", 2.54, 0, 1.6, 0.8) }, 10.0, 5.0);
     add("Trimmer-Cap-P5.0", "Trimmer capacitor", "Through-hole trimmer capacitor, 5 mm pitch.",
@@ -126,6 +128,9 @@ const std::map<juce::String, std::vector<Fit>>& fits()
         t["connector_2"] = { { "Header-1x2-P2.54", "1=1,2=2" } };
         t["connector_3"] = { { "Header-1x3-P2.54", "1=1,2=2,3=3" } };
         t["test_point"] = { { "TestPoint-THT", "1=1" } };
+        // A motor is off the board: its leads land on a header.
+        t["dc_motor"] = { { "Header-1x2-P2.54", "1=+,2=-" } };
+        t["dc_motor_tach"] = { { "Header-1x4-P2.54", "1=+,2=-,3=T+,4=T-" } };
         t["logic_not"] = t["logic_buffer"] = { { "SOT-23-5", "2=A,4=Y" } };
         for (const auto* g : { "logic_and", "logic_or", "logic_nand", "logic_nor", "logic_xor", "logic_xnor" })
             t[g] = { { "SOT-23-5", "1=A,2=B,4=Y" } };

@@ -141,6 +141,8 @@ private:
     void showAnalytics();
     void showNodeDesigner();
     juce::String analyticsTool(const juce::String& name, const juce::var& args);
+    // The tool's settings: its arguments, with param:<id> targets resolved.
+    std::map<juce::String, juce::String> analyticsToolSettings(const juce::var& args) const;
     class AnalyticsPanel* analyticsPanel = nullptr;
     class FrustPanel* frustPanel = nullptr;
     class NodeDesignerPanel* nodeDesignerPanel = nullptr;

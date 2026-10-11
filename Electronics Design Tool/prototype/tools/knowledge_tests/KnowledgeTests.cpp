@@ -380,6 +380,38 @@ int main(int argc, char** argv)
         checkTrue("section logic returns it", section.getProperty("logicGates", {}).isObject() && !section.hasProperty("components"));
     }
 
+    std::printf("-- 11. DC motors: discovery without being told the tools --\n");
+    {
+        capability_catalog::Request r;
+        r.query = "motor speed torque";
+        const auto result = juce::JSON::parse(capability_catalog::toJson(r));
+        const auto em = result.getProperty("electromechanical", {});
+        const auto text = juce::JSON::toString(em, true);
+        checkTrue("a 'motor speed torque' query explains the DC motor", em.isObject() && text.contains("back EMF") && text.contains("dc_motor_tach"),
+                  text.substring(0, 200));
+        checkTrue("it names the measurable quantities and their units",
+                  text.contains(".speed (rad/s)") && text.contains(".torque (N*m") && text.contains(".power_in"));
+        checkTrue("it says which backend runs motors (internal solver, Xyce falls back)",
+                  em.getProperty("simulation", {}).toString().contains("internal solver") && em.getProperty("simulation", {}).toString().contains("Xyce"));
+        checkTrue("feedback goes through the tachometer, not the motor's internals", em.getProperty("control", {}).toString().contains("tach_constant"));
+        const auto workflow = juce::JSON::toString(em.getProperty("workflow", {}));
+        checkTrue("its workflow places, configures, wires, simulates and checks a motor",
+                  workflow.indexOf("schematic_place_symbol") < workflow.indexOf("schematic_set_parameters")
+                      && workflow.contains("analytics_transient") && workflow.contains("M1.speed") && workflow.contains("circuit_run_erc"),
+                  workflow.substring(0, 300));
+        const auto motor = catalog("", "", "dc_motor");
+        juce::StringArray params;
+        if (const auto* list = motor.getProperty("component", {}).getProperty("parameters", {}).getArray())
+            for (const auto& p : *list)
+                params.add(p.getProperty("key", p.getProperty("name", {})).toString());
+        checkTrue("looking up dc_motor gives its parameters and the electromechanical section",
+                  motor.getProperty("electromechanical", {}).isObject() && params.contains("kt") && params.contains("ke") && params.contains("j")
+                      && params.contains("load_torque_pwl") && params.contains("initial_speed"),
+                  params.joinIntoString(","));
+        const auto section = juce::JSON::parse(capability_catalog::toJson([] { capability_catalog::Request q; q.section = "electromechanical"; return q; }()));
+        checkTrue("section electromechanical returns it", section.getProperty("electromechanical", {}).isObject() && !section.hasProperty("components"));
+    }
+
     std::printf("-- reference Chua circuits (values the cards document) --\n");
     {
         chua_reference::Values v;
