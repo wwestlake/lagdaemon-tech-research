@@ -554,6 +554,9 @@ public:
     // a caller that records samples steps to this time to record the left
     // limit of the change.
     double nextDeviceEvent() const;
+    // step(to), except that it returns at the first device event it lands on
+    // before `to` (time() < to then), so a caller can record each event.
+    bool stepToEvent(double to);
 
     double time() const;
     double voltage(Node node) const;

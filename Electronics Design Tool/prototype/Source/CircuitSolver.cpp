@@ -1035,6 +1035,46 @@ bool solveDcState(const Circuit& c, const Layout& l, const Options& o, std::vect
         if (!newton(c, l, o, Mode::Dc, x, 0.0, 1.0, step / 20.0, none, its, error))
         {
             error = "DC operating point did not converge (source stepping failed at " + std::to_string(step * 5) + "%).";
+            // Last resort, reached only by circuits every strategy above
+            // fails (so nothing that solved before solves differently):
+            // gmin continuation with adaptive steps. A high-gain loop whose
+            // gain does not scale with the sources (a logic gate's output
+            // fed back to its input) moves continuously with gmin, so small
+            // enough steps keep Newton in its basin where decade steps and
+            // source stepping cycle.
+            const auto failed = error;
+            std::vector<double> good((size_t)l.size, 0.0);
+            double g = 1e-2, factor = 10.0;
+            int steps = 0;
+            auto stepped = o;
+            stepped.gmin = g;
+            int its2 = 0;
+            bool ok = newton(c, l, stepped, Mode::Dc, good, 0.0, 1.0, 1.0, none, its2, error);
+            iterations += its2;
+            while (ok && g > o.gmin && steps++ < 4000)
+            {
+                const auto next = std::max(g / factor, o.gmin);
+                auto trial = good;
+                stepped.gmin = next;
+                its2 = 0;
+                const bool solved = newton(c, l, stepped, Mode::Dc, trial, 0.0, 1.0, 1.0, none, its2, error);
+                iterations += its2;
+                if (solved)
+                {
+                    good = trial;
+                    g = next;
+                    factor = std::min(factor * 2.0, 10.0);
+                }
+                else if ((factor = std::sqrt(factor)) < 1.0 + 1e-9)
+                    ok = false;
+            }
+            if (ok && g <= o.gmin)
+            {
+                x = good;
+                error.clear();
+                return true;
+            }
+            error = failed;
             return false;
         }
         iterations += its;
@@ -1854,23 +1894,22 @@ TransientResult runTransient(const Circuit& circuit, const TransientSettings& se
     for (size_t n = 0; n < grid.size(); ++n)
     {
         const auto t = grid[n];
-        // Device events between grid points: the step lands on each, and
-        // its sample (the left limit of the change) is always kept, so an
-        // edge shows at its own time, not at the next grid point.
-        for (auto e = stepper.nextDeviceEvent(); e < t - 1e-9 * (t - stepper.time()); e = stepper.nextDeviceEvent())
+        // Device events between grid points: the step lands on each
+        // (including one a step schedules inside itself), and its sample
+        // (the left limit of the change) is always kept, so an edge shows at
+        // its own time, not at the next grid point. Without event devices
+        // this is exactly one step(t).
+        while (stepper.time() < t)
         {
-            if (!stepper.step(e))
+            if (!stepper.stepToEvent(t))
             {
-                result.error = "Transient failed at t = " + formatValue(e, "s") + ": " + stepper.error();
+                result.error = "Transient failed at t = " + formatValue(t, "s") + ": " + stepper.error();
                 return result;
             }
+            if (stepper.time() >= t)
+                break;
             if (stepper.time() >= settings.start)
                 record(stepper.time());
-        }
-        if (!stepper.step(t))
-        {
-            result.error = "Transient failed at t = " + formatValue(t, "s") + ": " + stepper.error();
-            return result;
         }
         if (t >= settings.start)
         {
@@ -2162,7 +2201,7 @@ struct TransientStepper::Impl
     double eventResolution() const { return perSecond > 0.0 ? 0.5 / perSecond : std::max(1e-15, 1e-12 * std::abs(time)); }
     // An event at or within a hair of `to` (1e-9 of the step) is taken as at `to`.
     static bool eventBefore(double e, double from, double to) { return e < to - 1e-9 * (to - from); }
-    bool plainStep(double to);
+    bool plainStep(double to, bool stopAtEvent = false);
     bool landedOnEvent(double t0);
     bool stepOnce(double from, double to, int depth);
     bool stepPiece(double from, double to, int depth);
@@ -2181,7 +2220,7 @@ struct TransientStepper::Impl
 // input crossing interpolated inside it, followed by a delay shorter than the
 // step) is rolled back to its start and taken again to that event, so the
 // event is neither late nor applied twice.
-bool TransientStepper::Impl::plainStep(double to)
+bool TransientStepper::Impl::plainStep(double to, bool stopAtEvent)
 {
     if (eventDevices.empty())
     {
@@ -2210,8 +2249,11 @@ bool TransientStepper::Impl::plainStep(double to)
             ++stats.eventRetries;
             end = created;
         }
+        const auto landed = stats.deviceEvents;
         if (!landedOnEvent(t0))
             return false;
+        if (stopAtEvent && stats.deviceEvents != landed && time < to)
+            return true;
     }
     return true;
 }
@@ -3017,6 +3059,22 @@ bool TransientStepper::advance(double to, std::vector<Event>* events)
 
 void TransientStepper::requestRestart() { impl->restartPending = true; }
 double TransientStepper::nextDeviceEvent() const { return impl->nextDeviceEvent(impl->time); }
+
+bool TransientStepper::stepToEvent(double to)
+{
+    auto& m = *impl;
+    if (!m.initialised)
+    {
+        m.error = "The stepper is not initialised.";
+        return false;
+    }
+    if (!(to > m.time))
+    {
+        m.error = "A step must end after the current time.";
+        return false;
+    }
+    return m.plainStep(to, true);
+}
 double TransientStepper::time() const { return impl->time; }
 
 double TransientStepper::voltage(Node node) const

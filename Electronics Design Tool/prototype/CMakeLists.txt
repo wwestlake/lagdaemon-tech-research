@@ -352,6 +352,25 @@ foreach(variant IN ITEMS "CircuitStepperTests;circuit_sim;sim_core;circuit_stepp
     add_test(NAME ${test_target} COMMAND ${test_target} --out "${CMAKE_CURRENT_BINARY_DIR}/circuit_stepper_test_out_${test_config}")
 endforeach()
 
+# Logic gates (LogicGates.cpp in circuit_sim): truth tables, thresholds,
+# levels, propagation timing on the stepper's device events, latches and
+# rollback, built against the optimised and the unoptimised circuit_sim;
+# `logic_gate_tests --compare <outA> <outB>` checks the two agree.
+foreach(variant IN ITEMS "LogicGateTests;circuit_sim;logic_gate_tests;optimized"
+                         "LogicGateTestsUnopt;circuit_sim_unopt;logic_gate_tests_unopt;unoptimized")
+    list(GET variant 0 test_target)
+    list(GET variant 1 test_circuit)
+    list(GET variant 2 test_output)
+    list(GET variant 3 test_config)
+    add_executable(${test_target} tools/logic_gate_tests/LogicGateTests.cpp)
+    target_link_libraries(${test_target} PRIVATE ${test_circuit})
+    target_compile_definitions(${test_target} PRIVATE LOGIC_GATE_TESTS_CONFIG="${test_config}")
+    set_target_properties(${test_target} PROPERTIES
+        OUTPUT_NAME "${test_output}"
+        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/bin")
+    add_test(NAME ${test_target} COMMAND ${test_target} --out "${CMAKE_CURRENT_BINARY_DIR}/logic_gate_test_out_${test_config}")
+endforeach()
+
 juce_add_console_app(AudioDspTests PRODUCT_NAME "Audio Dsp Tests")
 set_target_properties(AudioDspTests PROPERTIES 
     OUTPUT_NAME "audio_dsp_tests_3"

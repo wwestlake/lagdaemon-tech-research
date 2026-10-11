@@ -25,6 +25,8 @@ set(CIRCUIT_SIM_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../../Source")
 set(CIRCUIT_SIM_SOURCES
     "${CIRCUIT_SIM_SOURCE_DIR}/CircuitSolver.h"
     "${CIRCUIT_SIM_SOURCE_DIR}/CircuitSolver.cpp"
+    "${CIRCUIT_SIM_SOURCE_DIR}/LogicGates.h"
+    "${CIRCUIT_SIM_SOURCE_DIR}/LogicGates.cpp"
 )
 
 function(circuit_sim_flags target optimise)
