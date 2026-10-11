@@ -751,6 +751,16 @@ public:
 
     bool keyPressed(const juce::KeyPress& key) override
     {
+        if (auto* focused = juce::Component::getCurrentlyFocusedComponent())
+        {
+            if (dynamic_cast<juce::TextEditor*>(focused) != nullptr
+                || dynamic_cast<juce::Label*>(focused) != nullptr
+                || focused->findParentComponentOfClass<juce::TextEditor>() != nullptr)
+            {
+                return false;
+            }
+        }
+
         if (key == juce::KeyPress::escapeKey && drawing)
         {
             drawing = false;

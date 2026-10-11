@@ -104,6 +104,66 @@ void styleTextEditor(juce::TextEditor& editor, bool mono = false)
     editor.setColour(juce::TextEditor::textColourId, juce::Colour(0xffdce9ee));
 }
 
+class SearchFilterComponent : public juce::Component
+{
+public:
+    SearchFilterComponent()
+    {
+        editor.setMultiLine(false);
+        editor.setReturnKeyStartsNewLine(false);
+        editor.setScrollbarsShown(false);
+        editor.setFont(juce::Font("Segoe UI", 14.5f, juce::Font::plain));
+        editor.setColour(juce::TextEditor::backgroundColourId, juce::Colour(0xff10161d));
+        editor.setColour(juce::TextEditor::outlineColourId, juce::Colour(0xff33424d));
+        editor.setColour(juce::TextEditor::focusedOutlineColourId, juce::Colour(0xff5aa7c8));
+        editor.setColour(juce::TextEditor::textColourId, juce::Colour(0xffdce9ee));
+        editor.onTextChange = [this] {
+            clearButton.setVisible(editor.getText().isNotEmpty());
+            if (onTextChange) onTextChange();
+        };
+        editor.onEscapeKey = [this] {
+            if (editor.getText().isNotEmpty())
+            {
+                editor.clear();
+                if (onTextChange) onTextChange();
+            }
+        };
+        addAndMakeVisible(editor);
+
+        clearButton.setButtonText(juce::String::charToString(0x00D7)); // '×'
+        clearButton.setColour(juce::TextButton::buttonColourId, juce::Colours::transparentBlack);
+        clearButton.setColour(juce::TextButton::textColourOffId, juce::Colour(0xff9aa8ba));
+        clearButton.setColour(juce::TextButton::textColourOnId, juce::Colours::white);
+        clearButton.setVisible(false);
+        clearButton.onClick = [this] {
+            editor.clear();
+            editor.grabKeyboardFocus();
+            if (onTextChange) onTextChange();
+        };
+        addAndMakeVisible(clearButton);
+    }
+
+    void setTextToShowWhenEmpty(const juce::String& text, juce::Colour colour)
+    {
+        editor.setTextToShowWhenEmpty(text, colour);
+    }
+
+    juce::String getText() const { return editor.getText(); }
+    void setText(const juce::String& text) { editor.setText(text); }
+    void clear() { editor.clear(); }
+
+    void resized() override
+    {
+        auto area = getLocalBounds();
+        clearButton.setBounds(area.removeFromRight(24).reduced(2));
+        editor.setBounds(area);
+    }
+
+    std::function<void()> onTextChange;
+    juce::TextEditor editor;
+    juce::TextButton clearButton;
+};
+
 void showCursorForEvent(const juce::MouseEvent& event, juce::MouseCursor cursor)
 {
     auto source = event.source;
@@ -1511,8 +1571,6 @@ public:
         : onSymbolSelected(std::move(onSelection))
     {
         filter.setTextToShowWhenEmpty("Search components, MPNs, aliases...", juce::Colour(0xff71808c));
-        styleTextEditor(filter);
-        filter.setMultiLine(false);
         filter.onTextChange = [this] { content.rebuild(); };
         addAndMakeVisible(filter);
 
@@ -1781,7 +1839,7 @@ private:
         int hover = -1;
     };
 
-    juce::TextEditor filter;
+    SearchFilterComponent filter;
     juce::Viewport viewport;
     ListContent content { *this };
     std::vector<SymbolInfo> allSymbols;
@@ -3640,6 +3698,16 @@ public:
 
     bool keyPressed(const juce::KeyPress& key) override
     {
+        if (auto* focused = juce::Component::getCurrentlyFocusedComponent())
+        {
+            if (dynamic_cast<juce::TextEditor*>(focused) != nullptr
+                || dynamic_cast<juce::Label*>(focused) != nullptr
+                || focused->findParentComponentOfClass<juce::TextEditor>() != nullptr)
+            {
+                return false;
+            }
+        }
+
         // With Ctrl held, Windows reports a control character as the text
         // character, so match the key code too.
         auto isKey = [&](juce_wchar letter) {
@@ -12825,8 +12893,6 @@ public:
     PreferencesView(class AudioPipeline* audioPipeline = nullptr) : audioPipeline(audioPipeline)
     {
         search.setTextToShowWhenEmpty("Search preferences (rail, spacing, grid, units...)", juce::Colour(0xff71808c));
-        styleTextEditor(search);
-        search.setMultiLine(false);
         search.onTextChange = [this] { rebuild(); };
         addAndMakeVisible(search);
 
@@ -13048,7 +13114,7 @@ private:
         content.setSize(width, y + 8);
     }
 
-    juce::TextEditor search;
+    SearchFilterComponent search;
     juce::OwnedArray<juce::TextButton> categoryButtons;
     juce::String selectedCategory;
     juce::Viewport viewport;
@@ -13260,7 +13326,7 @@ public:
     explicit PropertiesPanel(SchematicCanvasPanel* canvasPanel) : canvas(canvasPanel)
     {
         viewport.setViewedComponent(&content, false);
-        viewport.setScrollBarsShown(true, false);
+        viewport.setScrollBarsShown(true, true);
         viewport.setScrollBarThickness(10);
         addAndMakeVisible(viewport);
         saveButton.setTooltip("Apply the edited fields to the part (Enter in a field does the same)");
@@ -13401,6 +13467,9 @@ private:
         auto* editor = new juce::TextEditor();
         styleTextEditor(*editor);
         editor->setMultiLine(false);
+        editor->setReturnKeyStartsNewLine(false);
+        editor->setScrollbarsShown(false);
+        editor->setSelectAllWhenFocused(true);
         editor->setFont(juce::Font("Consolas", 13.5f, juce::Font::plain));
         editor->setText(text, false);
         return editor;

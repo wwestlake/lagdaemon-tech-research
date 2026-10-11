@@ -154,23 +154,85 @@ NodeDesignerPanel::PinFlow flowFromName(const juce::String& flow)
 }
 }
 
+class ClearableSearchBox : public juce::Component
+{
+public:
+    ClearableSearchBox()
+    {
+        editor.setMultiLine(false);
+        editor.setReturnKeyStartsNewLine(false);
+        editor.setScrollbarsShown(false);
+        editor.setColour(juce::TextEditor::backgroundColourId, juce::Colour(0xff20262f));
+        editor.setColour(juce::TextEditor::textColourId, juce::Colours::white);
+        editor.setColour(juce::TextEditor::outlineColourId, juce::Colour(0xff33424d));
+        editor.setColour(juce::TextEditor::focusedOutlineColourId, juce::Colour(0xff5aa7c8));
+        editor.onTextChange = [this] {
+            clearButton.setVisible(editor.getText().isNotEmpty());
+            if (onTextChange) onTextChange();
+        };
+        editor.onEscapeKey = [this] {
+            if (editor.getText().isNotEmpty())
+            {
+                editor.clear();
+                if (onTextChange) onTextChange();
+            }
+        };
+        addAndMakeVisible(editor);
+
+        clearButton.setButtonText(juce::String::charToString(0x00D7)); // multiplication sign '×'
+        clearButton.setColour(juce::TextButton::buttonColourId, juce::Colours::transparentBlack);
+        clearButton.setColour(juce::TextButton::textColourOffId, juce::Colour(0xff9aa8ba));
+        clearButton.setColour(juce::TextButton::textColourOnId, juce::Colours::white);
+        clearButton.setVisible(false);
+        clearButton.onClick = [this] {
+            editor.clear();
+            editor.grabKeyboardFocus();
+            if (onTextChange) onTextChange();
+        };
+        addAndMakeVisible(clearButton);
+    }
+
+    void setTextToShowWhenEmpty(const juce::String& text, juce::Colour colour)
+    {
+        editor.setTextToShowWhenEmpty(text, colour);
+    }
+
+    juce::String getText() const { return editor.getText(); }
+    void setText(const juce::String& text) { editor.setText(text); }
+    void clear() { editor.clear(); }
+
+    void resized() override
+    {
+        auto area = getLocalBounds();
+        clearButton.setBounds(area.removeFromRight(24).reduced(2));
+        editor.setBounds(area);
+    }
+
+    std::function<void()> onTextChange;
+    juce::TextEditor editor;
+    juce::TextButton clearButton;
+};
+
 class NodeDesignerPanel::PalettePanel final : public juce::Component
 {
 public:
     explicit PalettePanel(NodeDesignerPanel& ownerIn)
-        : owner(ownerIn)
+        : owner(ownerIn), content(*this)
     {
         title.setFont(juce::Font(15.0f, juce::Font::bold));
         title.setColour(juce::Label::textColourId, juce::Colours::white);
         addAndMakeVisible(title);
 
         filter.setTextToShowWhenEmpty("Filter nodes...", juce::Colour(0xff6b7a8c));
-        filter.setColour(juce::TextEditor::backgroundColourId, juce::Colour(0xff20262f));
-        filter.setColour(juce::TextEditor::textColourId, juce::Colours::white);
-        filter.onTextChange = [this] { rebuildRows(); repaint(); };
+        filter.onTextChange = [this] { content.rebuild(); };
         addAndMakeVisible(filter);
 
-        rebuildRows();
+        viewport.setViewedComponent(&content, false);
+        viewport.setScrollBarsShown(true, false);
+        viewport.setScrollBarThickness(10);
+        addAndMakeVisible(viewport);
+
+        content.rebuild();
     }
 
     void resized() override
@@ -178,31 +240,18 @@ public:
         auto b = getLocalBounds();
         title.setBounds(b.removeFromTop(25).reduced(8, 0));
         filter.setBounds(b.removeFromTop(30).reduced(6, 3));
-        listBounds = b;
+        viewport.setBounds(b);
+        content.layoutToWidth(b.getWidth() - viewport.getScrollBarThickness());
     }
 
     void refreshRows()
     {
-        rebuildRows();
-        repaint();
+        content.rebuild();
     }
 
     void paint(juce::Graphics& g) override
     {
         g.fillAll(juce::Colour(0xff15181d));
-        g.setColour(juce::Colour(0xff181c22));
-        g.fillRect(listBounds);
-
-        rowBounds.clear();
-        int y = listBounds.getY() + 4;
-        for (int i = 0; i < (int)rows.size(); ++i)
-        {
-            const auto h = rows[(size_t)i].header ? 25 : 31;
-            auto rowArea = juce::Rectangle<int>(listBounds.getX() + 4, y, listBounds.getWidth() - 8, h);
-            rowBounds.push_back(rowArea);
-            paintRow(g, i, rowArea);
-            y += h;
-        }
     }
 
 private:
@@ -212,130 +261,160 @@ private:
         juce::String category;
         int templateIndex = -1;
         int count = 0;
+        juce::Rectangle<int> bounds;
     };
 
-    void rebuildRows()
+    class ListContent final : public juce::Component
     {
-        rows.clear();
-        const auto text = filter.getText().trim();
-        std::vector<juce::String> categories;
-        for (const auto& t : owner.templates)
-            if (std::find(categories.begin(), categories.end(), t.category) == categories.end())
-                categories.push_back(t.category);
-        std::sort(categories.begin(), categories.end());
+    public:
+        explicit ListContent(PalettePanel& paletteIn) : palette(paletteIn) {}
 
-        for (const auto& category : categories)
+        void rebuild()
         {
-            std::vector<int> matches;
-            for (int i = 0; i < (int)owner.templates.size(); ++i)
+            rows.clear();
+            const auto text = palette.filter.getText().trim();
+            std::vector<juce::String> categories;
+            for (const auto& t : palette.owner.templates)
+                if (std::find(categories.begin(), categories.end(), t.category) == categories.end())
+                    categories.push_back(t.category);
+            std::sort(categories.begin(), categories.end());
+
+            for (const auto& category : categories)
             {
-                const auto& t = owner.templates[(size_t)i];
-                if (t.category != category) continue;
-                if (text.isEmpty() || t.title.containsIgnoreCase(text) || t.type.containsIgnoreCase(text))
-                    matches.push_back(i);
+                std::vector<int> matches;
+                for (int i = 0; i < (int)palette.owner.templates.size(); ++i)
+                {
+                    const auto& t = palette.owner.templates[(size_t)i];
+                    if (t.category != category) continue;
+                    if (text.isEmpty() || t.title.containsIgnoreCase(text) || t.type.containsIgnoreCase(text))
+                        matches.push_back(i);
+                }
+                if (matches.empty()) continue;
+
+                rows.push_back({ true, category, -1, (int)matches.size(), {} });
+                const bool expanded = palette.expandedCategories.count(category) != 0 || text.isNotEmpty();
+                if (expanded)
+                    for (const auto i : matches)
+                        rows.push_back({ false, category, i, 0, {} });
             }
-            if (matches.empty()) continue;
-
-            rows.push_back({ true, category, -1, (int)matches.size() });
-            const bool expanded = expandedCategories.count(category) != 0 || text.isNotEmpty();
-            if (expanded)
-                for (const auto i : matches)
-                    rows.push_back({ false, category, i, 0 });
-        }
-    }
-
-    void paintRow(juce::Graphics& g, int row, juce::Rectangle<int> bounds)
-    {
-        if (row < 0 || row >= (int)rows.size()) return;
-        const auto& r = rows[(size_t)row];
-        if (r.header)
-        {
-            g.setColour(juce::Colour(0xff20262f));
-            g.fillRect(bounds);
-            const bool expanded = expandedCategories.count(r.category) != 0 || filter.getText().trim().isNotEmpty();
-            g.setColour(juce::Colour(0xff9aa8ba));
-            g.setFont(juce::Font(12.0f, juce::Font::bold));
-            g.drawText((expanded ? "v " : "> ") + r.category + "  (" + juce::String(r.count) + ")",
-                       bounds.reduced(7, 0), juce::Justification::centredLeft, true);
-            return;
+            layoutToWidth(getWidth() > 0 ? getWidth() : 200);
         }
 
-        const auto& t = owner.templates[(size_t)r.templateIndex];
-        if (row == hoverRow)
+        void layoutToWidth(int width)
         {
-            g.setColour(juce::Colour(0xff24303d));
-            g.fillRoundedRectangle(bounds.toFloat().reduced(1.0f), 4.0f);
-        }
-        g.setColour(t.colour);
-        g.fillRoundedRectangle((float)bounds.getX() + 7.0f, (float)bounds.getCentreY() - 5.0f, 10.0f, 10.0f, 3.0f);
-        g.setColour(juce::Colour(0xffc7d2df));
-        g.setFont(juce::Font(13.0f));
-        g.drawText(t.title, bounds.withTrimmedLeft(24).withTrimmedBottom(12), juce::Justification::centredLeft, true);
-        g.setColour(juce::Colour(0xff758294));
-        g.setFont(juce::Font(10.5f));
-        g.drawText(t.type, bounds.withTrimmedLeft(24).withTrimmedTop(14), juce::Justification::centredLeft, true);
-    }
-
-    int rowAt(juce::Point<int> position) const
-    {
-        for (int i = 0; i < (int)rowBounds.size(); ++i)
-            if (rowBounds[(size_t)i].contains(position))
-                return i;
-        return -1;
-    }
-
-    void mouseMove(const juce::MouseEvent& e) override
-    {
-        const auto row = rowAt(e.getPosition());
-        if (row != hoverRow)
-        {
-            hoverRow = row;
+            int y = 4;
+            const int rowW = std::max(40, width - 8);
+            for (auto& r : rows)
+            {
+                const auto h = r.header ? 25 : 31;
+                r.bounds = juce::Rectangle<int>(4, y, rowW, h);
+                y += h;
+            }
+            setSize(std::max(40, width), y + 6);
             repaint();
         }
-    }
 
-    void mouseExit(const juce::MouseEvent&) override
-    {
-        hoverRow = -1;
-        repaint();
-    }
-
-    void mouseDown(const juce::MouseEvent& e) override
-    {
-        const auto row = rowAt(e.getPosition());
-        if (row < 0 || row >= (int)rows.size()) return;
-        const auto& r = rows[(size_t)row];
-        if (r.header)
+        void paint(juce::Graphics& g) override
         {
-            if (expandedCategories.count(r.category) == 0) expandedCategories.insert(r.category);
-            else expandedCategories.erase(r.category);
-            rebuildRows();
-            repaint();
-            return;
+            g.fillAll(juce::Colour(0xff181c22));
+            for (int i = 0; i < (int)rows.size(); ++i)
+                paintRow(g, i, rows[(size_t)i].bounds);
         }
-        if (r.templateIndex < 0) return;
-        if (auto* container = juce::DragAndDropContainer::findParentDragContainerFor(this))
-            container->startDragging(owner.templates[(size_t)r.templateIndex].type, this);
-    }
 
-    void mouseDoubleClick(const juce::MouseEvent& e) override
-    {
-        const auto row = rowAt(e.getPosition());
-        if (row < 0 || row >= (int)rows.size()) return;
-        const auto& r = rows[(size_t)row];
-        if (r.header || r.templateIndex < 0) return;
-        owner.addNode(owner.templates[(size_t)r.templateIndex].type, { 120.0f, 120.0f });
-        owner.repaint();
-    }
+        void paintRow(juce::Graphics& g, int row, juce::Rectangle<int> bounds)
+        {
+            if (row < 0 || row >= (int)rows.size()) return;
+            const auto& r = rows[(size_t)row];
+            if (r.header)
+            {
+                g.setColour(juce::Colour(0xff20262f));
+                g.fillRect(bounds);
+                const bool expanded = palette.expandedCategories.count(r.category) != 0 || palette.filter.getText().trim().isNotEmpty();
+                g.setColour(juce::Colour(0xff9aa8ba));
+                g.setFont(juce::Font(12.0f, juce::Font::bold));
+                g.drawText((expanded ? "v " : "> ") + r.category + "  (" + juce::String(r.count) + ")",
+                           bounds.reduced(7, 0), juce::Justification::centredLeft, true);
+                return;
+            }
+
+            const auto& t = palette.owner.templates[(size_t)r.templateIndex];
+            if (row == hoverRow)
+            {
+                g.setColour(juce::Colour(0xff24303d));
+                g.fillRoundedRectangle(bounds.toFloat().reduced(1.0f), 4.0f);
+            }
+            g.setColour(t.colour);
+            g.fillRoundedRectangle((float)bounds.getX() + 7.0f, (float)bounds.getCentreY() - 5.0f, 10.0f, 10.0f, 3.0f);
+            g.setColour(juce::Colour(0xffc7d2df));
+            g.setFont(juce::Font(13.0f));
+            g.drawText(t.title, bounds.withTrimmedLeft(24).withTrimmedBottom(12), juce::Justification::centredLeft, true);
+            g.setColour(juce::Colour(0xff758294));
+            g.setFont(juce::Font(10.5f));
+            g.drawText(t.type, bounds.withTrimmedLeft(24).withTrimmedTop(14), juce::Justification::centredLeft, true);
+        }
+
+        int rowAt(juce::Point<int> position) const
+        {
+            for (int i = 0; i < (int)rows.size(); ++i)
+                if (rows[(size_t)i].bounds.contains(position))
+                    return i;
+            return -1;
+        }
+
+        void mouseMove(const juce::MouseEvent& e) override
+        {
+            const auto row = rowAt(e.getPosition());
+            if (row != hoverRow)
+            {
+                hoverRow = row;
+                repaint();
+            }
+        }
+
+        void mouseExit(const juce::MouseEvent&) override
+        {
+            hoverRow = -1;
+            repaint();
+        }
+
+        void mouseDown(const juce::MouseEvent& e) override
+        {
+            const auto row = rowAt(e.getPosition());
+            if (row < 0 || row >= (int)rows.size()) return;
+            const auto& r = rows[(size_t)row];
+            if (r.header)
+            {
+                if (palette.expandedCategories.count(r.category) == 0) palette.expandedCategories.insert(r.category);
+                else palette.expandedCategories.erase(r.category);
+                rebuild();
+                return;
+            }
+            if (r.templateIndex < 0) return;
+            if (auto* container = juce::DragAndDropContainer::findParentDragContainerFor(this))
+                container->startDragging(palette.owner.templates[(size_t)r.templateIndex].type, this);
+        }
+
+        void mouseDoubleClick(const juce::MouseEvent& e) override
+        {
+            const auto row = rowAt(e.getPosition());
+            if (row < 0 || row >= (int)rows.size()) return;
+            const auto& r = rows[(size_t)row];
+            if (r.header || r.templateIndex < 0) return;
+            palette.owner.addNode(palette.owner.templates[(size_t)r.templateIndex].type, { 120.0f, 120.0f });
+            palette.owner.repaint();
+        }
+
+        PalettePanel& palette;
+        std::vector<Row> rows;
+        int hoverRow = -1;
+    };
 
     NodeDesignerPanel& owner;
     juce::Label title { {}, "Nodes" };
-    juce::TextEditor filter;
-    juce::Rectangle<int> listBounds;
-    std::vector<Row> rows;
-    std::vector<juce::Rectangle<int>> rowBounds;
+    ClearableSearchBox filter;
+    juce::Viewport viewport;
+    ListContent content;
     std::set<juce::String> expandedCategories { "Sources", "Math", "Logic", "Execution", "Functions", "Variables", "Types", "Streams", "Resources" };
-    int hoverRow = -1;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(PalettePanel)
 };
@@ -552,6 +631,16 @@ public:
 
     bool keyPressed(const juce::KeyPress& key) override
     {
+        if (auto* focused = juce::Component::getCurrentlyFocusedComponent())
+        {
+            if (dynamic_cast<juce::TextEditor*>(focused) != nullptr
+                || dynamic_cast<juce::Label*>(focused) != nullptr
+                || focused->findParentComponentOfClass<juce::TextEditor>() != nullptr)
+            {
+                return false;
+            }
+        }
+
         if (key != juce::KeyPress::deleteKey && key != juce::KeyPress::backspaceKey)
             return false;
         if (owner.selectedConnectionIndex >= 0 && owner.selectedConnectionIndex < (int)owner.connections.size())
@@ -1210,6 +1299,10 @@ public:
 private:
     void configureEditor(juce::TextEditor& editor)
     {
+        editor.setMultiLine(false);
+        editor.setReturnKeyStartsNewLine(false);
+        editor.setScrollbarsShown(false);
+        editor.setSelectAllWhenFocused(true);
         editor.setColour(juce::TextEditor::backgroundColourId, juce::Colour(0xff202a33));
         editor.setColour(juce::TextEditor::textColourId, juce::Colour(0xfff0f6f8));
         editor.setColour(juce::TextEditor::outlineColourId, juce::Colour(0xff40525f));
