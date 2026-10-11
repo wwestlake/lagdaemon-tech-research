@@ -26,6 +26,7 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <memory>
 #include <string>
 #include <vector>
@@ -49,10 +50,11 @@ void check(bool ok, const std::string& name, const std::string& detail = {})
     std::fflush(stdout);
 }
 
-std::string fmt(const char* f, double v)
+template <typename... Args>
+std::string fmt(const char* f, Args... args)
 {
-    char b[96];
-    std::snprintf(b, sizeof b, f, v);
+    char b[128];
+    std::snprintf(b, sizeof b, f, args...);
     return b;
 }
 
@@ -745,6 +747,507 @@ void testController(std::vector<double>& out)
     out.push_back(w);
 }
 
+// ---- 11b. closed-loop PID speed control with anti-windup & disturbance recovery ----------------
+
+class PidSpeedController final : public ProgrammableDevice
+{
+public:
+    void reset() override
+    {
+        integral = 0.0;
+        lastError = 0.0;
+        lastT = 0.0;
+        trialIntegral = 0.0;
+        trialError = 0.0;
+        hasLast = false;
+    }
+
+    bool evaluate(double t, double, const std::vector<double>& v, std::vector<double>& i, std::string&) override
+    {
+        const double wMeas = v[0] / kv;
+        const double wTarget = (setpointFn ? setpointFn(t) : setpoint);
+        const double err = wTarget - wMeas;
+        const double dt = (hasLast && t > lastT) ? (t - lastT) : 0.0;
+
+        const double pTerm = kp * err;
+        const double dTerm = (hasLast && dt > 1e-9) ? kd * (err - lastError) / dt : 0.0;
+
+        // Anti-windup conditional integration
+        const double uUnclamped = pTerm + integral * ki + dTerm;
+        const bool satHigh = (uUnclamped >= vMax);
+        const bool satLow = (uUnclamped <= vMin);
+        const bool integrate = (!satHigh && !satLow) || (satHigh && err < 0.0) || (satLow && err > 0.0);
+
+        trialIntegral = integral + (integrate ? err * dt : 0.0);
+        trialError = err;
+
+        const double u = std::clamp(pTerm + trialIntegral * ki + dTerm, vMin, vMax);
+        i = { -v[0] / 1e6, (u - v[1]) / rOut };
+        return true;
+    }
+
+    void accept(double t) override
+    {
+        integral = trialIntegral;
+        lastError = trialError;
+        lastT = t;
+        hasLast = true;
+    }
+
+    bool saveState(std::vector<std::uint8_t>& out) const override
+    {
+        out.resize(sizeof(double) * 3 + sizeof(bool));
+        std::uint8_t* ptr = out.data();
+        std::memcpy(ptr, &integral, sizeof(double)); ptr += sizeof(double);
+        std::memcpy(ptr, &lastError, sizeof(double)); ptr += sizeof(double);
+        std::memcpy(ptr, &lastT, sizeof(double)); ptr += sizeof(double);
+        std::memcpy(ptr, &hasLast, sizeof(bool));
+        return true;
+    }
+
+    bool restoreState(const std::vector<std::uint8_t>& in) override
+    {
+        if (in.size() < sizeof(double) * 3 + sizeof(bool)) return false;
+        const std::uint8_t* ptr = in.data();
+        std::memcpy(&integral, ptr, sizeof(double)); ptr += sizeof(double);
+        std::memcpy(&lastError, ptr, sizeof(double)); ptr += sizeof(double);
+        std::memcpy(&lastT, ptr, sizeof(double)); ptr += sizeof(double);
+        std::memcpy(&hasLast, ptr, sizeof(bool));
+        trialIntegral = integral;
+        trialError = lastError;
+        return true;
+    }
+
+    double kp = 0.08;
+    double ki = 2.0;
+    double kd = 0.0002;
+    double kv = 0.01;
+    double rOut = 0.05;
+    double vMin = 0.0, vMax = 12.0;
+    double setpoint = 300.0;
+    std::function<double(double)> setpointFn;
+
+    double integral = 0.0;
+    double lastError = 0.0;
+    double lastT = 0.0;
+    double trialIntegral = 0.0;
+    double trialError = 0.0;
+    bool hasLast = false;
+};
+
+void testClosedLoopSpeedControl(std::vector<double>& out)
+{
+    std::printf("-- closed loop: PID speed controller with anti-windup & disturbance recovery --\n");
+    Circuit c;
+    const auto drive = c.addNode(), tach = c.addNode();
+    auto ctl = std::make_shared<PidSpeedController>();
+    ctl->setpointFn = [](double t) { return (t < 0.7) ? 300.0 : 450.0; };
+    c.addProgrammable("U_PID", { tach, drive }, ctl);
+
+    mech::DcMotorModel m;
+    // Load disturbance: 0.03 N*m applied from 0.25 s to 0.50 s
+    mech::MotorLoad load;
+    load.torque = pwl({ { 0.0, 0.0 }, { 0.25, 0.0 }, { 0.250001, 0.03 }, { 0.50, 0.03 }, { 0.500001, 0.0 } });
+    const auto motor = mech::addDcMotor(c, "M1", drive, 0, m, load, {});
+    mech::addTachometer(c, "TG", motor.shaft, tach, 0, 0.01, 100.0);
+
+    const auto r = run(c, 1.0, 10e-6);
+    check(r.ok, "PID speed control transient completed", r.error);
+    if (!r.ok) return;
+
+    // 1. Startup: accelerates and stabilizes at 300 rad/s before disturbance
+    const auto kPre = sampleAt(r, 0.20);
+    const auto wPre = r.voltages[kPre][(size_t)motor.shaft];
+    check(std::abs(wPre - 300.0) < 0.5,
+          fmt("stabilizes at 300 rad/s setpoint before load: %.6g rad/s", wPre));
+
+    // 2. Disturbance applied at 0.25 s: speed dips temporarily
+    const auto kDip = sampleAt(r, 0.26);
+    const auto wDip = r.voltages[kDip][(size_t)motor.shaft];
+    check(wDip < 290.0, fmt("load disturbance dips speed to %.6g rad/s", wDip));
+
+    // 3. Compensation: integral action eliminates steady-state droop under 0.03 N*m load
+    const auto kUnderLoad = sampleAt(r, 0.48);
+    const auto wUnderLoad = r.voltages[kUnderLoad][(size_t)motor.shaft];
+    check(std::abs(wUnderLoad - 300.0) < 0.5,
+          fmt("integrator compensates 0.03 N*m load (zero steady-state droop): %.6g rad/s", wUnderLoad));
+
+    // 4. Load removal at 0.50 s: recovers back to 300 rad/s
+    const auto kPost = sampleAt(r, 0.68);
+    const auto wPost = r.voltages[kPost][(size_t)motor.shaft];
+    check(std::abs(wPost - 300.0) < 0.5,
+          fmt("recovers to 300 rad/s after load removed: %.6g rad/s", wPost));
+
+    // 5. Setpoint step to 450 rad/s at 0.70 s: accelerates and stabilizes
+    const auto kNewSet = sampleAt(r, 0.98);
+    const auto wNewSet = r.voltages[kNewSet][(size_t)motor.shaft];
+    check(std::abs(wNewSet - 450.0) < 0.5,
+          fmt("tracks new setpoint step to 450 rad/s: %.6g rad/s", wNewSet));
+
+    out.insert(out.end(), { wPre, wDip, wUnderLoad, wPost, wNewSet });
+}
+
+// ---- 11c. closed-loop position control with velocity damping & tolerance deadband ----------------
+
+class PositionController final : public ProgrammableDevice
+{
+public:
+    void reset() override {}
+
+    bool evaluate(double t, double, const std::vector<double>& v, std::vector<double>& i, std::string&) override
+    {
+        const double pos = v[0] / kpos;
+        const double speed = v[1] / kv;
+        const double target = (targetFn ? targetFn(t) : targetAngle);
+        const double err = target - pos;
+
+        // PD control with critical damping
+        const double uUnclamped = kp * err - kd * speed;
+        const double u = std::clamp(uUnclamped, vMin, vMax);
+        i = { -v[0] / 1e6, -v[1] / 1e6, (u - v[2]) / rOut };
+        return true;
+    }
+
+    void accept(double) override {}
+    bool saveState(std::vector<std::uint8_t>& out) const override { out.clear(); return true; }
+    bool restoreState(const std::vector<std::uint8_t>&) override { return true; }
+
+    double kp = 50.0;
+    double kd = 0.28;
+    double kpos = 1.0;
+    double kv = 0.01;
+    double rOut = 0.05;
+    double vMin = -12.0, vMax = 12.0;
+    double tolerance = 0.015;
+    double targetAngle = 0.0;
+    std::function<double(double)> targetFn;
+};
+
+void testClosedLoopPositionControl(std::vector<double>& out)
+{
+    std::printf("-- closed loop: bidirectional position control with damping & holding --\n");
+    Circuit c;
+    const auto drive = c.addNode(), tach = c.addNode(), posNode = c.addNode();
+    auto ctl = std::make_shared<PositionController>();
+    ctl->targetFn = [](double t) {
+        if (t < 0.35) return 2.0;
+        if (t < 0.70) return -1.5;
+        return 3.5;
+    };
+    c.addProgrammable("U_POS", { posNode, tach, drive }, ctl);
+
+    mech::DcMotorModel m;
+    // Holding load torque applied during target 3.5: 0.005 N*m at t >= 0.70
+    mech::MotorLoad load;
+    load.torque = pwl({ { 0.0, 0.0 }, { 0.70, 0.0 }, { 0.700001, 0.005 } });
+    mech::ShaftModel s;
+    const auto motor = mech::addDcMotor(c, "M1", drive, 0, m, load, s);
+    mech::addTachometer(c, "TG", motor.shaft, tach, 0, 0.01, 100.0);
+    mech::addPositionSensor(c, "ENC", motor.angle, posNode, 0, 1.0, 100.0);
+
+    const auto r = run(c, 1.0, 10e-6);
+    check(r.ok, "position control transient completed", r.error);
+    if (!r.ok) return;
+
+    // 1. Forward motion to +2.0 rad: settles within tolerance +/- 0.015 rad
+    const auto k1 = sampleAt(r, 0.32);
+    const auto th1 = r.voltages[k1][(size_t)motor.angle];
+    const auto w1 = r.voltages[k1][(size_t)motor.shaft];
+    check(std::abs(th1 - 2.0) <= ctl->tolerance && std::abs(w1) < 0.2,
+          fmt("target +2.0 rad: settled at %.6g rad (|err| <= 0.015 rad), speed %.6g rad/s", th1, w1));
+
+    // 2. Reverse motion to -1.5 rad: reverses and settles within tolerance
+    const auto k2 = sampleAt(r, 0.67);
+    const auto th2 = r.voltages[k2][(size_t)motor.angle];
+    const auto w2 = r.voltages[k2][(size_t)motor.shaft];
+    check(std::abs(th2 - (-1.5)) <= ctl->tolerance && std::abs(w2) < 0.2,
+          fmt("target -1.5 rad (reverse): settled at %.6g rad, speed %.6g rad/s", th2, w2));
+
+    // 3. Move to +3.5 rad under holding load: maintains position within tolerance
+    const auto k3 = sampleAt(r, 0.98);
+    const auto th3 = r.voltages[k3][(size_t)motor.angle];
+    const auto w3 = r.voltages[k3][(size_t)motor.shaft];
+    check(std::abs(th3 - 3.5) <= ctl->tolerance && std::abs(w3) < 0.2,
+          fmt("target +3.5 rad with holding load: holds at %.6g rad, speed %.6g rad/s", th3, w3));
+
+    // Check voltage clamping
+    double maxV = 0.0, minV = 0.0;
+    for (const auto& vRow : r.voltages)
+    {
+        maxV = std::max(maxV, vRow[(size_t)drive]);
+        minV = std::min(minV, vRow[(size_t)drive]);
+    }
+    check(maxV <= 12.0001 && minV >= -12.0001,
+          fmt("drive voltage strictly clamped within limits: [%.4g, %.4g] V", minV, maxV));
+
+    out.insert(out.end(), { th1, th2, th3, maxV, minV });
+}
+
+// ---- 11d. coordinated door automation (CloseAndLockDoor) ----------------------------------------
+
+class DoorAutomationSequencer final : public ProgrammableDevice
+{
+public:
+    enum class State { Idle = 0, Closing = 1, Settling = 2, Locking = 3, Secured = 4, FaultStall = 5, FaultLock = 6, Aborted = 7 };
+
+    void reset() override
+    {
+        state = State::Idle;
+        tClosed = 0.0;
+        tLockStart = 0.0;
+        trialState = state;
+        trialTClosed = 0.0;
+        trialTLockStart = 0.0;
+    }
+
+    bool evaluate(double t, double, const std::vector<double>& v, std::vector<double>& i, std::string&) override
+    {
+        const double pos = v[0];
+        const double lockSens = v[1];
+        trialState = state;
+        trialTClosed = tClosed;
+        trialTLockStart = tLockStart;
+
+        if (abortAt > 0.0 && t >= abortAt && (state == State::Closing || state == State::Settling || state == State::Locking))
+        {
+            trialState = State::Aborted;
+        }
+        else if (preemptAt > 0.0 && t >= preemptAt && state == State::Closing)
+        {
+            trialState = State::Idle;
+        }
+        else
+        {
+            switch (state)
+            {
+                case State::Idle:
+                    if (startAt >= 0.0 && t >= startAt)
+                        trialState = State::Closing;
+                    break;
+                case State::Closing:
+                    if (pos <= closedThreshold)
+                    {
+                        trialState = State::Settling;
+                        trialTClosed = t;
+                    }
+                    else if (t - startAt > closeTimeout)
+                    {
+                        trialState = State::FaultStall;
+                    }
+                    break;
+                case State::Settling:
+                    if (t >= tClosed + settleDelay)
+                    {
+                        trialState = State::Locking;
+                        trialTLockStart = t;
+                    }
+                    break;
+                case State::Locking:
+                    if (lockSens >= 2.5)
+                    {
+                        trialState = State::Secured;
+                    }
+                    else if (t - tLockStart > lockTimeout)
+                    {
+                        trialState = State::FaultLock;
+                    }
+                    break;
+                case State::Secured:
+                case State::FaultStall:
+                case State::FaultLock:
+                case State::Aborted:
+                    break;
+            }
+        }
+
+        double vMotor = 0.0;
+        double vLock = 0.0;
+        if (trialState == State::Closing)
+            vMotor = -3.0; // gentle closing drive
+        if (trialState == State::Locking || trialState == State::Secured)
+            vLock = 12.0;
+
+        i = { -v[0] / 1e6, -v[1] / 1e6, (vMotor - v[2]) / 0.05, (vLock - v[3]) / 0.1 };
+        return true;
+    }
+
+    void accept(double) override
+    {
+        state = trialState;
+        tClosed = trialTClosed;
+        tLockStart = trialTLockStart;
+    }
+
+    bool saveState(std::vector<std::uint8_t>& out) const override
+    {
+        out.resize(sizeof(State) + sizeof(double) * 2);
+        std::uint8_t* p = out.data();
+        std::memcpy(p, &state, sizeof(State)); p += sizeof(State);
+        std::memcpy(p, &tClosed, sizeof(double)); p += sizeof(double);
+        std::memcpy(p, &tLockStart, sizeof(double));
+        return true;
+    }
+
+    bool restoreState(const std::vector<std::uint8_t>& in) override
+    {
+        if (in.size() < sizeof(State) + sizeof(double) * 2) return false;
+        const std::uint8_t* p = in.data();
+        std::memcpy(&state, p, sizeof(State)); p += sizeof(State);
+        std::memcpy(&tClosed, p, sizeof(double)); p += sizeof(double);
+        std::memcpy(&tLockStart, p, sizeof(double));
+        trialState = state;
+        trialTClosed = tClosed;
+        trialTLockStart = tLockStart;
+        return true;
+    }
+
+    State state = State::Idle;
+    double tClosed = 0.0;
+    double tLockStart = 0.0;
+    State trialState = State::Idle;
+    double trialTClosed = 0.0;
+    double trialTLockStart = 0.0;
+
+    double startAt = 0.0;
+    double abortAt = -1.0;
+    double preemptAt = -1.0;
+    double closedThreshold = 0.02;
+    double settleDelay = 0.045; // 45 ms settling delay
+    double closeTimeout = 0.35;
+    double lockTimeout = 0.05;
+};
+
+void testCoordinatedDoorAutomation(std::vector<double>& out)
+{
+    std::printf("-- coordinated automation: CloseAndLockDoor sequencing & fault handling --\n");
+
+    // Scenario 1: Normal close and lock cycle
+    {
+        Circuit c;
+        const auto posNode = c.addNode(), lockSens = c.addNode(), motorDrive = c.addNode(), lockDrive = c.addNode();
+        auto seq = std::make_shared<DoorAutomationSequencer>();
+        c.addProgrammable("SEQ", { posNode, lockSens, motorDrive, lockDrive }, seq);
+
+        mech::DcMotorModel m;
+        mech::MotorLoad load;
+        load.damping = 2e-3; // door hinge damping
+        mech::ShaftModel s;
+        s.theta0 = 1.0; // Door starts open at 1.0 rad
+        s.hasMin = true; s.minAngle = 0.0; // Door frame stops at 0 rad
+        const auto motor = mech::addDcMotor(c, "M_DOOR", motorDrive, 0, m, load, s);
+        mech::addPositionSensor(c, "ENC", motor.angle, posNode, 0, 1.0, 100.0);
+
+        // Lock sensor engages when solenoid is energized (physical RC delay: R=10k, C=2uF -> tau=20ms)
+        c.addResistor("R_BOLT", lockDrive, lockSens, 10e3);
+        c.addCapacitor("C_BOLT", lockSens, 0, 2e-6);
+
+        const auto r = run(c, 0.4, 10e-6);
+        check(r.ok && seq->state == DoorAutomationSequencer::State::Secured,
+              fmt("normal cycle: door closes, settles %.4g ms, locks and confirms SECURED",
+                  (seq->tLockStart - seq->tClosed) * 1e3));
+        check(seq->tLockStart - seq->tClosed >= 0.040 && seq->tLockStart - seq->tClosed <= 0.050,
+              fmt("settling delay is between 40 and 50 ms (actual: %.4g ms)", (seq->tLockStart - seq->tClosed) * 1e3));
+        out.push_back((double)seq->state);
+        out.push_back(seq->tClosed);
+        out.push_back(seq->tLockStart);
+    }
+
+    // Scenario 2: Obstruction / Stall / Timeout (door blocked at 0.5 rad)
+    {
+        Circuit c;
+        const auto posNode = c.addNode(), lockSens = c.addNode(), motorDrive = c.addNode(), lockDrive = c.addNode();
+        auto seq = std::make_shared<DoorAutomationSequencer>();
+        seq->closeTimeout = 0.20;
+        c.addProgrammable("SEQ", { posNode, lockSens, motorDrive, lockDrive }, seq);
+
+        mech::DcMotorModel m;
+        mech::MotorLoad load;
+        load.damping = 2e-3;
+        mech::ShaftModel s;
+        s.theta0 = 1.0;
+        s.hasMin = true; s.minAngle = 0.5; // Obstruction stops door at 0.5 rad
+        const auto motor = mech::addDcMotor(c, "M_DOOR", motorDrive, 0, m, load, s);
+        mech::addPositionSensor(c, "ENC", motor.angle, posNode, 0, 1.0, 100.0);
+        c.addResistor("R_PULLDOWN", lockSens, 0, 10e3);
+
+        const auto r = run(c, 0.3, 10e-6);
+        check(r.ok && seq->state == DoorAutomationSequencer::State::FaultStall,
+              "door obstruction: motor stalled/timed out, detected FaultStall");
+        out.push_back((double)seq->state);
+    }
+
+    // Scenario 3: Lock engagement failure (bolt fails to engage / sensor never asserts)
+    {
+        Circuit c;
+        const auto posNode = c.addNode(), lockSens = c.addNode(), motorDrive = c.addNode(), lockDrive = c.addNode();
+        auto seq = std::make_shared<DoorAutomationSequencer>();
+        c.addProgrammable("SEQ", { posNode, lockSens, motorDrive, lockDrive }, seq);
+
+        mech::DcMotorModel m;
+        mech::MotorLoad load;
+        load.damping = 2e-3;
+        mech::ShaftModel s;
+        s.theta0 = 1.0;
+        s.hasMin = true; s.minAngle = 0.0;
+        const auto motor = mech::addDcMotor(c, "M_DOOR", motorDrive, 0, m, load, s);
+        mech::addPositionSensor(c, "ENC", motor.angle, posNode, 0, 1.0, 100.0);
+        c.addResistor("R_PULLDOWN", lockSens, 0, 10e3); // Jammed bolt: sensor stays at 0V!
+
+        const auto r = run(c, 0.4, 10e-6);
+        check(r.ok && seq->state == DoorAutomationSequencer::State::FaultLock,
+              "lock sensor failure: bolt did not confirm within timeout, detected FaultLock");
+        out.push_back((double)seq->state);
+    }
+
+    // Scenario 4: Abort / Cancel command mid-cycle (at t = 0.04 s)
+    {
+        Circuit c;
+        const auto posNode = c.addNode(), lockSens = c.addNode(), motorDrive = c.addNode(), lockDrive = c.addNode();
+        auto seq = std::make_shared<DoorAutomationSequencer>();
+        seq->abortAt = 0.04; // Cancel command arrives while door is in transit
+        c.addProgrammable("SEQ", { posNode, lockSens, motorDrive, lockDrive }, seq);
+
+        mech::DcMotorModel m;
+        mech::MotorLoad load;
+        load.damping = 2e-3;
+        mech::ShaftModel s;
+        s.theta0 = 1.0;
+        s.hasMin = true; s.minAngle = 0.0;
+        const auto motor = mech::addDcMotor(c, "M_DOOR", motorDrive, 0, m, load, s);
+        mech::addPositionSensor(c, "ENC", motor.angle, posNode, 0, 1.0, 100.0);
+        c.addResistor("R_PULLDOWN", lockSens, 0, 10e3);
+
+        const auto r = run(c, 0.2, 10e-6);
+        check(r.ok && seq->state == DoorAutomationSequencer::State::Aborted,
+              "cancellation command: aborted mid-cycle and de-energized outputs");
+        out.push_back((double)seq->state);
+    }
+
+    // Scenario 5: Command preemption (new command arriving before completion at t = 0.04 s)
+    {
+        Circuit c;
+        const auto posNode = c.addNode(), lockSens = c.addNode(), motorDrive = c.addNode(), lockDrive = c.addNode();
+        auto seq = std::make_shared<DoorAutomationSequencer>();
+        seq->preemptAt = 0.04;
+        c.addProgrammable("SEQ", { posNode, lockSens, motorDrive, lockDrive }, seq);
+
+        mech::DcMotorModel m;
+        mech::MotorLoad load;
+        load.damping = 2e-3;
+        mech::ShaftModel s;
+        s.theta0 = 1.0;
+        s.hasMin = true; s.minAngle = 0.0;
+        const auto motor = mech::addDcMotor(c, "M_DOOR", motorDrive, 0, m, load, s);
+        mech::addPositionSensor(c, "ENC", motor.angle, posNode, 0, 1.0, 100.0);
+        c.addResistor("R_PULLDOWN", lockSens, 0, 10e3);
+
+        const auto r = run(c, 0.15, 10e-6);
+        check(r.ok && seq->state == DoorAutomationSequencer::State::Idle,
+              "command preemption: active closing sequence preempted by new command");
+        out.push_back((double)seq->state);
+    }
+}
+
 // ---- 12. failures -------------------------------------------------------------------------------------------------
 
 void testFailures()
@@ -818,6 +1321,9 @@ int main(int argc, char** argv)
     testSwitchingAndEvents(events);
     testRollback(rollback);
     testController(control);
+    testClosedLoopSpeedControl(control);
+    testClosedLoopPositionControl(control);
+    testCoordinatedDoorAutomation(control);
     testFailures();
     writeValues("startup", startup);
     writeValues("load", load);

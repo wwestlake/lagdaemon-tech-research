@@ -534,7 +534,7 @@ juce::String toJson(const Request& request)
             root->setProperty("programmableComponents", programmableSection(request));
         if (schematic::isLogicGate(id))
             root->setProperty("logicGates", logicSection());
-        if (id == "dc_motor" || id == "dc_motor_tach")
+        if (id == "dc_motor" || id == "dc_motor_tach" || id == "dc_motor_servo" || id == "position_sensor")
             root->setProperty("electromechanical", motorSection());
         return juce::JSON::toString(juce::var(root), true);
     }

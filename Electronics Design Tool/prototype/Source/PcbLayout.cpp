@@ -131,6 +131,8 @@ const std::map<juce::String, std::vector<Fit>>& fits()
         // A motor is off the board: its leads land on a header.
         t["dc_motor"] = { { "Header-1x2-P2.54", "1=+,2=-" } };
         t["dc_motor_tach"] = { { "Header-1x4-P2.54", "1=+,2=-,3=T+,4=T-" } };
+        t["dc_motor_servo"] = { { "Header-1x6-P2.54", "1=+,2=-,3=T+,4=T-,5=P+,6=P-" } };
+        t["position_sensor"] = { { "Header-1x2-P2.54", "1=OUT,2=REF" } };
         t["logic_not"] = t["logic_buffer"] = { { "SOT-23-5", "2=A,4=Y" } };
         for (const auto* g : { "logic_and", "logic_or", "logic_nand", "logic_nor", "logic_xor", "logic_xnor" })
             t[g] = { { "SOT-23-5", "1=A,2=B,4=Y" } };

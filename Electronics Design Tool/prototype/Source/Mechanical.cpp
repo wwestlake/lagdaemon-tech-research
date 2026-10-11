@@ -238,4 +238,14 @@ int addTachometer(Circuit& c, const std::string& name, Node shaft, Node outPlus,
     c.addResistor(name + ".r", internal, outPlus, rOut);
     return e;
 }
+
+int addPositionSensor(Circuit& c, const std::string& name, Node angle, Node outPlus, Node outMinus, double k, double rOut)
+{
+    if (!(rOut > 0.0))
+        return c.addVcvs(name, outPlus, outMinus, angle, 0, k);
+    const auto internal = c.addNode();
+    const auto e = c.addVcvs(name, internal, outMinus, angle, 0, k);
+    c.addResistor(name + ".r", internal, outPlus, rOut);
+    return e;
+}
 } // namespace mech

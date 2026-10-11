@@ -156,4 +156,9 @@ DcMotor addDcMotor(circuit_sim::Circuit& c, const std::string& name, circuit_sim
 // rOut (ohm). A sensor through the electrical interface.
 int addTachometer(circuit_sim::Circuit& c, const std::string& name, circuit_sim::Node shaft, circuit_sim::Node outPlus,
                   circuit_sim::Node outMinus, double voltsPerRadPerSecond, double rOut);
+
+// A position sensor (potentiometer or encoder) on a shaft: out+ - out- = k * theta (V per rad) behind
+// rOut (ohm). A sensor through the electrical interface.
+int addPositionSensor(circuit_sim::Circuit& c, const std::string& name, circuit_sim::Node angle, circuit_sim::Node outPlus,
+                      circuit_sim::Node outMinus, double voltsPerRadian, double rOut);
 } // namespace mech

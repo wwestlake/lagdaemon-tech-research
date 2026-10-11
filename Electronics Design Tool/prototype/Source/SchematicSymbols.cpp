@@ -356,7 +356,7 @@ const juce::StringArray& supportedSymbolIds()
         "nmos", "pmos", "njfet", "pjfet", "switch_spst", "switch_spdt",
         "voltage_controlled_switch", "current_controlled_switch", "relay_spst",
         "fuse", "connector_2", "connector_3", "test_point", "logic_not", "logic_buffer", "logic_and",
-        "logic_or", "logic_nand", "logic_nor", "logic_xor", "logic_xnor", "dc_motor", "dc_motor_tach", "oscilloscope_2ch",
+        "logic_or", "logic_nand", "logic_nor", "logic_xor", "logic_xnor", "dc_motor", "dc_motor_tach", "dc_motor_servo", "position_sensor", "oscilloscope_2ch",
         "digital_multimeter", "bode_analyzer", "xyz_plotter", "annotation_text"
     };
     return ids;
@@ -439,6 +439,11 @@ SymbolDef symbolFor(const juce::String& id)
     // With a tachogenerator on its shaft: T+ - T- = k * speed.
     if (id == "dc_motor_tach")       return make(id, "M TG", { -30, -30, 126, 60 }, { { "+", { 0, -48 } }, { "-", { 0, 48 } },
                                                                                    { "T+", { 72, -48 } }, { "T-", { 72, 48 } } }, true);
+    // Servomotor with tachometer and position encoder/potentiometer: T+ - T- = k * speed, P+ - P- = k * angle.
+    if (id == "dc_motor_servo")      return make(id, "M SERVO", { -30, -30, 174, 60 }, { { "+", { 0, -48 } }, { "-", { 0, 48 } },
+                                                                                         { "T+", { 72, -48 } }, { "T-", { 72, 48 } },
+                                                                                         { "P+", { 120, -48 } }, { "P-", { 120, 48 } } }, true);
+    if (id == "position_sensor")     return make(id, "SENS", { -24, -24, 48, 48 }, { { "OUT", { 48, 0 } }, { "REF", { -48, 0 } } }, true);
     if (id == "oscilloscope_2ch")    return make(id, "SCOPE", { -60, -48, 120, 96 }, { { "CH1", { -72, -24 } }, { "CH2", { -72, 24 } }, { "REF", { 0, 72 } } }, true);
     if (id == "bode_analyzer")       return make(id, "BODE", { -60, -48, 120, 96 }, { { "IN", { -72, -24 } }, { "OUT", { -72, 24 } }, { "REF", { 0, 72 } } }, true);
     if (id == "digital_multimeter")  return make(id, "DMM", { -48, -36, 96, 72 }, { { "HI", { -72, -24 } }, { "LO", { -72, 24 } } }, true);
@@ -469,7 +474,8 @@ juce::String refdesPrefixFor(const juce::String& id)
     if (id == "npn" || id == "pnp" || id == "nmos" || id == "pmos" || id == "njfet" || id == "pjfet") return "Q";
     if (id.startsWith("switch_")) return "SW";
     if (id.startsWith("relay_")) return "K";
-    if (id == "dc_motor" || id == "dc_motor_tach") return "M";
+    if (id == "dc_motor" || id == "dc_motor_tach" || id == "dc_motor_servo") return "M";
+    if (id == "position_sensor") return "SENS";
     if (id == "fuse") return "F";
     if (id.startsWith("connector_")) return "J";
     if (id == "test_point") return "TP";
@@ -1053,21 +1059,36 @@ void drawSymbolArt(juce::Graphics& g, const SymbolDef& symbol, const juce::Strin
         contact(g, { 21, 24 });
         line(g, { -19, -2 }, { 18, -20 });
     }
-    else if (id == "dc_motor" || id == "dc_motor_tach")
+    else if (id == "dc_motor" || id == "dc_motor_tach" || id == "dc_motor_servo")
     {
         circleSource(g);
         text(g, "M", { -16, -16, 32, 32 }, 18.0f);
         text(g, "+", { 6, -40, 14, 14 });
-        // The shaft, and the tachogenerator on it.
+        // The shaft, and the tachogenerator / position sensor on it.
         const auto shaftEnd = id == "dc_motor" ? 42.0f : 54.0f;
         g.fillRect(24.0f, -3.0f, shaftEnd - 24.0f, 6.0f);
-        if (id == "dc_motor_tach")
+        if (id == "dc_motor_tach" || id == "dc_motor_servo")
         {
             g.drawEllipse(54.0f, -18.0f, 36.0f, 36.0f, stroke);
             text(g, "TG", { 56, -10, 32, 20 }, 11.0f);
             line(g, { 72, -48 }, { 72, -18 });
             line(g, { 72, 18 }, { 72, 48 });
         }
+        if (id == "dc_motor_servo")
+        {
+            g.fillRect(90.0f, -3.0f, 12.0f, 6.0f);
+            g.drawEllipse(102.0f, -18.0f, 36.0f, 36.0f, stroke);
+            text(g, "ENC", { 104, -10, 32, 20 }, 11.0f);
+            line(g, { 120, -48 }, { 120, -18 });
+            line(g, { 120, 18 }, { 120, 48 });
+        }
+    }
+    else if (id == "position_sensor")
+    {
+        line(g, { -48, 0 }, { -24, 0 });
+        line(g, { 24, 0 }, { 48, 0 });
+        g.drawRect(-24.0f, -24.0f, 48.0f, 48.0f, stroke);
+        text(g, "POS", { -20, -10, 40, 20 }, 12.0f);
     }
     else if (id == "relay_spst")
     {

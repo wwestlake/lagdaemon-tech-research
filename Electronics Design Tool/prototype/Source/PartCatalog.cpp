@@ -160,7 +160,7 @@ std::map<juce::String, std::vector<ParamSpec>> buildCatalog()
     // Brushed DC motor (Mechanical.h): V = Ra I + La dI/dt + Ke w, J dw/dt =
     // Kt I - B w - Tload, SI units. Defaults: a small 12 V motor (no-load
     // ~597 rad/s, stall 6 A / 0.12 N*m, mechanical time constant ~50 ms).
-    for (const auto* id : { "dc_motor", "dc_motor_tach" })
+    for (const auto* id : { "dc_motor", "dc_motor_tach", "dc_motor_servo" })
     {
         std::vector<ParamSpec> m {
             quantity("ra", "Armature resistance", "ohm", "2"),
@@ -186,14 +186,25 @@ std::map<juce::String, std::vector<ParamSpec>> buildCatalog()
             quantity("stop_stiffness", "End-stop stiffness", "N*m/rad", "100"),
             quantity("stop_damping", "End-stop damping", "N*m*s/rad", "10m"),
         };
-        if (juce::String(id) == "dc_motor_tach")
+        if (juce::String(id) == "dc_motor_tach" || juce::String(id) == "dc_motor_servo")
         {
             m.push_back(quantity("tach_constant", "Tachometer constant", "V/(rad/s)", "10m", Storage::Param,
                                  "T+ - T- = constant * speed (10m: 10 V at 1000 rad/s)."));
             m.push_back(quantity("tach_rout", "Tachometer output resistance", "ohm", "100"));
         }
+        if (juce::String(id) == "dc_motor_servo")
+        {
+            m.push_back(quantity("pos_constant", "Position sensor constant", "V/rad", "1.0", Storage::Param,
+                                 "P+ - P- = constant * angle (1.0: 1 V per radian)."));
+            m.push_back(quantity("pos_rout", "Position sensor output resistance", "ohm", "100"));
+        }
         c[id] = m;
     }
+    c["position_sensor"] = {
+        text("motor", "Target motor refdes", "M1", Storage::Param, "Refdes of the motor whose shaft angle is measured."),
+        quantity("constant", "Sensor constant", "V/rad", "1.0", Storage::Param, "Output voltage per radian of shaft angle."),
+        quantity("rout", "Output resistance", "ohm", "100")
+    };
     for (const auto* id : { "npn", "pnp" })
         c[id] = { text("value", "Model", juce::String(id) == "npn" ? "generic_npn" : "generic_pnp", Storage::Value),
                   quantity("beta", "Current gain (beta)", "", "100"),
@@ -326,7 +337,8 @@ juce::String displayName(const juce::String& id)
         { "annotation_text", "Text Note" },
         { "logic_not", "Inverter" }, { "logic_buffer", "Buffer" }, { "logic_and", "AND Gate" }, { "logic_or", "OR Gate" },
         { "logic_nand", "NAND Gate" }, { "logic_nor", "NOR Gate" }, { "logic_xor", "XOR Gate" }, { "logic_xnor", "XNOR Gate" },
-        { "dc_motor", "DC Motor" }, { "dc_motor_tach", "DC Motor with Tachometer" } };
+        { "dc_motor", "DC Motor" }, { "dc_motor_tach", "DC Motor with Tachometer" },
+        { "dc_motor_servo", "DC Servomotor" }, { "position_sensor", "Rotary Position Sensor" } };
     const auto found = names.find(id);
     return found != names.end() ? found->second : id;
 }
@@ -347,7 +359,7 @@ juce::String simulationFidelity(const juce::String& id)
     if (id.startsWith("logic_"))
         return "generic_model";
     // Electromechanical: the motor's equations on the internal solver.
-    if (id == "dc_motor" || id == "dc_motor_tach")
+    if (id == "dc_motor" || id == "dc_motor_tach" || id == "dc_motor_servo" || id == "position_sensor")
         return "generic_model";
     if (id == "switch_spst" || id == "switch_spdt" || id == "fuse")
         return "ideal";

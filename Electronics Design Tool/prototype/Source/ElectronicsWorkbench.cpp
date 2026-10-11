@@ -1944,6 +1944,8 @@ private:
         add({ "logic_xnor", "XNOR Gate", "Digital" });
         add({ "dc_motor", "DC Motor (brushed)", "Electromechanical" });
         add({ "dc_motor_tach", "DC Motor with Tachometer", "Electromechanical" });
+        add({ "dc_motor_servo", "DC Servomotor", "Electromechanical" });
+        add({ "position_sensor", "Rotary Position Sensor", "Electromechanical" });
         add({ "oscilloscope_2ch", "2-Channel Oscilloscope", "Instrument" });
         add({ "digital_multimeter", "Digital Multimeter", "Instrument" });
         add({ "bode_analyzer", "Frequency Analyzer (Bode)", "Instrument" });
@@ -2924,7 +2926,8 @@ public:
                 && instance.symbolId != "net_label"
                 && instance.symbolId != "block_port"
                 && !schematic::isLogicGate(instance.symbolId) // a gate's model is its parameters
-                && instance.symbolId != "dc_motor" && instance.symbolId != "dc_motor_tach") // so is a motor's
+                && instance.symbolId != "dc_motor" && instance.symbolId != "dc_motor_tach"
+                && instance.symbolId != "dc_motor_servo" && instance.symbolId != "position_sensor") // so is a motor's
                 add(partFinding("WARN", "missing_value", instance.refdes + " has no value or model text.", i));
 
             if (instance.symbolId == "net_label" && instance.busName.trim().isEmpty())
@@ -5304,6 +5307,8 @@ private:
         if (symbolId == "logic_xor") return "digital.logic.xor";
         if (symbolId == "dc_motor") return "electromechanical.motor.dc_brushed";
         if (symbolId == "dc_motor_tach") return "electromechanical.motor.dc_brushed.tachometer";
+        if (symbolId == "dc_motor_servo") return "electromechanical.motor.dc_brushed.servo";
+        if (symbolId == "position_sensor") return "electromechanical.sensor.position";
         if (symbolId == "oscilloscope_2ch") return "instrument.oscilloscope";
         if (symbolId == "digital_multimeter") return "instrument.multimeter";
         if (symbolId == "xyz_plotter") return "instrument.plotter";
@@ -8057,6 +8062,7 @@ public:
         };
         auto dcWave = [](double v) { circuit_sim::Waveform w; w.offset = v; return w; };
         const bool measuringOhms = ohmmeter >= 0;
+        std::map<juce::String, circuit_sim::Node> motorAngles;
 
         for (int i = 0; i < (int)instances.size(); ++i)
         {
@@ -8382,7 +8388,7 @@ public:
                                          + " not wired; an open input reads LOW (its input resistance to ground).");
                 }
             }
-            else if (id == "dc_motor" || id == "dc_motor_tach")
+            else if (id == "dc_motor" || id == "dc_motor_tach" || id == "dc_motor_servo")
             {
                 // A brushed DC motor (Mechanical.h): the armature and the shaft
                 // are elements of this circuit (the shaft is a node: speed in
@@ -8428,12 +8434,16 @@ public:
                 if (parseOptionalQuantity(partValue(inst, "max_angle"), angle)) { s.hasMax = true; s.maxAngle = angle; }
                 s.stopStiffness = number(inst, "stop_stiffness", s.stopStiffness);
                 s.stopDamping = number(inst, "stop_damping", s.stopDamping);
-                const bool tach = id == "dc_motor_tach";
+                const bool tach = id == "dc_motor_tach" || id == "dc_motor_servo";
                 const auto tachK = tach ? number(inst, "tach_constant", 10e-3) : 0.0;
                 const auto tachR = tach ? number(inst, "tach_rout", 100.0) : 0.0;
+                const bool servo = id == "dc_motor_servo";
+                const auto posK = servo ? number(inst, "pos_constant", 1.0) : 0.0;
+                const auto posR = servo ? number(inst, "pos_rout", 100.0) : 0.0;
                 if (const auto p = mech::problemsWith(m, load); !p.empty()) problems.add(p);
                 if (const auto p = mech::problemsWith(s); !p.empty()) problems.add(p);
                 if (tach && !(tachR >= 0.0)) problems.add("Tachometer output resistance must be 0 or more (ohm).");
+                if (servo && !(posR >= 0.0)) problems.add("Position sensor output resistance must be 0 or more (ohm).");
                 if (!problems.isEmpty())
                 {
                     const auto message = inst.refdes + " (" + parts::displayName(id) + "): " + problems.joinIntoString(" ");
@@ -8444,14 +8454,26 @@ public:
                 {
                     const auto motor = mech::addDcMotor(c, name, node(i, "+"), node(i, "-"), m, load, s);
                     element = motor.armature;
+                    motorAngles[inst.refdes] = motor.angle;
                     sim.quantities.insert(sim.quantities.end(), motor.quantities.begin(), motor.quantities.end());
                     if (tach)
                         mech::addTachometer(c, name + ".tg", motor.shaft, node(i, "T+"), node(i, "T-"), tachK, tachR);
+                    if (servo)
+                        mech::addPositionSensor(c, name + ".enc", motor.angle, node(i, "P+"), node(i, "P-"), posK, posR);
                     if (std::abs(m.kt - m.ke) > 0.01 * std::max(m.kt, m.ke))
                         sim.warnings.add(inst.refdes + " (" + parts::displayName(id) + "): Kt " + juce::String(m.kt) + " N*m/A and Ke "
                                          + juce::String(m.ke) + " V*s/rad differ; in SI units they are equal for an ideal motor, so this "
                                          "model's power conversion does not conserve energy (Kt * I * speed vs Ke * speed * I).");
                 }
+            }
+            else if (id == "position_sensor")
+            {
+                const auto targetMotor = partValue(inst, "motor").trim();
+                const auto posK = number(inst, "constant", 1.0);
+                const auto posR = number(inst, "rout", 100.0);
+                const auto it = motorAngles.find(targetMotor);
+                const auto angleNode = (it != motorAngles.end()) ? it->second : 0;
+                mech::addPositionSensor(c, name, angleNode, node(i, "OUT"), node(i, "REF"), posK, posR);
             }
             else if (id == "frust_component" && inst.ports.empty())
                 sim.warnings.add(inst.refdes + " (" + inst.value + ") has no pins yet, so it is not simulated.");
