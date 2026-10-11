@@ -451,6 +451,15 @@ const ModelBinding* modelBindingForElement(const analytics::Netlist& n, size_t e
         if (part.element == (int)elementIndex)
             if (const auto* binding = modelBindingFor(part.symbolId))
                 return binding;
+    if (elementIndex < n.circuit.elements().size())
+    {
+        const auto& e = n.circuit.elements()[elementIndex];
+        const auto m = juce::String(e.modelName).trim();
+        if (m.equalsIgnoreCase("uA741") || m.equalsIgnoreCase("UA741") || m.equalsIgnoreCase("LM741"))
+            return modelBindingFor("opamp_741");
+        if (m.equalsIgnoreCase("generic_opamp"))
+            return modelBindingFor("opamp_generic");
+    }
     return nullptr;
 }
 

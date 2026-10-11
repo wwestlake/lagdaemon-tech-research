@@ -711,6 +711,72 @@ int main()
                   tr.sourceCurrents.size() > 100 ? "(" + std::to_string(tr.sourceCurrents[100][(size_t)ind]) + ")" : "");
     }
 
+    // 25. Wien-bridge oscillator (10k / 10 nF -> f0 = 1 / (2 pi R C) = 1591.55 Hz):
+    //     Non-inverting amplifier with R1 = 10k, Rf = 18k + (3.3k || back-to-back diodes).
+    //     Small-signal gain: 1 + 21.3k / 10k = 3.13 > 3 (initiates oscillation from 50 mV kick).
+    //     Large-signal diode conduction limits gain to ~2.8, stabilizing amplitude smoothly.
+    {
+        Circuit c;
+        auto out = c.addNode(), vplus = c.addNode(), vminus = c.addNode(), wmid = c.addNode(), vlim = c.addNode();
+        auto vp = c.addNode(), vn = c.addNode();
+        c.addVoltageSource("VP", vp, 0, dc(15.0));
+        c.addVoltageSource("VN", 0, vn, dc(15.0));
+
+        // Op-amp
+        OpAmpModel opm;
+        opm.gain = 1e5;
+        opm.railDrop = 1.5;
+        c.addOpAmp("U1", vplus, vminus, out, vp, vn, opm);
+
+        // Wien network: 10 k, 10 nF
+        const auto cs = c.addCapacitor("CS", out, wmid, 10e-9);
+        c.elements()[(size_t)cs].hasInitialCondition = true;
+        c.elements()[(size_t)cs].initialCondition = 0.05; // 50 mV initial kick
+        c.addResistor("RS", wmid, vplus, 10e3);
+        c.addResistor("RP", vplus, 0, 10e3);
+        c.addCapacitor("CP", vplus, 0, 10e-9);
+
+        // Gain & amplitude limiter: R1 = 10k, RF1 = 18k, RF2 = 3.3k with D1, D2
+        c.addResistor("R1", vminus, 0, 10e3);
+        c.addResistor("RF1", out, vlim, 18e3);
+        c.addResistor("RF2", vlim, vminus, 3.3e3);
+        c.addDiode("D1", vlim, vminus);
+        c.addDiode("D2", vminus, vlim);
+
+        // Transient simulation: 25 ms with 2 us timestep
+        TransientSettings ts;
+        ts.stop = 0.025;
+        ts.step = 2e-6;
+        ts.maxSamples = 100000;
+        const auto tr = solveTransient(c, ts);
+        checkTrue("Wien-bridge transient completes", tr.ok, tr.error);
+
+        std::vector<double> t_steady, v_steady;
+        for (size_t i = 0; i < tr.time.size(); ++i)
+        {
+            if (tr.time[i] >= 0.015) // Inspect steady state (15 ms to 25 ms)
+            {
+                t_steady.push_back(tr.time[i]);
+                v_steady.push_back(tr.voltages[i][(size_t)out]);
+            }
+        }
+
+        signal_measure::Request fReq;
+        fReq.kind = signal_measure::Kind::Frequency;
+        const auto fResult = signal_measure::measure(fReq, t_steady, v_steady);
+        checkTrue("Wien-bridge frequency measured", fResult.ok, fResult.error);
+        // Expected theoretical frequency: 1591.55 Hz (+/- 25 Hz or ~1.5%)
+        check("Wien-bridge frequency (Hz)", fResult.value, 1591.55, 25.0);
+
+        signal_measure::Request ppReq;
+        ppReq.kind = signal_measure::Kind::PeakToPeak;
+        const auto ppResult = signal_measure::measure(ppReq, t_steady, v_steady);
+        checkTrue("Wien-bridge peak-to-peak measured", ppResult.ok, ppResult.error);
+        // Amplitude is limited by diode conduction to around 15..25 V peak-to-peak (cleanly inside +/-13.5 V rails)
+        checkTrue("Wien-bridge stable oscillation amplitude", ppResult.value > 10.0 && ppResult.value < 25.0,
+                  "actual Vpp: " + std::to_string(ppResult.value) + " V");
+    }
+
     std::printf("\n-- circuit hierarchy tree --\n");
     {
         using circuit_hierarchy::flatten;
