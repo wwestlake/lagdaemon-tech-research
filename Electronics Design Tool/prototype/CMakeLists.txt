@@ -371,6 +371,27 @@ foreach(variant IN ITEMS "LogicGateTests;circuit_sim;logic_gate_tests;optimized"
     add_test(NAME ${test_target} COMMAND ${test_target} --out "${CMAKE_CURRENT_BINARY_DIR}/logic_gate_test_out_${test_config}")
 endforeach()
 
+# Electromechanical simulation (Mechanical.cpp in circuit_sim): the brushed
+# DC motor against analytical solutions (startup, steady state, load,
+# reversal, generating, coast down, friction, end stops, energy, events,
+# switching, rollback, closed loop, failures), built against the optimised
+# and the unoptimised circuit_sim; `motor_tests --compare <outA> <outB>`
+# checks the two agree.
+foreach(variant IN ITEMS "MotorTests;circuit_sim;motor_tests;optimized"
+                         "MotorTestsUnopt;circuit_sim_unopt;motor_tests_unopt;unoptimized")
+    list(GET variant 0 test_target)
+    list(GET variant 1 test_circuit)
+    list(GET variant 2 test_output)
+    list(GET variant 3 test_config)
+    add_executable(${test_target} tools/motor_tests/MotorTests.cpp)
+    target_link_libraries(${test_target} PRIVATE ${test_circuit})
+    target_compile_definitions(${test_target} PRIVATE MOTOR_TESTS_CONFIG="${test_config}")
+    set_target_properties(${test_target} PROPERTIES
+        OUTPUT_NAME "${test_output}"
+        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/bin")
+    add_test(NAME ${test_target} COMMAND ${test_target} --out "${CMAKE_CURRENT_BINARY_DIR}/motor_test_out_${test_config}")
+endforeach()
+
 juce_add_console_app(AudioDspTests PRODUCT_NAME "Audio Dsp Tests")
 set_target_properties(AudioDspTests PROPERTIES 
     OUTPUT_NAME "audio_dsp_tests_3"

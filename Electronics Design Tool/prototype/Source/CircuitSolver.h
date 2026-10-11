@@ -177,6 +177,14 @@ struct Element
     double hysteresis = 0.0; // controlled switch Vh/Ih
     bool hasInitialCondition = false; // C: volts across node[0]-node[1], L: current node[0]->node[1]
     double initialCondition = 0.0;
+    // A transient starts this element at its initial condition with the rest
+    // of the circuit consistent with it: the initial operating point holds it
+    // there (a capacitor's voltage, an inductor's current) instead of solving
+    // it to its DC value, and the first step is a backward-Euler restart (the
+    // DC history of the trapezoidal rule does not hold for a state away from
+    // DC). A motor at rest uses it for its speed and armature current. The
+    // operating point analysis itself ignores it (steady state).
+    bool holdInitialCondition = false;
     std::string expression;  // Xyce behavioral source expression
     double tc1 = 0.0, tc2 = 0.0; // resistor temperature coefficients (1/K, 1/K^2)
     bool noiseless = false;  // e.g. instrument input resistances
@@ -197,6 +205,13 @@ class Circuit
 {
 public:
     Node addNode();
+    // A node whose value is not an electric potential (a shaft's speed in
+    // rad/s, its angle in rad: see Mechanical.h). It is solved like any node,
+    // but Newton's per-iteration step limit for voltages (Options::
+    // maxStepVolts, there to protect junctions) does not apply to it, so a
+    // speed of thousands of rad/s converges in a few iterations.
+    Node addQuantityNode();
+    bool isQuantityNode(Node n) const;
     int nodeCount() const { return nodes; }
 
     int addResistor(const std::string& name, Node a, Node b, double ohms);
@@ -236,6 +251,7 @@ public:
 private:
     int add(Element e);
     int nodes = 1; // ground
+    std::vector<Node> quantityNodes; // ascending
     std::vector<Element> parts;
     std::map<Node, double> initialNodeVoltages;
 };

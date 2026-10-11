@@ -409,6 +409,7 @@ struct Layout
     std::vector<std::vector<std::pair<int, double>>> mutual; // inductor element -> (other inductor element, M)
     int size = 0;
     bool nonlinear = false;
+    std::vector<char> unlimited;          // per node unknown: a quantity node (Circuit::addQuantityNode)
 };
 
 Layout makeLayout(const Circuit& c)
@@ -419,6 +420,9 @@ Layout makeLayout(const Circuit& c)
     const auto& parts = c.elements();
     l.branch.assign(parts.size(), -1);
     l.mutual.assign(parts.size(), {});
+    l.unlimited.assign((size_t)l.nodeUnknowns, 0);
+    for (int n = 1; n < c.nodeCount(); ++n)
+        l.unlimited[(size_t)(n - 1)] = c.isQuantityNode(n) ? 1 : 0;
     for (size_t i = 0; i < parts.size(); ++i)
     {
         if (needsBranch(parts[i].type))
@@ -577,6 +581,9 @@ void stampNonlinear(System<double>& s, const Element& e, const std::vector<doubl
 // A programmable device's failure during assembly (its program reported an
 // error): Newton stops with it.
 thread_local std::string programmableError;
+// Set while the transient's initial operating point is solved: elements with
+// holdInitialCondition are held at their initial condition (Element).
+thread_local bool holdingInitialState = false;
 
 std::vector<double> pinVoltagesOf(const Element& e, const std::vector<double>& x)
 {
@@ -706,7 +713,15 @@ void assembleInto(System<double>& s, const Circuit& c, const Layout& l, const Op
                 break;
             }
             case Element::Type::Capacitor:
-                if (mode == Mode::Transient && backwardEuler)
+                if (mode == Mode::Dc && holdingInitialState && e.holdInitialCondition && e.hasInitialCondition)
+                {
+                    // Held at its initial voltage: a stiff Norton source.
+                    constexpr double g = 1e9;
+                    s.conductance(e.nodes[0], e.nodes[1], g);
+                    s.rhs(idx(e.nodes[0]), g * e.initialCondition);
+                    s.rhs(idx(e.nodes[1]), -g * e.initialCondition);
+                }
+                else if (mode == Mode::Transient && backwardEuler)
                 {
                     // Backward Euler companion: i = C/h (v - v_prev).
                     const auto g = e.value / h;
@@ -727,6 +742,13 @@ void assembleInto(System<double>& s, const Circuit& c, const Layout& l, const Op
             case Element::Type::Inductor:
             {
                 s.branchIncidence(e.nodes[0], e.nodes[1], k);
+                if (mode == Mode::Dc && holdingInitialState && e.holdInitialCondition && e.hasInitialCondition)
+                {
+                    // Held at its initial current: the branch equation is i = i0.
+                    s.add(k, k, 1.0);
+                    s.rhs(k, e.initialCondition);
+                    break;
+                }
                 s.add(k, idx(e.nodes[0]), 1.0);
                 s.add(k, idx(e.nodes[1]), -1.0);
                 if (mode == Mode::Transient && backwardEuler)
@@ -930,7 +952,7 @@ bool newton(const Circuit& c, const Layout& l, const Options& o, Mode mode, std:
         for (size_t i = 0; i < next.size(); ++i)
         {
             auto delta = next[i] - x[i];
-            if (l.nonlinear && (int)i < l.nodeUnknowns)
+            if (l.nonlinear && (int)i < l.nodeUnknowns && !l.unlimited[i])
                 delta = std::clamp(delta, -o.maxStepVolts * 4.0, o.maxStepVolts * 4.0);
             if (std::abs(delta) > o.absTol + o.relTol * std::abs(next[i]) + ((int)i < l.nodeUnknowns ? 1e-6 : 1e-9))
                 converged = false;
@@ -1345,6 +1367,17 @@ std::vector<double> Waveform::breakpoints(double stop) const
 }
 
 Node Circuit::addNode() { return nodes++; }
+
+Node Circuit::addQuantityNode()
+{
+    quantityNodes.push_back(nodes);
+    return nodes++;
+}
+
+bool Circuit::isQuantityNode(Node n) const
+{
+    return std::binary_search(quantityNodes.begin(), quantityNodes.end(), n);
+}
 
 int Circuit::add(Element e)
 {
@@ -2839,11 +2872,21 @@ bool TransientStepper::init()
     auto& x = m.x;
     x.clear();
     int iterations = 0;
-    if (!solveDcState(atZero, layout, m.options, x, iterations, m.error))
+    bool held = false;
+    for (const auto& e : parts)
+        held |= e.holdInitialCondition && e.hasInitialCondition
+             && (e.type == Element::Type::Capacitor || e.type == Element::Type::Inductor);
+    holdingInitialState = held;
+    const auto solvedInitial = solveDcState(atZero, layout, m.options, x, iterations, m.error);
+    holdingInitialState = false;
+    if (!solvedInitial)
     {
         m.error = "Initial operating point: " + m.error;
         return false;
     }
+    // A state held away from DC: the first step restarts (Element::holdInitialCondition).
+    if (held && m.settings.restartAfterDiscontinuity)
+        m.restartPending = true;
     // Programmable devices: the t = 0 solution is their initial accepted state.
     if (!acceptProgrammable(circuit, x, 0.0, 0.0, m.error))
         return false;
