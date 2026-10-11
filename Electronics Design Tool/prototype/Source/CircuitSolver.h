@@ -22,6 +22,7 @@
 // onto this; this file knows nothing about schematics or UI.
 
 #include <complex>
+#include <cstdint>
 #include <map>
 #include <memory>
 #include <string>
@@ -123,6 +124,13 @@ public:
     // The transient solution at t was accepted: commit the state the last
     // evaluation computed.
     virtual void accept(double t) = 0;
+    // Optional: a copy of the committed state, and restoring one. The system
+    // simulator's stepper uses them to roll a step back (decision G1, whole
+    // state copies; conflict C6). Offline analyses never call them. Return
+    // false when the device does not support it; the stepper then reports
+    // that the circuit cannot roll back.
+    virtual bool saveState(std::vector<std::uint8_t>& out) const { (void)out; return false; }
+    virtual bool restoreState(const std::vector<std::uint8_t>& in) { (void)in; return false; }
 };
 
 struct Element
@@ -383,6 +391,134 @@ OperatingPoint solveOperatingPointFrom(const Circuit& circuit, const OperatingPo
 TransientResult solveTransient(const Circuit& circuit, double stopTime, double timeStep,
                                const Options& options = {}, int maxSamples = 4000);
 TransientResult solveTransient(const Circuit& circuit, const TransientSettings& settings, const Options& options = {});
+
+// ---- resumable transient stepper (system simulator, phase P1) ------------------
+//
+// The step code solveTransient() runs on, driven one step at a time: the
+// system simulator's electrical participant steps it to each round's end
+// time. With default settings a step is exactly the step solveTransient()
+// takes (trapezoidal, Newton at every step, the interval halved where Newton
+// fails), so stepping through timeGrid() reproduces solveTransient() bit for
+// bit.
+//
+// Event location (settings.locateEvents): voltage- and current-controlled
+// switches keep their state through a step, and their thresholds, plus any
+// watches, are zero crossings located inside the step (regula falsi, Illinois
+// variant) to locationTolerance. advance() stops at the first located event,
+// just past the crossing, and the switch changes state there. The step after
+// a located switch change, or after an input changes a resistance, is
+// backward Euler (restartAfterDiscontinuity), which damps the ringing a
+// trapezoidal step shows after a discontinuity; trapezoidal steps resume
+// after it.
+//
+// State (decision G1): saveState() copies everything the solution evolves -
+// time, the MNA solution, reactive history, switch states, the pending
+// restart, live input values and every programmable device's committed state
+// - and restoreState() puts it all back, so a rolled-back or re-run step
+// leaves no trace. A circuit whose programmable devices cannot save state
+// cannot save state (or locate events, which re-steps from a saved state).
+class TransientStepper
+{
+public:
+    struct Settings
+    {
+        bool locateEvents = false;
+        double locationTolerance = 1e-9;    // seconds: located times are at most this far past the crossing
+        double timeQuantum = 0.0;           // located times are multiples of this (seconds; 0 = any double)
+        bool restartAfterDiscontinuity = true;
+    };
+
+    // A threshold watched while stepping (locateEvents only): the quantity is
+    // V(plus) - V(minus), or the branch current of `element` (voltage source,
+    // inductor, controlled source with a branch).
+    struct Watch
+    {
+        enum class Quantity { Voltage, Current };
+        Quantity quantity = Quantity::Voltage;
+        Node plus = 0, minus = 0;
+        int element = -1;
+        double threshold = 0.0;
+        int direction = 0; // +1 rising only, -1 falling only, 0 either
+    };
+
+    struct Event
+    {
+        double time = 0.0;
+        int watch = -1;   // index from addWatch(), or -1 for a switch
+        int element = -1; // the switch that changed state, or -1
+        int direction = 0; // +1 rising (switch closed), -1 falling (switch opened)
+    };
+
+    struct State
+    {
+        double time = 0.0;
+        std::vector<double> x;              // MNA solution (node voltages then branch currents)
+        std::vector<double> reactiveV, reactiveI;
+        std::vector<signed char> switches;  // per element: 1 closed, 0 open, -1 not a controlled switch
+        bool restartPending = false;
+        std::vector<double> inputs;         // per element: live input value, NaN when none
+        std::vector<std::vector<std::uint8_t>> devices; // per programmable element, in element order
+    };
+
+    struct Stats
+    {
+        std::uint64_t steps = 0;            // accepted steps (including halved pieces)
+        std::uint64_t newtonIterations = 0;
+        std::uint64_t restarts = 0;         // backward-Euler steps
+        std::uint64_t locationSteps = 0;    // extra steps taken while locating events
+        std::uint64_t events = 0;
+    };
+
+    TransientStepper(const Circuit& circuit, const Options& options = {}, const Settings& settings = {});
+    ~TransientStepper();
+    TransientStepper(TransientStepper&&) noexcept;
+    TransientStepper& operator=(TransientStepper&&) noexcept;
+    TransientStepper(const TransientStepper&) = delete;
+    TransientStepper& operator=(const TransientStepper&) = delete;
+
+    // Live inputs, before or after init(). A source value replaces the
+    // source's waveform until cleared; a resistance applies to resistors,
+    // potentiometers and manual switches. Returns false for an element of
+    // another type (see error()).
+    bool setSourceValue(int element, double value);
+    bool setResistance(int element, double ohms);
+    void clearInput(int element);
+
+    int addWatch(const Watch& watch); // before init()
+
+    // The operating point at t = 0 with the inputs as set (solveTransient's
+    // initial state), devices reset first. May be called again to restart.
+    bool init();
+    // One step from time() to `to` (> time()), with no landing points.
+    bool step(double to);
+    // From time() to `to`, landing on source waveform corners in between.
+    // With locateEvents, stops at the first located event (time() < `to`
+    // then) and appends what happened to `events`.
+    bool advance(double to, std::vector<Event>* events = nullptr);
+    // The next step is backward Euler.
+    void requestRestart();
+
+    double time() const;
+    double voltage(Node node) const;
+    double branchCurrent(int element) const;  // 0 for elements without a branch
+    std::vector<double> nodeVoltages() const; // per node, [0] = 0 (as TransientResult)
+    std::vector<double> sourceCurrents() const;
+    bool switchClosed(int element) const;     // controlled switches under locateEvents
+    int nodeCount() const;
+    const std::string& error() const;
+    const Stats& stats() const;
+
+    bool saveState(State& out) const;
+    bool restoreState(const State& state);
+
+    // The time points solveTransient() steps to: the regular grid plus every
+    // source corner, merged where closer than 1e-3 of a step.
+    static std::vector<double> timeGrid(const Circuit& circuit, double stopTime, double timeStep);
+
+private:
+    struct Impl;
+    std::unique_ptr<Impl> impl;
+};
 
 // Source AC magnitudes/phases are taken from each source's waveform.
 AcResult solveAc(const Circuit& circuit, double startHz, double stopHz, int pointsPerDecade, const Options& options = {});
