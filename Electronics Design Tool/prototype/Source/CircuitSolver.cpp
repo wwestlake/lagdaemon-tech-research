@@ -3,10 +3,13 @@
 #include <algorithm>
 #include <cctype>
 #include <cmath>
+#include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <functional>
 #include <limits>
 #include <map>
+#include <mutex>
 
 namespace circuit_sim
 {
@@ -1639,7 +1642,61 @@ TransientResult solveTransient(const Circuit& circuit, double stopTime, double t
     return solveTransient(circuit, settings, options);
 }
 
+namespace
+{
+TransientResult runTransient(const Circuit& circuit, const TransientSettings& settings, const Options& options);
+
+// Regression aid: with CIRCUIT_SIM_TRANSIENT_DIGEST naming a file, every
+// transient appends one line, an FNV-1a hash of the exact bits of its result
+// (status, error, every time, voltage and current) and its sample count.
+// Running the test suites with it before and after a change to the solver
+// proves every transient they run is bit for bit unchanged.
+void recordTransientDigest(const TransientResult& r)
+{
+    static const std::string path = [] {
+        char* value = nullptr;
+        size_t length = 0;
+        std::string p;
+        if (_dupenv_s(&value, &length, "CIRCUIT_SIM_TRANSIENT_DIGEST") == 0 && value != nullptr)
+            p = value;
+        free(value);
+        return p;
+    }();
+    if (path.empty())
+        return;
+    std::uint64_t h = 1469598103934665603ull;
+    auto bytes = [&h](const void* data, size_t n) {
+        const auto* p = static_cast<const unsigned char*>(data);
+        for (size_t i = 0; i < n; ++i)
+            h = (h ^ p[i]) * 1099511628211ull;
+    };
+    auto doubles = [&](const std::vector<double>& v) { if (!v.empty()) bytes(v.data(), v.size() * sizeof(double)); };
+    const unsigned char ok = r.ok ? 1 : 0;
+    bytes(&ok, 1);
+    bytes(r.error.data(), r.error.size());
+    doubles(r.time);
+    for (const auto& v : r.voltages) doubles(v);
+    for (const auto& c : r.sourceCurrents) doubles(c);
+    static std::mutex mutex;
+    std::lock_guard<std::mutex> lock(mutex);
+    if (auto* f = std::fopen(path.c_str(), "ab"))
+    {
+        std::fprintf(f, "%016llx %zu\n", (unsigned long long)h, r.time.size());
+        std::fclose(f);
+    }
+}
+}
+
 TransientResult solveTransient(const Circuit& circuit, const TransientSettings& settings, const Options& options)
+{
+    auto result = runTransient(circuit, settings, options);
+    recordTransientDigest(result);
+    return result;
+}
+
+namespace
+{
+TransientResult runTransient(const Circuit& circuit, const TransientSettings& settings, const Options& options)
 {
     TransientResult result;
     const auto stopTime = settings.stop, timeStep = settings.step;
@@ -1804,6 +1861,7 @@ TransientResult solveTransient(const Circuit& circuit, const TransientSettings& 
     }
     result.ok = true;
     return result;
+}
 }
 
 // ---- AC -------------------------------------------------------------------------
