@@ -14,6 +14,8 @@
 #include "FrustPanel.h"
 #include "PcbPanel.h"
 #include "NodeDesignerPanel.h"
+#include "ControlPanelComponent.h"
+#include "SystemSimulationSession.h"
 #include "FrustExecution.h"
 #include "FrustDebuggerPanel.h"
 #include "FrustComponent.h"
@@ -891,6 +893,33 @@ const std::vector<ToolSpecText>& analyticsToolSpecs()
     return specs;
 }
 
+const std::vector<ToolSpecText>& controlPanelToolSpecs()
+{
+    static const std::vector<ToolSpecText> specs = {
+        {
+            "simulation_control",
+            "Control the interactive system simulation session (run, pause, resume, stop, reset, step) and adjust execution rate.",
+            R"({"type":"object","properties":{"action":{"type":"string","description":"Simulation action: run, pause, resume, stop, reset, or step."},"rate":{"type":"number","description":"Optional execution rate multiplier (e.g. 0.5, 1.0, 2.0; 0 for free-run)."}},"required":["action"],"additionalProperties":false})"
+        },
+        {
+            "control_panel_set_input",
+            "Set an input signal or control widget value on the operator control panel.",
+            R"({"type":"object","properties":{"signal":{"type":"string","description":"Signal or widget identifier (e.g. start_btn, stop_btn, estop, power_sw, speed_setpoint, load_torque, mode_selector)."},"value":{"type":["number","boolean"],"description":"Value to write to the signal."}},"required":["signal","value"],"additionalProperties":false})"
+        },
+        {
+            "control_panel_get_state",
+            "Retrieve a complete state snapshot of the active simulation session and control panel signals (simulation time, running state, rate, analog & digital signals, alarms).",
+            R"({"type":"object","properties":{},"additionalProperties":false})"
+        },
+        {
+            "control_panel_open",
+            "Open or bring to front the operator control panel dock panel.",
+            R"({"type":"object","properties":{},"additionalProperties":false})"
+        }
+    };
+    return specs;
+}
+
 // Tool text with live registry values filled in, so lists such as the
 // placeable component ids never drift from what the application supports.
 std::string liveToolText(const char* text)
@@ -904,6 +933,9 @@ bool isSchematicTool(const juce::String& name)
         if (name == spec.name)
             return true;
     for (const auto& spec : analyticsToolSpecs())
+        if (name == spec.name)
+            return true;
+    for (const auto& spec : controlPanelToolSpecs())
         if (name == spec.name)
             return true;
     return false;
@@ -14751,6 +14783,8 @@ private:
             definitions.push_back({ spec.name, liveToolText(spec.description), liveToolText(spec.schema) });
         for (const auto& spec : analyticsToolSpecs())
             definitions.push_back({ spec.name.toStdString(), spec.description.toStdString(), spec.schema.toStdString() });
+        for (const auto& spec : controlPanelToolSpecs())
+            definitions.push_back({ spec.name.toStdString(), spec.description.toStdString(), spec.schema.toStdString() });
         return definitions;
     }
 
@@ -15675,6 +15709,8 @@ ElectronicsWorkbench::ElectronicsWorkbench()
             return pcbTool(name, args);
         if (name.startsWith("pcb_"))
             return pcbLayoutTool(name, args);
+        if (name.startsWith("simulation_") || name.startsWith("control_panel_"))
+            return controlPanelTool(name, args);
         return schematicPanel->runSchematicTool(name, args);
     };
     schematicPanel->outputDirectory = [this] { return generatedRunDirectory(); };
@@ -15698,6 +15734,9 @@ ElectronicsWorkbench::ElectronicsWorkbench()
     dockManager->registerPanel("schematic", "Schematic", std::move(schematic), CreationDock::DockTargetZone::CenterTab);
     analyticsDockPanel = dockManager->registerPanel("analytics", "Analytics", std::move(analyticsOwner), CreationDock::DockTargetZone::CenterTab);
     dockManager->registerPanel("pcb", "PCB", std::move(pcbOwner), CreationDock::DockTargetZone::CenterTab);
+    auto controlPanelOwner = std::make_unique<sim_panel::ControlPanelComponent>();
+    controlPanel = controlPanelOwner.get();
+    controlPanelDockPanel = dockManager->registerPanel("control_panel", "Control Panel", std::move(controlPanelOwner), CreationDock::DockTargetZone::CenterTab);
     // FRust node programs (the node-programming editor ported from FrustIDE),
     // saved in the open project's programs folder.
     auto nodeDesignerOwner = std::make_unique<NodeDesignerPanel>();
@@ -15973,6 +16012,7 @@ juce::PopupMenu ElectronicsWorkbench::getMenuForIndex(int, const juce::String& m
     else if (menuName == "Analytics")
     {
         menu.addItem(openAnalyticsItem, "Open Analytics");
+        menu.addItem(openControlPanelItem, "Open Control Panel");
         menu.addSeparator();
         for (size_t i = 0; i < analytics::analyses().size(); ++i)
             menu.addItem(analyticsMenuBase + (int)i, analytics::analyses()[i].title + "...");
@@ -16042,6 +16082,7 @@ void ElectronicsWorkbench::menuItemSelected(int menuItemID, int)
         case autoLayoutDiagramItem: autoLayoutDiagram(); break;
         case runErc: runElectricalRuleCheck(); break;
         case openAnalyticsItem: showAnalytics(); break;
+        case openControlPanelItem: showControlPanel(); break;
         case runCompiledPreview: exportFrustRealtimePreview(); break;
         case loadAudioSourceItem: chooseAudioSourceFile(); break;
         case startAudioSimItem:
@@ -16427,6 +16468,8 @@ juce::String ElectronicsWorkbench::buildAssistantToolManifestJson() const
     for (const auto& spec : schematicToolSpecs)
         manifestSpecs.push_back({ spec.name, juce::String(liveToolText(spec.description)), juce::String(liveToolText(spec.schema)) });
     for (const auto& spec : analyticsToolSpecs())
+        manifestSpecs.push_back(spec);
+    for (const auto& spec : controlPanelToolSpecs())
         manifestSpecs.push_back(spec);
     for (const auto& spec : manifestSpecs)
     {
@@ -18074,6 +18117,147 @@ void ElectronicsWorkbench::showAnalytics()
     }
     else if (auto* zone = panel->findParentComponentOfClass<CreationDock::DockZone>())
         zone->setActivePanel(panel);
+}
+
+void ElectronicsWorkbench::showControlPanel()
+{
+    auto* panel = controlPanelDockPanel.getComponent();
+    if (dockManager == nullptr || panel == nullptr)
+        return;
+    if (auto* zone = panel->findParentComponentOfClass<CreationDock::DockZone>())
+        zone->setActivePanel(panel);
+    if (auto* window = dynamic_cast<CreationDock::FloatingDockWindow*>(panel->getTopLevelComponent()))
+        window->toFront(true);
+}
+
+juce::String ElectronicsWorkbench::controlPanelTool(const juce::String& name, const juce::var& args)
+{
+    if (name == "control_panel_open")
+    {
+        showControlPanel();
+        return R"({"ok": true, "tool": "control_panel_open", "status": "opened"})";
+    }
+
+    if (controlPanel == nullptr)
+        return R"({"ok": false, "error": "Control panel component is unavailable."})";
+
+    auto* session = controlPanel->getSession();
+    if (session == nullptr)
+        return R"({"ok": false, "error": "Simulation session is unavailable."})";
+
+    if (name == "simulation_control")
+    {
+        const auto action = args.getProperty("action", {}).toString().trim().toLowerCase();
+        if (action.isEmpty())
+            return R"({"ok": false, "error": "'action' is required (run, pause, resume, stop, reset, step)."})";
+
+        if (args.hasProperty("rate"))
+        {
+            const auto rateVal = (double)args.getProperty("rate", 1.0);
+            session->setExecutionRate(rateVal);
+        }
+
+        if (action == "run" || action == "start")
+        {
+            session->start();
+            return R"({"ok": true, "tool": "simulation_control", "action": "run", "state": "running"})";
+        }
+        else if (action == "pause")
+        {
+            session->pause();
+            return R"({"ok": true, "tool": "simulation_control", "action": "pause", "state": "paused"})";
+        }
+        else if (action == "resume")
+        {
+            session->resume();
+            return R"({"ok": true, "tool": "simulation_control", "action": "resume", "state": "running"})";
+        }
+        else if (action == "stop")
+        {
+            session->stop();
+            return R"({"ok": true, "tool": "simulation_control", "action": "stop", "state": "stopped"})";
+        }
+        else if (action == "reset")
+        {
+            session->reset();
+            return R"({"ok": true, "tool": "simulation_control", "action": "reset", "state": "stopped"})";
+        }
+        else if (action == "step")
+        {
+            session->stepSingle();
+            const auto snap = session->getSnapshot();
+            juce::DynamicObject::Ptr res = new juce::DynamicObject();
+            res->setProperty("ok", true);
+            res->setProperty("tool", "simulation_control");
+            res->setProperty("action", "step");
+            res->setProperty("simTime", snap.simTime);
+            res->setProperty("running", snap.running);
+            return juce::JSON::toString(juce::var(res.get()));
+        }
+
+        return "{ \"ok\": false, \"error\": \"Unknown simulation action: " + action + "\" }";
+    }
+
+    if (name == "control_panel_set_input")
+    {
+        const auto signal = args.getProperty("signal", {}).toString().trim();
+        if (signal.isEmpty())
+            return R"({"ok": false, "error": "'signal' is required."})";
+
+        if (!args.hasProperty("value"))
+            return R"({"ok": false, "error": "'value' is required."})";
+
+        const auto valVar = args.getProperty("value", {});
+        if (valVar.isBool())
+        {
+            session->setBooleanInput(signal.toStdString(), (bool)valVar);
+        }
+        else
+        {
+            const auto numVal = (double)valVar;
+            session->setNumericInput(signal.toStdString(), numVal);
+            session->setBooleanInput(signal.toStdString(), numVal > 0.5);
+        }
+
+        juce::DynamicObject::Ptr res = new juce::DynamicObject();
+        res->setProperty("ok", true);
+        res->setProperty("tool", "control_panel_set_input");
+        res->setProperty("signal", signal);
+        res->setProperty("value", valVar);
+        return juce::JSON::toString(juce::var(res.get()));
+    }
+
+    if (name == "control_panel_get_state")
+    {
+        const auto snap = session->getSnapshot();
+        juce::DynamicObject::Ptr root = new juce::DynamicObject();
+        root->setProperty("ok", true);
+        root->setProperty("tool", "control_panel_get_state");
+        root->setProperty("simTime", snap.simTime);
+        root->setProperty("wallTime", snap.wallTimeSeconds);
+        root->setProperty("running", snap.running);
+        root->setProperty("paused", snap.paused);
+        root->setProperty("rateMultiplier", snap.targetRate);
+
+        juce::DynamicObject::Ptr analog = new juce::DynamicObject();
+        for (const auto& pair : snap.numericSignals)
+            analog->setProperty(juce::String(pair.first), pair.second);
+        root->setProperty("analogSignals", juce::var(analog.get()));
+
+        juce::DynamicObject::Ptr digital = new juce::DynamicObject();
+        for (const auto& pair : snap.booleanSignals)
+            digital->setProperty(juce::String(pair.first), pair.second);
+        root->setProperty("digitalSignals", juce::var(digital.get()));
+
+        juce::Array<juce::var> alarms;
+        if (snap.faulted)
+            alarms.add(juce::String(snap.faultReason));
+        root->setProperty("alarms", juce::var(alarms));
+
+        return juce::JSON::toString(juce::var(root.get()));
+    }
+
+    return "{ \"ok\": false, \"error\": \"Unknown control panel tool: " + name + "\" }";
 }
 
 analytics::Settings ElectronicsWorkbench::analyticsToolSettings(const juce::var& args) const

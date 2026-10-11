@@ -191,6 +191,12 @@ target_sources(DjehutiElectronicsLab PRIVATE
     Source/AudioPipeline.cpp
     Source/FrustAudioGenerator.h
     Source/FrustAudioGenerator.cpp
+    Source/SystemSimulationSession.h
+    Source/SystemSimulationSession.cpp
+    Source/ControlPanelModel.h
+    Source/ControlPanelModel.cpp
+    Source/ControlPanelComponent.h
+    Source/ControlPanelComponent.cpp
 )
 
 target_compile_definitions(DjehutiElectronicsLab PRIVATE
@@ -406,6 +412,21 @@ target_compile_definitions(AudioDspTests PRIVATE JUCE_WEB_BROWSER=0 JUCE_USE_CUR
 target_link_libraries(AudioDspTests PRIVATE circuit_sim frust_plugin_host juce::juce_core)
 juce_generate_juce_header(AudioDspTests)
 add_test(NAME AudioDspTests COMMAND AudioDspTests)
+
+juce_add_console_app(ControlPanelTests PRODUCT_NAME "Control Panel Tests")
+set_target_properties(ControlPanelTests PROPERTIES 
+    OUTPUT_NAME "control_panel_tests"
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/bin")
+target_sources(ControlPanelTests PRIVATE 
+    tools/control_panel_tests/ControlPanelTests.cpp
+    Source/SystemSimulationSession.cpp
+    Source/ControlPanelModel.cpp
+)
+target_include_directories(ControlPanelTests PRIVATE Source)
+target_compile_definitions(ControlPanelTests PRIVATE JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0)
+target_link_libraries(ControlPanelTests PRIVATE circuit_sim juce::juce_core)
+juce_generate_juce_header(ControlPanelTests)
+add_test(NAME ControlPanelTests COMMAND ControlPanelTests)
 
 # Headless layout/routing preview: renders reference circuits to PNG and
 # prints readability metrics, without opening the app.

@@ -11,6 +11,7 @@ class AudioPipeline;
 
 struct ComponentPinPlacement;
 namespace frust_component { struct Definition; }
+namespace sim_panel { class ControlPanelComponent; }
 
 class ElectronicsWorkbench final : public juce::Component,
                                    public juce::DragAndDropContainer,
@@ -51,6 +52,7 @@ private:
         runErc,
         runCompiledPreview,
         openAnalyticsItem,
+        openControlPanelItem,
         autoLayoutDiagramItem,
         toggleStampModeItem,
         openAgentSettings,
@@ -139,11 +141,13 @@ private:
     void exportFrustRealtimePreview();
     void chooseAudioSourceFile();
     void showAnalytics();
+    void showControlPanel();
     void showNodeDesigner();
     juce::String analyticsTool(const juce::String& name, const juce::var& args);
     // The tool's settings: its arguments, with param:<id> targets resolved.
     std::map<juce::String, juce::String> analyticsToolSettings(const juce::var& args) const;
     class AnalyticsPanel* analyticsPanel = nullptr;
+    sim_panel::ControlPanelComponent* controlPanel = nullptr;
     class FrustPanel* frustPanel = nullptr;
     class NodeDesignerPanel* nodeDesignerPanel = nullptr;
     class PcbPanel* pcbPanel = nullptr;
@@ -151,6 +155,7 @@ private:
     juce::String pcbLayoutTool(const juce::String& name, const juce::var& args);
     juce::String frustTool(const juce::String& name, const juce::var& args);
     juce::String nodeProgramTool(const juce::String& name, const juce::var& args);
+    juce::String controlPanelTool(const juce::String& name, const juce::var& args);
     // FRust execution and the debugger (FrustExecution): frust_run,
     // node_program_run and node_debug_* answer when the program reaches the
     // state asked for, never blocking the message thread.
@@ -193,6 +198,7 @@ private:
     int executionListener = 0;
     juce::uint64 lastReportedSession = 0;
     juce::Component::SafePointer<CreationDock::DockPanel> analyticsDockPanel;
+    juce::Component::SafePointer<CreationDock::DockPanel> controlPanelDockPanel;
     juce::Component::SafePointer<CreationDock::DockPanel> nodeDesignerDockPanel;
     void autoLayoutDiagram();
     void applySchematicZoom(float zoom);
