@@ -19066,7 +19066,8 @@ bool pinsFromVar(const juce::var& list, std::vector<frust_component::Pin>& pins,
 }
 }
 
-bool ElectronicsWorkbench::compileComponent(const juce::String& componentName, juce::String& error, juce::String* source)
+bool ElectronicsWorkbench::compileComponent(const juce::String& componentName, juce::String& error, juce::String* source,
+                                            juce::StringArray* notes)
 {
     frust_component::Definition d;
     if (!frust_component::load(componentFile(componentName), d, error))
@@ -19107,6 +19108,10 @@ bool ElectronicsWorkbench::compileComponent(const juce::String& componentName, j
     }
     if (source != nullptr)
         *source = compiler.generatedProgramSource();
+    if (notes != nullptr)
+        for (const auto& p : compiler.validateGraph())
+            if (p.contains("does not reach"))
+                notes->add(p);
     return frust_component::Library::instance().compile(d, compiler.generatedProgramSource().toStdString(), key, error);
 }
 
@@ -19361,7 +19366,10 @@ juce::String ElectronicsWorkbench::componentTool(const juce::String& name, const
                 {
                     for (int k = 0; k < (int)d.pins.size(); ++k)
                         if (d.pins[(size_t)k].uid == pin.uid) old = k;
-                    if (old < 0)
+                    // Creating, every pin is new: a given uid is its uid (duplicates are
+                    // refused with the definition's other problems). Updating, a uid
+                    // names an existing pin, so an unknown one is a mistake, not a new pin.
+                    if (old < 0 && !creating)
                         return fail("Pin " + pin.id + ": " + d.name + " has no pin with uid " + pin.uid + " (component_get lists the uids).");
                 }
                 else
@@ -19460,10 +19468,17 @@ juce::String ElectronicsWorkbench::componentTool(const juce::String& name, const
     else if (name == "component_compile")
     {
         juce::String source;
-        if (!compileComponent(text("name"), error, &source))
+        juce::StringArray notes;
+        if (!compileComponent(text("name"), error, &source, &notes))
             return fail(error);
         root->setProperty("source", source);
         root->setProperty("message", "Compiled; simulations use this program now.");
+        if (!notes.isEmpty())
+        {
+            juce::Array<juce::var> list;
+            for (const auto& n : notes) list.add(n);
+            root->setProperty("warnings", list);
+        }
     }
     else if (name == "component_place")
     {

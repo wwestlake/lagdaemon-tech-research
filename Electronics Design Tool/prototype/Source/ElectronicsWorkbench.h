@@ -162,7 +162,9 @@ private:
     // pin_layout_* tools, the Properties buttons, the canvas device factory.
     juce::String componentTool(const juce::String& name, const juce::var& args);
     juce::File componentFile(const juce::String& componentName) const;
-    bool compileComponent(const juce::String& componentName, juce::String& error, juce::String* source = nullptr);
+    // notes: what the program's validation says that does not stop compilation (unused nodes).
+    bool compileComponent(const juce::String& componentName, juce::String& error, juce::String* source = nullptr,
+                          juce::StringArray* notes = nullptr);
     bool openComponentProgram(const juce::String& componentName, juce::String& error);
     bool applyComponentLayout(const juce::String& componentName, const std::vector<ComponentPinPlacement>& layout, juce::String& error);
     void openPinLayoutEditor(const juce::String& refdes);

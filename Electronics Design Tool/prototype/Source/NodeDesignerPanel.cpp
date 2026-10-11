@@ -3959,6 +3959,27 @@ juce::StringArray NodeDesignerPanel::validateGraph() const
                 if (drivers.count({ n.uid, i }) == 0)
                     problems.add("Input '" + n.id + "." + n.inputs[(size_t)i].name + "' is not wired: every input needs a wire "
                                  "(connect a value to it, or delete the node).");
+        // A node whose result reaches no pin, resistance or state variable
+        // changes nothing the circuit sees: usually a condition left out of
+        // the logic by mistake.
+        auto isSink = [](const juce::String& type) {
+            return type == "pc_drive" || type == "pc_drive_current" || type == "pc_set_resistance" || type == "pc_state_set";
+        };
+        std::set<int> reaches;
+        for (const auto& n : nodes)
+            if (isSink(n.type))
+                reaches.insert(n.uid);
+        for (bool grew = true; grew;)
+        {
+            grew = false;
+            for (const auto& c : connections)
+                if (reaches.count(c.toNode) != 0 && reaches.insert(c.fromNode).second)
+                    grew = true;
+        }
+        for (const auto& n : nodes)
+            if (reaches.count(n.uid) == 0)
+                problems.add("Node '" + n.id + "' (" + n.type + ") does not reach any pin, resistance or state variable: its result "
+                             "is unused (wire it into the logic that drives a pin, or delete it).");
     }
     return problems;
 }

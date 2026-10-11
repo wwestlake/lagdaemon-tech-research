@@ -386,7 +386,7 @@ int main()
         // instead of the node compiler's "input ref must have 'ref' or 'param'".
         NodeDesignerPanel prog;
         prog.newGraph("node_graph", false);
-        prog.setComponentContext(juce::JSON::parse(R"({"pins":[{"name":"IN"},{"name":"OUT"}],"parameters":[],"state":[]})"));
+        prog.setComponentContext(juce::JSON::parse(R"({"name":"Window","pins":["IN","OUT"],"parameters":[],"state":[]})"));
         prog.addNodeOfType("pc_pin_voltage", 0, 0, "vin", error);
         prog.setNodeParameter("vin", "text", "IN", error);
         prog.addNodeOfType("literal_f64", 0, 100, "five", error);
@@ -406,6 +406,16 @@ int main()
               "and compile reports it by name", message);
         prog.connect("vin", "volts", "pick", "else", error);
         check(!prog.validateGraph().joinIntoString(" ").contains("is not wired"), "wired: no such problem", error);
+        check(prog.validateGraph().isEmpty(), "every node reaches the driven pin: no problems", prog.validateGraph().joinIntoString(" "));
+        // A second condition computed but never used (a window comparator
+        // whose upper limit was left out): named, and compile still works.
+        prog.addNodeOfType("lt", 200, 200, "below", error);
+        prog.connect("vin", "volts", "below", "a", error);
+        prog.connect("five", "value", "below", "b", error);
+        const auto unused = prog.validateGraph().joinIntoString(" ");
+        check(unused.contains("Node 'below' (lt) does not reach any pin") && !unused.contains("'above'"),
+              "a computed condition that reaches no pin is named (and only it)", unused);
+        check(prog.compileProgram(message), "an unused node does not stop compilation", message);
         // An ordinary (executable) program is not held to it: its compiler takes other paths.
         NodeDesignerPanel plain;
         plain.newGraph("node_graph", false);
