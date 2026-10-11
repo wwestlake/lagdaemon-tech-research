@@ -281,6 +281,98 @@ juce::String componentIdList()
     return schematic::supportedSymbolIds().joinIntoString(", ");
 }
 
+namespace
+{
+// What a programmable component is and how the tools make one, built from
+// the request's live data (the project's definitions, the node types).
+juce::var programmableSection(const Request& request)
+{
+    auto* o = new Obj();
+    o->setProperty("what", "A programmable component is a reusable schematic part whose electrical behaviour is a FRust node program. "
+                           "It is backed by a definition in the open project (components/<Name>.frcomp.json with its program "
+                           "<Name>.frnode.json): pins, parameters, state variables and output resistance. Each placed instance "
+                           "(symbol frust_component, refdes U...) is a copy of that definition with its own state and parameter values; "
+                           "changing the definition changes every instance. The library's Programmable Components group lists the "
+                           "definitions and New Programmable Component...");
+    o->setProperty("incompleteDefinitions", "A definition may have no pins while it is designed: it can be created, saved and placed as a "
+                                            "blank symbol, and is not simulated until it has pins. Give it pins with component_update "
+                                            "(or the Component panel in the Node Designer, which opens when the user double-clicks an instance).");
+    o->setProperty("pinModel", "Every pin is a branch from the pin to its reference (ground, or another pin of the component): current into "
+                               "the circuit = I + (V - Vpin_to_ref)/R. role sets the start values: input = no load until the program sets a "
+                               "resistance (input impedance); voltage_output = V behind outputResistance (output impedance); current_output "
+                               "= a current. Pin names are identifiers (letters, digits, _); wires name them U1.NAME. Each pin also has a "
+                               "stable uid (component_get): rename a pin by giving component_update its uid with the new name, and its "
+                               "wires stay; a removed pin's wires are removed and reported, never moved to another pin.");
+    o->setProperty("programModel", "The program is a node graph (a function, compute()). Component nodes name a pin, parameter or state "
+                                   "variable in their text parameter. The internal solver runs the program at every Newton iteration with "
+                                   "that iterate's pin voltages, so behaviour that depends on pin voltages (comparators, voltage-dependent "
+                                   "resistances, controlled sources) is solved with the circuit. A state read gives the value at the last "
+                                   "accepted step; state writes and pin settings are kept when the step is accepted. Outside a simulation "
+                                   "pin reads are 0. Ordinary nodes (arithmetic, comparisons gt/lt, if, literal_f64...) build the logic: "
+                                   "node_program_node_types lists every node type with its pins.");
+    if (request.componentNodeTypes.isArray())
+        o->setProperty("componentNodeTypes", request.componentNodeTypes);
+    o->setProperty("simulation", "Programmable components run on the internal solver (operating point, DC sweep, transient: the analytics_* "
+                                 "tools); Xyce refuses circuits that contain one. Simulations compile changed programs automatically; "
+                                 "component_compile checks a program first and returns its FRust source or the error.");
+    juce::Array<juce::var> tools;
+    auto tool = [&tools](const char* name, const char* use) {
+        auto* t = new Obj();
+        t->setProperty("tool", name);
+        t->setProperty("use", use);
+        tools.add(juce::var(t));
+    };
+    tool("component_list", "the project's definitions, pin counts and instances: look here first");
+    tool("component_create", "a new definition (name, pins, parameters, state); no name and no pins makes a blank one");
+    tool("component_get", "read a definition: pins with uids, roles and layout, parameters, state, instances");
+    tool("component_update", "change pins (keep a pin's uid to rename it), parameters, state, description, output resistance");
+    tool("component_rename", "rename a definition; its program and instances (every diagram) follow");
+    tool("component_open_program", "open its program in the Node Designer for the node_program_* tools");
+    tool("node_program_node_types / node_program_add_node / node_program_connect / node_program_set_parameter / node_program_inspect / node_program_validate",
+         "build and check the behaviour graph (component nodes name pins, parameters, state in their text parameter)");
+    tool("component_compile", "compile it; returns the FRust source or the error");
+    tool("component_place", "place an instance at x, y (no name: a new blank component)");
+    tool("component_set_parameter", "one instance's parameter value");
+    tool("pin_layout_get / pin_layout_set", "where pins are drawn (side, order); belongs to the definition");
+    tool("schematic_connect", "wire its pins (U1.NAME) into the circuit");
+    tool("analytics_operating_point / analytics_transient / instrument_read", "simulate and read the results");
+    o->setProperty("tools", tools);
+    o->setProperty("workflow", juce::StringArray { "1. component_list: is there a definition to reuse?",
+                                                   "2. component_create (or component_update an existing one): name, pins with roles, parameters, state.",
+                                                   "3. component_open_program, then node_program_* to build the behaviour: component nodes read pins, time, parameters and state, and drive pins.",
+                                                   "4. node_program_validate and component_compile; fix what they report.",
+                                                   "5. component_place the instance; schematic_connect its pins into a test circuit.",
+                                                   "6. Simulate (analytics_operating_point / analytics_transient) and compare with the expected behaviour.",
+                                                   "7. If it is wrong, change the program or definition, compile, simulate again.",
+                                                   "For the user to finish by hand: component_place with no name places a blank component; they double-click it to design it." });
+    juce::Array<juce::var> defs;
+    for (const auto& d : request.programmable)
+    {
+        auto* e = new Obj();
+        e->setProperty("name", d.name);
+        e->setProperty("pinCount", d.pins.size());
+        e->setProperty("pins", arrayOf(d.pins));
+        e->setProperty("instances", arrayOf(d.instances));
+        defs.add(juce::var(e));
+    }
+    o->setProperty("definitions", defs);
+    o->setProperty("definitionsNote", !request.projectOpen ? juce::String("No project is open: definitions live in a project (project_create or project_open first).")
+                                      : request.programmable.empty() ? juce::String("The open project has no definitions yet.")
+                                      : juce::String(request.programmable.size()) + " definition(s) in the open project.");
+    return juce::var(o);
+}
+
+bool asksAboutProgrammable(const juce::StringArray& query)
+{
+    static const juce::StringArray topics { "programmable", "frust", "frustcomponent", "custom", "behavioral", "behavioural", "nodeprogram",
+                                            "microcontroller", "mcu", "controller", "program", "programmed" };
+    for (const auto& t : query)
+        if (topics.contains(t))
+            return true;
+    return false;
+}
+}
+
 juce::String toJson(const Request& request)
 {
     auto* root = new Obj();
@@ -302,6 +394,8 @@ juce::String toJson(const Request& request)
             return juce::JSON::toString(juce::var(root), true);
         }
         root->setProperty("component", component(id, true));
+        if (id == "frust_component")
+            root->setProperty("programmableComponents", programmableSection(request));
         return juce::JSON::toString(juce::var(root), true);
     }
 
@@ -367,7 +461,8 @@ juce::String toJson(const Request& request)
             if (!unmatched.isEmpty())
                 root->setProperty("note", "No component matched: " + unmatched.joinIntoString(", ") + ". An empty search does not show a part is absent: "
                                           "call workbench_capabilities with no query to list all " + juce::String(schematic::supportedSymbolIds().size())
-                                          + " registered components, or look one up by symbolId, before concluding anything is missing.");
+                                          + " registered components, or look one up by symbolId, before concluding anything is missing. "
+                                            "A part the registry does not have can often be built as a programmable component: see programmableComponents.");
         }
         if (all || section == "components")
             root->setProperty("components", comps);
@@ -378,6 +473,18 @@ juce::String toJson(const Request& request)
                                                  "Read them with instrument_read; plotter samples with instrument_plot_data; change settings with schematic_set_parameters.");
         }
     }
+    // Programmable components: in the summary, when asked about, and when a
+    // searched part is not in the registry (it may be built as one).
+    bool unmatchedTerm = false;
+    for (const auto& term : query)
+    {
+        bool any = false;
+        for (const auto& id : schematic::supportedSymbolIds())
+            any |= termMatches(term, id);
+        unmatchedTerm |= !any;
+    }
+    if (all || section == "programmable" || asksAboutProgrammable(query) || unmatchedTerm)
+        root->setProperty("programmableComponents", programmableSection(request));
     if (all || section == "analyses")
         root->setProperty("analyses", analysesList(section == "analyses" ? query : juce::StringArray()));
     if (all || section == "engines")

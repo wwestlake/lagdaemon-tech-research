@@ -583,22 +583,22 @@ const SchematicToolSpec schematicToolSpecs[] = {
     },
     {
         "component_create",
-        "Create a FRust programmable electronic component in the open project: a schematic part whose behaviour is a FRust node program. pins: its external electrical pins (id = stable identity; side/order = where it is drawn). Every pin is a branch from the pin to its reference (ground, or another pin): current into the circuit = I + (V - Vpin_to_ref)/R, with V, R and I set by the program at every solver iteration. role gives the start values: input = no load until the program sets a resistance (input impedance); voltage_output = V behind outputResistance (output impedance, changeable by the program); current_output = I. parameters: numbers each instance can set (with defaults). state: variables kept between accepted simulation steps (with initial values). Also creates its empty program; edit it with component_open_program and the node_program_* tools, then component_compile.",
-        R"({"type":"object","properties":{"name":{"type":"string","description":"Letters, digits, _; starts with a letter."},"description":{"type":"string"},"pins":{"type":"array","items":{"type":"object","properties":{"id":{"type":"string","description":"Pin name (stable identity)."},"role":{"type":"string","enum":["input","voltage_output","current_output"]},"side":{"type":"string","enum":["left","right","top","bottom"]},"order":{"type":"integer"},"reference":{"type":"string","description":"Another pin its branch returns through (a floating pin between two terminals); omit for ground."}},"required":["id","role"],"additionalProperties":false}},"parameters":{"type":"array","items":{"type":"object","properties":{"name":{"type":"string"},"default":{"type":"number"}},"required":["name"],"additionalProperties":false}},"state":{"type":"array","items":{"type":"object","properties":{"name":{"type":"string"},"initial":{"type":"number"}},"required":["name"],"additionalProperties":false}},"outputResistance":{"type":"number","description":"Ohms, each voltage output (default 1)."}},"required":["name","pins"],"additionalProperties":false})"
+        "Create a FRust programmable electronic component definition in the open project: a reusable schematic part whose behaviour is a FRust node program (each placed instance is a copy with its own state). With no name and no pins it creates a blank component (Component1, Component2...) to design later; a component may have no pins while it is designed (it is placed as a blank symbol and not simulated until it has pins). pins: its external electrical pins (id = stable identity; side/order = where it is drawn). Every pin is a branch from the pin to its reference (ground, or another pin): current into the circuit = I + (V - Vpin_to_ref)/R, with V, R and I set by the program at every solver iteration. role gives the start values: input = no load until the program sets a resistance (input impedance); voltage_output = V behind outputResistance (output impedance, changeable by the program); current_output = I. parameters: numbers each instance can set (with defaults). state: variables kept between accepted simulation steps (with initial values). Also creates its empty program; edit it with component_open_program and the node_program_* tools, then component_compile.",
+        R"({"type":"object","properties":{"name":{"type":"string","description":"Letters, digits, _; starts with a letter."},"description":{"type":"string"},"pins":{"type":"array","items":{"type":"object","properties":{"id":{"type":"string","description":"Pin name: what wires (U1.NAME) and the program's component nodes use."},"uid":{"type":"string","description":"component_update: the pin's stable identity from component_get (P1, P2...). Give it with a new id to rename the pin: its wires stay, and an open program's nodes follow."},"role":{"type":"string","enum":["input","voltage_output","current_output"]},"side":{"type":"string","enum":["left","right","top","bottom"]},"order":{"type":"integer"},"reference":{"type":"string","description":"Another pin its branch returns through (a floating pin between two terminals); omit for ground."}},"required":["id","role"],"additionalProperties":false}},"parameters":{"type":"array","items":{"type":"object","properties":{"name":{"type":"string"},"default":{"type":"number"}},"required":["name"],"additionalProperties":false}},"state":{"type":"array","items":{"type":"object","properties":{"name":{"type":"string"},"initial":{"type":"number"}},"required":["name"],"additionalProperties":false}},"outputResistance":{"type":"number","description":"Ohms, each voltage output (default 1)."}},"additionalProperties":false})"
     },
     {
         "component_update",
-        "Change a programmable component's description, pins, parameters, state variables or output resistance (each given replaces that list). Instances on the schematic follow; wires stay on the pin with the same name. Pins given without side keep their layout.",
-        R"({"type":"object","properties":{"name":{"type":"string"},"description":{"type":"string"},"pins":{"type":"array","items":{"type":"object","properties":{"id":{"type":"string","description":"Pin name (stable identity)."},"role":{"type":"string","enum":["input","voltage_output","current_output"]},"side":{"type":"string","enum":["left","right","top","bottom"]},"order":{"type":"integer"},"reference":{"type":"string","description":"Another pin its branch returns through (a floating pin between two terminals); omit for ground."}},"required":["id","role"],"additionalProperties":false}},"parameters":{"type":"array","items":{"type":"object","properties":{"name":{"type":"string"},"default":{"type":"number"}},"required":["name"],"additionalProperties":false}},"state":{"type":"array","items":{"type":"object","properties":{"name":{"type":"string"},"initial":{"type":"number"}},"required":["name"],"additionalProperties":false}},"outputResistance":{"type":"number"}},"required":["name"],"additionalProperties":false})"
+        "Change a programmable component's description, pins, parameters, state variables or output resistance (each given replaces that list). Every instance on the schematic follows. A pin keeps its identity, and its wires, when given with the same id or with its uid (rename: new id, same uid); a wire on a pin the new list no longer has is removed and reported in warnings, never moved to another pin. Pins given without side keep their layout. Rename the component itself with component_rename.",
+        R"({"type":"object","properties":{"name":{"type":"string"},"description":{"type":"string"},"pins":{"type":"array","items":{"type":"object","properties":{"id":{"type":"string","description":"Pin name: what wires (U1.NAME) and the program's component nodes use."},"uid":{"type":"string","description":"component_update: the pin's stable identity from component_get (P1, P2...). Give it with a new id to rename the pin: its wires stay, and an open program's nodes follow."},"role":{"type":"string","enum":["input","voltage_output","current_output"]},"side":{"type":"string","enum":["left","right","top","bottom"]},"order":{"type":"integer"},"reference":{"type":"string","description":"Another pin its branch returns through (a floating pin between two terminals); omit for ground."}},"required":["id","role"],"additionalProperties":false}},"parameters":{"type":"array","items":{"type":"object","properties":{"name":{"type":"string"},"default":{"type":"number"}},"required":["name"],"additionalProperties":false}},"state":{"type":"array","items":{"type":"object","properties":{"name":{"type":"string"},"initial":{"type":"number"}},"required":["name"],"additionalProperties":false}},"outputResistance":{"type":"number"}},"required":["name"],"additionalProperties":false})"
     },
     {
         "component_list",
-        "List the open project's FRust programmable components with their pin counts and the schematic instances of each.",
+        "List the open project's FRust programmable component definitions (the reusable parts the library's Programmable Components group shows) with their pin counts and the schematic instances of each. Start here before creating one: a suitable definition may exist.",
         R"({"type":"object","properties":{},"additionalProperties":false})"
     },
     {
         "component_get",
-        "Read a programmable component's definition: pins (role, side, order, symbol position), parameters, state variables, output resistance, program file and its schematic instances.",
+        "Read a programmable component's definition: pins (name as id, stable uid, role, side, order, symbol position), parameters, state variables, output resistance, program file and its schematic instances.",
         R"({"type":"object","properties":{"name":{"type":"string"}},"required":["name"],"additionalProperties":false})"
     },
     {
@@ -613,8 +613,13 @@ const SchematicToolSpec schematicToolSpecs[] = {
     },
     {
         "component_place",
-        "Place an instance of a programmable component on the current schematic sheet at x, y. Returns its refdes and pins; wire it like any part (pins by name). Each instance has its own state in simulation.",
-        R"({"type":"object","properties":{"name":{"type":"string"},"x":{"type":"number"},"y":{"type":"number"}},"required":["name","x","y"],"additionalProperties":false})"
+        "Place an instance of a programmable component definition on the current schematic sheet at x, y. Returns its refdes and pins; wire it like any part (schematic_connect with U1.PINNAME). Each instance has its own state in simulation. Without a name it creates and places a new blank component (no pins), as the library's New Programmable Component... does, for the user or you to design.",
+        R"({"type":"object","properties":{"name":{"type":"string","description":"The definition (component_list); omit for a new blank component."},"x":{"type":"number"},"y":{"type":"number"}},"required":["x","y"],"additionalProperties":false})"
+    },
+    {
+        "component_rename",
+        "Rename a programmable component definition. Its program file, every instance (in every diagram of the project) and the library follow; pins and wires are unchanged.",
+        R"({"type":"object","properties":{"name":{"type":"string"},"newName":{"type":"string","description":"Letters, digits, _; starts with a letter."}},"required":["name","newName"],"additionalProperties":false})"
     },
     {
         "component_set_parameter",
@@ -638,8 +643,8 @@ const SchematicToolSpec schematicToolSpecs[] = {
     },
     {
         "workbench_capabilities",
-        "Discover what this Workbench actually has, from its live registries: component types (pins, parameters with units, choices, defaults and help, simulation fidelity), virtual instruments and their modes, analyses (analytics_* tools and their settings) and simulation engines. Omit query to list every registered component. A query's terms are matched separately (any term matches; most matches first) and each term's matches are reported. Look a part up by symbolId before setting its parameters. Use only listed ids; an empty search is not proof a part is missing - list all or look up by symbolId first.",
-        R"({"type":"object","properties":{"section":{"type":"string","description":"components, instruments, analyses or engines; omit for a summary of all."},"query":{"type":"string","description":"Optional search terms separated by spaces or commas, such as 'opamp resistor capacitor ground diode' or 'behavioral current source'. Each term is matched on its own against ids, display names and common synonyms (op-amp, gnd, supply...)."},"symbolId":{"type":"string","description":"Optional component id for full detail, such as behavioral_current_source. Unknown ids are reported with close matches."}},"additionalProperties":false})"
+        "Discover what this Workbench actually has, from its live registries: component types (pins, parameters with units, choices, defaults and help, simulation fidelity), virtual instruments and their modes, analyses (analytics_* tools and their settings) and simulation engines. Omit query to list every registered component. A query's terms are matched separately (any term matches; most matches first) and each term's matches are reported. Look a part up by symbolId before setting its parameters. Use only listed ids; an empty search is not proof a part is missing - list all or look up by symbolId first. Programmable components (reusable parts whose behaviour is a FRust node program, backed by project definitions) are covered in programmableComponents: what they are, the open project's definitions, the component node types, the tools and the workflow to create, design, compile, place and test one; section programmable returns just that.",
+        R"({"type":"object","properties":{"section":{"type":"string","description":"components, instruments, analyses, engines or programmable; omit for a summary of all."},"query":{"type":"string","description":"Optional search terms separated by spaces or commas, such as 'opamp resistor capacitor ground diode' or 'behavioral current source'. Each term is matched on its own against ids, display names and common synonyms (op-amp, gnd, supply...)."},"symbolId":{"type":"string","description":"Optional component id for full detail, such as behavioral_current_source. Unknown ids are reported with close matches."}},"additionalProperties":false})"
     },
     {
         "instrument_read",
@@ -1477,7 +1482,28 @@ public:
         juce::String id;
         juce::String name;
         juce::String category;
+        juce::String detail; // the row's second line; the symbol id when empty
     };
+
+    static constexpr const char* programmableGroup = "Programmable Components";
+
+    // The open project's programmable component definitions (name and pin
+    // count), in their own group after New Programmable Component...
+    void setProgrammableComponents(const std::vector<std::pair<juce::String, int>>& definitions)
+    {
+        allSymbols.erase(std::remove_if(allSymbols.begin(), allSymbols.end(),
+                                        [](const SymbolInfo& s) { return s.category == programmableGroup; }),
+                         allSymbols.end());
+        add({ "frust_component:*new", "New Programmable Component...", programmableGroup, "blank: design it in the Node Designer" });
+        for (const auto& [name, pins] : definitions)
+            add({ "frust_component:" + name, name, programmableGroup,
+                  "programmable, " + juce::String(pins) + (pins == 1 ? " pin" : " pins") });
+        content.rebuild();
+    }
+
+    // The mouse came into the library: the Workbench rescans the project's
+    // definitions (so files added, renamed or deleted elsewhere show up).
+    std::function<void()> onRescanRequested;
 
     explicit ComponentLibraryPanel(std::function<void(juce::String)> onSelection)
         : onSymbolSelected(std::move(onSelection))
@@ -1509,7 +1535,11 @@ public:
             add({ "sub_block", "Sub Diagram (empty)", "Sub Diagrams" });
         if (std::none_of(allSymbols.begin(), allSymbols.end(), [](const SymbolInfo& s) { return s.id == "block_port"; }))
             add({ "block_port", "Sub Diagram Port (inside a block)", "Sub Diagrams" });
-        content.rebuild();
+        // The seed's generic entry cannot be placed (an instance needs a
+        // definition); the Programmable Components group replaces it.
+        allSymbols.erase(std::remove_if(allSymbols.begin(), allSymbols.end(), [](const SymbolInfo& s) { return s.id == "frust_component"; }),
+                         allSymbols.end());
+        setProgrammableComponents({});
 
         if (onSymbolSelected != nullptr)
             onSymbolSelected("resistor");
@@ -1560,7 +1590,8 @@ private:
     {
         static const juce::StringArray order { "Passives", "Magnetics", "Diodes", "Transistors", "Sources",
                                                "Controlled Sources", "Power & Ground", "Analog ICs", "Digital Logic",
-                                               "Switches & Relays", "Protection", "Connectors & Test Points", "Instruments", "Sub Diagrams" };
+                                               "Switches & Relays", "Protection", "Connectors & Test Points", "Instruments", "Sub Diagrams",
+                                               programmableGroup };
         return order;
     }
 
@@ -1570,6 +1601,7 @@ private:
         if (group == "Power & Ground") return juce::Colour(0xff78dcca);
         if (group == "Analog ICs" || group == "Digital Logic") return juce::Colour(0xffffc857);
         if (group == "Instruments") return juce::Colour(0xffff6b6b);
+        if (group == programmableGroup) return juce::Colour(0xff7fffd4);
         return juce::Colour(0xff5aa7c8);
     }
 
@@ -1681,7 +1713,8 @@ private:
                 g.drawText(symbol.name, area.withTrimmedLeft(34).withTrimmedBottom(16), juce::Justification::centredLeft, true);
                 g.setColour(juce::Colour(0xff93a7b0));
                 g.setFont(juce::Font(11.5f));
-                g.drawText(symbol.id, area.withTrimmedLeft(34).withTrimmedTop(18), juce::Justification::centredLeft, true);
+                g.drawText(symbol.detail.isNotEmpty() ? symbol.detail : symbol.id, area.withTrimmedLeft(34).withTrimmedTop(18),
+                           juce::Justification::centredLeft, true);
             }
         }
 
@@ -1703,6 +1736,12 @@ private:
         {
             hover = -1;
             repaint();
+        }
+
+        void mouseEnter(const juce::MouseEvent&) override
+        {
+            if (owner.onRescanRequested != nullptr)
+                owner.onRescanRequested();
         }
 
         void mouseDown(const juce::MouseEvent& event) override
@@ -3730,8 +3769,30 @@ public:
             return "{ \"ok\": true, \"tool\": \"schematic_place_symbol\", \"refdes\": " + quote(instances.back().refdes)
                  + ", \"symbolId\": \"block_port\", \"block\": " + blockJson(block) + " }";
         }
-        if (requestedSymbol == "frust_component")
-            return "{ \"ok\": false, \"error\": \"FRust programmable components are placed with component_place (they need a definition).\" }";
+        if (requestedSymbol == "frust_component" || requestedSymbol.startsWith("frust_component:"))
+        {
+            // An instance is of a project definition: value names it.
+            const auto definition = requestedSymbol.startsWith("frust_component:") ? requestedSymbol.fromFirstOccurrenceOf(":", false, false)
+                                                                                  : value.trim();
+            juce::String error;
+            if (definition.isNotEmpty() && placeProgrammable != nullptr)
+            {
+                const auto refdes = placeProgrammable(definition, snapPoint({ x, y }), error);
+                if (refdes.isNotEmpty())
+                    return "{ \"ok\": true, \"tool\": \"schematic_place_symbol\", \"refdes\": " + quote(refdes)
+                         + ", \"symbolId\": \"frust_component\", \"component\": " + quote(componentDefinitionOf(refdes))
+                         + ", \"note\": \"component_get lists its pins; component_place is the dedicated tool.\" }";
+            }
+            return "{ \"ok\": false, \"error\": " + quote((error.isNotEmpty() ? error + " " : juce::String())
+                       + "A programmable component (frust_component) is an instance of a definition in the project, so placing one needs the "
+                         "definition's name. Next steps: component_list shows the definitions; component_place {name, x, y} places one "
+                         "(or schematic_place_symbol with value = the definition name); component_place without a name, or component_create "
+                         "without pins, makes a new blank component to design (component_update for pins, component_open_program and "
+                         "node_program_* for its behaviour, component_compile to check it). workbench_capabilities with query "
+                         "'programmable component' explains the whole workflow.")
+                 + ", \"nextTools\": [\"component_list\", \"component_create\", \"component_place\", \"component_update\", "
+                   "\"component_open_program\", \"component_compile\"] }";
+        }
         if (!schematic::isSupportedSymbol(requestedSymbol))
             return "{ \"ok\": false, \"error\": \"Unsupported symbolId; no substitute was placed.\", \"requestedSymbolId\": "
                 + quote(requestedSymbol) + " }";
@@ -8182,6 +8243,8 @@ public:
             }
             else if (id.startsWith("logic_"))
                 sim.warnings.add(inst.refdes + " (" + parts::displayName(id) + ") is not simulated yet.");
+            else if (id == "frust_component" && inst.ports.empty())
+                sim.warnings.add(inst.refdes + " (" + inst.value + ") has no pins yet, so it is not simulated.");
             else if (id == "frust_component")
             {
                 // Its pins by name (identity), never by where they are drawn.
@@ -9522,10 +9585,12 @@ public:
                                                                             : std::vector<std::pair<juce::String, juce::String>> {};
     }
 
+    // An instance of a definition; a definition with no pins yet places a
+    // blank symbol (it gets pins when the definition does).
     juce::String placeComponent(const juce::String& definition, const std::vector<schematic::BlockPort>& ports,
                                 juce::Point<float> position, juce::String& error)
     {
-        if (ports.empty()) { error = "The component has no pins."; return {}; }
+        (void)error;
         pushUndoSnapshot();
         Instance part;
         part.symbolId = "frust_component";
@@ -9537,6 +9602,11 @@ public:
         part.ports = ports;
         part.params["definition"] = definition;
         instances.push_back(part);
+        selectedInstance = (int)instances.size() - 1;
+        selectedInstances.clear();
+        selectedInstances.add(selectedInstance);
+        selectedGroup = -1;
+        notifySelection();
         routeSignature.clear();
         forceDeferredRepaint();
         return part.refdes;
@@ -9552,8 +9622,10 @@ public:
     }
 
     // The definition changed: every instance takes its pins (names, order,
-    // sides). Pins are matched by name, so a wire stays on the same terminal;
-    // a wire on a pin the definition no longer has is reported, not moved.
+    // sides). A pin is matched by its uid, so a renamed pin keeps its wires
+    // (by name for instances saved before uids). A wire or probe on a pin the
+    // definition no longer has is removed and reported: it is never left on
+    // whatever pin now has the old index.
     juce::StringArray refreshComponentPorts(const juce::String& definition, const std::vector<schematic::BlockPort>& ports)
     {
         juce::StringArray problems;
@@ -9567,31 +9639,46 @@ public:
             std::map<int, int> remap; // old pin index -> new
             for (int o = 0; o < (int)old.size(); ++o)
                 for (int n = 0; n < (int)ports.size(); ++n)
-                    if (ports[(size_t)n].name == old[(size_t)o].name)
+                {
+                    const auto& a = old[(size_t)o];
+                    const auto& b = ports[(size_t)n];
+                    if (a.id.isNotEmpty() && b.id.isNotEmpty() ? a.id == b.id : a.name == b.name)
+                    {
                         remap[o] = n;
-            bool samePins = old.size() == ports.size();
-            for (const auto& [o, n] : remap) samePins &= o == n;
-            if (samePins && (int)remap.size() == (int)old.size())
-            {
-                bool sameLayout = true;
-                for (size_t k = 0; k < old.size(); ++k)
-                    sameLayout &= old[k].side == ports[k].side && old[k].order == ports[k].order;
-                if (sameLayout) continue;
-            }
+                        break;
+                    }
+                }
+            bool same = old.size() == ports.size() && remap.size() == old.size();
+            for (const auto& [o, n] : remap) same &= o == n;
+            for (size_t k = 0; same && k < old.size(); ++k)
+                same &= old[k].name == ports[k].name && old[k].id == ports[k].id && old[k].side == ports[k].side && old[k].order == ports[k].order;
+            if (same)
+                continue;
             if (!changed) pushUndoSnapshot();
             changed = true;
+            auto gone = [&](const WireNode& end) { return end.isPin() && end.pin.instanceIndex == i && remap.find(end.pin.pinIndex) == remap.end(); };
+            for (const auto& wire : wires)
+                for (const auto* end : { &wire.a, &wire.b })
+                    if (gone(*end))
+                        problems.add(inst.refdes + ": pin " + old[(size_t)end->pin.pinIndex].name + " was removed from " + definition
+                                     + "; the wire on it was removed.");
+            wires.erase(std::remove_if(wires.begin(), wires.end(), [&](const Wire& w) { return gone(w.a) || gone(w.b); }), wires.end());
+            for (auto it = probes.begin(); it != probes.end();)
+            {
+                if (gone(it->node))
+                {
+                    problems.add(inst.refdes + ": probe " + it->id + " was on removed pin " + old[(size_t)it->node.pin.pinIndex].name + "; it was removed.");
+                    it = probes.erase(it);
+                    continue;
+                }
+                if (it->node.isPin() && it->node.pin.instanceIndex == i)
+                    it->node.pin.pinIndex = remap[it->node.pin.pinIndex];
+                ++it;
+            }
             for (auto& wire : wires)
                 for (auto* end : { &wire.a, &wire.b })
                     if (end->isPin() && end->pin.instanceIndex == i)
-                    {
-                        const auto found = remap.find(end->pin.pinIndex);
-                        if (found != remap.end())
-                            end->pin.pinIndex = found->second;
-                        else
-                            problems.add(inst.refdes + ": a wire was on pin " + old[(size_t)end->pin.pinIndex].name
-                                         + ", which " + definition + " no longer has; it was left on pin index "
-                                         + juce::String(end->pin.pinIndex) + " - check it.");
-                    }
+                        end->pin.pinIndex = remap[end->pin.pinIndex];
             inst.ports = ports;
         }
         if (changed)
@@ -9601,6 +9688,30 @@ public:
         }
         return problems;
     }
+
+    // A definition was renamed: its instances follow (their pins are the same).
+    void renameComponentInstances(const juce::String& from, const juce::String& to)
+    {
+        bool any = false;
+        for (auto& inst : instances)
+            if (inst.symbolId == "frust_component" && inst.value == from)
+            {
+                if (!any) pushUndoSnapshot();
+                any = true;
+                inst.value = to;
+                inst.params["definition"] = to;
+            }
+        if (any)
+            forceDeferredRepaint();
+    }
+
+    // Places a programmable component from the library ("frust_component:*new"
+    // or "frust_component:<definition>"); set by the Workbench, which owns
+    // the definitions. Returns the refdes or "" with `error`.
+    std::function<juce::String(const juce::String& definition, juce::Point<float> position, juce::String& error)> placeProgrammable;
+    // Adds what only the Workbench knows to a workbench_capabilities request
+    // (the project's programmable component definitions, the node types).
+    std::function<void(capability_catalog::Request&)> fillCapabilityRequest;
 
     juce::String componentParameter(const juce::String& refdes, const juce::String& name) const
     {
@@ -10316,8 +10427,15 @@ public:
         if (name == "instrument_read")
             return instrumentReadJson(args.getProperty("refdes", {}).toString());
         if (name == "workbench_capabilities")
-            return capability_catalog::toJson({ args.getProperty("section", {}).toString(), args.getProperty("query", {}).toString(),
-                                                args.getProperty("symbolId", {}).toString() });
+        {
+            capability_catalog::Request request;
+            request.section = args.getProperty("section", {}).toString();
+            request.query = args.getProperty("query", {}).toString();
+            request.symbolId = args.getProperty("symbolId", {}).toString();
+            if (fillCapabilityRequest != nullptr)
+                fillCapabilityRequest(request);
+            return capability_catalog::toJson(request);
+        }
         if (name == "instrument_plot_data")
             return plotterDataJson(args.getProperty("refdes", {}).toString(), (int)args.getProperty("max_points", 400));
         auto arg = [&](const char* key) { return args.getProperty(key, {}).toString().trim(); };
@@ -11278,6 +11396,17 @@ private:
 
     void placeSymbol(const juce::String& symbolId, juce::Point<float> p, const juce::String& portName = {})
     {
+        if (symbolId == "frust_component" || symbolId.startsWith("frust_component:"))
+        {
+            juce::String error;
+            const auto refdes = placeProgrammable != nullptr
+                ? placeProgrammable(symbolId.fromFirstOccurrenceOf("frust_component:", false, false), p, error)
+                : juce::String();
+            if (onStatus)
+                onStatus(refdes.isNotEmpty() ? "Placed " + refdes + " (" + componentDefinitionOf(refdes) + "). Double-click it to design it in the Node Designer."
+                                             : (error.isNotEmpty() ? error : juce::String("Programmable components need an open project.")));
+            return;
+        }
         if (symbolId == "sub_block")
         {
             createEmptySubDiagram({}, p);
@@ -14185,6 +14314,9 @@ private:
                "Discover parts, instruments, analyses and engines with workbench_capabilities (the application's own registry) before designing; "
                "look a part up by symbolId before setting its parameters. If a search finds nothing, that is inconclusive: list all components (no query) "
                "or look up the likely id before concluding a part is missing, and check engine support separately (simulationFidelity, engines). "
+               "A part the registry lacks, or custom behaviour (a controller, a timer, a behavioural model), can be built as a programmable component: "
+               "a reusable part whose behaviour is a FRust node program, backed by a project definition; workbench_capabilities with section "
+               "programmable gives the tools, node types and workflow, and component_list the project's definitions. "
                "Use cookbook_lookup for engineering knowledge and reference designs. "
                "Never invent component types, model names or parameters; if what you need does not exist, say so or record it with capability_gap_record. "
                "If a schematic_connect call fails, correct the pin labels using the available-labels error; do not continue as if it succeeded. "
@@ -14981,13 +15113,17 @@ ElectronicsWorkbench::ElectronicsWorkbench()
     dockManager = std::make_unique<CreationDock::DockManager>(*this);
     addAndMakeVisible(*dockManager);
 
-    dockManager->registerPanel("library", "Component Library",
-                               std::make_unique<ComponentLibraryPanel>(
-                                   [this](juce::String id) {
-                                       selectedSymbolId = id;
-                                       appendLog("Selected symbol: " + id + ". Click the schematic to place it, or drag it from the library.");
-                                   }),
-                               CreationDock::DockTargetZone::Left);
+    auto library = std::make_unique<ComponentLibraryPanel>([this](juce::String id) {
+        selectedSymbolId = id;
+        appendLog("Selected symbol: " + id + ". Click the schematic to place it, or drag it from the library.");
+    });
+    juce::Component::SafePointer<ComponentLibraryPanel> safeLibrary(library.get());
+    setLibraryComponents = [safeLibrary](const std::vector<std::pair<juce::String, int>>& definitions) {
+        if (safeLibrary != nullptr)
+            safeLibrary->setProgrammableComponents(definitions);
+    };
+    library->onRescanRequested = [this] { refreshComponentPalette(); };
+    dockManager->registerPanel("library", "Component Library", std::move(library), CreationDock::DockTargetZone::Left);
     auto schematic = std::make_unique<SchematicCanvasPanel>(
         [this] { return selectedSymbolId; },
         [this] { return stampModeButton.getToggleState(); },
@@ -15318,6 +15454,47 @@ ElectronicsWorkbench::ElectronicsWorkbench()
                 list.push_back({ p.name, juce::String(p.defaultValue) });
         return list;
     };
+    schematicPanel->placeProgrammable = [this](const juce::String& definition, juce::Point<float> at, juce::String& error) {
+        return placeProgrammableComponent(definition, at, error);
+    };
+    schematicPanel->fillCapabilityRequest = [this, schematicPanel](capability_catalog::Request& request) {
+        request.projectOpen = project.folder != juce::File();
+        if (request.projectOpen)
+            for (const auto& f : project_store::componentsDirectory(project).findChildFiles(juce::File::findFiles, false, "*.frcomp.json"))
+            {
+                frust_component::Definition d;
+                juce::String ignored;
+                if (!frust_component::load(f, d, ignored))
+                    continue;
+                capability_catalog::ProgrammableDefinition entry;
+                entry.name = d.name;
+                for (const auto& p : d.pins) entry.pins.add(p.id);
+                entry.instances = schematicPanel->componentInstances(d.name);
+                request.programmable.push_back(entry);
+            }
+        std::sort(request.programmable.begin(), request.programmable.end(),
+                  [](const auto& a, const auto& b) { return a.name.compareIgnoreCase(b.name) < 0; });
+        if (nodeDesignerPanel != nullptr)
+        {
+            juce::Array<juce::var> types;
+            if (const auto* all = nodeDesignerPanel->describeNodeTypes().getArray())
+                for (const auto& t : *all)
+                    if (t.getProperty("category", {}).toString() == "Component")
+                        types.add(t);
+            request.componentNodeTypes = types;
+        }
+    };
+    nodeDesignerPanel->onComponentEdited = [this](const juce::var& edited, juce::String& message) {
+        const auto oldName = nodeDesignerPanel->componentDefinition().getProperty("name", {}).toString();
+        frust_component::Definition d;
+        if (!frust_component::fromVar(edited, d, message))
+            return false;
+        juce::StringArray warnings;
+        if (!storeComponentDefinition(oldName, d, warnings, message))
+            return false;
+        message = warnings.joinIntoString("\n");
+        return true;
+    };
     schematicPanel->openComponentProgram = [this](const juce::String& definition) {
         juce::String error;
         if (!openComponentProgram(definition, error))
@@ -15398,6 +15575,7 @@ void ElectronicsWorkbench::showPreferences()
 
 ElectronicsWorkbench::~ElectronicsWorkbench()
 {
+    saveOpenComponentProgram();
     frust_exec::Executor::instance().removeListener(executionListener);
     prefs::removeListener(preferenceListener);
     preferencesWindow = nullptr;
@@ -18880,6 +19058,7 @@ bool pinsFromVar(const juce::var& list, std::vector<frust_component::Pin>& pins,
                  : pin.role == frust_component::PinRole::Input ? schematic::PinSide::Left : schematic::PinSide::Right;
         pin.order = p.hasProperty("order") ? (int)p.getProperty("order", -1) : -1;
         pin.reference = p.getProperty("reference", {}).toString().trim();
+        pin.uid = p.getProperty("uid", {}).toString().trim();
         pins.push_back(pin);
     }
     return true;
@@ -18941,13 +19120,17 @@ bool ElectronicsWorkbench::openComponentProgram(const juce::String& componentNam
         return false;
     }
     const auto programFile = componentFile(componentName).getSiblingFile(d.programFile);
+    // The program open now keeps its edits (it is saved before another opens).
+    if (nodeDesignerPanel->currentFile() != programFile)
+        saveOpenComponentProgram();
     juce::String problems;
-    if (!nodeDesignerPanel->openFile(programFile, problems))
+    if (nodeDesignerPanel->currentFile() != programFile && !nodeDesignerPanel->openFile(programFile, problems))
     {
         error = problems;
         return false;
     }
     nodeDesignerPanel->setComponentContext(d.compilerContext());
+    nodeDesignerPanel->setComponentDefinition(frust_component::toVar(d));
     showNodeDesigner();
     return true;
 }
@@ -19114,33 +19297,84 @@ juce::String ElectronicsWorkbench::componentTool(const juce::String& name, const
         }
         root->setProperty("components", list);
     }
+    else if (name == "component_rename")
+    {
+        if (!renameComponent(text("name"), text("newName"), error))
+            return fail(error);
+        frust_component::Definition d;
+        if (!frust_component::load(componentFile(text("newName")), d, error))
+            return fail(error);
+        root->setProperty("component", definitionVar(d));
+        juce::Array<juce::var> instances;
+        for (const auto& r : canvas->componentInstances(d.name)) instances.add(r);
+        root->setProperty("instances", instances);
+        root->setProperty("message", "Renamed; its instances (in every diagram of the project) and its program follow.");
+    }
     else if (name == "component_create" || name == "component_update")
     {
-        const auto componentName = text("name");
+        auto componentName = text("name");
         frust_component::Definition d;
         const bool creating = name == "component_create";
+        juce::String oldName = componentName;
         if (creating)
         {
-            if (componentFile(componentName).existsAsFile())
-                return fail("A component named " + componentName + " already exists; use component_update.");
-            d.name = componentName;
-            d.programFile = componentName + ".frnode.json";
+            if (componentName.isEmpty())
+            {
+                // A blank component to finish later (in the Node Designer or with these tools).
+                componentName = createBlankComponent(error);
+                if (componentName.isEmpty())
+                    return fail(error);
+                oldName = componentName;
+                if (!frust_component::load(componentFile(componentName), d, error))
+                    return fail(error);
+            }
+            else
+            {
+                if (!frust_component::isValidName(componentName))
+                    return fail("The component name '" + componentName + "' must start with a letter and use letters, digits and _.");
+                if (componentFile(componentName).existsAsFile())
+                    return fail("A component named " + componentName + " already exists; use component_update.");
+                d.name = componentName;
+                d.programFile = componentName + ".frnode.json";
+                juce::String blankError;
+                if (!frust_component::save(componentFile(componentName), d, blankError) || !saveOpenComponentProgramStarter(d, blankError))
+                    return fail(blankError);
+            }
         }
         else if (!frust_component::load(componentFile(componentName), d, error))
             return fail(error);
+        const auto before = d;
         if (args.hasProperty("description")) d.description = text("description");
-        if (args.hasProperty("pins") || creating)
+        if (args.hasProperty("pins"))
         {
             std::vector<frust_component::Pin> pins;
             if (!pinsFromVar(args.getProperty("pins", {}), pins, error))
                 return fail(error);
-            // An existing pin keeps its layout unless the call sets one.
+            // A pin keeps its uid (so its wires) when the call gives the uid
+            // (a rename) or the same name; and its layout unless the call sets one.
             for (auto& pin : pins)
-                if (const auto old = d.pinIndex(pin.id); old >= 0 && !args.getProperty("pins", {})[(int)(&pin - &pins[0])].hasProperty("side"))
+            {
+                const auto& given = args.getProperty("pins", {})[(int)(&pin - &pins[0])];
+                int old = -1;
+                if (pin.uid.isNotEmpty())
                 {
-                    pin.side = d.pins[(size_t)old].side;
-                    pin.order = d.pins[(size_t)old].order;
+                    for (int k = 0; k < (int)d.pins.size(); ++k)
+                        if (d.pins[(size_t)k].uid == pin.uid) old = k;
+                    if (old < 0)
+                        return fail("Pin " + pin.id + ": " + d.name + " has no pin with uid " + pin.uid + " (component_get lists the uids).");
                 }
+                else
+                    old = d.pinIndex(pin.id);
+                if (old >= 0)
+                {
+                    pin.uid = d.pins[(size_t)old].uid;
+                    if (!given.hasProperty("side"))
+                    {
+                        pin.side = d.pins[(size_t)old].side;
+                        pin.order = d.pins[(size_t)old].order;
+                    }
+                }
+            }
             d.pins = pins;
         }
         if (args.hasProperty("parameters"))
@@ -19159,28 +19393,47 @@ juce::String ElectronicsWorkbench::componentTool(const juce::String& name, const
         }
         if (args.hasProperty("outputResistance"))
             d.outputResistance = (double)args.getProperty("outputResistance", 1.0);
-        auto ports = d.ports();
-        schematic::normalizePinOrders(ports);
-        d.setLayout(ports);
-        if (const auto problems = frust_component::problemsWith(d); problems.isNotEmpty())
-            return fail(problems);
-        if (!frust_component::save(componentFile(d.name), d, error))
-            return fail(error);
-        const auto programFile = componentFile(d.name).getSiblingFile(d.programFile);
-        if (!programFile.existsAsFile())
+        frust_component::assignPinUids(d);
+        juce::StringArray moved;
+        const auto beforeProgram = componentFile(before.name).getSiblingFile(before.programFile);
+        if (!creating && nodeDesignerPanel != nullptr && nodeDesignerPanel->componentDefinition().isObject()
+            && nodeDesignerPanel->currentFile() == beforeProgram)
         {
-            // A new, empty program for the component (a function graph).
-            NodeDesignerPanel starter;
-            starter.newGraph("node_graph", false);
-            starter.setComponentContext(d.compilerContext());
-            if (!starter.saveToFile(programFile, error))
-                return fail(error);
+            // Open in the Node Designer: the same path as its Component panel
+            // (nodes naming a renamed pin, parameter or state follow).
+            juce::String message;
+            if (!nodeDesignerPanel->editComponent(frust_component::toVar(d), message))
+                return fail(message);
+            if (message.isNotEmpty())
+                moved.add(message);
         }
-        const auto moved = canvas->refreshComponentPorts(d.name, d.ports());
+        else
+        {
+            if (!storeComponentDefinition(oldName, d, moved, error))
+                return fail(error);
+            if (!creating)
+            {
+                // Not open: the program's nodes follow renames in its file.
+                NodeDesignerPanel offscreen;
+                juce::String problems;
+                if (offscreen.openFile(componentFile(d.name).getSiblingFile(d.programFile), problems))
+                {
+                    offscreen.setComponentDefinition(frust_component::toVar(before));
+                    offscreen.onComponentEdited = [](const juce::var&, juce::String&) { return true; };
+                    juce::String message;
+                    offscreen.editComponent(frust_component::toVar(d), message);
+                }
+            }
+        }
+        frust_component::load(componentFile(d.name), d, error);
+        const auto programFile = componentFile(d.name).getSiblingFile(d.programFile);
         if (!moved.isEmpty())
             root->setProperty("warnings", moved.joinIntoString("\n"));
         root->setProperty("component", definitionVar(d));
         root->setProperty("program", programFile.getFullPathName());
+        if (d.pins.empty())
+            root->setProperty("note", "The component has no pins yet: it can be placed (a blank symbol) but is not simulated until it has some. "
+                                      "Add pins with component_update, its behaviour with component_open_program and node_program_* tools.");
     }
     else if (name == "component_get")
     {
@@ -19212,15 +19465,19 @@ juce::String ElectronicsWorkbench::componentTool(const juce::String& name, const
     }
     else if (name == "component_place")
     {
-        frust_component::Definition d;
-        if (!frust_component::load(componentFile(text("name")), d, error))
-            return fail(error);
-        const auto refdes = canvas->placeComponent(d.name, d.ports(), { (float)(double)args.getProperty("x", 0.0), (float)(double)args.getProperty("y", 0.0) }, error);
+        // No name: a new blank component, as the library's New Programmable Component...
+        const auto refdes = placeProgrammableComponent(text("name"), { (float)(double)args.getProperty("x", 0.0), (float)(double)args.getProperty("y", 0.0) }, error);
         if (refdes.isEmpty())
             return fail(error);
+        frust_component::Definition d;
+        if (!frust_component::load(componentFile(canvas->componentDefinitionOf(refdes)), d, error))
+            return fail(error);
         root->setProperty("refdes", refdes);
+        root->setProperty("component", d.name);
         const auto symbol = schematic::blockSymbol(d.ports(), "frust_component");
         root->setProperty("pins", portsVar(d.ports(), &symbol));
+        if (d.pins.empty())
+            root->setProperty("note", "A blank component (no pins yet). Double-click it to design it in the Node Designer, or use component_update and component_open_program.");
     }
     else if (name == "component_set_parameter")
     {
@@ -19230,6 +19487,231 @@ juce::String ElectronicsWorkbench::componentTool(const juce::String& name, const
     else
         return fail("Unknown component tool.");
 
+    refreshComponentPalette();
     root->setProperty("ok", true);
     return juce::JSON::toString(juce::var(root), true);
+}
+
+// The empty program a new component starts with (a function graph).
+bool ElectronicsWorkbench::saveOpenComponentProgramStarter(const frust_component::Definition& d, juce::String& error)
+{
+    const auto programFile = componentFile(d.name).getSiblingFile(d.programFile);
+    if (programFile.existsAsFile())
+        return true;
+    NodeDesignerPanel starter;
+    starter.newGraph("node_graph", false);
+    starter.setComponentContext(d.compilerContext());
+    return starter.saveToFile(programFile, error);
+}
+
+void ElectronicsWorkbench::refreshComponentPalette()
+{
+    std::vector<std::pair<juce::String, int>> definitions;
+    if (project.folder != juce::File())
+        for (const auto& f : project_store::componentsDirectory(project).findChildFiles(juce::File::findFiles, false, "*.frcomp.json"))
+        {
+            frust_component::Definition d;
+            juce::String ignored;
+            if (frust_component::load(f, d, ignored))
+                definitions.push_back({ d.name, (int)d.pins.size() });
+        }
+    std::sort(definitions.begin(), definitions.end(), [](const auto& a, const auto& b) { return a.first.compareIgnoreCase(b.first) < 0; });
+    juce::String signature;
+    for (const auto& [n, pins] : definitions)
+        signature << n << ":" << pins << ";";
+    if (signature == paletteSignature && signature.isNotEmpty())
+        return;
+    paletteSignature = signature;
+    if (setLibraryComponents != nullptr)
+        setLibraryComponents(definitions);
+}
+
+juce::String ElectronicsWorkbench::createBlankComponent(juce::String& error)
+{
+    if (project.folder == juce::File())
+    {
+        error = "Open or create a project first; programmable components are saved in its components folder.";
+        return {};
+    }
+    juce::String name;
+    for (int n = 1;; ++n)
+        if (name = "Component" + juce::String(n); !componentFile(name).existsAsFile())
+            break;
+    frust_component::Definition d;
+    d.name = name;
+    d.programFile = name + ".frnode.json";
+    if (!frust_component::save(componentFile(name), d, error) || !saveOpenComponentProgramStarter(d, error))
+        return {};
+    return name;
+}
+
+juce::String ElectronicsWorkbench::placeProgrammableComponent(const juce::String& definition, juce::Point<float> at, juce::String& error)
+{
+    auto* canvas = dynamic_cast<SchematicCanvasPanel*>(schematicView.getComponent());
+    if (canvas == nullptr)
+    {
+        error = "The schematic is unavailable.";
+        return {};
+    }
+    if (project.folder == juce::File())
+    {
+        error = "Open or create a project first; programmable components are saved in its components folder.";
+        return {};
+    }
+    auto name = definition.trim();
+    if (name.isEmpty() || name == "*new")
+    {
+        name = createBlankComponent(error);
+        if (name.isEmpty())
+            return {};
+    }
+    frust_component::Definition d;
+    if (!frust_component::load(componentFile(name), d, error))
+        return {};
+    const auto refdes = canvas->placeComponent(d.name, d.ports(), at, error);
+    refreshComponentPalette();
+    return refdes;
+}
+
+void ElectronicsWorkbench::saveOpenComponentProgram()
+{
+    if (nodeDesignerPanel == nullptr || !nodeDesignerPanel->componentDefinition().isObject())
+        return;
+    const auto file = nodeDesignerPanel->currentFile();
+    if (file == juce::File() || !file.getParentDirectory().exists())
+        return;
+    juce::String error;
+    if (!nodeDesignerPanel->saveToFile(file, error))
+        appendLog("Could not save " + file.getFileName() + ": " + error);
+}
+
+bool ElectronicsWorkbench::storeComponentDefinition(const juce::String& oldName, frust_component::Definition d,
+                                                    juce::StringArray& warnings, juce::String& error)
+{
+    auto* canvas = dynamic_cast<SchematicCanvasPanel*>(schematicView.getComponent());
+    if (canvas == nullptr || project.folder == juce::File())
+    {
+        error = "Open or create a project first.";
+        return false;
+    }
+    d.name = d.name.trim();
+    if (!frust_component::isValidName(d.name))
+    {
+        error = "The component name '" + d.name + "' must start with a letter and use letters, digits and _.";
+        return false;
+    }
+    if (oldName.isNotEmpty() && d.name != oldName)
+    {
+        if (!renameComponent(oldName, d.name, error))
+            return false;
+        frust_component::Definition renamed;
+        if (frust_component::load(componentFile(d.name), renamed, error))
+            d.programFile = renamed.programFile;
+    }
+    if (d.programFile.isEmpty())
+        d.programFile = d.name + ".frnode.json";
+    frust_component::assignPinUids(d);
+    auto ports = d.ports();
+    schematic::normalizePinOrders(ports);
+    d.setLayout(ports);
+    if (const auto problems = frust_component::problemsWith(d); problems.isNotEmpty())
+    {
+        error = problems;
+        return false;
+    }
+    if (!frust_component::save(componentFile(d.name), d, error) || !saveOpenComponentProgramStarter(d, error))
+        return false;
+    warnings.addArray(canvas->refreshComponentPorts(d.name, d.ports()));
+    // The Node Designer, if it has this component's program open, follows.
+    if (nodeDesignerPanel != nullptr && nodeDesignerPanel->currentFile() == componentFile(d.name).getSiblingFile(d.programFile))
+    {
+        nodeDesignerPanel->setComponentContext(d.compilerContext());
+        nodeDesignerPanel->setComponentDefinition(frust_component::toVar(d));
+    }
+    refreshComponentPalette();
+    return true;
+}
+
+bool ElectronicsWorkbench::renameComponent(const juce::String& from, const juce::String& to, juce::String& error)
+{
+    auto* canvas = dynamic_cast<SchematicCanvasPanel*>(schematicView.getComponent());
+    if (canvas == nullptr || project.folder == juce::File())
+    {
+        error = "Open or create a project first.";
+        return false;
+    }
+    const auto newName = to.trim();
+    if (!frust_component::isValidName(newName))
+    {
+        error = "The component name '" + newName + "' must start with a letter and use letters, digits and _.";
+        return false;
+    }
+    if (newName == from)
+        return true;
+    frust_component::Definition d;
+    if (!frust_component::load(componentFile(from), d, error))
+        return false;
+    const bool caseOnly = newName.equalsIgnoreCase(from);
+    if (!caseOnly && componentFile(newName).existsAsFile())
+    {
+        error = "A component named " + newName + " already exists.";
+        return false;
+    }
+    const auto oldProgram = componentFile(from).getSiblingFile(d.programFile);
+    const auto newProgram = componentFile(newName).getSiblingFile(newName + ".frnode.json");
+    if (!caseOnly && newProgram.existsAsFile() && newProgram != oldProgram)
+    {
+        error = "A program " + newProgram.getFileName() + " already exists in the components folder.";
+        return false;
+    }
+    const bool openHere = nodeDesignerPanel != nullptr && nodeDesignerPanel->currentFile() == oldProgram;
+    if (openHere)
+        saveOpenComponentProgram();
+    // Files move (a case-only rename goes through a temporary name).
+    auto move = [&error](const juce::File& a, const juce::File& b) {
+        if (!a.existsAsFile())
+            return true;
+        const auto temp = b.getSiblingFile(b.getFileName() + ".renaming");
+        if (!a.moveFileTo(temp) || !temp.moveFileTo(b))
+        {
+            error = "Could not rename " + a.getFileName() + " to " + b.getFileName() + ".";
+            return false;
+        }
+        return true;
+    };
+    if (!move(oldProgram, newProgram) || !move(componentFile(from), componentFile(newName)))
+        return false;
+    d.name = newName;
+    d.programFile = newProgram.getFileName();
+    if (!frust_component::save(componentFile(newName), d, error))
+        return false;
+    if (openHere)
+        nodeDesignerPanel->setCurrentFile(newProgram);
+    canvas->renameComponentInstances(from, newName);
+    // Instances in the project's other diagrams (the open one is in memory).
+    for (const auto& entry : project.diagrams)
+    {
+        if (entry.name.equalsIgnoreCase(currentDiagram))
+            continue;
+        juce::String content, ignored;
+        if (!project_store::readDiagram(project, entry.name, content, ignored))
+            continue;
+        auto root = juce::JSON::parse(content);
+        bool changed = false;
+        if (const auto* list = root.getProperty("components", {}).getArray())
+            for (const auto& c : *list)
+                if (auto* o = c.getDynamicObject(); o != nullptr && o->getProperty("symbol").toString() == "frust_component"
+                                                    && o->getProperty("value").toString() == from)
+                {
+                    o->setProperty("value", newName);
+                    if (auto* params = o->getProperty("params").getDynamicObject())
+                        params->setProperty("definition", newName);
+                    changed = true;
+                }
+        if (changed && !project_store::writeDiagram(project, entry.name, juce::JSON::toString(root, false), ignored))
+            appendLog("Could not update " + entry.name + " for the rename of " + from + ": " + ignored);
+    }
+    refreshComponentPalette();
+    appendLog("Renamed programmable component " + from + " to " + newName + ".");
+    return true;
 }

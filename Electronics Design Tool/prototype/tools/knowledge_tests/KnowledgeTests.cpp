@@ -293,6 +293,57 @@ int main(int argc, char** argv)
                   none.getProperty("note", {}).toString());
     }
 
+    std::printf("-- 9. programmable components: discovery without being told the tools --\n");
+    {
+        capability_catalog::Request r;
+        r.query = "programmable component";
+        r.projectOpen = true;
+        r.programmable.push_back({ "Doubler", { "IN", "OUT" }, { "U1", "U2" } });
+        r.programmable.push_back({ "Component1", {}, {} });
+        r.componentNodeTypes = juce::JSON::parse(R"([{"type":"pc_pin_voltage","title":"Pin Voltage","category":"Component"}])");
+        const auto result = juce::JSON::parse(capability_catalog::toJson(r));
+        const auto pc = result.getProperty("programmableComponents", {});
+        const auto text = juce::JSON::toString(pc, true);
+        checkTrue("a 'programmable component' query explains them", pc.isObject() && text.contains("reusable") && text.contains("definition"),
+                  text.substring(0, 200));
+        checkTrue("it lists the project's definitions with their pins and instances",
+                  pc.getProperty("definitions", {}).size() == 2 && pc.getProperty("definitions", {})[0].getProperty("pinCount", 0) == juce::var(2)
+                      && text.contains("U2"), text.substring(0, 400));
+        checkTrue("it says a definition may start with no pins", pc.getProperty("incompleteDefinitions", {}).toString().contains("no pins"));
+        bool create = false, place = false, list = false, compile = false;
+        if (const auto* tools = pc.getProperty("tools", {}).getArray())
+            for (const auto& t : *tools)
+            {
+                const auto name = t.getProperty("tool", {}).toString();
+                create |= name == "component_create";
+                place |= name == "component_place";
+                list |= name == "component_list";
+                compile |= name == "component_compile";
+            }
+        checkTrue("it names the tools that list, create, compile and place them", create && place && list && compile);
+        const auto workflow = juce::JSON::toString(pc.getProperty("workflow", {}));
+        checkTrue("its workflow runs list -> create -> program -> compile -> place -> simulate",
+                  workflow.indexOf("component_list") < workflow.indexOf("component_create") && workflow.indexOf("component_create") < workflow.indexOf("component_compile")
+                      && workflow.indexOf("component_compile") < workflow.indexOf("component_place") && workflow.contains("analytics_transient"),
+                  workflow.substring(0, 300));
+        checkTrue("the live component node types are included", pc.getProperty("componentNodeTypes", {}).size() == 1);
+        // Asked for a section other than programmable, an unknown part still points to them.
+        capability_catalog::Request missing;
+        missing.section = "components";
+        missing.query = "ne555";
+        const auto m = juce::JSON::parse(capability_catalog::toJson(missing));
+        checkTrue("a part the registry lacks points to programmable components",
+                  m.getProperty("programmableComponents", {}).isObject() && m.getProperty("note", {}).toString().contains("programmable"),
+                  m.getProperty("note", {}).toString());
+        capability_catalog::Request none;
+        none.section = "programmable";
+        const auto n = juce::JSON::parse(capability_catalog::toJson(none));
+        checkTrue("with no project open it says where definitions live",
+                  n.getProperty("programmableComponents", {}).getProperty("definitionsNote", {}).toString().contains("No project"));
+        const auto symbol = catalog("", "", "frust_component");
+        checkTrue("looking up frust_component explains the workflow too", symbol.getProperty("programmableComponents", {}).isObject());
+    }
+
     std::printf("-- reference Chua circuits (values the cards document) --\n");
     {
         chua_reference::Values v;

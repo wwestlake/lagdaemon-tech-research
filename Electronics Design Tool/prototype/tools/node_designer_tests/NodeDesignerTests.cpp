@@ -330,6 +330,61 @@ int main()
               "it runs and reports its states", juce::String(states.report()) + juce::String(states.output));
     }
 
+    std::printf("-- a programmable component's definition (Component panel) --\n");
+    {
+        // A component program: pin IN read, pin OUT driven, parameter gain.
+        NodeDesignerPanel panel;
+        panel.newGraph("node_graph", false);
+        juce::String error;
+        panel.addNodeOfType("pc_pin_voltage", 0, 0, "vin", error);
+        panel.setNodeParameter("vin", "text", "IN", error);
+        panel.addNodeOfType("pc_parameter", 0, 150, "k", error);
+        panel.setNodeParameter("k", "text", "gain", error);
+        panel.addNodeOfType("pc_drive", 300, 0, "drive", error);
+        panel.setNodeParameter("drive", "text", "OUT", error);
+        auto definition = juce::JSON::parse(R"({"kind":"frust_component","name":"Amp","pins":[{"id":"IN","uid":"P1","role":"input"},)"
+                                            R"({"id":"OUT","uid":"P2","role":"voltage_output"}],"parameters":[{"name":"gain","default":2}],)"
+                                            R"("state":[],"outputResistance":1})");
+        check(!panel.componentDefinition().isObject(), "an ordinary program has no component definition");
+        panel.setComponentDefinition(definition);
+        check(panel.componentDefinition().getProperty("name", {}) == juce::var("Amp"), "the definition is shown for editing");
+
+        auto textOf = [&panel](const juce::String& id) {
+            const auto graph = panel.describeGraph();
+            if (const auto* list = graph.getProperty("nodes", {}).getArray())
+                for (const auto& n : *list)
+                    if (n.getProperty("id", {}).toString() == id)
+                        return n.getProperty("parameters", {}).getProperty("text", {}).toString();
+            return juce::String();
+        };
+        juce::var received;
+        bool accept = false;
+        panel.onComponentEdited = [&](const juce::var& edited, juce::String& message) {
+            received = edited;
+            if (!accept) { message = "refused for the test"; return false; }
+            panel.setComponentDefinition(edited);
+            return true;
+        };
+        // Rename pin IN (uid P1) to SENSE and parameter gain to k: refused first.
+        auto edited = juce::JSON::parse(juce::JSON::toString(definition));
+        edited.getProperty("pins", {})[0].getDynamicObject()->setProperty("id", "SENSE");
+        edited.getProperty("parameters", {})[0].getDynamicObject()->setProperty("name", "k");
+        juce::String message;
+        check(!panel.editComponent(edited, message) && message == "refused for the test" && textOf("vin") == "IN" && textOf("k") == "gain",
+              "a refused edit leaves the program's names alone", message + " " + textOf("vin"));
+        accept = true;
+        check(panel.editComponent(edited, message) && textOf("vin") == "SENSE" && textOf("k") == "k" && textOf("drive") == "OUT",
+              "an accepted rename: the nodes naming the pin (by uid) and the parameter follow; others do not", message);
+        check(message.contains("2 nodes follow"), "the editor reports how many nodes followed", message);
+        // Removing pin OUT: no node is renamed (its node now names a missing pin, which compile reports).
+        auto removed = juce::JSON::parse(juce::JSON::toString(panel.componentDefinition()));
+        removed.getProperty("pins", {}).getArray()->remove(1);
+        check(panel.editComponent(removed, message) && textOf("drive") == "OUT", "removing a pin renames nothing", message);
+        // A new graph is not a component's program any more.
+        panel.newGraph("node_graph", false);
+        check(!panel.componentDefinition().isObject() && !panel.componentContext().isObject(), "a new program clears the component definition");
+    }
+
     std::printf("-- rendering --\n");
     {
         // The editor drawn off screen at a typical tab size, saved for a look.

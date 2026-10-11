@@ -50,6 +50,8 @@ public:
     bool openFile(const juce::File& file, juce::String& error);
     bool saveToFile(const juce::File& file, juce::String& error);
     juce::File currentFile() const { return currentGraphFile; }
+    // The open program's file was renamed (its component was): later saves go there.
+    void setCurrentFile(const juce::File& file);
     juce::String addNodeOfType(const juce::String& type, float x, float y, const juce::String& requestedId, juce::String& error);
     bool deleteNode(const juce::String& nodeId, juce::String& error);
     bool moveNode(const juce::String& nodeId, float x, float y, juce::String& error);
@@ -114,6 +116,19 @@ public:
     // which its component nodes name; void for an ordinary program.
     void setComponentContext(const juce::var& context);
     juce::var componentContext() const { return componentInfo; }
+    // The component's whole definition, edited in the Component panel (shown
+    // only while a component's program is open): name, pins (id = name, uid =
+    // stable identity, role, side, order, reference), parameters, state and
+    // output resistance, as frust_component::toVar writes it. void hides it.
+    void setComponentDefinition(const juce::var& definition);
+    juce::var componentDefinition() const { return editedDefinition; }
+    // A definition edit (from the panel, or programmatically): the Workbench
+    // checks, saves and applies it through onComponentEdited, which returns
+    // false with `message` to refuse it and calls setComponentDefinition with
+    // what it saved. Once accepted, nodes that name a renamed pin, parameter
+    // or state variable follow the new name and the program is saved.
+    bool editComponent(const juce::var& edited, juce::String& message);
+    std::function<bool(const juce::var& edited, juce::String& message)> onComponentEdited;
     // A marker changed (so a running debug session can follow it).
     std::function<void()> onDebugMarkersChanged;
     // Start Debugging (toolbar and canvas menu).
@@ -269,6 +284,7 @@ private:
     class InspectorPanel;
     class VariablesPanel;
     class TypesPanel;
+    class ComponentPanel;
 
     static std::vector<NodeTemplate> buildTemplates();
     static juce::String quoted(const juce::String& text);
@@ -346,6 +362,7 @@ private:
     std::unique_ptr<InspectorPanel> inspector;
     std::unique_ptr<VariablesPanel> variablesPanel;
     std::unique_ptr<TypesPanel> typesPanel;
+    std::unique_ptr<ComponentPanel> componentPanel;
 
     juce::TextButton newButton { "New" };
     juce::TextButton openButton { "Open" };
@@ -368,6 +385,7 @@ private:
     std::unique_ptr<juce::FileChooser> fileChooser;
     juce::String executionNodeId;
     juce::var componentInfo;
+    juce::var editedDefinition;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(NodeDesignerPanel)
 };

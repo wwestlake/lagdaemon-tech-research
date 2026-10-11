@@ -10,6 +10,7 @@
 class AudioPipeline;
 
 struct ComponentPinPlacement;
+namespace frust_component { struct Definition; }
 
 class ElectronicsWorkbench final : public juce::Component,
                                    public juce::DragAndDropContainer,
@@ -165,6 +166,25 @@ private:
     bool openComponentProgram(const juce::String& componentName, juce::String& error);
     bool applyComponentLayout(const juce::String& componentName, const std::vector<ComponentPinPlacement>& layout, juce::String& error);
     void openPinLayoutEditor(const juce::String& refdes);
+    // The library's Programmable Components group, from the project's
+    // definitions: refreshed after every change and when the mouse enters
+    // the library (files changed elsewhere).
+    void refreshComponentPalette();
+    std::function<void(const std::vector<std::pair<juce::String, int>>&)> setLibraryComponents;
+    juce::String paletteSignature;
+    // A new definition with no pins (Component1, Component2...) and its empty
+    // program; returns its name, or "" with `error`.
+    juce::String createBlankComponent(juce::String& error);
+    // Library placement: "" or "*new" places a new blank component.
+    juce::String placeProgrammableComponent(const juce::String& definition, juce::Point<float> at, juce::String& error);
+    // Saves a changed definition (from the Node Designer's Component panel or
+    // component_update): renames it if its name changed, keeps pin uids,
+    // updates every instance, the open program's context and the library.
+    bool storeComponentDefinition(const juce::String& oldName, frust_component::Definition definition,
+                                  juce::StringArray& warnings, juce::String& error);
+    bool renameComponent(const juce::String& from, const juce::String& to, juce::String& error);
+    void saveOpenComponentProgram();
+    bool saveOpenComponentProgramStarter(const frust_component::Definition& definition, juce::String& error);
     int executionListener = 0;
     juce::uint64 lastReportedSession = 0;
     juce::Component::SafePointer<CreationDock::DockPanel> analyticsDockPanel;

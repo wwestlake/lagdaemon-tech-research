@@ -11,11 +11,27 @@
 // registries appears here automatically.
 namespace capability_catalog
 {
+// A programmable component definition in the open project (the Workbench
+// fills these: the catalog has no project of its own).
+struct ProgrammableDefinition
+{
+    juce::String name;
+    juce::StringArray pins;      // pin names, in pin order
+    juce::StringArray instances; // refdes of its instances in the open diagram
+};
+
 struct Request
 {
-    juce::String section;  // "components", "instruments", "analyses", "engines", or empty for a summary of all
+    juce::String section;  // "components", "instruments", "analyses", "engines", "programmable", or empty for a summary of all
     juce::String query;    // optional: search terms (space or comma separated), each matched separately; see searchRule in the result
     juce::String symbolId; // optional: one component in full detail
+    // Programmable components (filled by the Workbench): whether a project is
+    // open, its definitions, and the Node Designer's component node types
+    // ({type, title, inputs, outputs, parameters} as node_program_node_types
+    // reports them).
+    bool projectOpen = false;
+    std::vector<ProgrammableDefinition> programmable;
+    juce::var componentNodeTypes;
 };
 
 // The JSON tool result (ok:false with a reason, and close matches, for an unknown symbolId).

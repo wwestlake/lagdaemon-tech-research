@@ -167,6 +167,7 @@ void ElectronicsWorkbench::useProjectMemory()
 
 void ElectronicsWorkbench::autoSaveCurrentDiagram()
 {
+    saveOpenComponentProgram();
     juce::String error;
     if (getCircuitJson != nullptr && looksLikeNonBlankCircuit(lastSavedJson))
     {
@@ -205,6 +206,7 @@ bool ElectronicsWorkbench::openProjectFolder(const juce::File& folder, juce::Str
             appendLog("Could not open diagram " + diagramToOpen + ": " + diagramError);
     }
     updateProjectTitle();
+    refreshComponentPalette();
     appendLog("Opened project " + project.name + " (" + project.folder.getFullPathName() + ").");
     return true;
 }
@@ -222,6 +224,7 @@ bool ElectronicsWorkbench::createNewProject(const juce::File& location, const ju
     if (resetCircuit != nullptr) resetCircuit();
     lastSavedJson = getCircuitJson != nullptr ? getCircuitJson() : juce::String();
     updateProjectTitle();
+    refreshComponentPalette();
     appendLog("Created project " + project.name + " at " + project.folder.getFullPathName() + ".");
     return true;
 }
@@ -282,6 +285,7 @@ bool ElectronicsWorkbench::saveDiagram(juce::String& error)
     if (!project_store::writeDiagram(project, currentDiagram, content, error))
         return false;
     lastSavedJson = content;
+    saveOpenComponentProgram();
     appendLog("Saved " + project.name + " > " + currentDiagram + ".");
     return true;
 }

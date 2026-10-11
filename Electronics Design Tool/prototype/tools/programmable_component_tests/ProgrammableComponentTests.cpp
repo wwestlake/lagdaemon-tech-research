@@ -493,6 +493,53 @@ int main()
               "Xyce refuses a circuit with a programmable component, naming it", problem);
     }
 
+    std::printf("-- definitions: blank components and stable pin identity --\n");
+    {
+        // A component may have no pins while it is designed.
+        frust_component::Definition blank;
+        blank.name = "Component1";
+        blank.programFile = "Component1.frnode.json";
+        check(frust_component::problemsWith(blank).isEmpty(), "a definition with no pins is valid (it is being designed)",
+              frust_component::problemsWith(blank));
+        const auto dir = juce::File::getSpecialLocation(juce::File::tempDirectory).getChildFile("pc_definition_tests");
+        dir.createDirectory();
+        juce::String e;
+        frust_component::Definition back;
+        const auto file = dir.getChildFile("Component1.frcomp.json");
+        check(frust_component::save(file, blank, e) && frust_component::load(file, back, e) && back.name == "Component1" && back.pins.empty()
+                  && back.programFile == "Component1.frnode.json",
+              "a zero-pin definition saves and reopens unchanged", e);
+        check(schematic::blockSymbol(blank.ports(), "frust_component").bounds.getWidth() >= 144.0f,
+              "a zero-pin component still has a symbol body to select and double-click");
+
+        // Uids: kept through a rename, assigned to files from before uids.
+        frust_component::Definition d;
+        d.name = "Amp";
+        d.pins = { { "IN", frust_component::PinRole::Input }, { "OUT", frust_component::PinRole::VoltageOutput } };
+        frust_component::assignPinUids(d);
+        check(d.pins[0].uid == "P1" && d.pins[1].uid == "P2", "pins get uids P1, P2 in pin order");
+        d.pins[0].id = "SENSE"; // renamed: same uid
+        frust_component::Pin added { "EN", frust_component::PinRole::Input };
+        d.pins.push_back(added);
+        frust_component::assignPinUids(d);
+        check(d.pins[2].uid == "P3" && d.ports()[0].id == "P1" && d.ports()[0].name == "SENSE",
+              "a new pin gets the next uid; a renamed pin keeps its own, and the symbol's ports carry it");
+        const auto ampFile = dir.getChildFile("Amp.frcomp.json");
+        check(frust_component::save(ampFile, d, e) && frust_component::load(ampFile, back, e) && back.pins.size() == 3 && back.pins[0].uid == "P1"
+                  && back.pins[0].id == "SENSE" && back.pins[2].uid == "P3",
+              "uids, names and roles survive save and reopen", e);
+        // A file written before uids: pins get them by index on load.
+        juce::var old = frust_component::toVar(d);
+        for (auto& p : *old.getProperty("pins", {}).getArray())
+            p.getDynamicObject()->removeProperty("uid");
+        frust_component::Definition legacy;
+        check(frust_component::fromVar(old, legacy, e) && legacy.pins[0].uid == "P1" && legacy.pins[2].uid == "P3",
+              "a definition from before uids gets them by pin order", e);
+        d.pins[2].uid = "P1";
+        check(frust_component::problemsWith(d).contains("uid"), "two pins sharing a uid are refused", frust_component::problemsWith(d));
+        dir.deleteRecursively();
+    }
+
     std::printf("-- diagnostics --\n");
     {
         frust_component::Definition bad;

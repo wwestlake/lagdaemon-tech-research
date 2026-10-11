@@ -41,7 +41,14 @@ std::vector<schematic::BlockPort> Definition::ports() const
 {
     std::vector<schematic::BlockPort> list;
     for (const auto& p : pins)
-        list.push_back({ p.id, p.side, p.order });
+    {
+        schematic::BlockPort port;
+        port.name = p.id;
+        port.id = p.uid; // instances match pins by it, so a renamed pin keeps its wires
+        port.side = p.side;
+        port.order = p.order;
+        list.push_back(port);
+    }
     return list;
 }
 
@@ -80,8 +87,6 @@ juce::String problemsWith(const Definition& d)
     juce::StringArray problems;
     if (!isValidName(d.name))
         problems.add("The component name '" + d.name + "' must start with a letter and use letters, digits and _.");
-    if (d.pins.empty())
-        problems.add("The component has no pins.");
     auto names = [&problems](const juce::String& what, const juce::StringArray& list) {
         juce::StringArray seen;
         for (const auto& n : list)
@@ -93,8 +98,14 @@ juce::String problemsWith(const Definition& d)
             seen.add(n);
         }
     };
-    juce::StringArray pinIds, params, states;
-    for (const auto& p : d.pins) pinIds.add(p.id);
+    juce::StringArray pinIds, params, states, uids;
+    for (const auto& p : d.pins)
+    {
+        pinIds.add(p.id);
+        if (p.uid.isNotEmpty() && uids.contains(p.uid))
+            problems.add("Two pins share the uid '" + p.uid + "'.");
+        uids.add(p.uid);
+    }
     for (const auto& p : d.parameters) params.add(p.name);
     for (const auto& s : d.state) states.add(s.name);
     names("pin", pinIds);
@@ -106,6 +117,22 @@ juce::String problemsWith(const Definition& d)
     if (!(d.outputResistance > 0.0))
         problems.add("The output resistance must be greater than 0 ohms.");
     return problems.joinIntoString("\n");
+}
+
+juce::String newPinUid(const Definition& d)
+{
+    int highest = 0;
+    for (const auto& p : d.pins)
+        if (p.uid.length() > 1 && p.uid.startsWith("P") && p.uid.substring(1).containsOnly("0123456789"))
+            highest = std::max(highest, p.uid.substring(1).getIntValue());
+    return "P" + juce::String(highest + 1);
+}
+
+void assignPinUids(Definition& d)
+{
+    for (auto& p : d.pins)
+        if (p.uid.isEmpty())
+            p.uid = newPinUid(d);
 }
 
 juce::var toVar(const Definition& d)
@@ -120,6 +147,8 @@ juce::var toVar(const Definition& d)
     {
         auto* po = new juce::DynamicObject();
         po->setProperty("id", p.id);
+        if (p.uid.isNotEmpty())
+            po->setProperty("uid", p.uid);
         po->setProperty("role", roleName(p.role));
         po->setProperty("side", schematic::pinSideName(p.side));
         po->setProperty("order", p.order);
@@ -172,6 +201,7 @@ bool fromVar(const juce::var& v, Definition& d, juce::String& error)
         {
             Pin pin;
             pin.id = p.getProperty("id", {}).toString();
+            pin.uid = p.getProperty("uid", {}).toString();
             if (!parseRole(p.getProperty("role", "input").toString(), pin.role))
             {
                 error = "Pin " + pin.id + " has an unknown role '" + p.getProperty("role", {}).toString() + "'.";
@@ -190,6 +220,7 @@ bool fromVar(const juce::var& v, Definition& d, juce::String& error)
     if (const auto* states = v.getProperty("state", {}).getArray())
         for (const auto& s : *states)
             d.state.push_back({ s.getProperty("name", {}).toString(), (double)s.getProperty("initial", 0.0) });
+    assignPinUids(d);
     return true;
 }
 

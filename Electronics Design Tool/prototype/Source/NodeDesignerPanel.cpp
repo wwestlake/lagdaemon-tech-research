@@ -1524,6 +1524,276 @@ private:
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(InspectorPanel)
 };
 
+// The definition of the programmable component whose program is open: its
+// name, pins (name, role, reference), parameters, state variables and
+// output resistance. Every change goes to the Workbench (onComponentEdited),
+// which validates it, saves the definition and updates the schematic's
+// instances; a refused change puts the panel back as it was.
+class NodeDesignerPanel::ComponentPanel final : public juce::Component
+{
+public:
+    explicit ComponentPanel(NodeDesignerPanel& ownerIn) : owner(ownerIn)
+    {
+        viewport.setViewedComponent(&content, false);
+        viewport.setScrollBarsShown(true, false);
+        viewport.setScrollBarThickness(8);
+        addAndMakeVisible(viewport);
+    }
+
+    void paint(juce::Graphics& g) override
+    {
+        g.fillAll(juce::Colour(0xff15181d));
+        g.setFont(juce::Font(15.0f, juce::Font::bold));
+        g.setColour(juce::Colours::white);
+        g.drawText("Component", getLocalBounds().reduced(6, 0).removeFromTop(24), juce::Justification::centredLeft, true);
+    }
+
+    void resized() override
+    {
+        viewport.setBounds(getLocalBounds().withTrimmedTop(26));
+        layout();
+    }
+
+    // Rebuilds the rows from the owner's definition.
+    void rebuild()
+    {
+        rows.clear();
+        content.removeAllChildren();
+        const auto& d = owner.editedDefinition;
+        if (!d.isObject())
+            return;
+
+        auto label = [this](const juce::String& text) {
+            auto l = std::make_unique<juce::Label>(juce::String(), text);
+            l->setFont(juce::Font(12.0f, juce::Font::bold));
+            l->setColour(juce::Label::textColourId, juce::Colour(0xff9aa8ba));
+            return l;
+        };
+        auto editor = [this](const juce::String& text, std::function<void(const juce::String&)> commit) {
+            auto e = std::make_unique<juce::TextEditor>();
+            e->setText(text, false);
+            e->setFont(juce::Font(13.0f));
+            e->setColour(juce::TextEditor::backgroundColourId, juce::Colour(0xff1b232c));
+            e->setColour(juce::TextEditor::textColourId, juce::Colour(0xffdce9ee));
+            auto* raw = e.get();
+            auto done = [raw, text, commit] {
+                if (raw->getText().trim() != text)
+                    commit(raw->getText().trim());
+            };
+            e->onReturnKey = done;
+            e->onFocusLost = done;
+            return e;
+        };
+        auto button = [](const juce::String& text, std::function<void()> click) {
+            auto b = std::make_unique<juce::TextButton>(text);
+            b->setColour(juce::TextButton::buttonColourId, juce::Colour(0xff263942));
+            b->setColour(juce::TextButton::textColourOffId, juce::Colour(0xfff0f6f8));
+            b->onClick = std::move(click);
+            return b;
+        };
+
+        // Name.
+        {
+            Row r;
+            r.cells.push_back({ label("Name"), 54 });
+            r.cells.push_back({ editor(d.getProperty("name", {}).toString(), [this](const juce::String& v) { change([v](juce::var& e) { e.getDynamicObject()->setProperty("name", v); }); }), 0 });
+            add(std::move(r));
+        }
+
+        // Pins.
+        {
+            Row r;
+            r.cells.push_back({ label("Pins"), 0 });
+            r.cells.push_back({ button("+ Pin", [this] { addPin(); }), 60 });
+            add(std::move(r));
+        }
+        const auto* pins = d.getProperty("pins", {}).getArray();
+        const int pinCount = pins != nullptr ? pins->size() : 0;
+        if (pinCount == 0)
+        {
+            Row r;
+            r.cells.push_back({ label("No pins yet: + Pin adds one."), 0 });
+            add(std::move(r));
+        }
+        for (int k = 0; k < pinCount; ++k)
+        {
+            const auto pin = (*pins)[k];
+            Row r;
+            r.cells.push_back({ editor(pin.getProperty("id", {}).toString(), [this, k](const juce::String& v) {
+                change([k, v](juce::var& e) { e.getProperty("pins", {})[k].getDynamicObject()->setProperty("id", v); });
+            }), 0 });
+            auto role = std::make_unique<juce::ComboBox>();
+            role->addItem("input", 1);
+            role->addItem("voltage out", 2);
+            role->addItem("current out", 3);
+            const auto roleText = pin.getProperty("role", "input").toString();
+            role->setSelectedId(roleText == "voltage_output" ? 2 : roleText == "current_output" ? 3 : 1, juce::dontSendNotification);
+            role->setTooltip("input: no load until the program sets a resistance; voltage out: V behind the output resistance; current out: a current");
+            auto* roleRaw = role.get();
+            role->onChange = [this, k, roleRaw] {
+                const auto id = roleRaw->getSelectedId();
+                const juce::String value = id == 2 ? "voltage_output" : id == 3 ? "current_output" : "input";
+                change([k, value](juce::var& e) { e.getProperty("pins", {})[k].getDynamicObject()->setProperty("role", value); });
+            };
+            r.cells.push_back({ std::move(role), 92 });
+            auto reference = std::make_unique<juce::ComboBox>();
+            reference->addItem("gnd", 1);
+            int selected = 1;
+            for (int j = 0; j < pinCount; ++j)
+                if (j != k)
+                {
+                    const auto other = (*pins)[j].getProperty("id", {}).toString();
+                    reference->addItem(other, j + 2);
+                    if (other == pin.getProperty("reference", {}).toString())
+                        selected = j + 2;
+                }
+            reference->setSelectedId(selected, juce::dontSendNotification);
+            reference->setTooltip("The pin's branch returns through ground, or through another pin (a floating branch between two terminals)");
+            auto* refRaw = reference.get();
+            reference->onChange = [this, k, refRaw] {
+                const auto value = refRaw->getSelectedId() == 1 ? juce::String() : refRaw->getText();
+                change([k, value](juce::var& e) {
+                    auto* o = e.getProperty("pins", {})[k].getDynamicObject();
+                    if (value.isEmpty()) o->removeProperty("reference"); else o->setProperty("reference", value);
+                });
+            };
+            r.cells.push_back({ std::move(reference), 64 });
+            r.cells.push_back({ button("x", [this, k] { change([k](juce::var& e) { e.getProperty("pins", {}).getArray()->remove(k); }); }), 24 });
+            add(std::move(r));
+        }
+
+        // Parameters and state variables: name and a number.
+        auto namedNumbers = [&](const char* title, const char* listKey, const char* valueKey, const char* base) {
+            {
+                Row r;
+                r.cells.push_back({ label(title), 0 });
+                r.cells.push_back({ button("+ Add", [this, listKey, valueKey, base] {
+                    change([this, listKey, valueKey, base](juce::var& e) {
+                        auto* o = new juce::DynamicObject();
+                        o->setProperty("name", uniqueName(e.getProperty(listKey, {}), base));
+                        o->setProperty(valueKey, 0.0);
+                        if (!e.getProperty(listKey, {}).isArray()) e.getDynamicObject()->setProperty(listKey, juce::Array<juce::var>());
+                        e.getProperty(listKey, {}).getArray()->add(juce::var(o));
+                    });
+                }), 60 });
+                add(std::move(r));
+            }
+            const auto* list = d.getProperty(listKey, {}).getArray();
+            for (int k = 0; list != nullptr && k < list->size(); ++k)
+            {
+                const auto item = (*list)[k];
+                Row r;
+                r.cells.push_back({ editor(item.getProperty("name", {}).toString(), [this, k, listKey](const juce::String& v) {
+                    change([k, v, listKey](juce::var& e) { e.getProperty(listKey, {})[k].getDynamicObject()->setProperty("name", v); });
+                }), 0 });
+                r.cells.push_back({ editor(item.getProperty(valueKey, 0.0).toString(), [this, k, listKey, valueKey](const juce::String& v) {
+                    change([k, v, listKey, valueKey](juce::var& e) { e.getProperty(listKey, {})[k].getDynamicObject()->setProperty(valueKey, v.getDoubleValue()); });
+                }), 80 });
+                r.cells.push_back({ button("x", [this, k, listKey] { change([k, listKey](juce::var& e) { e.getProperty(listKey, {}).getArray()->remove(k); }); }), 24 });
+                add(std::move(r));
+            }
+        };
+        namedNumbers("Parameters (name, default)", "parameters", "default", "param");
+        namedNumbers("State (name, initial)", "state", "initial", "state");
+
+        {
+            Row r;
+            r.cells.push_back({ label("Output R (ohm)"), 0 });
+            r.cells.push_back({ editor(d.getProperty("outputResistance", 1.0).toString(), [this](const juce::String& v) {
+                change([v](juce::var& e) { e.getDynamicObject()->setProperty("outputResistance", v.getDoubleValue()); });
+            }), 80 });
+            add(std::move(r));
+        }
+        layout();
+    }
+
+private:
+    struct Cell
+    {
+        std::unique_ptr<juce::Component> component;
+        int width = 0; // 0 = the rest of the row
+    };
+    struct Row
+    {
+        std::vector<Cell> cells;
+    };
+
+    void add(Row row)
+    {
+        for (auto& c : row.cells)
+            content.addAndMakeVisible(*c.component);
+        rows.push_back(std::move(row));
+    }
+
+    void layout()
+    {
+        const auto width = std::max(120, viewport.getWidth() - viewport.getScrollBarThickness() - 4);
+        int y = 2;
+        for (auto& row : rows)
+        {
+            auto area = juce::Rectangle<int>(4, y, width - 4, 24);
+            int fixed = 0, flexible = 0;
+            for (auto& c : row.cells) { fixed += c.width; if (c.width == 0) ++flexible; }
+            const auto rest = std::max(30, (area.getWidth() - fixed - 4 * ((int)row.cells.size() - 1)) / std::max(1, flexible));
+            for (auto& c : row.cells)
+            {
+                c.component->setBounds(area.removeFromLeft(c.width > 0 ? c.width : rest));
+                area.removeFromLeft(4);
+            }
+            y += 28;
+        }
+        content.setSize(width, y + 4);
+    }
+
+    static juce::String uniqueName(const juce::var& list, const juce::String& base)
+    {
+        for (int n = 1;; ++n)
+        {
+            const auto candidate = base + juce::String(n);
+            bool taken = false;
+            if (const auto* items = list.getArray())
+                for (const auto& item : *items)
+                    taken |= item.getProperty("name", item.getProperty("id", {})).toString().equalsIgnoreCase(candidate);
+            if (!taken)
+                return candidate;
+        }
+    }
+
+    void addPin()
+    {
+        change([](juce::var& e) {
+            if (!e.getProperty("pins", {}).isArray())
+                e.getDynamicObject()->setProperty("pins", juce::Array<juce::var>());
+            auto* o = new juce::DynamicObject();
+            o->setProperty("id", uniqueName(e.getProperty("pins", {}), "PIN"));
+            o->setProperty("role", "input");
+            e.getProperty("pins", {}).getArray()->add(juce::var(o));
+        });
+    }
+
+    // Applies an edit to a copy of the definition and hands it to the owner;
+    // the rows are rebuilt afterwards (asynchronously: the control whose
+    // callback made the change is still on the stack).
+    void change(const std::function<void(juce::var&)>& edit)
+    {
+        auto edited = juce::JSON::parse(juce::JSON::toString(owner.editedDefinition));
+        edit(edited);
+        juce::String message;
+        owner.editComponent(edited, message);
+        juce::Component::SafePointer<ComponentPanel> safe(this);
+        juce::MessageManager::callAsync([safe] { if (safe != nullptr) safe->rebuild(); });
+    }
+
+    NodeDesignerPanel& owner;
+    // Destroyed in reverse: the rows (children of content), the viewport
+    // (which shows content), then content.
+    juce::Component content;
+    juce::Viewport viewport;
+    std::vector<Row> rows;
+
+    JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(ComponentPanel)
+};
+
 class NodeDesignerPanel::VariablesPanel final : public juce::Component
 {
 public:
@@ -1778,6 +2048,8 @@ NodeDesignerPanel::NodeDesignerPanel()
     inspector = std::make_unique<InspectorPanel>(*this);
     variablesPanel = std::make_unique<VariablesPanel>(*this);
     typesPanel = std::make_unique<TypesPanel>(*this);
+    componentPanel = std::make_unique<ComponentPanel>(*this);
+    addChildComponent(*componentPanel);
 
     titleLabel.setFont(juce::Font(16.0f, juce::Font::bold));
     titleLabel.setColour(juce::Label::textColourId, juce::Colour(0xff7fffd4));
@@ -1921,6 +2193,11 @@ void NodeDesignerPanel::resized()
     palette->setBounds(left);
     variablesPanel->setBounds(variablesArea);
     typesPanel->setBounds(typesArea);
+    if (componentPanel != nullptr && componentPanel->isVisible())
+    {
+        componentPanel->setBounds(right.removeFromTop(std::max(200, right.getHeight() * 11 / 20)));
+        right.removeFromTop(8);
+    }
     propertiesTitle.setBounds(right.removeFromTop(25).reduced(6, 0));
     inspector->setBounds(right);
     canvas->setBounds(b);
@@ -3508,6 +3785,8 @@ void NodeDesignerPanel::clearGraph()
 
 void NodeDesignerPanel::newGraph(const juce::String& type, bool withStarterNodes)
 {
+    componentInfo = juce::var();
+    setComponentDefinition({});
     const bool stateMachine = type == "state_machine";
     if (withStarterNodes)
     {
@@ -3576,6 +3855,9 @@ bool NodeDesignerPanel::openFile(const juce::File& file, juce::String& error)
         error = statusText();
         return false;
     }
+    // Whose program it is, the caller says (setComponentContext/Definition).
+    componentInfo = juce::var();
+    setComponentDefinition({});
     currentGraphFile = file;
     titleLabel.setText(file.getFileName(), juce::dontSendNotification);
     setStatus(problems.isEmpty() ? "Opened " + file.getFullPathName() : "Opened " + file.getFileName() + " with problems: " + problems,
@@ -4341,6 +4623,96 @@ void NodeDesignerPanel::setExecutionMarker(const juce::String& nodeId)
     executionNodeId = nodeId;
     if (canvas != nullptr)
         canvas->repaint();
+}
+
+void NodeDesignerPanel::setCurrentFile(const juce::File& file)
+{
+    currentGraphFile = file;
+    titleLabel.setText(file.getFileName(), juce::dontSendNotification);
+}
+
+void NodeDesignerPanel::setComponentDefinition(const juce::var& definition)
+{
+    editedDefinition = definition.isObject() ? juce::JSON::parse(juce::JSON::toString(definition)) : juce::var();
+    const bool show = editedDefinition.isObject();
+    if (componentPanel != nullptr)
+    {
+        componentPanel->setVisible(show);
+        componentPanel->rebuild();
+    }
+    resized();
+}
+
+bool NodeDesignerPanel::editComponent(const juce::var& edited, juce::String& message)
+{
+    if (!editedDefinition.isObject())
+    {
+        message = "No programmable component's program is open.";
+        return false;
+    }
+    // What the edit renames, so the nodes that name it can follow: pins by
+    // their uid; parameters and state variables by position (the panel edits
+    // them in place) when the old name is gone.
+    struct Rename { juce::StringArray types; juce::String from, to; };
+    std::vector<Rename> renames;
+    const juce::StringArray pinTypes { "pc_pin_voltage", "pc_pin_current", "pc_drive", "pc_drive_current", "pc_set_resistance" };
+    if (const auto* before = editedDefinition.getProperty("pins", {}).getArray())
+        if (const auto* after = edited.getProperty("pins", {}).getArray())
+            for (const auto& p : *before)
+                for (const auto& q : *after)
+                    if (p.getProperty("uid", {}).toString().isNotEmpty() && p.getProperty("uid", {}) == q.getProperty("uid", {})
+                        && p.getProperty("id", {}).toString() != q.getProperty("id", {}).toString())
+                        renames.push_back({ pinTypes, p.getProperty("id", {}).toString(), q.getProperty("id", {}).toString() });
+    auto byPosition = [&](const char* key, const juce::StringArray& types) {
+        const auto* before = editedDefinition.getProperty(key, {}).getArray();
+        const auto* after = edited.getProperty(key, {}).getArray();
+        if (before == nullptr || after == nullptr || before->size() != after->size())
+            return;
+        juce::StringArray newNames;
+        for (const auto& q : *after) newNames.add(q.getProperty("name", {}).toString());
+        for (int k = 0; k < before->size(); ++k)
+        {
+            const auto from = (*before)[k].getProperty("name", {}).toString();
+            const auto to = (*after)[k].getProperty("name", {}).toString();
+            if (from != to && !newNames.contains(from))
+                renames.push_back({ types, from, to });
+        }
+    };
+    byPosition("parameters", { "pc_parameter" });
+    byPosition("state", { "pc_state_get", "pc_state_set" });
+
+    if (onComponentEdited == nullptr)
+    {
+        message = "Component definitions cannot be edited here.";
+        setStatus(message, true);
+        return false;
+    }
+    if (!onComponentEdited(edited, message))
+    {
+        setStatus(message, true);
+        return false;
+    }
+    int followed = 0;
+    for (auto& node : nodes)
+        for (const auto& r : renames)
+            if (r.types.contains(node.type) && node.textValue == r.from)
+            {
+                node.textValue = r.to;
+                ++followed;
+            }
+    if (currentGraphFile != juce::File())
+    {
+        juce::String saveError;
+        if (!saveToFile(currentGraphFile, saveError))
+            message << (message.isNotEmpty() ? "\n" : "") << "The program could not be saved: " << saveError;
+    }
+    if (followed > 0)
+        message << (message.isNotEmpty() ? " " : "") << juce::String(followed) << (followed == 1 ? " node follows" : " nodes follow") << " the new name.";
+    setStatus(message.isNotEmpty() ? message : juce::String("Component updated."), false);
+    refreshProperties();
+    if (canvas != nullptr)
+        canvas->repaint();
+    return true;
 }
 
 void NodeDesignerPanel::setComponentContext(const juce::var& context)

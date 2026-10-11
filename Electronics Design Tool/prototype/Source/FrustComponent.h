@@ -57,7 +57,10 @@ bool parseRole(const juce::String& text, PinRole& role);
 
 struct Pin
 {
-    juce::String id;   // the pin's name; unique in the component
+    juce::String id;   // the pin's name; unique in the component (what the program and wires name)
+    // The pin's stable identity (P1, P2...): kept through renames, so a
+    // renamed pin keeps its wires. Files from before uids get them by index.
+    juce::String uid;
     PinRole role = PinRole::Input;
     schematic::PinSide side = schematic::PinSide::Left;
     int order = -1;
@@ -84,7 +87,7 @@ struct Definition
 {
     juce::String name;
     juce::String description;
-    std::vector<Pin> pins;               // index = electrical identity
+    std::vector<Pin> pins;               // index = electrical identity; may be empty while the component is designed
     std::vector<Parameter> parameters;
     std::vector<StateVariable> state;
     double outputResistance = 1.0;       // ohms, each voltage output
@@ -100,8 +103,14 @@ struct Definition
 };
 
 bool isValidName(const juce::String& name); // letters, digits, _ ; starts with a letter
-// Checks pins, parameters and state for empty or duplicate names.
+// Checks pins, parameters and state for empty or duplicate names. A
+// component with no pins yet is valid (it is being designed); it is simply
+// not simulated until it has some.
 juce::String problemsWith(const Definition& definition);
+// A pin uid the definition does not use yet (P1, P2...).
+juce::String newPinUid(const Definition& definition);
+// Gives every pin without a uid one (files from before uids).
+void assignPinUids(Definition& definition);
 
 juce::var toVar(const Definition& definition);
 bool fromVar(const juce::var& v, Definition& definition, juce::String& error);
