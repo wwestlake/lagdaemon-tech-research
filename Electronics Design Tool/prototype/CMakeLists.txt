@@ -98,6 +98,10 @@ add_library(libavoid STATIC
 target_include_directories(libavoid PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/third_party")
 target_compile_definitions(libavoid PUBLIC LIBAVOID_NO_DLL)
 
+# The internal circuit solver as a library built in place (decision F2),
+# optimised inside Debug builds; see libs/circuit_sim/CMakeLists.txt.
+add_subdirectory(libs/circuit_sim)
+
 juce_add_gui_app(DjehutiElectronicsLab
     PRODUCT_NAME "Djehuti Electronics Lab"
     VERSION 0.1.0
@@ -121,7 +125,6 @@ target_sources(DjehutiElectronicsLab PRIVATE
     Source/Preferences.h
     Source/Preferences.cpp
     Source/CircuitSolver.h
-    Source/CircuitSolver.cpp
     Source/AudioDsp.h
     Source/AudioDsp.cpp
     Source/FrustEngine.h
@@ -200,6 +203,7 @@ target_compile_definitions(DjehutiElectronicsLab PRIVATE
 )
 
 target_link_libraries(DjehutiElectronicsLab PRIVATE
+    circuit_sim
     CreationDock
     ai_provider
     libavoid
@@ -297,10 +301,10 @@ juce_generate_juce_header(FrustEngineSmoke)
 # Circuit solver checks against hand-calculated results (plain C++, no JUCE).
 add_executable(CircuitSolverTests
     tools/solver_tests/SolverTests.cpp
-    Source/CircuitSolver.cpp
     Source/CircuitHierarchy.cpp
     Source/SignalMeasure.cpp
 )
+target_link_libraries(CircuitSolverTests PRIVATE circuit_sim)
 set_target_properties(CircuitSolverTests PROPERTIES
     OUTPUT_NAME "circuit_solver_tests"
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/bin")
@@ -325,19 +329,41 @@ foreach(variant IN ITEMS "SimCoreTests;sim_core;sim_core_tests;optimized" "SimCo
     add_test(NAME ${test_target} COMMAND ${test_target} --out "${CMAKE_CURRENT_BINARY_DIR}/sim_core_test_out_${test_config}")
 endforeach()
 
+# Phase P1 acceptance tests: the resumable TransientStepper and the
+# electrical participant, built against the optimised and the unoptimised
+# circuit_sim and sim_core; `circuit_stepper_tests --compare <outA> <outB>`
+# checks the two agree within the electrical tolerance.
+foreach(variant IN ITEMS "CircuitStepperTests;circuit_sim;sim_core;circuit_stepper_tests;optimized"
+                         "CircuitStepperTestsUnopt;circuit_sim_unopt;sim_core_unopt;circuit_stepper_tests_unopt;unoptimized")
+    list(GET variant 0 test_target)
+    list(GET variant 1 test_circuit)
+    list(GET variant 2 test_core)
+    list(GET variant 3 test_output)
+    list(GET variant 4 test_config)
+    add_executable(${test_target}
+        tools/circuit_stepper_tests/CircuitStepperTests.cpp
+        Source/ElectricalParticipant.h
+        Source/ElectricalParticipant.cpp)
+    target_link_libraries(${test_target} PRIVATE ${test_circuit} ${test_core})
+    target_compile_definitions(${test_target} PRIVATE CIRCUIT_STEPPER_TESTS_CONFIG="${test_config}")
+    set_target_properties(${test_target} PROPERTIES
+        OUTPUT_NAME "${test_output}"
+        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/bin")
+    add_test(NAME ${test_target} COMMAND ${test_target} --out "${CMAKE_CURRENT_BINARY_DIR}/circuit_stepper_test_out_${test_config}")
+endforeach()
+
 juce_add_console_app(AudioDspTests PRODUCT_NAME "Audio Dsp Tests")
 set_target_properties(AudioDspTests PROPERTIES 
     OUTPUT_NAME "audio_dsp_tests_3"
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/bin")
 target_sources(AudioDspTests PRIVATE 
     tools/audio_dsp_tests/AudioDspTests.cpp
-    Source/CircuitSolver.cpp
     Source/AudioDsp.cpp
     Source/FrustEngine.cpp
 )
 target_include_directories(AudioDspTests PRIVATE Source)
 target_compile_definitions(AudioDspTests PRIVATE JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0)
-target_link_libraries(AudioDspTests PRIVATE frust_plugin_host juce::juce_core)
+target_link_libraries(AudioDspTests PRIVATE circuit_sim frust_plugin_host juce::juce_core)
 juce_generate_juce_header(AudioDspTests)
 add_test(NAME AudioDspTests COMMAND AudioDspTests)
 
@@ -396,7 +422,6 @@ target_sources(PlotInstrumentTests PRIVATE
     tools/plot_tests/PlotTests.cpp
     Source/PlotInstrument.cpp
     Source/Analytics.cpp
-    Source/CircuitSolver.cpp
     Source/SignalMeasure.cpp
 )
 target_compile_definitions(PlotInstrumentTests PRIVATE
@@ -404,6 +429,7 @@ target_compile_definitions(PlotInstrumentTests PRIVATE
     JUCE_USE_CURL=0
 )
 target_link_libraries(PlotInstrumentTests PRIVATE
+    circuit_sim
     juce::juce_core
     juce::juce_events
     juce::juce_graphics
@@ -421,7 +447,6 @@ target_sources(KnowledgeTests PRIVATE
     tools/knowledge_tests/KnowledgeTests.cpp
     Source/ElectronicsKnowledge.cpp
     Source/Analytics.cpp
-    Source/CircuitSolver.cpp
     Source/SignalMeasure.cpp
     Source/XyceBackend.cpp
     Source/SpiceLibrary.cpp
@@ -436,6 +461,7 @@ target_compile_definitions(KnowledgeTests PRIVATE
     ELECTRONICS_RESEARCH_ROOT="${CMAKE_CURRENT_SOURCE_DIR}/.."
 )
 target_link_libraries(KnowledgeTests PRIVATE
+    circuit_sim
     juce::juce_core
     juce::juce_events
     juce::juce_graphics
@@ -512,7 +538,6 @@ target_sources(ProgrammableComponentTests PRIVATE
     Source/SignalMeasure.cpp
     Source/XyceBackend.cpp
     Source/SpiceLibrary.cpp
-    Source/CircuitSolver.cpp
     Source/FrustComponent.cpp
     Source/SchematicSymbols.cpp
     Source/NodeDesignerPanel.cpp
@@ -524,6 +549,7 @@ target_compile_definitions(ProgrammableComponentTests PRIVATE
     JUCE_USE_CURL=0
 )
 target_link_libraries(ProgrammableComponentTests PRIVATE
+    circuit_sim
     frust_plugin_host
     juce::juce_core
     juce::juce_events

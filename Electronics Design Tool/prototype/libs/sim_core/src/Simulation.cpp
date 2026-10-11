@@ -77,12 +77,26 @@ double InputFrame::rate(int port, Tick at) const
     return s.d1 + s.d2 * ticksToSeconds(at - s.at);
 }
 
+// Collects a participant's emissions into a vector the scheduler keeps (and
+// reuses from round to round).
 class Simulation::Sink final : public EventSink
 {
 public:
+    explicit Sink(std::vector<PendingEmission>& out) : emissions(out) { emissions.clear(); }
     void emit(int outputPort, Tick at, EventPayload payload) override { emissions.push_back({ outputPort, at, payload }); }
-    std::vector<PendingEmission> emissions;
+    std::vector<PendingEmission>& emissions;
 };
+
+// The record of the round being built, emptied in place: in the Debug
+// runtime constructing a container allocates, and a round should not.
+void Simulation::resetRound()
+{
+    current_.round = 0;
+    current_.time = {};
+    current_.samples.clear();
+    current_.events.clear();
+    current_.diagnostics.clear();
+}
 
 // ---- construction -----------------------------------------------------------
 
@@ -799,7 +813,7 @@ RoundOutcome Simulation::faultRound(const std::string& participant, Category cat
 
 Status Simulation::processEvents(Tick t, int& processed)
 {
-    InputFrame frame;
+    auto& frame = eventFrame_;
     while (!queue_.empty() && queue_.begin()->time.tick == t)
     {
         const Event e = *queue_.begin();
@@ -841,7 +855,7 @@ Status Simulation::processEvents(Tick t, int& processed)
             if (entry.info.timing.kind == TimingKind::VariableStep && entry.lastCommit < t)
             {
                 buildFrame(p, t, frame);
-                Sink stepSink;
+                Sink stepSink(stepEmissions_);
                 const auto r = entry.participant->doStep(entry.lastCommit, t, frame, stepSink);
                 if (!r.status)
                 {
@@ -877,7 +891,7 @@ Status Simulation::processEvents(Tick t, int& processed)
                 }
             }
             buildFrame(p, t, frame);
-            Sink sink;
+            Sink sink(eventEmissions_);
             if (auto s = entry.participant->handleEvent(e, port, frame, sink); !s)
             {
                 entry.faulted = true;
@@ -920,11 +934,12 @@ RoundOutcome Simulation::advanceRound()
         lastError_ = std::string("Cannot advance while the simulation is ") + toString(state_) + ".";
         return outcome;
     }
-    current_ = {};
+    resetRound();
     const int n = (int)participants_.size();
 
     // 1. The round's end.
-    std::vector<Tick> due((std::size_t)n, kNever);
+    auto& due = scratchDue_;
+    due.assign((std::size_t)n, kNever);
     Tick tNext = kNever;
     for (int i = 0; i < n; ++i)
     {
@@ -959,7 +974,8 @@ RoundOutcome Simulation::advanceRound()
     // arrive at it: one is queued for that time, an external input will ride
     // on that boundary, or a writer of one of their event inputs steps in
     // this round (its events are only known after it steps).
-    std::vector<char> firstDue((std::size_t)n, 0);
+    auto& firstDue = scratchFirstDue_;
+    firstDue.assign((std::size_t)n, 0);
     for (int i = 0; i < n; ++i)
         firstDue[(std::size_t)i] = due[(std::size_t)i] == tNext;
     auto externalAt = [&](int signal, Tick t) {
@@ -969,8 +985,9 @@ RoundOutcome Simulation::advanceRound()
             if (ev.time.tick == t && ev.signal == signal) return true;
         return false;
     };
-    auto dueAt = [&](Tick t, const std::vector<int>&) {
-        std::vector<char> in((std::size_t)n, 0);
+    auto dueAt = [&](Tick t, const std::vector<int>&) -> const std::vector<int>& {
+        auto& in = scratchIn_;
+        in.assign((std::size_t)n, 0);
         for (int i = 0; i < n; ++i)
         {
             const bool variable = participants_[(std::size_t)i].info.timing.kind == TimingKind::VariableStep;
@@ -1003,19 +1020,19 @@ RoundOutcome Simulation::advanceRound()
                 }
             }
         }
-        std::vector<int> list;
+        auto& list = scratchList_;
+        list.clear();
         for (int i = 0; i < n; ++i)
             if (in[(std::size_t)i]) list.push_back(i);
         return list;
     };
 
-    InputFrame frame;
+    auto& frame = scratchFrame_;
     auto stepOne = [&](int i, Tick to, StepResult& r) {
         auto& e = participants_[(std::size_t)i];
         buildFrame(i, to, frame);
-        Sink sink;
+        Sink sink(e.trialEvents);
         r = e.participant->doStep(e.lastCommit, to, frame, sink);
-        e.trialEvents = std::move(sink.emissions);
     };
     auto rollbackAll = [&](const std::vector<int>& list) {
         for (int s : list)
@@ -1028,7 +1045,8 @@ RoundOutcome Simulation::advanceRound()
     };
 
     // 2a. Event locators first; one that stops early shortens the round.
-    std::vector<int> stepped;
+    auto& stepped = scratchStepped_;
+    stepped.clear();
     bool pauseRequested = false;
     int iterations = 0;
     for (bool shortened = true; shortened;)
@@ -1076,7 +1094,7 @@ RoundOutcome Simulation::advanceRound()
     }
 
     // 2b. Other participants that can roll back, then those that cannot (C1).
-    const auto finalDue = dueAt(tNext, stepped);
+    const auto& finalDue = dueAt(tNext, stepped);
     for (int pass = 0; pass < 2; ++pass)
         for (int i : finalDue)
         {
@@ -1172,7 +1190,7 @@ RoundOutcome Simulation::advanceRound()
         current_.time = { tNext, 0 };
         recorder_->round(std::move(current_));
     }
-    current_ = {};
+    resetRound();
     publishSnapshot();
 
     outcome.kind = RoundOutcome::Kind::Advanced;

@@ -4,6 +4,7 @@
 
 #include <cmath>
 #include <cstdint>
+#include <cstring>
 
 namespace frust_component
 {
@@ -329,6 +330,64 @@ public:
         committedState = nextState;
         committedModels = trialModels;
         committedCurrents = trialCurrents;
+    }
+
+    // A whole copy of the device's state, committed and trial (the system
+    // simulator's rollback, decision G1): every value is a double.
+    bool saveState(std::vector<std::uint8_t>& out) const override
+    {
+        std::vector<double> values;
+        auto put = [&values](const std::vector<double>& v) { values.push_back((double)v.size()); values.insert(values.end(), v.begin(), v.end()); };
+        auto putModels = [&values](const std::vector<PinModel>& models) {
+            values.push_back((double)models.size());
+            for (const auto& m : models) { values.push_back(m.volts); values.push_back(m.ohms); values.push_back(m.amps); }
+        };
+        put(committedState);
+        put(nextState);
+        putModels(committedModels);
+        putModels(trialModels);
+        put(committedCurrents);
+        put(trialCurrents);
+        out.resize(values.size() * sizeof(double));
+        if (!values.empty())
+            std::memcpy(out.data(), values.data(), out.size());
+        return true;
+    }
+
+    bool restoreState(const std::vector<std::uint8_t>& in) override
+    {
+        if (in.size() % sizeof(double) != 0)
+            return false;
+        std::vector<double> values(in.size() / sizeof(double));
+        if (!values.empty())
+            std::memcpy(values.data(), in.data(), in.size());
+        size_t at = 0;
+        auto get = [&](std::vector<double>& v, size_t expected) {
+            if (at >= values.size() || (size_t)values[at] != expected || at + 1 + expected > values.size()) return false;
+            v.assign(values.begin() + (std::ptrdiff_t)at + 1, values.begin() + (std::ptrdiff_t)(at + 1 + expected));
+            at += 1 + expected;
+            return true;
+        };
+        auto getModels = [&](std::vector<PinModel>& models) {
+            const auto expected = roles.size();
+            if (at >= values.size() || (size_t)values[at] != expected || at + 1 + 3 * expected > values.size()) return false;
+            ++at;
+            models.resize(expected);
+            for (auto& m : models) { m.volts = values[at]; m.ohms = values[at + 1]; m.amps = values[at + 2]; at += 3; }
+            return true;
+        };
+        std::vector<double> cs, ns, cc, tc;
+        std::vector<PinModel> cm, tm;
+        if (!get(cs, initialState.size()) || !get(ns, initialState.size()) || !getModels(cm) || !getModels(tm)
+            || !get(cc, roles.size()) || !get(tc, roles.size()) || at != values.size())
+            return false;
+        committedState = std::move(cs);
+        nextState = std::move(ns);
+        committedModels = std::move(cm);
+        trialModels = std::move(tm);
+        committedCurrents = std::move(cc);
+        trialCurrents = std::move(tc);
+        return true;
     }
 
     // Host-function access (the program runs on this thread, in evaluate).

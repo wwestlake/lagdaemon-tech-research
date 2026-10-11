@@ -406,10 +406,12 @@ TransientResult solveTransient(const Circuit& circuit, const TransientSettings& 
 // watches, are zero crossings located inside the step (regula falsi, Illinois
 // variant) to locationTolerance. advance() stops at the first located event,
 // just past the crossing, and the switch changes state there. The step after
-// a located switch change, or after an input changes a resistance, is
-// backward Euler (restartAfterDiscontinuity), which damps the ringing a
-// trapezoidal step shows after a discontinuity; trapezoidal steps resume
-// after it.
+// a located switch change, or after an input changes a resistance, is a
+// restart (restartAfterDiscontinuity): two backward-Euler half steps, which
+// absorb the jump and leave the reactive history consistent, so the
+// trapezoidal steps that resume after it do not ring. A circuit that is
+// linear within a step (held switches and linear elements only) is solved
+// with cached LU factorisations; times are then whole timeQuantum units.
 //
 // State (decision G1): saveState() copies everything the solution evolves -
 // time, the MNA solution, reactive history, switch states, the pending
@@ -449,6 +451,15 @@ public:
         int direction = 0; // +1 rising (switch closed), -1 falling (switch opened)
     };
 
+    // A live input on one element: the value v1 held, or for a source a ramp
+    // from v0 at t0 to v1 at t1 (held outside it).
+    struct Input
+    {
+        bool set = false;
+        double t0 = 0.0, v0 = 0.0, t1 = 0.0, v1 = 0.0;
+        bool operator==(const Input&) const = default;
+    };
+
     struct State
     {
         double time = 0.0;
@@ -456,7 +467,7 @@ public:
         std::vector<double> reactiveV, reactiveI;
         std::vector<signed char> switches;  // per element: 1 closed, 0 open, -1 not a controlled switch
         bool restartPending = false;
-        std::vector<double> inputs;         // per element: live input value, NaN when none
+        std::vector<Input> inputs;          // per element
         std::vector<std::vector<std::uint8_t>> devices; // per programmable element, in element order
     };
 
@@ -464,9 +475,10 @@ public:
     {
         std::uint64_t steps = 0;            // accepted steps (including halved pieces)
         std::uint64_t newtonIterations = 0;
-        std::uint64_t restarts = 0;         // backward-Euler steps
+        std::uint64_t restarts = 0;         // backward-Euler pieces (two per restart)
         std::uint64_t locationSteps = 0;    // extra steps taken while locating events
         std::uint64_t events = 0;
+        std::uint64_t factorisations = 0;   // linear fast path: matrices factorised (the rest reused a cached one)
     };
 
     TransientStepper(const Circuit& circuit, const Options& options = {}, const Settings& settings = {});
@@ -481,10 +493,17 @@ public:
     // potentiometers and manual switches. Returns false for an element of
     // another type (see error()).
     bool setSourceValue(int element, double value);
+    // The source follows v0 at t0 to v1 at t1 linearly (an input known at
+    // both ends of a step, so located trial times inside it see the right value).
+    bool setSourceRamp(int element, double t0, double v0, double t1, double v1);
     bool setResistance(int element, double ohms);
     void clearInput(int element);
 
     int addWatch(const Watch& watch); // before init()
+    // Whether a controlled switch's change stops advance() (default: yes).
+    // A switch nothing outside the circuit observes can change inside a step
+    // (its event is still located and still restarts the integration).
+    void setSwitchStops(int element, bool stops);
 
     // The operating point at t = 0 with the inputs as set (solveTransient's
     // initial state), devices reset first. May be called again to restart.

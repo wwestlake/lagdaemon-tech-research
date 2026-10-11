@@ -280,6 +280,45 @@ int main()
         device->reset();
         device->evaluate(0.0, 0.0, { 0.0, 0.0 }, outputs, evalError);
         check(near(outputs[1], 0.0, 1e-12), "reset() restores the initial state");
+
+        // State snapshots (system simulator rollback): a saved state, then an
+        // accepted edge, then restoring: the edge is gone.
+        std::vector<std::uint8_t> snapshot;
+        const bool saved = device->saveState(snapshot);
+        device->evaluate(1e-3, 1e-6, { 5.0, 0.0 }, outputs, evalError);
+        device->accept(1e-3); // Q -> 5 V committed
+        const bool restored = device->restoreState(snapshot);
+        device->evaluate(2e-3, 1e-6, { 0.0, 0.0 }, outputs, evalError);
+        check(saved && restored && near(outputs[1], 0.0, 1e-12), "restoreState() takes back an accepted toggle (Q 0 V again)", juce::String(outputs[1]));
+        check(!device->restoreState(std::vector<std::uint8_t>(5, 0)), "a malformed snapshot is refused");
+
+        // The resumable stepper with the two toggles: save at 1.6 ms, run to
+        // 4.5 ms, restore, run again: the same waveform bit for bit, because
+        // the devices' toggled state goes back with the solver's.
+        circuit_sim::TransientStepper stepper(c);
+        const auto grid = circuit_sim::TransientStepper::timeGrid(c, 4.5e-3, 10e-6);
+        bool ok = stepper.init();
+        size_t n = 0;
+        for (; n < grid.size() && grid[n] <= 1.6e-3 && ok; ++n)
+            ok = stepper.step(grid[n]);
+        circuit_sim::TransientStepper::State mid;
+        ok = ok && stepper.saveState(mid);
+        auto runRest = [&](std::vector<double>& wave) {
+            for (size_t k = n; k < grid.size() && ok; ++k)
+            {
+                ok = stepper.step(grid[k]);
+                wave.push_back(stepper.voltage(qA));
+                wave.push_back(stepper.voltage(qB));
+            }
+        };
+        std::vector<double> first, second;
+        runRest(first);
+        ok = ok && stepper.restoreState(mid);
+        runRest(second);
+        const double level = 5.0 * 10e3 / (10e3 + 1.0);
+        check(ok && first == second && first.size() >= 2 && near(first[first.size() - 2], level, 1e-3) && near(first.back(), level, 1e-3),
+              "stepper save at 1.6 ms, restore, re-step: identical waveform with the toggles' state restored (Q_A, Q_B end at 5 V)",
+              juce::String(stepper.error()) + " samples " + juce::String((int)first.size()));
     }
 
     std::printf("-- pin electrical models set by the program --\n");

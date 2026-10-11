@@ -234,6 +234,7 @@ private:
     Status processEvents(Tick t, int& processed);
     void publishSnapshot();
     void beginRecording();
+    void resetRound();
 
     LifecycleState state_ = LifecycleState::Created;
     std::vector<Entry> participants_;
@@ -253,6 +254,12 @@ private:
     RecordingSink* recorder_ = nullptr;
     bool recordingStarted_ = false;
     RoundRecord current_;
+    // Per-round scratch, reused so a round in steady state allocates nothing.
+    std::vector<Tick> scratchDue_;
+    std::vector<char> scratchFirstDue_, scratchIn_;
+    std::vector<int> scratchList_, scratchStepped_;
+    InputFrame scratchFrame_, eventFrame_;
+    std::vector<PendingEmission> stepEmissions_, eventEmissions_;
     TripleBuffer<Snapshot> snapshots_;
     int cascadeLimit_ = 1000;
     int initPassLimit_ = 50;

@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <functional>
 #include <limits>
 #include <map>
@@ -665,13 +666,13 @@ bool acceptProgrammable(const Circuit& c, const std::vector<double>& x, double t
     return true;
 }
 
-System<double> assemble(const Circuit& c, const Layout& l, const Options& o, Mode mode, const std::vector<double>& x,
-                        double t, double h, double sourceScale, const ReactiveState& state, JunctionMemory* memory = nullptr,
-                        const StepControl* control = nullptr)
+// Stamps the MNA system into `s`, which must be l.size square and zero.
+void assembleInto(System<double>& s, const Circuit& c, const Layout& l, const Options& o, Mode mode, const std::vector<double>& x,
+                  double t, double h, double sourceScale, const ReactiveState& state, JunctionMemory* memory = nullptr,
+                  const StepControl* control = nullptr)
 {
     const bool backwardEuler = control != nullptr && control->backwardEuler;
     const auto* heldSwitches = control != nullptr ? control->switches : nullptr;
-    System<double> s(l.size);
     for (int n = 1; n < c.nodeCount(); ++n)
         s.add(idx(n), idx(n), o.gmin);
 
@@ -733,8 +734,11 @@ System<double> assemble(const Circuit& c, const Layout& l, const Options& o, Mod
                     // Backward Euler: v = L/h (i - i_prev) + sum M/h (i_m - i_m,prev).
                     double rhs = -(e.value / h) * state.i[ei];
                     s.add(k, k, -e.value / h);
-                    for (const auto& [other, m] : l.mutual[ei])
+                    const auto& mutual = l.mutual[ei];
+                    for (size_t q = 0; q < mutual.size(); ++q) // indices: Debug iterators are costly here
                     {
+                        const auto other = mutual[q].first;
+                        const auto m = mutual[q].second;
                         s.add(k, l.branch[(size_t)other], -m / h);
                         rhs -= (m / h) * state.i[(size_t)other];
                     }
@@ -744,8 +748,11 @@ System<double> assemble(const Circuit& c, const Layout& l, const Options& o, Mod
                 {
                     double rhs = -state.v[ei] - (2.0 * e.value / h) * state.i[ei];
                     s.add(k, k, -2.0 * e.value / h);
-                    for (const auto& [other, m] : l.mutual[ei])
+                    const auto& mutual = l.mutual[ei];
+                    for (size_t q = 0; q < mutual.size(); ++q)
                     {
+                        const auto other = mutual[q].first;
+                        const auto m = mutual[q].second;
                         s.add(k, l.branch[(size_t)other], -2.0 * m / h);
                         rhs -= (2.0 * m / h) * state.i[(size_t)other];
                     }
@@ -817,7 +824,83 @@ System<double> assemble(const Circuit& c, const Layout& l, const Options& o, Mod
                 break;
         }
     }
+}
+
+System<double> assemble(const Circuit& c, const Layout& l, const Options& o, Mode mode, const std::vector<double>& x,
+                        double t, double h, double sourceScale, const ReactiveState& state, JunctionMemory* memory = nullptr,
+                        const StepControl* control = nullptr)
+{
+    System<double> s(l.size);
+    assembleInto(s, c, l, o, mode, x, t, h, sourceScale, state, memory, control);
     return s;
+}
+
+// The right-hand side alone of a transient step of a circuit that is linear
+// within the step (the stepper's cached-factorisation path): exactly the
+// additions assembleInto makes to b, in the same element order, for the
+// elements that make any (`elements`: independent sources, capacitors,
+// inductors, ascending). `b` must be zero.
+void assembleRhs(std::vector<double>& b, const Circuit& c, const Layout& l, const std::vector<int>& elements, double t, double h,
+                 const ReactiveState& state, bool backwardEuler)
+{
+    const auto& parts = c.elements();
+    auto rhs = [&b](int r, double v) { if (r >= 0) b[(size_t)r] += v; };
+    for (size_t q = 0; q < elements.size(); ++q)
+    {
+        const auto ei = (size_t)elements[q];
+        const auto& e = parts[ei];
+        const auto k = l.branch[ei];
+        switch (e.type)
+        {
+            case Element::Type::Capacitor:
+                if (backwardEuler)
+                {
+                    const auto g = e.value / h;
+                    const auto ieq = g * state.v[ei];
+                    rhs(idx(e.nodes[0]), ieq);
+                    rhs(idx(e.nodes[1]), -ieq);
+                }
+                else
+                {
+                    const auto g = 2.0 * e.value / h;
+                    const auto ieq = g * state.v[ei] + state.i[ei];
+                    rhs(idx(e.nodes[0]), ieq);
+                    rhs(idx(e.nodes[1]), -ieq);
+                }
+                break;
+            case Element::Type::Inductor:
+            {
+                const auto& mutual = l.mutual[ei];
+                if (backwardEuler)
+                {
+                    double r = -(e.value / h) * state.i[ei];
+                    for (size_t m = 0; m < mutual.size(); ++m)
+                        r -= (mutual[m].second / h) * state.i[(size_t)mutual[m].first];
+                    rhs(k, r);
+                }
+                else
+                {
+                    double r = -state.v[ei] - (2.0 * e.value / h) * state.i[ei];
+                    for (size_t m = 0; m < mutual.size(); ++m)
+                        r -= (2.0 * mutual[m].second / h) * state.i[(size_t)mutual[m].first];
+                    rhs(k, r);
+                }
+                break;
+            }
+            case Element::Type::VoltageSource:
+                rhs(k, e.wave.valueAt(t) * 1.0);
+                break;
+            case Element::Type::CurrentSource:
+            {
+                const auto value = e.wave.valueAt(t) * 1.0;
+                rhs(idx(e.nodes[0]), -value);
+                rhs(idx(e.nodes[1]), value);
+                break;
+            }
+            default:
+                break;
+        }
+    }
 }
 
 bool newton(const Circuit& c, const Layout& l, const Options& o, Mode mode, std::vector<double>& x, double t, double h,
@@ -1849,6 +1932,19 @@ bool isIndependentSourceType(Element::Type t)
 {
     return t == Element::Type::VoltageSource || t == Element::Type::CurrentSource;
 }
+
+// Under event location a controlled switch is a fixed resistance within a
+// step, so a circuit whose only nonlinear elements are such switches is
+// linear there: one Newton iteration solves it exactly.
+Layout heldSwitchLayout(const Circuit& c, const Layout& l)
+{
+    auto held = l;
+    held.nonlinear = false;
+    for (const auto& e : c.elements())
+        if (isNonlinear(e.type) && !isControlledSwitch(e.type))
+            held.nonlinear = true;
+    return held;
+}
 }
 
 // ---- resumable transient stepper -----------------------------------------------
@@ -1866,11 +1962,20 @@ struct TransientStepper::Impl
     bool initialised = false;
     std::vector<signed char> switches;
     std::vector<Watch> watches;
-    std::vector<double> inputs;        // per element, NaN = none
+    std::vector<Input> inputs;         // per element
+    Layout heldLayout;                 // located mode: linear when the only nonlinear elements are held switches
     std::vector<Waveform> baseWaves;   // each element's waveform as built
     std::vector<double> baseValues;    // each element's value as built
     std::string error;
     Stats stats;
+    double perSecond = 0.0;            // 1 / settings.timeQuantum, or 0 (times not quantised)
+    // Event location: a step that lands exactly on a source corner samples the
+    // sources just before it (their left limit); the jump itself is applied by
+    // a short step leaving the corner. Otherwise a jump that rounding places a
+    // hair after its corner time, followed by the opposite jump at the next
+    // landing, would leave the whole pulse between them unseen.
+    double leftLimitAt = -1.0;
+    int restartPieces = 0;             // backward-Euler pieces left in the current restart
 
     // A threshold being watched in the current step: a user watch, or a
     // controlled switch's threshold for its current state.
@@ -1881,46 +1986,220 @@ struct TransientStepper::Impl
         int element = -1;
     };
 
+    // The linear fast path (event location on a circuit that is linear within
+    // a step: held switches, no diodes, transistors, op amps or programmable
+    // devices): the system is assembled into a reused buffer and solved with
+    // an LU factorisation of its matrix, kept in a small cache keyed by the
+    // whole matrix. The matrix changes only with the step length, the
+    // integration method, the switch states and resistance inputs, so steady
+    // stepping reuses one factorisation (architecture section 08, the first
+    // item of the performance path).
+    // Keyed by everything the matrix of a held linear circuit depends on: the
+    // step length, the integration method, the switch states and the element
+    // values (valueVersion changes whenever an input changes a resistance).
+    struct Factor
+    {
+        double h = 0.0;
+        bool backwardEuler = false;
+        std::uint64_t valueVersion = 0;
+        std::vector<signed char> switches;
+        std::vector<double> lu;      // row-major factors
+        std::vector<int> perm;
+        std::uint64_t used = 0;
+    };
+    bool fastLinear = false;
+    std::uint64_t valueVersion = 0;
+    System<double> work { 0 };
+    std::vector<double> solution;
+    std::vector<Factor> factors;
+    std::uint64_t factorClock = 0;
+    std::vector<int> reactiveElements, switchElements, sourceElements; // capacitors and inductors; controlled switches; independent sources
+    std::vector<int> rhsElements;      // the elements a linear step's right-hand side has terms from, ascending
+    std::vector<signed char> quietSwitches;            // per element: 1 = its changes do not stop advance()
+    bool hasProgrammable = false;
+
+    // Scratch reused from step to step.
+    // Location re-steps from the step's start: the evolving state only (live
+    // inputs do not change inside advance()), copied as raw memory.
+    struct Snapshot
+    {
+        double time = 0.0;
+        std::vector<double> x, v, i;
+        std::vector<signed char> switches;
+        bool restartPending = false;
+        std::vector<std::vector<std::uint8_t>> devices;
+    };
+    Snapshot start, atB;
+    static void copyInto(std::vector<double>& to, const std::vector<double>& from)
+    {
+        to.resize(from.size());
+        if (!from.empty()) std::memcpy(to.data(), from.data(), from.size() * sizeof(double));
+    }
+    bool snap(Snapshot& s)
+    {
+        s.time = time;
+        copyInto(s.x, x);
+        copyInto(s.v, reactive.v);
+        copyInto(s.i, reactive.i);
+        s.switches.resize(switches.size());
+        if (!switches.empty()) std::memcpy(s.switches.data(), switches.data(), switches.size());
+        s.restartPending = restartPending;
+        if (!hasProgrammable)
+            return true;
+        size_t k = 0;
+        for (size_t e = 0; e < circuit.elements().size(); ++e)
+        {
+            const auto& el = circuit.elements()[e];
+            if (el.type != Element::Type::Programmable)
+                continue;
+            if (s.devices.size() <= k) s.devices.emplace_back();
+            if (el.device != nullptr && !el.device->saveState(s.devices[k]))
+            {
+                error = el.name + " cannot save its state.";
+                return false;
+            }
+            ++k;
+        }
+        return true;
+    }
+    bool unsnap(const Snapshot& s)
+    {
+        time = s.time;
+        copyInto(x, s.x);
+        copyInto(reactive.v, s.v);
+        copyInto(reactive.i, s.i);
+        if (!switches.empty()) std::memcpy(switches.data(), s.switches.data(), switches.size());
+        restartPending = s.restartPending;
+        restartPieces = 0;
+        if (!hasProgrammable)
+            return true;
+        size_t k = 0;
+        for (size_t e = 0; e < circuit.elements().size(); ++e)
+        {
+            const auto& el = circuit.elements()[e];
+            if (el.type != Element::Type::Programmable)
+                continue;
+            if (el.device != nullptr && !el.device->restoreState(s.devices[k]))
+            {
+                error = el.name + " cannot restore its state.";
+                return false;
+            }
+            ++k;
+        }
+        return true;
+    }
+    std::vector<Active> active;
+    std::vector<double> g0, ga, gb, gc;
+    std::vector<double> corners;
+    struct Landing
+    {
+        double end = 0.0;
+        double corner = -1.0;        // a source corner at or just before `end`, or -1
+        bool startsAtCorner = false; // the step starts at a source corner
+    };
+    std::vector<Landing> points;
+
+    double quantised(double t) const { return perSecond > 0.0 ? std::round(t * perSecond) / perSecond : t; }
+    // A step's length: from whole quanta when times are quantised, so equal
+    // steps have bit-identical lengths (and matrices) wherever they fall.
+    double length(double from, double to) const
+    {
+        return perSecond > 0.0 ? (std::round(to * perSecond) - std::round(from * perSecond)) / perSecond : to - from;
+    }
+    void indexElements()
+    {
+        reactiveElements.clear();
+        switchElements.clear();
+        sourceElements.clear();
+        rhsElements.clear();
+        hasProgrammable = false;
+        const auto& parts = circuit.elements();
+        for (size_t i = 0; i < parts.size(); ++i)
+        {
+            const auto t = parts[i].type;
+            if (t == Element::Type::Capacitor || t == Element::Type::Inductor) reactiveElements.push_back((int)i);
+            if (isControlledSwitch(t)) switchElements.push_back((int)i);
+            if (isIndependentSourceType(t)) sourceElements.push_back((int)i);
+            if (isIndependentSourceType(t) || t == Element::Type::Capacitor || t == Element::Type::Inductor) rhsElements.push_back((int)i);
+            if (t == Element::Type::Programmable) hasProgrammable = true;
+        }
+    }
     bool stepOnce(double from, double to, int depth);
+    bool stepPiece(double from, double to, int depth);
+    bool solveLinear(double t, double h, const StepControl& control);
     void updateReactive(double h, bool backwardEuler);
     void applyInput(int element);
     double quantity(const Watch& w) const;
-    std::vector<Active> activeWatches() const;
-    std::vector<double> values(const std::vector<Active>& active) const;
-    bool locatedStep(double to, double cornerHint, std::vector<Event>* events, bool& stopped, TransientStepper& owner);
+    void activeWatches();
+    void values(std::vector<double>& g) const;
+    bool locatedStep(const Landing& landing, std::vector<Event>* events, bool& stopped, TransientStepper& owner);
 };
 
-// One step from -> to; where Newton fails the interval is halved (up to 2^12
-// pieces). solveTransient() takes exactly these steps.
+// One step from -> to. After a discontinuity (a pending restart) the step is
+// taken as two backward-Euler half steps: the first absorbs the jump, the
+// second leaves reactive history consistent with the circuit after it, so the
+// trapezoidal steps that follow do not ring (the critical damping adjustment
+// of EMTP-type simulators). Without a restart this is exactly the step
+// solveTransient() takes.
 bool TransientStepper::Impl::stepOnce(double from, double to, int depth)
 {
-    const auto savedX = x;
-    const auto savedState = reactive;
-    int its = 0;
-    std::string stepError;
-    StepControl control;
-    control.backwardEuler = restartPending;
-    control.switches = settings.locateEvents ? &switches : nullptr;
-    const bool controlled = control.backwardEuler || control.switches != nullptr;
-    if (newton(circuit, layout, options, Mode::Transient, x, to, to - from, 1.0, reactive, its, stepError, controlled ? &control : nullptr))
+    if (restartPending && restartPieces == 0)
     {
+        restartPending = false;
+        const auto mid = quantised(0.5 * (from + to));
+        if (!(mid > from && mid < to))
+        {
+            restartPieces = 1;
+            return stepPiece(from, to, depth);
+        }
+        restartPieces = 2;
+        return stepPiece(from, mid, depth) && stepPiece(mid, to, depth);
+    }
+    return stepPiece(from, to, depth);
+}
+
+// One piece from -> to; where Newton fails the interval is halved (up to
+// 2^12 pieces).
+bool TransientStepper::Impl::stepPiece(double from, double to, int depth)
+{
+    const auto h = length(from, to);
+    StepControl control;
+    control.backwardEuler = restartPieces > 0;
+    control.switches = settings.locateEvents ? &switches : nullptr;
+    auto accept = [&](int its) {
         // Accepted: reactive state and programmable devices move on. A
-        // failed (rejected) attempt above changed neither.
-        updateReactive(to - from, control.backwardEuler);
+        // failed (rejected) attempt changed neither.
+        updateReactive(h, control.backwardEuler);
         ++stats.steps;
         stats.newtonIterations += (std::uint64_t)its;
         if (control.backwardEuler)
         {
-            restartPending = false;
+            --restartPieces;
             ++stats.restarts;
         }
-        if (!acceptProgrammable(circuit, x, to, to - from, stepError))
+        if (hasProgrammable)
         {
-            error = stepError;
-            return false;
+            std::string acceptError;
+            if (!acceptProgrammable(circuit, x, to, h, acceptError))
+            {
+                error = acceptError;
+                return false;
+            }
         }
         return true;
-    }
+    };
+    const auto tSample = to == leftLimitAt ? to - (perSecond > 0.0 ? 1.0 / perSecond : 1e-3 * settings.locationTolerance) : to;
+    if (fastLinear && solveLinear(tSample, h, control))
+        return accept(1);
+
+    const auto savedX = x;
+    const auto savedState = reactive;
+    int its = 0;
+    std::string stepError;
+    const bool controlled = control.backwardEuler || control.switches != nullptr;
+    const auto& stepLayout = settings.locateEvents ? heldLayout : layout;
+    if (newton(circuit, stepLayout, options, Mode::Transient, x, tSample, h, 1.0, reactive, its, stepError, controlled ? &control : nullptr))
+        return accept(its);
     x = savedX;
     reactive = savedState;
     stats.newtonIterations += (std::uint64_t)its;
@@ -1929,15 +2208,131 @@ bool TransientStepper::Impl::stepOnce(double from, double to, int depth)
         error = stepError;
         return false;
     }
-    const auto mid = 0.5 * (from + to);
-    return stepOnce(from, mid, depth + 1) && stepOnce(mid, to, depth + 1);
+    const auto mid = quantised(0.5 * (from + to));
+    if (!(mid > from && mid < to))
+    {
+        error = stepError;
+        return false;
+    }
+    return stepPiece(from, mid, depth + 1) && stepPiece(mid, to, depth + 1);
+}
+
+bool TransientStepper::Impl::solveLinear(double t, double h, const StepControl& control)
+{
+    const auto n = (size_t)heldLayout.size;
+    if (work.b.size() != n)
+        work = System<double>((int)n);
+    Factor* f = nullptr;
+    for (size_t i = 0; i < factors.size(); ++i)
+    {
+        auto& c = factors[i];
+        if (std::memcmp(&c.h, &h, sizeof h) == 0 && c.backwardEuler == control.backwardEuler && c.valueVersion == valueVersion
+            && c.switches.size() == switches.size()
+            && (switches.empty() || std::memcmp(c.switches.data(), switches.data(), switches.size()) == 0))
+        {
+            f = &c;
+            break;
+        }
+    }
+    // Raw memory operations here: in the Debug runtime every standard
+    // iterator registers with its container under a global lock, which costs
+    // more than the arithmetic of a cached solve.
+    if (n > 0)
+        std::memset(work.b.data(), 0, n * sizeof(double));
+    if (f != nullptr)
+    {
+        // The matrix is factorised already: stamp only the right-hand side
+        // (the same additions in the same order, so the result is the same).
+        assembleRhs(work.b, circuit, heldLayout, rhsElements, t, h, reactive, control.backwardEuler);
+    }
+    else
+    {
+        for (size_t i = 0; i < n; ++i)
+            std::memset(work.a[i].data(), 0, n * sizeof(double));
+        assembleInto(work, circuit, heldLayout, options, Mode::Transient, x, t, h, 1.0, reactive, nullptr, &control);
+        // Factorise: partial pivoting, with the batch solver's singularity limit.
+        Factor fresh;
+        fresh.h = h;
+        fresh.backwardEuler = control.backwardEuler;
+        fresh.valueVersion = valueVersion;
+        fresh.switches = switches;
+        fresh.lu.resize(n * n);
+        for (size_t i = 0; i < n; ++i)
+            std::memcpy(fresh.lu.data() + i * n, work.a[i].data(), n * sizeof(double));
+        fresh.perm.resize(n);
+        for (size_t i = 0; i < n; ++i) fresh.perm[i] = (int)i;
+        auto* a = fresh.lu.data();
+        for (size_t col = 0; col < n; ++col)
+        {
+            size_t pivot = col;
+            double best = std::abs(a[col * n + col]);
+            for (size_t row = col + 1; row < n; ++row)
+                if (std::abs(a[row * n + col]) > best) { best = std::abs(a[row * n + col]); pivot = row; }
+            if (best < 1e-30)
+                return false; // singular: the general path reports it
+            if (pivot != col)
+            {
+                std::swap_ranges(a + col * n, a + col * n + n, a + pivot * n);
+                std::swap(fresh.perm[col], fresh.perm[pivot]);
+            }
+            const auto* p = a + col * n;
+            for (size_t row = col + 1; row < n; ++row)
+            {
+                auto* r = a + row * n;
+                const auto factor = r[col] / p[col];
+                r[col] = factor;
+                if (factor == 0.0) continue;
+                for (size_t k = col + 1; k < n; ++k)
+                    r[k] -= factor * p[k];
+            }
+        }
+        ++stats.factorisations;
+        if (factors.size() < 32)
+        {
+            factors.push_back(std::move(fresh));
+            f = &factors.back();
+        }
+        else
+        {
+            size_t oldest = 0;
+            for (size_t i = 1; i < factors.size(); ++i)
+                if (factors[i].used < factors[oldest].used) oldest = i;
+            f = &factors[oldest];
+            *f = std::move(fresh);
+        }
+    }
+    f->used = ++factorClock;
+    const auto* a = f->lu.data();
+    const auto* perm = f->perm.data();
+    const auto* b = work.b.data();
+    solution.resize(n);
+    auto* y = solution.data();
+    for (size_t i = 0; i < n; ++i)
+    {
+        double sum = b[perm[i]];
+        const auto* r = a + i * n;
+        for (size_t k = 0; k < i; ++k) sum -= r[k] * y[k];
+        y[i] = sum;
+    }
+    for (size_t i = n; i-- > 0;)
+    {
+        const auto* r = a + i * n;
+        double sum = y[i];
+        for (size_t k = i + 1; k < n; ++k) sum -= r[k] * y[k];
+        y[i] = sum / r[i];
+    }
+    auto* xs = x.data();
+    for (size_t i = 0; i < n; ++i)
+        xs[i] = xs[i] + (y[i] - xs[i]); // as Newton's single linear iteration updates it
+    return true;
 }
 
 void TransientStepper::Impl::updateReactive(double h, bool backwardEuler)
 {
     const auto& parts = circuit.elements();
-    for (size_t i = 0; i < parts.size(); ++i)
+    for (size_t r = 0; r < reactiveElements.size(); ++r)
     {
+        const auto i = (size_t)reactiveElements[r];
         const auto& e = parts[i];
         if (e.type == Element::Type::Capacitor)
         {
@@ -1962,19 +2357,30 @@ void TransientStepper::Impl::updateReactive(double h, bool backwardEuler)
 void TransientStepper::Impl::applyInput(int element)
 {
     auto& e = circuit.elements()[(size_t)element];
-    const auto v = inputs[(size_t)element];
+    const auto& in = inputs[(size_t)element];
     if (isIndependentSourceType(e.type))
     {
-        if (std::isnan(v))
+        if (!in.set)
             e.wave = baseWaves[(size_t)element];
+        else if (in.t1 > in.t0)
+        {
+            e.wave = Waveform {};
+            e.wave.kind = Waveform::Kind::Pwl;
+            e.wave.points = { { in.t0, in.v0 }, { in.t1, in.v1 } };
+        }
         else
         {
             e.wave = Waveform {};
-            e.wave.offset = v;
+            e.wave.offset = in.v1;
         }
     }
     else
-        e.value = std::isnan(v) ? baseValues[(size_t)element] : v;
+    {
+        const auto value = in.set ? in.v1 : baseValues[(size_t)element];
+        if (!(value == e.value))
+            ++valueVersion; // the matrix changes: cached factorisations no longer apply
+        e.value = value;
+    }
 }
 
 double TransientStepper::Impl::quantity(const Watch& w) const
@@ -1989,17 +2395,16 @@ double TransientStepper::Impl::quantity(const Watch& w) const
 // control rises to threshold + hysteresis, a closed one opens when it falls
 // below threshold - hysteresis (SPICE's switch; the batch solver's rule,
 // control >= threshold, when the hysteresis is 0).
-std::vector<TransientStepper::Impl::Active> TransientStepper::Impl::activeWatches() const
+void TransientStepper::Impl::activeWatches()
 {
-    std::vector<Active> active;
+    active.clear();
     for (size_t i = 0; i < watches.size(); ++i)
         active.push_back({ watches[i], (int)i, -1 });
     const auto& parts = circuit.elements();
-    for (size_t i = 0; i < parts.size(); ++i)
+    for (size_t w = 0; w < switchElements.size(); ++w)
     {
+        const auto i = (size_t)switchElements[w];
         const auto& e = parts[i];
-        if (!isControlledSwitch(e.type))
-            continue;
         Active a;
         a.element = (int)i;
         if (e.type == Element::Type::VoltageControlledSwitch)
@@ -2018,15 +2423,13 @@ std::vector<TransientStepper::Impl::Active> TransientStepper::Impl::activeWatche
         a.watch.direction = closed ? -1 : 1;
         active.push_back(a);
     }
-    return active;
 }
 
-std::vector<double> TransientStepper::Impl::values(const std::vector<Active>& active) const
+void TransientStepper::Impl::values(std::vector<double>& g) const
 {
-    std::vector<double> g(active.size());
+    g.resize(active.size());
     for (size_t i = 0; i < active.size(); ++i)
         g[i] = quantity(active[i].watch) - active[i].watch.threshold;
-    return g;
 }
 
 namespace
@@ -2045,19 +2448,22 @@ int crossing(const TransientStepper::Watch& w, double g0, double g1)
 // to trial times (regula falsi with the Illinois correction, using the
 // earliest estimate over the crossed watches) until the bracket is within
 // the tolerance; the stepper ends just past the crossing.
-bool TransientStepper::Impl::locatedStep(double to, double cornerHint, std::vector<Event>* events, bool& stopped,
+bool TransientStepper::Impl::locatedStep(const Landing& landing, std::vector<Event>* events, bool& stopped,
                                          TransientStepper& owner)
 {
+    const auto to = landing.end;
     stopped = false;
+    leftLimitAt = landing.corner == to ? to : -1.0;
+    struct Reset { double& at; ~Reset() { at = -1.0; } } resetLeftLimit { leftLimitAt };
     const auto t0 = time;
-    const auto active = activeWatches();
-    const auto g0 = values(active);
-    State start;
-    if (!owner.saveState(start))
+    activeWatches();
+    values(g0);
+    (void)owner;
+    if (!snap(start))
         return false;
     if (!stepOnce(t0, to, 0))
         return false;
-    auto gb = values(active);
+    values(gb);
     auto crossedBy = [&](const std::vector<double>& g) {
         for (size_t w = 0; w < active.size(); ++w)
             if (crossing(active[w].watch, g0[w], g[w]) != 0)
@@ -2070,29 +2476,20 @@ bool TransientStepper::Impl::locatedStep(double to, double cornerHint, std::vect
         return true;
     }
 
-    State atB;
-    if (!owner.saveState(atB))
+    if (!snap(atB))
         return false;
     atB.time = to;
     double ta = t0, tb = to;
-    auto ga = g0;
+    ga = g0;
     double scaleA = 1.0, scaleB = 1.0;
     int lastSide = 0;
     const auto tol = settings.locationTolerance;
-    const auto quantum = settings.timeQuantum;
-    auto quantise = [&](double t) { return quantum > 0.0 ? std::ceil(t / quantum) * quantum : t; };
-    // A source corner inside the step: a crossing there is usually the
-    // source's jump, found in at most two trials (just before, at).
-    int hintTrials = cornerHint > t0 ? 2 : 0;
+    // Trial times are whole quanta (ticks), rounded up: the stepper ends just
+    // past the crossing, at a time the caller's clock represents exactly.
+    auto quantise = [&](double t) { return perSecond > 0.0 ? std::ceil(t * perSecond) / perSecond : t; };
     for (int iteration = 0; iteration < 200 && tb - ta > tol; ++iteration)
     {
         double tc;
-        const bool fromHint = hintTrials > 0;
-        if (hintTrials == 2)
-            tc = cornerHint - tol;
-        else if (hintTrials == 1)
-            tc = cornerHint;
-        else
         {
             tc = tb;
             for (size_t w = 0; w < active.size(); ++w)
@@ -2106,26 +2503,22 @@ bool TransientStepper::Impl::locatedStep(double to, double cornerHint, std::vect
             // Once the estimate reaches an end, straddle the tolerance there.
             tc = tb - ta < 2.0 * tol ? 0.5 * (ta + tb) : std::clamp(tc, ta + tol, tb - tol);
         }
-        if (hintTrials > 0)
-            --hintTrials;
         tc = quantise(tc);
         if (!(tc > ta && tc < tb))
         {
-            if (fromHint)
-                continue; // the corner is outside the bracket: no trial needed
             tc = quantise(0.5 * (ta + tb));
             if (!(tc > ta && tc < tb))
                 break; // no representable time inside the bracket
         }
-        if (!owner.restoreState(start) || !stepOnce(t0, tc, 0))
+        if (!unsnap(start) || !stepOnce(t0, tc, 0))
             return false;
         ++stats.locationSteps;
-        const auto gc = values(active);
+        values(gc);
         if (crossedBy(gc))
         {
             tb = tc;
             gb = gc;
-            if (!owner.saveState(atB))
+            if (!snap(atB))
                 return false;
             atB.time = tc;
             if (lastSide == 1) scaleA *= 0.5;
@@ -2141,11 +2534,11 @@ bool TransientStepper::Impl::locatedStep(double to, double cornerHint, std::vect
             scaleA = 1.0;
         }
     }
-    if (!owner.restoreState(atB))
+    if (!unsnap(atB))
         return false;
     time = tb;
 
-    bool switched = false;
+    bool switched = false, stops = false;
     for (size_t w = 0; w < active.size(); ++w)
     {
         const auto direction = crossing(active[w].watch, g0[w], gb[w]);
@@ -2155,14 +2548,17 @@ bool TransientStepper::Impl::locatedStep(double to, double cornerHint, std::vect
         {
             switches[(size_t)active[w].element] = direction > 0 ? 1 : 0;
             switched = true;
+            stops |= quietSwitches.empty() || quietSwitches[(size_t)active[w].element] == 0;
         }
+        else
+            stops = true;
         ++stats.events;
         if (events != nullptr)
             events->push_back({ tb, active[w].userIndex, active[w].element, direction });
     }
     if (switched && settings.restartAfterDiscontinuity)
         restartPending = true;
-    stopped = tb < to;
+    stopped = tb < to && stops;
     return true;
 }
 
@@ -2173,7 +2569,7 @@ TransientStepper::TransientStepper(const Circuit& circuit, const Options& option
     impl->options = options;
     impl->settings = settings;
     const auto& parts = circuit.elements();
-    impl->inputs.assign(parts.size(), std::numeric_limits<double>::quiet_NaN());
+    impl->inputs.assign(parts.size(), Input {});
     for (const auto& e : parts)
     {
         impl->baseWaves.push_back(e.wave);
@@ -2193,7 +2589,20 @@ bool TransientStepper::setSourceValue(int element, double value)
         m.error = "Element " + std::to_string(element) + " is not an independent source.";
         return false;
     }
-    m.inputs[(size_t)element] = value;
+    m.inputs[(size_t)element] = Input { true, 0.0, value, 0.0, value };
+    m.applyInput(element);
+    return true;
+}
+
+bool TransientStepper::setSourceRamp(int element, double t0, double v0, double t1, double v1)
+{
+    auto& m = *impl;
+    if (element < 0 || element >= (int)m.inputs.size() || !isIndependentSourceType(m.circuit.elements()[(size_t)element].type))
+    {
+        m.error = "Element " + std::to_string(element) + " is not an independent source.";
+        return false;
+    }
+    m.inputs[(size_t)element] = Input { true, t0, v0, t1, v1 };
     m.applyInput(element);
     return true;
 }
@@ -2208,7 +2617,7 @@ bool TransientStepper::setResistance(int element, double ohms)
     }
     if (m.initialised && m.settings.restartAfterDiscontinuity && m.circuit.elements()[(size_t)element].value != ohms)
         m.restartPending = true; // a step change in the circuit
-    m.inputs[(size_t)element] = ohms;
+    m.inputs[(size_t)element] = Input { true, 0.0, ohms, 0.0, ohms };
     m.applyInput(element);
     return true;
 }
@@ -2216,14 +2625,24 @@ bool TransientStepper::setResistance(int element, double ohms)
 void TransientStepper::clearInput(int element)
 {
     auto& m = *impl;
-    if (element < 0 || element >= (int)m.inputs.size() || std::isnan(m.inputs[(size_t)element]))
+    if (element < 0 || element >= (int)m.inputs.size() || !m.inputs[(size_t)element].set)
         return;
     const auto before = m.circuit.elements()[(size_t)element].value;
-    m.inputs[(size_t)element] = std::numeric_limits<double>::quiet_NaN();
+    m.inputs[(size_t)element] = Input {};
     m.applyInput(element);
     if (m.initialised && m.settings.restartAfterDiscontinuity && isLiveResistance(m.circuit.elements()[(size_t)element].type)
         && m.circuit.elements()[(size_t)element].value != before)
         m.restartPending = true;
+}
+
+void TransientStepper::setSwitchStops(int element, bool stops)
+{
+    auto& m = *impl;
+    const auto n = m.circuit.elements().size();
+    if (element < 0 || element >= (int)n)
+        return;
+    m.quietSwitches.resize(n, 0);
+    m.quietSwitches[(size_t)element] = stops ? 0 : 1;
 }
 
 int TransientStepper::addWatch(const Watch& watch)
@@ -2243,6 +2662,11 @@ bool TransientStepper::init()
     const auto& circuit = m.circuit;
     m.layout = makeLayout(circuit);
     const auto& layout = m.layout;
+    m.heldLayout = heldSwitchLayout(circuit, layout);
+    m.fastLinear = m.settings.locateEvents && !m.heldLayout.nonlinear;
+    m.perSecond = m.settings.timeQuantum > 0.0 ? std::round(1.0 / m.settings.timeQuantum) : 0.0;
+    m.restartPieces = 0;
+    m.indexElements();
     const auto& parts = circuit.elements();
     resetProgrammable(circuit);
 
@@ -2363,45 +2787,87 @@ bool TransientStepper::advance(double to, std::vector<Event>* events)
     }
     // Landing points: the corners of every source still on its own waveform,
     // merged like timeGrid() merges them (closer than 1e-3 of the step).
-    std::vector<double> corners;
-    const auto& parts = m.circuit.elements();
-    for (size_t i = 0; i < parts.size(); ++i)
-        if (isIndependentSourceType(parts[i].type) && std::isnan(m.inputs[i]))
-            cornersBetween(parts[i].wave, m.time, to, corners);
-    std::sort(corners.begin(), corners.end());
     const auto merge = (to - m.time) * 1e-3;
-    std::vector<std::pair<double, double>> points; // (step end, corner it lands on or follows)
-    double previous = m.time;
-    for (auto c : corners)
+    auto& corners = m.corners;
+    corners.clear();
+    const auto& parts = m.circuit.elements();
+    for (size_t k = 0; k < m.sourceElements.size(); ++k)
     {
+        const auto i = (size_t)m.sourceElements[k];
+        if (!m.inputs[i].set)
+            cornersBetween(parts[i].wave, m.time - merge, to, corners);
+    }
+    // A handful of corners: insertion sort on raw memory (no Debug iterators).
+    for (size_t a = 1; a < corners.size(); ++a)
+    {
+        auto* c = corners.data();
+        const auto v = c[a];
+        size_t b = a;
+        for (; b > 0 && c[b - 1] > v; --b)
+            c[b] = c[b - 1];
+        c[b] = v;
+    }
+    auto& points = m.points;
+    points.clear();
+    double previous = m.time;
+    bool atCorner = false;
+    for (auto corner : corners)
+    {
+        const auto c = m.quantised(corner); // on the caller's clock
         if (c - previous <= merge)
+        {
+            if (points.empty() && std::abs(c - m.time) <= 1e-3 * m.settings.locationTolerance)
+                atCorner = true; // the step starts at a corner
             continue;
+        }
         if (to - c <= merge)
         {
-            points.push_back({ to, c });
+            points.push_back({ to, c, atCorner });
             previous = to;
             break;
         }
-        points.push_back({ c, c });
+        points.push_back({ c, c, atCorner });
+        atCorner = true;
         previous = c;
     }
-    if (points.empty() || points.back().first != to)
-        points.push_back({ to, -1.0 });
+    if (points.empty() || points.back().end != to)
+        points.push_back({ to, -1.0, atCorner });
 
-    for (const auto& [end, corner] : points)
+    for (size_t k = 0; k < points.size(); ++k)
     {
+        const auto landing = points[k];
         if (!m.settings.locateEvents)
         {
-            if (!m.stepOnce(m.time, end, 0))
+            if (!m.stepOnce(m.time, landing.end, 0))
                 return false;
-            m.time = end;
+            m.time = landing.end;
             continue;
         }
-        bool stopped = false;
-        if (!m.locatedStep(end, corner, events, stopped, *this))
-            return false;
-        if (stopped)
-            return true;
+        // Leaving a source corner: a step of one location tolerance applies
+        // the jump (and locates any switch it trips, already to tolerance).
+        if (landing.startsAtCorner)
+        {
+            const auto past = m.perSecond > 0.0 ? std::ceil((m.time + m.settings.locationTolerance) * m.perSecond) / m.perSecond
+                                                : m.time + m.settings.locationTolerance;
+            if (past < landing.end)
+            {
+                bool stopped = false;
+                if (!m.locatedStep({ past, -1.0, false }, events, stopped, *this))
+                    return false;
+                if (stopped)
+                    return true;
+            }
+        }
+        // Events that do not stop advance() (quiet switches) end a located
+        // step early; the rest of the way to the landing point follows.
+        while (m.time < landing.end)
+        {
+            bool stopped = false;
+            if (!m.locatedStep(landing, events, stopped, *this))
+                return false;
+            if (stopped)
+                return true;
+        }
     }
     return true;
 }
@@ -2449,8 +2915,12 @@ bool TransientStepper::saveState(State& out) const
     out.restartPending = m.restartPending;
     out.inputs = m.inputs;
     out.devices.clear();
-    for (const auto& e : m.circuit.elements())
+    if (!m.hasProgrammable)
+        return true;
+    const auto& parts = m.circuit.elements();
+    for (size_t i = 0; i < parts.size(); ++i) // indices: Debug iterators are costly on the participant's per-round path
     {
+        const auto& e = parts[i];
         if (e.type != Element::Type::Programmable)
             continue;
         out.devices.emplace_back();
@@ -2474,7 +2944,13 @@ bool TransientStepper::restoreState(const State& s)
         return false;
     }
     if (!m.initialised)
+    {
         m.layout = makeLayout(m.circuit);
+        m.heldLayout = heldSwitchLayout(m.circuit, m.layout);
+        m.fastLinear = m.settings.locateEvents && !m.heldLayout.nonlinear;
+        m.perSecond = m.settings.timeQuantum > 0.0 ? std::round(1.0 / m.settings.timeQuantum) : 0.0;
+        m.indexElements();
+    }
     if ((int)s.x.size() != m.layout.size)
     {
         m.error = "The saved state is for a different circuit.";
@@ -2503,8 +2979,9 @@ bool TransientStepper::restoreState(const State& s)
     m.reactive.i = s.reactiveI;
     m.switches = s.switches;
     m.restartPending = s.restartPending;
+    m.restartPieces = 0;
     for (size_t i = 0; i < n; ++i)
-        if (!(std::isnan(m.inputs[i]) && std::isnan(s.inputs[i])) && !(m.inputs[i] == s.inputs[i]))
+        if (!(m.inputs[i] == s.inputs[i]))
         {
             m.inputs[i] = s.inputs[i];
             m.applyInput((int)i);
