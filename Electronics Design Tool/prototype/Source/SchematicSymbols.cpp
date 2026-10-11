@@ -236,36 +236,39 @@ void contact(juce::Graphics& g, P c)
     g.drawEllipse(c.x - 3.0f, c.y - 3.0f, 6.0f, 6.0f, 1.4f);
 }
 
-void gateInputs(juce::Graphics& g, float bodyLeft)
+// One lead per input pin (every pin left of the body), to the body's edge.
+void gateInputs(juce::Graphics& g, const std::vector<PinDef>& pins, float bodyLeft)
 {
-    line(g, { -48, -24 }, { bodyLeft, -24 });
-    line(g, { -48, 24 }, { bodyLeft, 24 });
+    for (const auto& pin : pins)
+        if (pin.offset.x < 0.0f)
+            line(g, pin.offset, { bodyLeft, pin.offset.y });
 }
 
-void andShape(juce::Graphics& g)
+// h: half the body height (30 for two inputs, taller for more).
+void andShape(juce::Graphics& g, float h = 30.0f)
 {
     juce::Path p;
-    p.startNewSubPath(-30.0f, -30.0f);
-    p.lineTo(0.0f, -30.0f);
-    p.addCentredArc(0.0f, 0.0f, 30.0f, 30.0f, 0.0f, 0.0f, juce::MathConstants<float>::pi, false);
-    p.lineTo(-30.0f, 30.0f);
+    p.startNewSubPath(-30.0f, -h);
+    p.lineTo(30.0f - h, -h);
+    p.addCentredArc(30.0f - h, 0.0f, h, h, 0.0f, 0.0f, juce::MathConstants<float>::pi, false);
+    p.lineTo(-30.0f, h);
     p.closeSubPath();
     strokePath(g, p);
 }
 
-void orShape(juce::Graphics& g, bool exclusive)
+void orShape(juce::Graphics& g, bool exclusive, float h = 30.0f)
 {
     juce::Path p;
-    p.startNewSubPath(-30.0f, -30.0f);
-    p.quadraticTo(10.0f, -30.0f, 30.0f, 0.0f);
-    p.quadraticTo(10.0f, 30.0f, -30.0f, 30.0f);
-    p.quadraticTo(-14.0f, 0.0f, -30.0f, -30.0f);
+    p.startNewSubPath(-30.0f, -h);
+    p.quadraticTo(10.0f, -h, 30.0f, 0.0f);
+    p.quadraticTo(10.0f, h, -30.0f, h);
+    p.quadraticTo(-14.0f, 0.0f, -30.0f, -h);
     strokePath(g, p);
     if (exclusive)
     {
         juce::Path x;
-        x.startNewSubPath(-38.0f, -30.0f);
-        x.quadraticTo(-22.0f, 0.0f, -38.0f, 30.0f);
+        x.startNewSubPath(-38.0f, -h);
+        x.quadraticTo(-22.0f, 0.0f, -38.0f, h);
         strokePath(g, x);
     }
 }
@@ -286,6 +289,56 @@ SymbolDef make(const juce::String& id, const juce::String& title, juce::Rectangl
     def.showPinNames = showPinNames;
     return def;
 }
+
+// Input lead heights for n inputs on a 24 grid: odd counts centred on the
+// output (0, +-24...), even counts symmetric about it (+-24, +-48...).
+std::vector<float> gateInputOffsets(int n)
+{
+    std::vector<float> y;
+    if (n % 2 == 1)
+        for (int k = 0; k < n; ++k) y.push_back(24.0f * (float)(k - (n - 1) / 2));
+    else
+    {
+        for (int k = n / 2; k >= 1; --k) y.push_back(-24.0f * (float)k);
+        for (int k = 1; k <= n / 2; ++k) y.push_back(24.0f * (float)k);
+    }
+    return y;
+}
+
+float gateHalfHeight(const SymbolDef& symbol)
+{
+    float h = 30.0f;
+    for (const auto& pin : symbol.pins)
+        h = std::max(h, std::abs(pin.offset.y) + 6.0f);
+    return h;
+}
+}
+
+bool isLogicGate(const juce::String& id)
+{
+    return id == "logic_not" || id == "logic_buffer" || id == "logic_and" || id == "logic_nand" || id == "logic_or"
+        || id == "logic_nor" || id == "logic_xor" || id == "logic_xnor";
+}
+
+int defaultGateInputs(const juce::String& id) { return id == "logic_not" || id == "logic_buffer" ? 1 : 2; }
+int maxGateInputs(const juce::String& id) { return id == "logic_not" || id == "logic_buffer" ? 1 : 8; }
+
+SymbolDef logicGateSymbol(const juce::String& id, int inputs)
+{
+    if (!isLogicGate(id))
+        return {};
+    const auto n = std::clamp(inputs, defaultGateInputs(id), maxGateInputs(id));
+    const auto title = id == "logic_buffer" ? juce::String("BUF") : id.fromFirstOccurrenceOf("logic_", false, false).toUpperCase();
+    std::vector<PinDef> pins;
+    const auto offsets = gateInputOffsets(n);
+    for (int k = 0; k < n; ++k)
+        pins.push_back({ juce::String::charToString((juce::juce_wchar)('A' + k)), { -48.0f, offsets[(size_t)k] } });
+    pins.push_back({ "Y", { 48.0f, 0.0f } });
+    float h = 24.0f;
+    for (auto y : offsets) h = std::max(h, std::abs(y) + 6.0f);
+    if (n >= 2) h = std::max(h, 30.0f);
+    return make(id, title, n == 1 ? juce::Rectangle<float> { -30.0f, -24.0f, 60.0f, 48.0f } : juce::Rectangle<float> { -36.0f, -h, 76.0f, 2.0f * h },
+                pins);
 }
 
 const juce::StringArray& supportedSymbolIds()
@@ -301,8 +354,8 @@ const juce::StringArray& supportedSymbolIds()
         "regulator_adjustable_generic", "regulator_lm317", "npn", "pnp",
         "nmos", "pmos", "njfet", "pjfet", "switch_spst", "switch_spdt",
         "voltage_controlled_switch", "current_controlled_switch", "relay_spst",
-        "fuse", "connector_2", "connector_3", "test_point", "logic_not", "logic_and",
-        "logic_or", "logic_nand", "logic_nor", "logic_xor", "oscilloscope_2ch",
+        "fuse", "connector_2", "connector_3", "test_point", "logic_not", "logic_buffer", "logic_and",
+        "logic_or", "logic_nand", "logic_nor", "logic_xor", "logic_xnor", "oscilloscope_2ch",
         "digital_multimeter", "bode_analyzer", "xyz_plotter", "annotation_text"
     };
     return ids;
@@ -379,12 +432,7 @@ SymbolDef symbolFor(const juce::String& id)
     if (id == "connector_2")         return make(id, "J2", { -24, -18, 36, 60 }, { { "1", { -48, 0 } }, { "2", { -48, 24 } } }, true);
     if (id == "connector_3")         return make(id, "J3", { -24, -42, 36, 84 }, { { "1", { -48, -24 } }, { "2", { -48, 0 } }, { "3", { -48, 24 } } }, true);
     if (id == "test_point")          return make(id, "TP", { -12, -12, 24, 24 }, { { "1", { -24, 0 } } });
-    if (id == "logic_not")           return make(id, "NOT", { -30, -24, 60, 48 }, { { "A", { -48, 0 } }, { "Y", { 48, 0 } } });
-    if (id == "logic_and" || id == "logic_or" || id == "logic_nand" || id == "logic_nor" || id == "logic_xor")
-    {
-        const auto title = id.fromFirstOccurrenceOf("logic_", false, false).toUpperCase();
-        return make(id, title, { -36, -30, 76, 60 }, { { "A", { -48, -24 } }, { "B", { -48, 24 } }, { "Y", { 48, 0 } } });
-    }
+    if (isLogicGate(id))             return logicGateSymbol(id, defaultGateInputs(id));
     if (id == "oscilloscope_2ch")    return make(id, "SCOPE", { -60, -48, 120, 96 }, { { "CH1", { -72, -24 } }, { "CH2", { -72, 24 } }, { "REF", { 0, 72 } } }, true);
     if (id == "bode_analyzer")       return make(id, "BODE", { -60, -48, 120, 96 }, { { "IN", { -72, -24 } }, { "OUT", { -72, 24 } }, { "REF", { 0, 72 } } }, true);
     if (id == "digital_multimeter")  return make(id, "DMM", { -48, -36, 96, 72 }, { { "HI", { -72, -24 } }, { "LO", { -72, 24 } } }, true);
@@ -1038,27 +1086,30 @@ void drawSymbolArt(juce::Graphics& g, const SymbolDef& symbol, const juce::Strin
         line(g, { -24, 0 }, { -8, 0 });
         g.drawEllipse(-8.0f, -8.0f, 16.0f, 16.0f, stroke);
     }
-    else if (id == "logic_not")
+    else if (id == "logic_not" || id == "logic_buffer")
     {
         line(g, { -48, 0 }, { -30, 0 });
         juce::Path tri;
         tri.addTriangle(-30.0f, -22.0f, -30.0f, 22.0f, 14.0f, 0.0f);
         strokePath(g, tri);
-        bubble(g, 14.0f);
-        line(g, { 24, 0 }, { 48, 0 });
+        if (id == "logic_not") { bubble(g, 14.0f); line(g, { 24, 0 }, { 48, 0 }); }
+        else line(g, { 14, 0 }, { 48, 0 });
     }
     else if (id == "logic_and" || id == "logic_nand")
     {
-        gateInputs(g, -30.0f);
-        andShape(g);
+        const auto h = gateHalfHeight(symbol);
+        gateInputs(g, symbol.pins, -30.0f);
+        andShape(g, h);
         if (id == "logic_nand") { bubble(g, 30.0f); line(g, { 40, 0 }, { 48, 0 }); }
         else line(g, { 30, 0 }, { 48, 0 });
     }
-    else if (id == "logic_or" || id == "logic_nor" || id == "logic_xor")
+    else if (id == "logic_or" || id == "logic_nor" || id == "logic_xor" || id == "logic_xnor")
     {
-        gateInputs(g, id == "logic_xor" ? -34.0f : -24.0f);
-        orShape(g, id == "logic_xor");
-        if (id == "logic_nor") { bubble(g, 30.0f); line(g, { 40, 0 }, { 48, 0 }); }
+        const auto h = gateHalfHeight(symbol);
+        const bool exclusive = id == "logic_xor" || id == "logic_xnor";
+        gateInputs(g, symbol.pins, exclusive ? -34.0f : -24.0f);
+        orShape(g, exclusive, h);
+        if (id == "logic_nor" || id == "logic_xnor") { bubble(g, 30.0f); line(g, { 40, 0 }, { 48, 0 }); }
         else line(g, { 30, 0 }, { 48, 0 });
     }
     else if (id == "oscilloscope_2ch")

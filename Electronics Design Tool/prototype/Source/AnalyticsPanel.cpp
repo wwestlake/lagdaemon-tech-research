@@ -1267,10 +1267,22 @@ bool hasProgrammableComponent(const analytics::Netlist& netlist)
     return false;
 }
 
-juce::String programmableNote()
+// Which kind of in-app device forced the internal solver: FRust programmable
+// components, logic gates (their delays are device events of the internal
+// stepper), or both.
+juce::String programmableNote(const analytics::Netlist& netlist)
 {
-    return "This circuit has FRust programmable components, so the internal solver ran it: their programs run at "
-           "every Newton iteration inside the app, which the external Xyce process cannot call.";
+    bool gates = false, programs = false;
+    for (const auto& e : netlist.circuit.elements())
+        if (e.type == circuit_sim::Element::Type::Programmable)
+            (juce::String(e.modelName).startsWith("LOGIC_") ? gates : programs) = true;
+    juce::StringArray why;
+    if (programs)
+        why.add("FRust programmable components (their programs run at every Newton iteration inside the app)");
+    if (gates)
+        why.add("logic gates (their thresholds and propagation delays run on the internal solver's device events)");
+    return "This circuit has " + why.joinIntoString(" and ")
+         + ", so the internal solver ran it: the external Xyce process cannot call them.";
 }
 
 // The internal solver's result carries the circuit's own warnings (parts not
@@ -1585,7 +1597,7 @@ void AnalyticsPanel::runSelected()
         if (!compare && engine == xyce_backend::Engine::Xyce)
             addCircuitWarnings(result, netlist);
         if (programmable)
-            result.warnings.add(programmableNote());
+            result.warnings.add(programmableNote(netlist));
         juce::MessageManager::callAsync([this, weak, result]() mutable {
             if (weak.expired()) return;
             deliver(std::move(result));
@@ -1625,7 +1637,7 @@ const AnalyticsPanel::Run& AnalyticsPanel::runNow(analytics::Analysis analysis, 
     if (!compare && engine == xyce_backend::Engine::Xyce)
         addCircuitWarnings(result, netlist);
     if (programmable)
-        result.warnings.add(programmableNote());
+        result.warnings.add(programmableNote(netlist));
     settings[analysis] = result.settings;
     saveSettings();
     if (analysis != current)

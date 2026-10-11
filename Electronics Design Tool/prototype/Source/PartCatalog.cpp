@@ -137,6 +137,26 @@ std::map<juce::String, std::vector<ParamSpec>> buildCatalog()
     c["regulator_fixed_generic"] = { text("value", "Model", "generic_regulator_5v", Storage::Value) };
     c["regulator_adjustable_generic"] = { text("value", "Model", "generic_regulator_adjustable", Storage::Value) };
     c["regulator_lm317"] = { text("value", "Model", "LM317_TRANS", Storage::Value) };
+    // Logic gates (LogicGates.h): a first-pass electrical model with an
+    // ideal supply (no supply pins). Defaults: a 5 V CMOS-like gate.
+    for (const auto* id : { "logic_not", "logic_buffer", "logic_and", "logic_nand", "logic_or", "logic_nor", "logic_xor", "logic_xnor" })
+    {
+        std::vector<ParamSpec> gate;
+        if (juce::String(id) != "logic_not" && juce::String(id) != "logic_buffer")
+            gate.push_back(choice("inputs", "Inputs", { "2", "3", "4", "5", "6", "7", "8" }, "2", Storage::Param,
+                                  "Number of inputs (A, B, C...); wires on inputs removed by lowering it are removed."));
+        gate.push_back(quantity("voh", "Output HIGH level", "V", "5"));
+        gate.push_back(quantity("vol", "Output LOW level", "V", "0"));
+        gate.push_back(quantity("threshold", "Input switching threshold", "V", "2.5"));
+        gate.push_back(quantity("hysteresis", "Input hysteresis", "V", "0", Storage::Param,
+                                "Rising switch point at threshold + h/2, falling at threshold - h/2 (Schmitt input when > 0)."));
+        gate.push_back(quantity("rout", "Output resistance", "ohm", "50"));
+        gate.push_back(quantity("rin", "Input resistance", "ohm", "1G"));
+        gate.push_back(quantity("tpd", "Propagation delay", "s", "10n", Storage::Param,
+                                "Input crossing to the start of the output change (inertial: shorter input pulses are filtered). Must be > 0."));
+        gate.push_back(quantity("tr", "Output transition time", "s", "4n", Storage::Param, "Time the output takes to move between levels."));
+        c[id] = gate;
+    }
     for (const auto* id : { "npn", "pnp" })
         c[id] = { text("value", "Model", juce::String(id) == "npn" ? "generic_npn" : "generic_pnp", Storage::Value),
                   quantity("beta", "Current gain (beta)", "", "100"),
@@ -267,8 +287,8 @@ juce::String displayName(const juce::String& id)
         { "sub_block", "Sub-diagram Block" }, { "block_port", "Sub-diagram Port" },
         { "frust_component", "FRust Programmable Component" },
         { "annotation_text", "Text Note" },
-        { "logic_not", "Inverter" }, { "logic_and", "AND Gate" }, { "logic_or", "OR Gate" },
-        { "logic_nand", "NAND Gate" }, { "logic_nor", "NOR Gate" }, { "logic_xor", "XOR Gate" } };
+        { "logic_not", "Inverter" }, { "logic_buffer", "Buffer" }, { "logic_and", "AND Gate" }, { "logic_or", "OR Gate" },
+        { "logic_nand", "NAND Gate" }, { "logic_nor", "NOR Gate" }, { "logic_xor", "XOR Gate" }, { "logic_xnor", "XNOR Gate" } };
     const auto found = names.find(id);
     return found != names.end() ? found->second : id;
 }
@@ -285,7 +305,10 @@ juce::String simulationFidelity(const juce::String& id)
     if (id == "diode" || id == "zener_diode" || id == "schottky_diode" || id == "led"
         || id == "npn" || id == "pnp" || id == "nmos" || id == "pmos" || id == "njfet" || id == "pjfet")
         return "generic_model";
-    if (id == "switch_spst" || id == "switch_spdt" || id.startsWith("logic_") || id == "fuse")
+    // Logic gates: levels, thresholds, drive and delay (internal solver).
+    if (id.startsWith("logic_"))
+        return "generic_model";
+    if (id == "switch_spst" || id == "switch_spdt" || id == "fuse")
         return "ideal";
     // Its program runs in the internal solver at every Newton iteration (Xyce cannot call it).
     if (id == "frust_component")

@@ -365,6 +365,70 @@ juce::var programmableSection(const Request& request)
     return juce::var(o);
 }
 
+// Logic gates: what they are electrically, how they time, how to test them.
+juce::var logicSection()
+{
+    auto* o = new Obj();
+    o->setProperty("what", "Logic gates are electrical parts simulated by the internal solver: NOT and BUFFER (1 input), AND, NAND, OR, NOR, "
+                           "XOR (odd parity) and XNOR (2..8 inputs, parameter inputs). Inputs A, B, C... on the left, output Y on the right. "
+                           "Every gate uses one shared logical function; there is no separate digital simulator.");
+    juce::Array<juce::var> gates;
+    for (const auto* id : { "logic_not", "logic_buffer", "logic_and", "logic_nand", "logic_or", "logic_nor", "logic_xor", "logic_xnor" })
+    {
+        auto* g = new Obj();
+        g->setProperty("symbolId", id);
+        g->setProperty("name", parts::displayName(id));
+        g->setProperty("inputs", juce::String(schematic::defaultGateInputs(id))
+                                     + (schematic::maxGateInputs(id) > schematic::defaultGateInputs(id) ? "..8 (parameter inputs, default 2)" : ""));
+        gates.add(juce::var(g));
+    }
+    o->setProperty("gates", gates);
+    o->setProperty("electricalModel",
+                   "First-pass model (identified as such): no supply pins; the output is a level (vol LOW, voh HIGH) behind rout to ground, "
+                   "so it drives and sags into loads like a real output; each input is rin to ground and switches at threshold, with "
+                   "hysteresis (rising at threshold + h/2, falling at threshold - h/2). Defaults: a 5 V CMOS-like gate (voh 5 V, vol 0 V, "
+                   "threshold 2.5 V, hysteresis 0, rout 50 ohm, rin 1 Gohm, tpd 10 ns, tr 4 ns). Not modelled: supply current, output "
+                   "sag with a supply, input capacitance, temperature.");
+    o->setProperty("dc", "Operating point, DC sweep and AC bias: the output follows the inputs with no delay through a smooth transfer "
+                         "curve (gain 25 V/V at the threshold): rail levels for inputs clear of the threshold, a mid level for an input "
+                         "held at it. A truth table is an operating point per input combination.");
+    o->setProperty("timing", "Transient: an input crossing its switching point (time interpolated in the step) that changes the gate's "
+                             "result starts the output change exactly tpd later (the solver lands a step on that time), and the output "
+                             "moves linearly to the new level over tr. Delay semantics: inertial - a new input change cancels a change "
+                             "not yet started, so input pulses shorter than tpd do not reach the output. tpd must be > 0.");
+    o->setProperty("feedback", "Gates may be wired in loops (latches, ring oscillators, Schmitt RC oscillators): every change waits tpd, "
+                               "so a loop advances in time and never loops without time passing. A latch whose inputs are both inactive at "
+                               "t = 0 has no defined state (its DC solution is the mid level, and equal delays then oscillate); start it "
+                               "with set or reset asserted. An odd ring of inverters oscillates (period 2 x stages x (tpd + tr/2)).");
+    o->setProperty("sequential", "There are no flip-flop or counter parts: build them from gates. SR latch: two NANDs cross-coupled "
+                                 "(Q = NAND(S', Q'), Q' = NAND(R', Q), set and reset active low) or two NORs (active high). Clocked D "
+                                 "latch: NOT on D, NAND(D, CLK) and NAND(D', CLK) driving a NAND SR latch. Drive clocks and input "
+                                 "sequences with signal_source (waveform Pulse, Square or PWL).");
+    o->setProperty("simulation", "Internal solver only (analytics_operating_point, analytics_dc_sweep, analytics_transient). With the "
+                                 "Xyce engine selected the run falls back to the internal solver and the result says so; there is no "
+                                 "Xyce co-simulation. Gates work with every other part, programmable components included.");
+    o->setProperty("workflow", juce::StringArray {
+        "1. schematic_place_symbol with the gate's symbolId (workbench_capabilities symbolId gives its pins and parameters).",
+        "2. schematic_set_parameters for inputs (2..8), levels, threshold, hysteresis, rout, tpd, tr; lowering inputs removes wires on removed inputs (reported).",
+        "3. schematic_connect the inputs (U1.A, U1.B...) and the output (U1.Y); an unwired input reads LOW (the result warns).",
+        "4. Truth table: a voltage_source (0 V or the HIGH level) on each input, analytics_operating_point per combination, read Y.",
+        "5. Timing, latches, clocks: signal_source inputs (Pulse/PWL), analytics_transient, read Y over time (edges are sampled at their exact times).",
+        "6. Compare every result with the expected logic level and timing; a mismatch means the circuit is not done." });
+    o->setProperty("limitations", "No supply pins or supply current; no digital-only simulation mode; no logic analyzer; no flip-flop, "
+                                  "counter or register parts; PCB footprints only for single 1- and 2-input gates.");
+    return juce::var(o);
+}
+
+bool asksAboutLogic(const juce::StringArray& query)
+{
+    static const juce::StringArray topics { "logic", "gate", "gates", "nand", "nor", "xor", "xnor", "inverter", "buffer", "latch",
+                                            "flipflop", "digital", "boolean", "truth", "truthtable", "propagation", "clock", "sr" };
+    for (const auto& t : query)
+        if (topics.contains(t))
+            return true;
+    return false;
+}
+
 bool asksAboutProgrammable(const juce::StringArray& query)
 {
     static const juce::StringArray topics { "programmable", "frust", "frustcomponent", "custom", "behavioral", "behavioural", "nodeprogram",
@@ -399,6 +463,8 @@ juce::String toJson(const Request& request)
         root->setProperty("component", component(id, true));
         if (id == "frust_component")
             root->setProperty("programmableComponents", programmableSection(request));
+        if (schematic::isLogicGate(id))
+            root->setProperty("logicGates", logicSection());
         return juce::JSON::toString(juce::var(root), true);
     }
 
@@ -488,6 +554,8 @@ juce::String toJson(const Request& request)
     }
     if (all || section == "programmable" || asksAboutProgrammable(query) || unmatchedTerm)
         root->setProperty("programmableComponents", programmableSection(request));
+    if (all || section == "logic" || asksAboutLogic(query))
+        root->setProperty("logicGates", logicSection());
     if (all || section == "analyses")
         root->setProperty("analyses", analysesList(section == "analyses" ? query : juce::StringArray()));
     if (all || section == "engines")

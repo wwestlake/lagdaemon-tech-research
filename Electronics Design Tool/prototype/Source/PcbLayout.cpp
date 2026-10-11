@@ -126,8 +126,8 @@ const std::map<juce::String, std::vector<Fit>>& fits()
         t["connector_2"] = { { "Header-1x2-P2.54", "1=1,2=2" } };
         t["connector_3"] = { { "Header-1x3-P2.54", "1=1,2=2,3=3" } };
         t["test_point"] = { { "TestPoint-THT", "1=1" } };
-        t["logic_not"] = { { "SOT-23-5", "2=A,4=Y" } };
-        for (const auto* g : { "logic_and", "logic_or", "logic_nand", "logic_nor", "logic_xor" })
+        t["logic_not"] = t["logic_buffer"] = { { "SOT-23-5", "2=A,4=Y" } };
+        for (const auto* g : { "logic_and", "logic_or", "logic_nand", "logic_nor", "logic_xor", "logic_xnor" })
             t[g] = { { "SOT-23-5", "1=A,2=B,4=Y" } };
         return t;
     }();

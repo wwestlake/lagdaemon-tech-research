@@ -37,6 +37,15 @@ bool isSupportedSymbol(const juce::String& symbolId);
 // reject unknown symbols rather than substitute another class.
 SymbolDef symbolFor(const juce::String& symbolId);
 
+// Logic gates (logic_not, logic_buffer, logic_and, logic_nand, logic_or,
+// logic_nor, logic_xor, logic_xnor): inputs A, B, C... (one for NOT and
+// BUFFER, 2..8 for the rest) on the left, output Y on the right. symbolFor()
+// gives the default count; a placed gate's count is its "inputs" parameter.
+bool isLogicGate(const juce::String& symbolId);
+int defaultGateInputs(const juce::String& symbolId);
+int maxGateInputs(const juce::String& symbolId);
+SymbolDef logicGateSymbol(const juce::String& symbolId, int inputs);
+
 // IEEE 315 / common EDA reference designator letters (SCH-T3).
 juce::String refdesPrefixFor(const juce::String& symbolId);
 

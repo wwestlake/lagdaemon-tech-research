@@ -567,8 +567,11 @@ bool appendElement(const analytics::Netlist& n, juce::String& netlist, std::map<
     // (no post-processed stand-in): the internal solver simulates it.
     if (e.type == ElementType::Programmable)
     {
-        error = juce::String(e.name) + " is a FRust programmable component: its program runs inside the app at every solver "
-                "iteration, which the external Xyce engine cannot call. Simulate this circuit with the internal solver engine.";
+        error = juce::String(e.modelName).startsWith("LOGIC_")
+            ? juce::String(e.name) + " is a logic gate: its thresholds and propagation delays run on the internal solver's device "
+              "events, which the external Xyce engine does not have. Simulate this circuit with the internal solver engine."
+            : juce::String(e.name) + " is a FRust programmable component: its program runs inside the app at every solver "
+              "iteration, which the external Xyce engine cannot call. Simulate this circuit with the internal solver engine.";
         return false;
     }
 

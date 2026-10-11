@@ -7,6 +7,7 @@
 #include "RouteEditing.h"
 #include "PartCatalog.h"
 #include "CircuitSolver.h"
+#include "LogicGates.h"
 #include "Analytics.h"
 #include "AnalyticsPanel.h"
 #include "FrustPanel.h"
@@ -643,8 +644,8 @@ const SchematicToolSpec schematicToolSpecs[] = {
     },
     {
         "workbench_capabilities",
-        "Discover what this Workbench actually has, from its live registries: component types (pins, parameters with units, choices, defaults and help, simulation fidelity), virtual instruments and their modes, analyses (analytics_* tools and their settings) and simulation engines. Omit query to list every registered component. A query's terms are matched separately (any term matches; most matches first) and each term's matches are reported. Look a part up by symbolId before setting its parameters. Use only listed ids; an empty search is not proof a part is missing - list all or look up by symbolId first. Programmable components (reusable parts whose behaviour is a FRust node program, backed by project definitions) are covered in programmableComponents: what they are, the open project's definitions, the component node types, the tools and the workflow to create, design, compile, place and test one; section programmable returns just that.",
-        R"({"type":"object","properties":{"section":{"type":"string","description":"components, instruments, analyses, engines or programmable; omit for a summary of all."},"query":{"type":"string","description":"Optional search terms separated by spaces or commas, such as 'opamp resistor capacitor ground diode' or 'behavioral current source'. Each term is matched on its own against ids, display names and common synonyms (op-amp, gnd, supply...)."},"symbolId":{"type":"string","description":"Optional component id for full detail, such as behavioral_current_source. Unknown ids are reported with close matches."}},"additionalProperties":false})"
+        "Discover what this Workbench actually has, from its live registries: component types (pins, parameters with units, choices, defaults and help, simulation fidelity), virtual instruments and their modes, analyses (analytics_* tools and their settings) and simulation engines. Omit query to list every registered component. A query's terms are matched separately (any term matches; most matches first) and each term's matches are reported. Look a part up by symbolId before setting its parameters. Use only listed ids; an empty search is not proof a part is missing - list all or look up by symbolId first. Programmable components (reusable parts whose behaviour is a FRust node program, backed by project definitions) are covered in programmableComponents: what they are, the open project's definitions, the component node types, the tools and the workflow to create, design, compile, place and test one; section programmable returns just that. Logic gates (NOT, BUFFER, AND, NAND, OR, NOR, XOR, XNOR) are covered in logicGates: their electrical model, parameters, exact propagation timing, latches built from them, and how to test them; section logic returns just that.",
+        R"({"type":"object","properties":{"section":{"type":"string","description":"components, instruments, analyses, engines, programmable or logic; omit for a summary of all."},"query":{"type":"string","description":"Optional search terms separated by spaces or commas, such as 'opamp resistor capacitor ground diode' or 'behavioral current source'. Each term is matched on its own against ids, display names and common synonyms (op-amp, gnd, supply...)."},"symbolId":{"type":"string","description":"Optional component id for full detail, such as behavioral_current_source. Unknown ids are reported with close matches."}},"additionalProperties":false})"
     },
     {
         "instrument_read",
@@ -1874,12 +1875,14 @@ private:
         add({ "connector_2", "2-Pin Connector", "Connector" });
         add({ "connector_3", "3-Pin Connector", "Connector" });
         add({ "test_point", "Test Point", "Connector" });
-        add({ "logic_not", "Logic Inverter - behavioral", "Digital" });
-        add({ "logic_and", "AND Gate - behavioral", "Digital" });
-        add({ "logic_or", "OR Gate - behavioral", "Digital" });
-        add({ "logic_nand", "NAND Gate - behavioral", "Digital" });
-        add({ "logic_nor", "NOR Gate - behavioral", "Digital" });
-        add({ "logic_xor", "XOR Gate - behavioral", "Digital" });
+        add({ "logic_not", "NOT Gate (Inverter)", "Digital" });
+        add({ "logic_buffer", "Buffer", "Digital" });
+        add({ "logic_and", "AND Gate", "Digital" });
+        add({ "logic_nand", "NAND Gate", "Digital" });
+        add({ "logic_or", "OR Gate", "Digital" });
+        add({ "logic_nor", "NOR Gate", "Digital" });
+        add({ "logic_xor", "XOR Gate", "Digital" });
+        add({ "logic_xnor", "XNOR Gate", "Digital" });
         add({ "oscilloscope_2ch", "2-Channel Oscilloscope", "Instrument" });
         add({ "digital_multimeter", "Digital Multimeter", "Instrument" });
         add({ "bode_analyzer", "Frequency Analyzer (Bode)", "Instrument" });
@@ -5103,7 +5106,21 @@ private:
     {
         if (schematic::isBlockSymbol(instance.symbolId))
             return schematic::blockSymbol(instance.ports, instance.symbolId);
+        if (schematic::isLogicGate(instance.symbolId))
+            return schematic::logicGateSymbol(instance.symbolId, gateInputs(instance));
         return symbolFor(instance.symbolId);
+    }
+
+    // A logic gate's input count (its "inputs" parameter, within its range).
+    // Read straight from the stored parameter: symbolForInstance() calls this
+    // for every pin label and repaint, and partValue() goes through the part
+    // catalog.
+    int gateInputs(const Instance& instance) const
+    {
+        const auto found = instance.params.find("inputs");
+        const auto n = found != instance.params.end() ? found->second.getIntValue() : 0;
+        return std::clamp(n > 0 ? n : schematic::defaultGateInputs(instance.symbolId), schematic::defaultGateInputs(instance.symbolId),
+                          schematic::maxGateInputs(instance.symbolId));
     }
 
     SymbolDef symbolFor(const juce::String& id) const
@@ -5203,6 +5220,8 @@ private:
         if (symbolId == "connector_3") return "connector.3pin";
         if (symbolId == "test_point") return "connector.test_point";
         if (symbolId == "logic_not") return "digital.logic.not";
+        if (symbolId == "logic_buffer") return "digital.logic.buffer";
+        if (symbolId == "logic_xnor") return "digital.logic.xnor";
         if (symbolId == "logic_and") return "digital.logic.and";
         if (symbolId == "logic_or") return "digital.logic.or";
         if (symbolId == "logic_nand") return "digital.logic.nand";
@@ -8241,8 +8260,50 @@ public:
                     c.elements()[(size_t)element].noiseless = true;
                 }
             }
-            else if (id.startsWith("logic_"))
-                sim.warnings.add(inst.refdes + " (" + parts::displayName(id) + ") is not simulated yet.");
+            else if (schematic::isLogicGate(id))
+            {
+                // A logic gate (LogicGates.h): its inputs and Y, one shared
+                // logical function, levels behind Rout, thresholds with
+                // hysteresis, propagation delay on the stepper's device events.
+                logic::Function function;
+                logic::parseFunction(id.fromFirstOccurrenceOf("logic_", false, false).toStdString(), function);
+                const auto inputs = gateInputs(inst);
+                logic::Model m;
+                m.voh = number(inst, "voh", m.voh);
+                m.vol = number(inst, "vol", m.vol);
+                m.vth = number(inst, "threshold", m.vth);
+                m.hysteresis = number(inst, "hysteresis", m.hysteresis);
+                m.rOut = number(inst, "rout", m.rOut);
+                m.rIn = number(inst, "rin", m.rIn);
+                m.tpd = number(inst, "tpd", m.tpd);
+                m.tr = number(inst, "tr", m.tr);
+                const auto problem = logic::problemsWith(m, function, inputs);
+                if (!problem.empty())
+                {
+                    const auto message = inst.refdes + " (" + parts::displayName(id) + "): " + juce::String(problem) + ".";
+                    sim.valueErrors.add(message);
+                    if (sim.error.isEmpty()) sim.error = message;
+                }
+                else
+                {
+                    const auto symbol = symbolForInstance(inst);
+                    std::vector<circuit_sim::Node> pins;
+                    juce::StringArray open;
+                    for (int p = 0; p < (int)symbol.pins.size(); ++p)
+                    {
+                        pins.push_back(node(i, symbol.pins[(size_t)p].name));
+                        if (symbol.pins[(size_t)p].name != "Y" && !pinHasWire(i, p))
+                            open.add(symbol.pins[(size_t)p].name);
+                    }
+                    element = c.addProgrammable(name, std::move(pins), std::make_shared<logic::GateDevice>(function, inputs, m));
+                    if (element >= 0)
+                        c.elements()[(size_t)element].modelName = ("LOGIC_" + id.fromFirstOccurrenceOf("logic_", false, false).toUpperCase()
+                                                                   + juce::String(inputs)).toStdString();
+                    if (!open.isEmpty())
+                        sim.warnings.add(inst.refdes + " (" + parts::displayName(id) + "): input(s) " + open.joinIntoString(", ")
+                                         + " not wired; an open input reads LOW (its input resistance to ground).");
+                }
+            }
             else if (id == "frust_component" && inst.ports.empty())
                 sim.warnings.add(inst.refdes + " (" + inst.value + ") has no pins yet, so it is not simulated.");
             else if (id == "frust_component")
@@ -8731,10 +8792,54 @@ public:
         }
         if (!validatePartValue(*spec, value, error))
             return false;
+        const auto gateInputsBefore = schematic::isLogicGate(instance.symbolId) ? gateInputs(instance) : 0;
         setPartValue(instance, key, value.trim());
+        if (gateInputsBefore > 0 && gateInputs(instance) != gateInputsBefore)
+            lastParameterNotes.addArray(regateWires(index, gateInputsBefore, gateInputs(instance)));
         notifySelection();
         forceDeferredRepaint();
         return true;
+    }
+
+    // What the last parameter changes did besides setting the value (wires
+    // removed from inputs a gate no longer has); the tool reports it.
+    juce::StringArray lastParameterNotes;
+
+    // A logic gate's input count changed from oldInputs to newInputs: its pins
+    // are A.. then Y, so Y moves to index newInputs and inputs past the new
+    // count go. Wires and probes on Y and the kept inputs stay; those on
+    // removed inputs are removed and reported, never moved to another pin.
+    juce::StringArray regateWires(int i, int oldInputs, int newInputs)
+    {
+        juce::StringArray notes;
+        const auto& inst = instances[(size_t)i];
+        auto remapped = [&](int pin) { return pin == oldInputs ? newInputs : pin < newInputs ? pin : -1; };
+        auto gone = [&](const WireNode& end) { return end.isPin() && end.pin.instanceIndex == i && remapped(end.pin.pinIndex) < 0; };
+        auto pinName = [](int pin) { return juce::String::charToString((juce::juce_wchar)('A' + pin)); };
+        for (const auto& wire : wires)
+            for (const auto* end : { &wire.a, &wire.b })
+                if (gone(*end))
+                    notes.add(inst.refdes + ": input " + pinName(end->pin.pinIndex) + " was removed (now " + juce::String(newInputs)
+                              + " inputs); the wire on it was removed.");
+        wires.erase(std::remove_if(wires.begin(), wires.end(), [&](const Wire& w) { return gone(w.a) || gone(w.b); }), wires.end());
+        for (auto it = probes.begin(); it != probes.end();)
+        {
+            if (gone(it->node))
+            {
+                notes.add(inst.refdes + ": probe " + it->id + " was on removed input " + pinName(it->node.pin.pinIndex) + "; it was removed.");
+                it = probes.erase(it);
+                continue;
+            }
+            if (it->node.isPin() && it->node.pin.instanceIndex == i)
+                it->node.pin.pinIndex = remapped(it->node.pin.pinIndex);
+            ++it;
+        }
+        for (auto& wire : wires)
+            for (auto* end : { &wire.a, &wire.b })
+                if (end->isPin() && end->pin.instanceIndex == i)
+                    end->pin.pinIndex = remapped(end->pin.pinIndex);
+        routeSignature.clear();
+        return notes;
     }
 
     bool renamePart(const juce::String& refdes, const juce::String& newRefdes, juce::String& error)
@@ -10491,13 +10596,21 @@ public:
             const auto* params = args.getProperty("params", {}).getDynamicObject();
             if (params == nullptr || params->getProperties().isEmpty())
                 return toolFailure(name, "params must be an object such as {\"value\": \"4.7k\"}.");
+            lastParameterNotes.clear();
             for (const auto& property : params->getProperties())
             {
                 juce::String error;
                 if (!setPartParameter(refdes, property.name.toString(), property.value.toString(), error))
                     return toolFailure(name, error);
             }
-            return parametersJson(refdes).replace("\"schematic_get_parameters\"", "\"schematic_set_parameters\"");
+            auto json = parametersJson(refdes).replace("\"schematic_get_parameters\"", "\"schematic_set_parameters\"").trimEnd();
+            if (!lastParameterNotes.isEmpty() && json.endsWithChar('}'))
+            {
+                juce::StringArray quoted;
+                for (const auto& n : lastParameterNotes) quoted.add(quote(n));
+                json = json.dropLastCharacters(1).trimEnd() + ", \"warnings\": [" + quoted.joinIntoString(", ") + "] }";
+            }
+            return json;
         }
         if (name == "simulation_parameter_expose")
         {
@@ -14317,6 +14430,9 @@ private:
                "A part the registry lacks, or custom behaviour (a controller, a timer, a behavioural model), can be built as a programmable component: "
                "a reusable part whose behaviour is a FRust node program, backed by a project definition; workbench_capabilities with section "
                "programmable gives the tools, node types and workflow, and component_list the project's definitions. "
+               "Logic gates (logic_not, logic_buffer, logic_and, logic_nand, logic_or, logic_nor, logic_xor, logic_xnor; 2..8 inputs) are "
+               "electrical parts with levels, thresholds, hysteresis, output resistance and exact propagation delay on the internal solver; "
+               "workbench_capabilities with section logic gives the model, timing, how to test truth tables and build latches. "
                "Use cookbook_lookup for engineering knowledge and reference designs. "
                "Never invent component types, model names or parameters; if what you need does not exist, say so or record it with capability_gap_record. "
                "If a schematic_connect call fails, correct the pin labels using the available-labels error; do not continue as if it succeeded. "

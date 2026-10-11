@@ -344,6 +344,42 @@ int main(int argc, char** argv)
         checkTrue("looking up frust_component explains the workflow too", symbol.getProperty("programmableComponents", {}).isObject());
     }
 
+    std::printf("-- 10. logic gates: discovery without being told the tools --\n");
+    {
+        capability_catalog::Request r;
+        r.query = "nand gate latch";
+        const auto result = juce::JSON::parse(capability_catalog::toJson(r));
+        const auto lg = result.getProperty("logicGates", {});
+        const auto text = juce::JSON::toString(lg, true);
+        checkTrue("a 'nand gate latch' query explains the logic gates", lg.isObject() && text.contains("tpd") && text.contains("inertial") && text.contains("hysteresis"),
+                  text.substring(0, 200));
+        juce::StringArray ids;
+        if (const auto* gates = lg.getProperty("gates", {}).getArray())
+            for (const auto& g : *gates)
+                ids.add(g.getProperty("symbolId", {}).toString());
+        checkTrue("it lists all eight gates, BUFFER and XNOR included", ids.size() == 8 && ids.contains("logic_buffer") && ids.contains("logic_xnor"),
+                  ids.joinIntoString(","));
+        checkTrue("it says latches are built from cross-coupled gates", lg.getProperty("sequential", {}).toString().contains("NAND(S', Q')"));
+        checkTrue("it says which backend runs them (internal solver, Xyce falls back)",
+                  lg.getProperty("simulation", {}).toString().contains("internal solver") && lg.getProperty("simulation", {}).toString().contains("Xyce"));
+        const auto workflow = juce::JSON::toString(lg.getProperty("workflow", {}));
+        checkTrue("its workflow places, configures, wires and simulates them",
+                  workflow.indexOf("schematic_place_symbol") < workflow.indexOf("schematic_set_parameters")
+                      && workflow.indexOf("schematic_set_parameters") < workflow.indexOf("schematic_connect")
+                      && workflow.contains("analytics_operating_point") && workflow.contains("analytics_transient"),
+                  workflow.substring(0, 300));
+        const auto nand = catalog("", "", "logic_nand");
+        juce::StringArray params;
+        if (const auto* list = nand.getProperty("component", {}).getProperty("parameters", {}).getArray())
+            for (const auto& p : *list)
+                params.add(p.getProperty("key", p.getProperty("name", {})).toString());
+        checkTrue("looking up logic_nand gives its parameters and the logic section",
+                  nand.getProperty("logicGates", {}).isObject() && params.contains("inputs") && params.contains("tpd") && params.contains("hysteresis"),
+                  params.joinIntoString(","));
+        const auto section = juce::JSON::parse(capability_catalog::toJson([] { capability_catalog::Request q; q.section = "logic"; return q; }()));
+        checkTrue("section logic returns it", section.getProperty("logicGates", {}).isObject() && !section.hasProperty("components"));
+    }
+
     std::printf("-- reference Chua circuits (values the cards document) --\n");
     {
         chua_reference::Values v;
