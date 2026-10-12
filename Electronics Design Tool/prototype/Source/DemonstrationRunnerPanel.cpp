@@ -20,32 +20,12 @@ DemonstrationRunnerPanel::DemonstrationRunnerPanel(std::shared_ptr<sim_panel::Sy
     titleLabel.setColour(juce::Label::textColourId, juce::Colour(0xff5bc0be));
     addAndMakeVisible(titleLabel);
 
-    machineSelector.addItem("Dual-Motor Coordinated Machine (Capstone A)", 1);
-    machineSelector.addItem("Articulated Robotic Arm 2-DOF (Capstone B)", 2);
+    machineSelector.addItem("No machine loaded", 1);
     machineSelector.setSelectedId(1, juce::dontSendNotification);
-    machineSelector.onChange = [this]() {
-        if (machineSelector.getSelectedId() == 1)
-        {
-            setMachine(machine_builder::MachineDesign::createDualMotorMachineTemplate());
-            demoSelector.setSelectedId(1, juce::sendNotification);
-        }
-        else
-        {
-            setMachine(machine_builder::MachineDesign::createRoboticArmMachineTemplate());
-            demoSelector.setSelectedId(2, juce::sendNotification);
-        }
-    };
     addAndMakeVisible(machineSelector);
 
-    demoSelector.addItem("Dual-Motor Disturbance & Control Demo", 1);
-    demoSelector.addItem("Robotic Arm 2-DOF Articulation & Limit Demo", 2);
+    demoSelector.addItem("No demonstration loaded", 1);
     demoSelector.setSelectedId(1, juce::dontSendNotification);
-    demoSelector.onChange = [this]() {
-        if (demoSelector.getSelectedId() == 1)
-            setDemonstration(DemonstrationDefinition::createCapstoneAMotorDemo());
-        else
-            setDemonstration(DemonstrationDefinition::createCapstoneBRoboticArmDemo());
-    };
     addAndMakeVisible(demoSelector);
 
     startBtn.onClick = [this]() { startDemo(); };
@@ -80,10 +60,6 @@ DemonstrationRunnerPanel::DemonstrationRunnerPanel(std::shared_ptr<sim_panel::Sy
     statusLabel.setColour(juce::Label::textColourId, juce::Colours::white);
     addAndMakeVisible(statusLabel);
 
-    // Initial default configuration
-    setMachine(machine_builder::MachineDesign::createDualMotorMachineTemplate());
-    setDemonstration(DemonstrationDefinition::createCapstoneAMotorDemo());
-
     startTimerHz(15);
 }
 
@@ -95,11 +71,6 @@ DemonstrationRunnerPanel::~DemonstrationRunnerPanel()
 void DemonstrationRunnerPanel::setMachine(const machine_builder::MachineDesign& machine)
 {
     runner_.setMachine(machine);
-    if (session_)
-    {
-        std::string err;
-        machine.compileAndLoadIntoSession(*session_, &err);
-    }
     if (mechanicalView_)
         mechanicalView_->setScene(machine.scene);
     if (controlPanel_)

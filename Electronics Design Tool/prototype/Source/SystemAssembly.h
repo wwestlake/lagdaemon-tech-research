@@ -230,7 +230,7 @@ struct CompiledAssemblyCircuit
 class AssemblyCompiler
 {
 public:
-    static CompiledAssemblyCircuit compile(const SystemAssembly& assembly);
+    static CompiledAssemblyCircuit compile(const SystemAssembly& assembly, const juce::File& projectFolder = {});
 };
 
 } // namespace sim_panel

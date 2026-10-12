@@ -12,7 +12,7 @@ ControlPanelLayout ControlPanelLayout::createDefaultMotorPanel()
     // 1. Main Power Switch
     p.widgets.push_back({
         "pwr_sw", WidgetType::ToggleSwitch, "Main Power",
-        "power_switch", "", 0.0, 1.0, 1.0, 1.0, 0, 0, 50, {}
+        "power_switch", "", 0.0, 1.0, 0.0, 1.0, 0, 0, 50, {}
     });
 
     // 2. Start Button
@@ -121,7 +121,7 @@ ControlPanelLayout ControlPanelLayout::createDualMotorCoordinatedPanel()
     // 1. System Master Power
     p.widgets.push_back({
         "pwr_sw", WidgetType::ToggleSwitch, "Master System Power",
-        "system.power", "", 0.0, 1.0, 1.0, 1.0, 0, 0, 50, {}
+        "system.power", "", 0.0, 1.0, 0.0, 1.0, 0, 0, 50, {}
     });
 
     // 2. Coordinated System Start Button

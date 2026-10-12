@@ -13,7 +13,7 @@ MachineBuilderPanel::MachineBuilderPanel(std::shared_ptr<sim_panel::SystemSimula
                                            sim_panel::ControlPanelComponent* ctrlPanel)
     : session_(session), mechanicalView_(mechView), controlPanel_(ctrlPanel)
 {
-    machine_ = MachineDesign::createDualMotorMachineTemplate();
+    machine_ = MachineDesign::createBlankMachine("Custom Machine");
 
     titleLabel.setText("Virtual Machine Builder", juce::dontSendNotification);
     titleLabel.setFont(juce::Font(18.0f, juce::Font::bold));
@@ -23,16 +23,6 @@ MachineBuilderPanel::MachineBuilderPanel(std::shared_ptr<sim_panel::SystemSimula
     addAndMakeVisible(newBlankBtn);
     newBlankBtn.onClick = [this] {
         setMachine(MachineDesign::createBlankMachine("Custom Machine"));
-    };
-
-    addAndMakeVisible(loadDualMotorBtn);
-    loadDualMotorBtn.onClick = [this] {
-        setMachine(MachineDesign::createDualMotorMachineTemplate());
-    };
-
-    addAndMakeVisible(loadRobotArmBtn);
-    loadRobotArmBtn.onClick = [this] {
-        setMachine(MachineDesign::createRoboticArmMachineTemplate());
     };
 
     addAndMakeVisible(validateBtn);
@@ -71,11 +61,6 @@ void MachineBuilderPanel::setMachine(const MachineDesign& machine)
 {
     machine_ = machine;
     updateDiagnosticsDisplay();
-    if (session_ != nullptr)
-    {
-        std::string err;
-        machine_.compileAndLoadIntoSession(*session_, &err);
-    }
     if (mechanicalView_ != nullptr)
         mechanicalView_->setScene(machine_.scene);
     if (controlPanel_ != nullptr)
@@ -84,12 +69,8 @@ void MachineBuilderPanel::setMachine(const MachineDesign& machine)
 
 void MachineBuilderPanel::loadTemplate(const std::string& templateName)
 {
-    if (templateName == "dual_motor" || templateName == "dual_motor_machine")
-        setMachine(MachineDesign::createDualMotorMachineTemplate());
-    else if (templateName == "robotic_arm" || templateName == "robotic_arm_machine" || templateName == "robot_arm")
-        setMachine(MachineDesign::createRoboticArmMachineTemplate());
-    else
-        setMachine(MachineDesign::createBlankMachine("Custom Machine"));
+    juce::ignoreUnused(templateName);
+    setMachine(MachineDesign::createBlankMachine("Custom Machine"));
 }
 
 bool MachineBuilderPanel::compileAndRun()

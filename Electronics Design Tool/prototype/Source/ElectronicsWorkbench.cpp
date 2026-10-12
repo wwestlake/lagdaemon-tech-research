@@ -25,6 +25,7 @@
 #include "FrustExecution.h"
 #include "FrustDebuggerPanel.h"
 #include "FrustComponent.h"
+#include "FrustComponentCompiler.h"
 #include "PinLayoutEditor.h"
 #include <djehuti_route/outline.h>
 #include "Preferences.h"
@@ -934,8 +935,8 @@ const std::vector<ToolSpecText>& controlPanelToolSpecs()
         },
         {
             "assembly_load",
-            "Load and compile a system assembly document into the interactive simulation runtime (e.g. 'dual_motor_coordinated' or project assembly file).",
-            R"({"type":"object","properties":{"name":{"type":"string","description":"Assembly name or predefined assembly ('dual_motor_coordinated')."}},"required":["name"],"additionalProperties":false})"
+            "Load and compile a saved system assembly document into the interactive simulation runtime.",
+            R"({"type":"object","properties":{"filePath":{"type":"string","description":"Assembly JSON file path to load."},"name":{"type":"string","description":"Project assembly name saved under the open project's assemblies folder."}},"additionalProperties":false})"
         },
         {
             "assembly_operate",
@@ -983,8 +984,8 @@ const std::vector<ToolSpecText>& machineToolSpecs()
     static const std::vector<ToolSpecText> specs = {
         {
             "machine_create",
-            "Create a new virtual machine design (blank, 'dual_motor', or 'robotic_arm' template).",
-            R"({"type":"object","properties":{"template":{"type":"string","description":"Optional template: 'blank', 'dual_motor', or 'robotic_arm'."},"name":{"type":"string","description":"Machine design display name."}},"additionalProperties":false})"
+            "Create a new blank virtual machine design.",
+            R"({"type":"object","properties":{"template":{"type":"string","description":"Optional; only 'blank' is accepted."},"name":{"type":"string","description":"Machine design display name."}},"additionalProperties":false})"
         },
         {
             "machine_get",
@@ -998,8 +999,8 @@ const std::vector<ToolSpecText>& machineToolSpecs()
         },
         {
             "machine_load",
-            "Load a virtual machine design from file or template into the Machine Builder.",
-            R"({"type":"object","properties":{"filePath":{"type":"string","description":"File path to load machine JSON from."},"template":{"type":"string","description":"Template name ('dual_motor' or 'robotic_arm')."}},"additionalProperties":false})"
+            "Load a saved virtual machine design from a .machine.json file into the Machine Builder.",
+            R"({"type":"object","properties":{"filePath":{"type":"string","description":"File path to load machine JSON from."}},"required":["filePath"],"additionalProperties":false})"
         },
         {
             "machine_validate",
@@ -18577,39 +18578,35 @@ juce::String ElectronicsWorkbench::assemblyTool(const juce::String& name, const 
 
     if (name == "assembly_load")
     {
-        const auto asmName = args.getProperty("name", "dual_motor_coordinated").toString().trim();
+        const auto asmName = args.getProperty("name", {}).toString().trim();
         sim_panel::SystemAssembly assembly;
+        juce::File assemblyFile;
 
-        if (asmName == "user_assembled_dual_motor" || asmName == "user_assembled_motor_system")
+        if (args.hasProperty("filePath"))
         {
-            assembly = sim_panel::SystemAssembly::createUserAssembledMotorSystem();
+            assemblyFile = juce::File(args.getProperty("filePath", {}).toString());
         }
-        else if (asmName == "dual_motor_coordinated" || asmName.isEmpty())
+        else if (project.isOpen() && asmName.isNotEmpty())
         {
-            assembly = sim_panel::SystemAssembly::createDualMotorSystem();
-        }
-        else if (project.isOpen())
-        {
-            const auto asmFile = project.folder.getChildFile("assemblies").getChildFile(asmName + ".assembly.json");
-            juce::String err;
-            if (!sim_panel::SystemAssembly::loadFromFile(asmFile, assembly, err))
-                return "{ \"ok\": false, \"error\": \"Could not load assembly file: " + err + "\" }";
+            assemblyFile = project.folder.getChildFile("assemblies").getChildFile(asmName + ".assembly.json");
         }
         else
         {
-            assembly = sim_panel::SystemAssembly::createDualMotorSystem();
+            return R"({"ok": false, "error": "assembly_load requires 'filePath' or an open-project assembly 'name'; no factory assembly will be substituted."})";
         }
 
-        if (!session->setupAssembly(assembly))
-            return R"({"ok": false, "error": "Failed to compile and configure system assembly in simulation session."})";
+        juce::String err;
+        if (!sim_panel::SystemAssembly::loadFromFile(assemblyFile, assembly, err))
+            return "{ \"ok\": false, \"error\": \"Could not load assembly file: " + err + "\" }";
 
-        // Update control panel layout to match the loaded assembly
-        controlPanel->setLayout(sim_panel::ControlPanelLayout::createDualMotorCoordinatedPanel());
+        if (!session->setupAssembly(assembly, assemblyFile.getParentDirectory()))
+            return R"({"ok": false, "error": "Failed to compile and configure system assembly in simulation session."})";
 
         juce::DynamicObject::Ptr res = new juce::DynamicObject();
         res->setProperty("ok", true);
         res->setProperty("tool", "assembly_load");
         res->setProperty("assembly", juce::String(assembly.name));
+        res->setProperty("filePath", assemblyFile.getFullPathName());
         res->setProperty("subsystems", (int)assembly.instances.size());
         res->setProperty("connections", (int)assembly.connections.size());
         return juce::JSON::toString(juce::var(res.get()));
@@ -18662,14 +18659,21 @@ juce::String ElectronicsWorkbench::assemblyTool(const juce::String& name, const 
 
     if (name == "assembly_validate")
     {
-        const auto asmName = args.getProperty("name", "user_assembled_dual_motor").toString().trim();
+        const auto asmName = args.getProperty("name", {}).toString().trim();
         sim_panel::SystemAssembly assembly;
-        if (asmName == "user_assembled_dual_motor" || asmName == "user_assembled_motor_system")
-            assembly = sim_panel::SystemAssembly::createUserAssembledMotorSystem();
+        juce::File assemblyFile;
+        if (args.hasProperty("filePath"))
+            assemblyFile = juce::File(args.getProperty("filePath", {}).toString());
+        else if (project.isOpen() && asmName.isNotEmpty())
+            assemblyFile = project.folder.getChildFile("assemblies").getChildFile(asmName + ".assembly.json");
         else
-            assembly = sim_panel::SystemAssembly::createDualMotorSystem();
+            return R"({"ok": false, "error": "assembly_validate requires 'filePath' or an open-project assembly 'name'."})";
 
-        const auto issues = assembly.validate(project.isOpen() ? project.folder : juce::File());
+        juce::String err;
+        if (!sim_panel::SystemAssembly::loadFromFile(assemblyFile, assembly, err))
+            return "{ \"ok\": false, \"error\": \"Could not load assembly file: " + err + "\" }";
+
+        const auto issues = assembly.validate(assemblyFile.getParentDirectory());
 
         juce::DynamicObject::Ptr root = new juce::DynamicObject();
         root->setProperty("ok", issues.empty());
@@ -18686,7 +18690,7 @@ juce::String ElectronicsWorkbench::assemblyTool(const juce::String& name, const 
 
     if (name == "assembly_list_subsystems")
     {
-        auto assembly = sim_panel::SystemAssembly::createDualMotorSystem();
+        const auto assembly = machineBuilder != nullptr ? machineBuilder->getMachine().assembly : sim_panel::SystemAssembly {};
         juce::DynamicObject::Ptr root = new juce::DynamicObject();
         root->setProperty("ok", true);
         root->setProperty("tool", "assembly_list_subsystems");
@@ -18899,12 +18903,10 @@ juce::String ElectronicsWorkbench::machineTool(const juce::String& name, const j
     {
         const auto tmpl = args.getProperty("template", "blank").toString().trim().toLowerCase();
         const auto mName = args.getProperty("name", "Custom Machine").toString().trim();
-        if (tmpl == "dual_motor" || tmpl == "dual_motor_machine")
-            machineBuilder->setMachine(machine_builder::MachineDesign::createDualMotorMachineTemplate());
-        else if (tmpl == "robotic_arm" || tmpl == "robot_arm" || tmpl == "robotic_arm_machine")
-            machineBuilder->setMachine(machine_builder::MachineDesign::createRoboticArmMachineTemplate());
-        else
-            machineBuilder->setMachine(machine_builder::MachineDesign::createBlankMachine(mName.toStdString()));
+        if (tmpl.isNotEmpty() && tmpl != "blank")
+            return "{ \"ok\": false, \"error\": \"Machine factory templates are disabled in the operational path. Load a saved .machine.json model instead.\" }";
+
+        machineBuilder->setMachine(machine_builder::MachineDesign::createBlankMachine(mName.toStdString()));
 
         return "{ \"ok\": true, \"tool\": \"machine_create\", \"name\": \"" + machineBuilder->getMachine().name + "\" }";
     }
@@ -18942,9 +18944,7 @@ juce::String ElectronicsWorkbench::machineTool(const juce::String& name, const j
     {
         if (args.hasProperty("template"))
         {
-            const auto tmpl = args.getProperty("template", {}).toString().trim().toLowerCase();
-            machineBuilder->loadTemplate(tmpl.toStdString());
-            return "{ \"ok\": true, \"tool\": \"machine_load\", \"source\": \"template\" }";
+            return "{ \"ok\": false, \"error\": \"Machine factory templates are disabled in the operational path. Use 'filePath' to load a saved .machine.json model.\" }";
         }
         if (args.hasProperty("filePath"))
         {
@@ -19245,18 +19245,6 @@ juce::String ElectronicsWorkbench::demoTool(const juce::String& name, const juce
         root->setProperty("tool", "demo_list_machines");
         juce::Array<juce::var> machines;
 
-        auto* m1 = new juce::DynamicObject();
-        m1->setProperty("id", "dual_motor");
-        m1->setProperty("name", "Dual-Motor Coordinated Machine (Capstone A)");
-        m1->setProperty("template", true);
-        machines.add(juce::var(m1));
-
-        auto* m2 = new juce::DynamicObject();
-        m2->setProperty("id", "robotic_arm");
-        m2->setProperty("name", "Articulated Robotic Arm 2-DOF (Capstone B)");
-        m2->setProperty("template", true);
-        machines.add(juce::var(m2));
-
         const auto mDir = generatedRunDirectory().getChildFile("machines");
         if (mDir.isDirectory())
         {
@@ -19280,18 +19268,6 @@ juce::String ElectronicsWorkbench::demoTool(const juce::String& name, const juce
         root->setProperty("tool", "demo_list_definitions");
         juce::Array<juce::var> defs;
 
-        auto* d1 = new juce::DynamicObject();
-        d1->setProperty("id", "capstone_a_motor");
-        d1->setProperty("name", "Dual-Motor Disturbance Rejection & Velocity Control Demo");
-        d1->setProperty("template", true);
-        defs.add(juce::var(d1));
-
-        auto* d2 = new juce::DynamicObject();
-        d2->setProperty("id", "capstone_b_robotic_arm");
-        d2->setProperty("name", "Articulated Robotic Arm Joint Sequencing & Travel Limit Demo");
-        d2->setProperty("template", true);
-        defs.add(juce::var(d2));
-
         const auto dDir = generatedRunDirectory().getChildFile("demonstrations");
         if (dDir.isDirectory())
         {
@@ -19310,21 +19286,17 @@ juce::String ElectronicsWorkbench::demoTool(const juce::String& name, const juce
 
     if (name == "demo_create")
     {
-        const auto tmpl = args.getProperty("template", "capstone_a").toString().trim().toLowerCase();
+        const auto tmpl = args.getProperty("template", "blank").toString().trim().toLowerCase();
         const auto demoId = args.getProperty("id", "custom_demo").toString().toStdString();
         const auto demoName = args.getProperty("name", "Custom Demonstration").toString().toStdString();
 
         demo_system::DemonstrationDefinition def;
-        if (tmpl == "capstone_a" || tmpl == "motor" || tmpl == "dual_motor")
-            def = demo_system::DemonstrationDefinition::createCapstoneAMotorDemo();
-        else if (tmpl == "capstone_b" || tmpl == "arm" || tmpl == "robotic_arm")
-            def = demo_system::DemonstrationDefinition::createCapstoneBRoboticArmDemo();
-        else
-        {
-            def.id = demoId;
-            def.name = demoName;
-            def.machineRef = args.getProperty("machineId", "dual_motor").toString().toStdString();
-        }
+        if (tmpl.isNotEmpty() && tmpl != "blank")
+            return "{ \"ok\": false, \"error\": \"Demonstration factory templates are disabled in the operational path. Create a blank demonstration or load a saved .demo.json file.\" }";
+
+        def.id = demoId;
+        def.name = demoName;
+        def.machineRef = args.getProperty("machineId", "").toString().toStdString();
 
         demoRunnerPanel->setDemonstration(def);
         juce::DynamicObject::Ptr root = new juce::DynamicObject();
@@ -19367,18 +19339,7 @@ juce::String ElectronicsWorkbench::demoTool(const juce::String& name, const juce
     {
         if (args.hasProperty("template"))
         {
-            const auto tmpl = args.getProperty("template", {}).toString().trim().toLowerCase();
-            if (tmpl == "capstone_a" || tmpl == "motor" || tmpl == "dual_motor")
-            {
-                demoRunnerPanel->setMachine(machine_builder::MachineDesign::createDualMotorMachineTemplate());
-                demoRunnerPanel->setDemonstration(demo_system::DemonstrationDefinition::createCapstoneAMotorDemo());
-            }
-            else
-            {
-                demoRunnerPanel->setMachine(machine_builder::MachineDesign::createRoboticArmMachineTemplate());
-                demoRunnerPanel->setDemonstration(demo_system::DemonstrationDefinition::createCapstoneBRoboticArmDemo());
-            }
-            return "{ \"ok\": true, \"tool\": \"demo_load\", \"source\": \"template\" }";
+            return "{ \"ok\": false, \"error\": \"Demonstration factory templates are disabled in the operational path. Use 'filePath' to load a saved .demo.json file.\" }";
         }
         if (args.hasProperty("filePath"))
         {
@@ -20906,36 +20867,7 @@ bool ElectronicsWorkbench::compileComponent(const juce::String& componentName, j
             return false;
         }
     }
-    const auto definitionText = juce::JSON::toString(frust_component::toVar(d), true);
-    const auto programText = programFile.loadFileAsString();
-    // What was compiled: the definition and the program (hash and length).
-    const auto inputs = definitionText + "\n" + programText;
-    const auto key = (juce::String::toHexString(inputs.hashCode64()) + ":" + juce::String(inputs.length())).toStdString();
-    if (source == nullptr && frust_component::Library::instance().isCompiled(d.name, key))
-        return true;
-    // The node compiler, through an off-screen Node Designer: the same
-    // compile path as the editor's Compile button.
-    NodeDesignerPanel compiler;
-    juce::String problems;
-    if (!compiler.openFile(programFile, problems))
-    {
-        error = "Component " + d.name + ": its program " + programFile.getFileName() + " does not open: " + problems;
-        return false;
-    }
-    compiler.setComponentContext(d.compilerContext());
-    juce::String message;
-    if (!compiler.compileProgram(message))
-    {
-        error = "Component " + d.name + " (program " + programFile.getFileName() + "): " + message;
-        return false;
-    }
-    if (source != nullptr)
-        *source = compiler.generatedProgramSource();
-    if (notes != nullptr)
-        for (const auto& p : compiler.validateGraph())
-            if (p.contains("does not reach"))
-                notes->add(p);
-    return frust_component::Library::instance().compile(d, compiler.generatedProgramSource().toStdString(), key, error);
+    return frust_component::compileProgramFile(d, programFile, error, source, notes);
 }
 
 bool ElectronicsWorkbench::openComponentProgram(const juce::String& componentName, juce::String& error)

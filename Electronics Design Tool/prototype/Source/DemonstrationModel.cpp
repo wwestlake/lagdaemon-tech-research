@@ -1067,14 +1067,12 @@ bool DemonstrationRunner::start()
         session_ = std::make_shared<sim_panel::SystemSimulationSession>();
     }
 
-    // Make sure machine is loaded and compiled
-    if (def_.machineRef == "dual_motor" && machine_.assembly.instances.empty())
+    if (machine_.assembly.instances.empty())
     {
-        machine_ = machine_builder::MachineDesign::createDualMotorMachineTemplate();
-    }
-    else if (def_.machineRef == "robotic_arm" && machine_.scene.joints.empty())
-    {
-        machine_ = machine_builder::MachineDesign::createRoboticArmMachineTemplate();
+        status_ = RunStatus::Failed;
+        currentRun_.status = RunStatus::Failed;
+        currentRun_.failureReason = "No machine model is loaded. Demonstrations must run against an explicit saved machine.";
+        return false;
     }
 
     std::string err;

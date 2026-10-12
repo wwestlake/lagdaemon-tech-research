@@ -185,6 +185,8 @@ target_sources(DjehutiElectronicsLab PRIVATE
     Source/FrustDebuggerPanel.cpp
     Source/FrustComponent.h
     Source/FrustComponent.cpp
+    Source/FrustComponentCompiler.h
+    Source/FrustComponentCompiler.cpp
     Source/PinLayoutEditor.h
     Source/PinLayoutEditor.cpp
     Source/AudioPipeline.h
@@ -436,6 +438,12 @@ target_sources(ControlPanelTests PRIVATE
     Source/SystemSimulationSession.cpp
     Source/ControlPanelModel.cpp
     Source/SystemAssembly.cpp
+    Source/FrustComponent.cpp
+    Source/FrustComponentCompiler.cpp
+    Source/NodeDesignerPanel.cpp
+    Source/NodeCompiler.cpp
+    Source/FrustEngine.cpp
+    Source/SchematicSymbols.cpp
     Source/MechanicalSceneModel.h
     Source/MechanicalSceneModel.cpp
     Source/MachineModel.h
@@ -447,6 +455,7 @@ target_include_directories(ControlPanelTests PRIVATE Source)
 target_compile_definitions(ControlPanelTests PRIVATE JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0)
 target_link_libraries(ControlPanelTests PRIVATE 
     circuit_sim 
+    frust_plugin_host
     juce::juce_core
     juce::juce_events
     juce::juce_graphics
@@ -455,6 +464,38 @@ target_link_libraries(ControlPanelTests PRIVATE
 )
 juce_generate_juce_header(ControlPanelTests)
 add_test(NAME ControlPanelTests COMMAND ControlPanelTests)
+
+juce_add_console_app(ModelDrivenSimulationTests PRODUCT_NAME "Model Driven Simulation Tests")
+set_target_properties(ModelDrivenSimulationTests PROPERTIES
+    OUTPUT_NAME "model_driven_simulation_tests"
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/bin")
+target_sources(ModelDrivenSimulationTests PRIVATE
+    tools/model_driven_sim_tests/ModelDrivenSimulationTests.cpp
+    Source/SystemSimulationSession.cpp
+    Source/ControlPanelModel.cpp
+    Source/SystemAssembly.cpp
+    Source/FrustComponent.cpp
+    Source/FrustComponentCompiler.cpp
+    Source/NodeDesignerPanel.cpp
+    Source/NodeCompiler.cpp
+    Source/FrustEngine.cpp
+    Source/SchematicSymbols.cpp
+    Source/MechanicalSceneModel.cpp
+    Source/MachineModel.cpp
+)
+target_include_directories(ModelDrivenSimulationTests PRIVATE Source)
+target_compile_definitions(ModelDrivenSimulationTests PRIVATE JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0)
+target_link_libraries(ModelDrivenSimulationTests PRIVATE
+    circuit_sim
+    frust_plugin_host
+    juce::juce_core
+    juce::juce_events
+    juce::juce_graphics
+    juce::juce_data_structures
+    juce::juce_gui_basics
+)
+juce_generate_juce_header(ModelDrivenSimulationTests)
+add_test(NAME ModelDrivenSimulationTests COMMAND ModelDrivenSimulationTests)
 
 # Headless layout/routing preview: renders reference circuits to PNG and
 # prints readability metrics, without opening the app.

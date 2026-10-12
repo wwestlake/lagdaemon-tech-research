@@ -10,7 +10,7 @@
 
 namespace machine_builder
 {
-class MachineDesign;
+struct MachineDesign;
 }
 
 namespace sim_panel

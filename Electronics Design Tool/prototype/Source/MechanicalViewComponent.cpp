@@ -25,8 +25,8 @@ MechanicalViewComponent::MechanicalViewComponent(std::shared_ptr<sim_panel::Syst
     camera_.panY = 0.0;
     camera_.perspective = true;
 
-    // Load default dual-motor scene
-    scene_ = MechanicalScene::createDualMotorShaftScene();
+    scene_.id = "scene_blank";
+    scene_.name = "No Active Machine";
 
     // Setup controls
     titleLabel.setText("Mechanical View", juce::dontSendNotification);
@@ -34,13 +34,21 @@ MechanicalViewComponent::MechanicalViewComponent(std::shared_ptr<sim_panel::Syst
     titleLabel.setColour(juce::Label::textColourId, juce::Colour(0xffdce9ee));
     addAndMakeVisible(titleLabel);
 
-    sceneSelector.addItem("Dual Motor Assembly", 1);
-    sceneSelector.addItem("Controlled Robotic Arm", 2);
+    sceneSelector.addItem("No Active Machine", 1);
+    sceneSelector.addItem("Dual Motor Assembly", 2);
+    sceneSelector.addItem("Controlled Robotic Arm", 3);
     sceneSelector.setSelectedId(1, juce::dontSendNotification);
     sceneSelector.onChange = [this] {
         if (sceneSelector.getSelectedId() == 1)
-            setScene(MechanicalScene::createDualMotorShaftScene());
+        {
+            MechanicalScene blank;
+            blank.id = "scene_blank";
+            blank.name = "No Active Machine";
+            setScene(blank);
+        }
         else if (sceneSelector.getSelectedId() == 2)
+            setScene(MechanicalScene::createDualMotorShaftScene());
+        else if (sceneSelector.getSelectedId() == 3)
             setScene(MechanicalScene::createControlledArmScene());
     };
     addAndMakeVisible(sceneSelector);

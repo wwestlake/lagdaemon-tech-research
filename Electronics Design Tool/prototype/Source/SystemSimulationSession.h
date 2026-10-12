@@ -3,6 +3,8 @@
 #include "CircuitSolver.h"
 #include "Mechanical.h"
 
+#include <juce_core/juce_core.h>
+
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
@@ -82,7 +84,7 @@ public:
     void setupDefaultMotorSystem();
 
     // Setup from a user-defined or hierarchical SystemAssembly
-    bool setupAssembly(const class SystemAssembly& assembly);
+    bool setupAssembly(const class SystemAssembly& assembly, const juce::File& projectFolder = {});
 
     // Simulation lifecycle commands
     bool start();

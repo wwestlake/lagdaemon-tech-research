@@ -5,6 +5,29 @@
 
 namespace machine_builder
 {
+namespace
+{
+juce::File resolveReferenceFile(const std::string& referenceFile, const juce::File& projectFolder)
+{
+    if (referenceFile.empty())
+        return {};
+
+    const juce::String ref(referenceFile);
+    if (juce::File::isAbsolutePath(ref))
+        return juce::File(ref);
+
+    if (projectFolder != juce::File())
+        return projectFolder.getChildFile(ref);
+
+    return juce::File(ref);
+}
+
+bool hasSystemPort(const sim_panel::SystemAssembly& assembly, const std::string& portName)
+{
+    return std::any_of(assembly.systemPorts.begin(), assembly.systemPorts.end(),
+                       [&](const sim_panel::SubsystemPort& p) { return p.name == portName; });
+}
+}
 
 // -----------------------------------------------------------------------------
 // SimulationConfig JSON
@@ -106,14 +129,16 @@ std::vector<Diagnostic> MachineDesign::validate(const juce::File& projectFolder)
             diags.push_back({ Diagnostic::Level::Error, "assembly", inst.instanceId,
                               "Referenced definition not found: " + inst.definitionId });
         }
-        else if (def->kind == sim_panel::SubsystemKind::SchematicReference && !def->referenceFile.empty())
+        else if ((def->kind == sim_panel::SubsystemKind::SchematicReference
+               || def->kind == sim_panel::SubsystemKind::ProgrammableComponent)
+              && !def->referenceFile.empty())
         {
             if (projectFolder != juce::File())
             {
-                const auto ref = projectFolder.getChildFile(def->referenceFile);
+                const auto ref = resolveReferenceFile(def->referenceFile, projectFolder);
                 if (!ref.existsAsFile())
                     diags.push_back({ Diagnostic::Level::Error, "assembly", inst.instanceId,
-                                      "Referenced schematic file not found: " + def->referenceFile });
+                                      "Referenced subsystem file not found: " + def->referenceFile });
             }
         }
     }
@@ -121,10 +146,16 @@ std::vector<Diagnostic> MachineDesign::validate(const juce::File& projectFolder)
     // 2. Validate Connections
     for (const auto& conn : assembly.connections)
     {
-        const auto* fromInst = assembly.findInstance(conn.fromInstance);
-        const auto* toInst = assembly.findInstance(conn.toInstance);
+        const auto* fromInst = conn.fromInstance == "system" ? nullptr : assembly.findInstance(conn.fromInstance);
+        const auto* toInst = conn.toInstance == "system" ? nullptr : assembly.findInstance(conn.toInstance);
 
-        if (fromInst == nullptr)
+        if (conn.fromInstance == "system")
+        {
+            if (!hasSystemPort(assembly, conn.fromPort))
+                diags.push_back({ Diagnostic::Level::Error, "assembly", conn.sourcePath(),
+                                  "Connection source system port not found: system." + conn.fromPort });
+        }
+        else if (fromInst == nullptr)
         {
             diags.push_back({ Diagnostic::Level::Error, "assembly", conn.fromInstance,
                               "Connection source instance not found: " + conn.fromInstance });
@@ -139,7 +170,13 @@ std::vector<Diagnostic> MachineDesign::validate(const juce::File& projectFolder)
             }
         }
 
-        if (toInst == nullptr)
+        if (conn.toInstance == "system")
+        {
+            if (!hasSystemPort(assembly, conn.toPort))
+                diags.push_back({ Diagnostic::Level::Error, "assembly", conn.destPath(),
+                                  "Connection destination system port not found: system." + conn.toPort });
+        }
+        else if (toInst == nullptr)
         {
             diags.push_back({ Diagnostic::Level::Error, "assembly", conn.toInstance,
                               "Connection destination instance not found: " + conn.toInstance });
@@ -559,12 +596,13 @@ bool MachineDesign::removeControlWidget(const std::string& widgetId, std::string
 // Compilation & Session Integration
 // -----------------------------------------------------------------------------
 
-bool MachineDesign::compileAndLoadIntoSession(sim_panel::SystemSimulationSession& session, std::string* error) const
+bool MachineDesign::compileAndLoadIntoSession(sim_panel::SystemSimulationSession& session, std::string* error,
+                                              const juce::File& projectFolder) const
 {
     auto asmCopy = assembly;
     asmCopy.mechanicalScene = scene;
 
-    if (!session.setupAssembly(asmCopy))
+    if (!session.setupAssembly(asmCopy, projectFolder))
     {
         if (error) *error = "Failed to compile assembly into simulation session.";
         return false;
@@ -652,6 +690,10 @@ bool MachineDesign::loadFromFile(const juce::File& file, MachineDesign& out, juc
         return false;
     }
     out = fromJson(parsed);
+    const auto base = file.getParentDirectory();
+    for (auto& def : out.assembly.definitions)
+        if (!def.referenceFile.empty() && !juce::File::isAbsolutePath(juce::String(def.referenceFile)))
+            def.referenceFile = base.getChildFile(juce::String(def.referenceFile)).getFullPathName().toStdString();
     return true;
 }
 
@@ -682,7 +724,6 @@ MachineDesign MachineDesign::createDualMotorMachineTemplate()
     m.description = "Coordinated dual-motor system with independent closed-loop velocity controllers, "
                     "delayed start sequencing, load disturbance isolation, and master emergency stop.";
     m.version = "1.0";
-
     // 1. Definitions
     m.assembly.definitions.push_back(sim_panel::SystemAssembly::makeDCMotorDefinition());
     m.assembly.definitions.push_back(sim_panel::SystemAssembly::makeMotorControllerDefinition());

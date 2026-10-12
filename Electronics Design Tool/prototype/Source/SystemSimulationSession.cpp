@@ -227,10 +227,10 @@ void SystemSimulationSession::setupCircuit(circuit_sim::Circuit circuit,
     outputBranchBindings_ = outputBranchBindings;
 }
 
-bool SystemSimulationSession::setupAssembly(const SystemAssembly& assembly)
+bool SystemSimulationSession::setupAssembly(const SystemAssembly& assembly, const juce::File& projectFolder)
 {
     stop();
-    auto compiled = AssemblyCompiler::compile(assembly);
+    auto compiled = AssemblyCompiler::compile(assembly, projectFolder);
     if (!compiled.success)
     {
         addEventLog("Assembly compilation failed: " + compiled.error, "FAULT");

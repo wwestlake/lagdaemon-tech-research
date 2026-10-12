@@ -245,7 +245,11 @@ void testDualMotorCoordinatedSystem()
     check(snap.booleanSignals["system.power"] || snap.booleanSignals["power_switch"],
           "4. System power switch set ON; sequencer initialized");
 
-    // Step 3: Motor A starts and reaches its operating speed (300 rad/s)
+    session->setBooleanInput("system.start", true);
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    session->setBooleanInput("system.start", false);
+
+    // Step 3: Operator starts the sequence; Motor A reaches its operating speed (300 rad/s)
     // Wait for Motor A to accelerate and stabilize
     std::this_thread::sleep_for(std::chrono::milliseconds(150));
     snap = session->getSnapshot();
@@ -359,7 +363,11 @@ void testUserAssembledMotorSystem()
     auto snap = session->getSnapshot();
     check(snap.booleanSignals["system.power"], "4. System power active on assembled system");
 
-    // 5. Motor A begins operating and reaches 300 rad/s
+    session->setBooleanInput("system.start", true);
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    session->setBooleanInput("system.start", false);
+
+    // 5. Motor A begins operating after the operator starts the system and reaches 300 rad/s
     std::this_thread::sleep_for(std::chrono::milliseconds(150));
     snap = session->getSnapshot();
     const double wA_5 = snap.numericSignals["motorA.speed"];
@@ -989,6 +997,8 @@ void testAuthoritativeActiveMachineIntegration()
 
 int main()
 {
+    juce::ScopedJuceInitialiser_GUI juceInit;
+
     std::printf("====================================================\n");
     std::printf("  Control Panel & Interactive Simulation Tests (P3-P8) \n");
     std::printf("====================================================\n");

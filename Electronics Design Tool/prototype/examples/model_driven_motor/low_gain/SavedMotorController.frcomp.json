@@ -1,0 +1,90 @@
+{
+  "schemaVersion": 1,
+  "kind": "frust_component",
+  "name": "SavedMotorController",
+  "description": "Saved FRust/node proportional motor controller with run latch.",
+  "pins": [
+    {
+      "id": "pwr_in",
+      "role": "input",
+      "side": "left",
+      "order": -1
+    },
+    {
+      "id": "start_in",
+      "role": "input",
+      "side": "left",
+      "order": -1
+    },
+    {
+      "id": "stop_in",
+      "role": "input",
+      "side": "left",
+      "order": -1
+    },
+    {
+      "id": "estop_in",
+      "role": "input",
+      "side": "left",
+      "order": -1
+    },
+    {
+      "id": "reset_in",
+      "role": "input",
+      "side": "left",
+      "order": -1
+    },
+    {
+      "id": "setpoint_in",
+      "role": "input",
+      "side": "left",
+      "order": -1
+    },
+    {
+      "id": "feedback_in",
+      "role": "input",
+      "side": "left",
+      "order": -1
+    },
+    {
+      "id": "drive_out",
+      "role": "voltage_output",
+      "side": "left",
+      "order": -1
+    },
+    {
+      "id": "run_lamp",
+      "role": "voltage_output",
+      "side": "left",
+      "order": -1
+    },
+    {
+      "id": "fault_lamp",
+      "role": "voltage_output",
+      "side": "left",
+      "order": -1
+    }
+  ],
+  "parameters": [
+    {
+      "name": "kp",
+      "default": 12.0
+    },
+    {
+      "name": "v_max",
+      "default": 18.0
+    },
+    {
+      "name": "v_min",
+      "default": 0.0
+    }
+  ],
+  "state": [
+    {
+      "name": "run",
+      "initial": 0.0
+    }
+  ],
+  "outputResistance": 0.05,
+  "program": "SavedMotorController.frnode.json"
+}

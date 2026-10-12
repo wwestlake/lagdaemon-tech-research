@@ -101,7 +101,8 @@ struct MachineDesign
     bool removeControlWidget(const std::string& widgetId, std::string* error = nullptr);
 
     // Runtime compilation
-    bool compileAndLoadIntoSession(sim_panel::SystemSimulationSession& session, std::string* error = nullptr) const;
+    bool compileAndLoadIntoSession(sim_panel::SystemSimulationSession& session, std::string* error = nullptr,
+                                   const juce::File& projectFolder = {}) const;
 
     // JSON serialization
     juce::var toJson() const;

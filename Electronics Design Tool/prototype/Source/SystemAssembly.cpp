@@ -1,7 +1,9 @@
 #include "SystemAssembly.h"
+#include "FrustComponentCompiler.h"
 
 #include <algorithm>
 #include <cmath>
+#include <cstring>
 #include <sstream>
 
 namespace sim_panel
@@ -232,21 +234,10 @@ SubsystemDefinition SubsystemDefinition::fromFrustComponent(const frust_componen
     d.displayName = def.name.toStdString();
     d.kind = SubsystemKind::ProgrammableComponent;
     d.description = def.description.toStdString();
-    d.referenceFile = def.programFile.toStdString();
+    d.componentData = frust_component::toVar(def);
 
-    auto* obj = new juce::DynamicObject();
-    obj->setProperty("name", def.name);
-    obj->setProperty("description", def.description);
-    obj->setProperty("programFile", def.programFile);
-
-    juce::Array<juce::var> pinArr;
     for (const auto& pin : def.pins)
     {
-        auto* pObj = new juce::DynamicObject();
-        pObj->setProperty("id", pin.id);
-        pObj->setProperty("role", (int)pin.role);
-        pinArr.add(juce::var(pObj));
-
         SubsystemPort p;
         p.name = pin.id.toStdString();
         p.direction = (pin.role == frust_component::PinRole::Input) ? PortDirection::Input : PortDirection::Output;
@@ -255,20 +246,9 @@ SubsystemDefinition SubsystemDefinition::fromFrustComponent(const frust_componen
         p.description = ("Pin " + pin.id).toStdString();
         d.ports.push_back(p);
     }
-    obj->setProperty("pins", juce::var(pinArr));
 
-    juce::Array<juce::var> paramArr;
     for (const auto& param : def.parameters)
-    {
-        auto* parObj = new juce::DynamicObject();
-        parObj->setProperty("name", param.name);
-        parObj->setProperty("defaultValue", param.defaultValue);
-        paramArr.add(juce::var(parObj));
-
         d.defaultNumericParams[param.name.toStdString()] = param.defaultValue;
-    }
-    obj->setProperty("parameters", juce::var(paramArr));
-    d.componentData = juce::var(obj);
 
     return d;
 }
@@ -280,53 +260,12 @@ bool SubsystemDefinition::loadFrustComponentDefinition(const juce::File& file, S
         error = "Component definition file not found: " + file.getFullPathName();
         return false;
     }
-    const auto parsed = juce::JSON::parse(file);
-    if (!parsed.isObject())
-    {
-        error = "Invalid JSON in component definition: " + file.getFullPathName();
+    frust_component::Definition definition;
+    if (!frust_component::load(file, definition, error))
         return false;
-    }
-    const auto* root = parsed.getDynamicObject();
-    if (root == nullptr) return false;
 
-    out.id = file.getFileNameWithoutExtension().toStdString();
-    out.displayName = root->getProperty("name").toString().toStdString();
-    if (out.displayName.empty()) out.displayName = out.id;
-    out.kind = SubsystemKind::ProgrammableComponent;
-    out.description = root->getProperty("description").toString().toStdString();
+    out = fromFrustComponent(definition, file.getFileNameWithoutExtension().toStdString());
     out.referenceFile = file.getFullPathName().toStdString();
-    out.componentData = parsed;
-
-    if (const auto* pins = root->getProperty("pins").getArray())
-    {
-        for (const auto& pinVar : *pins)
-        {
-            if (const auto* pObj = pinVar.getDynamicObject())
-            {
-                SubsystemPort p;
-                p.name = pObj->getProperty("id").toString().toStdString();
-                const auto roleStr = pObj->getProperty("role").toString().toLowerCase();
-                const int roleInt = (int)pObj->getProperty("role");
-                bool isInput = (roleInt == 0 || roleStr == "input" || roleStr == "in");
-                p.direction = isInput ? PortDirection::Input : PortDirection::Output;
-                p.domain = PortDomain::SignalControl;
-                p.unit = "V";
-                p.description = pObj->getProperty("label").toString().toStdString();
-                out.ports.push_back(p);
-            }
-        }
-    }
-
-    if (const auto* params = root->getProperty("parameters").getArray())
-    {
-        for (const auto& paramVar : *params)
-        {
-            if (const auto* pObj = paramVar.getDynamicObject())
-            {
-                out.defaultNumericParams[pObj->getProperty("name").toString().toStdString()] = (double)pObj->getProperty("defaultValue");
-            }
-        }
-    }
     return true;
 }
 
@@ -909,6 +848,11 @@ SystemAssembly SystemAssembly::createUserAssembledMotorSystem()
     return a;
 }
 
+namespace
+{
+juce::File resolveReferenceFile(const std::string& referenceFile, const juce::File& projectFolder);
+}
+
 std::vector<std::string> SystemAssembly::validate(const juce::File& projectFolder) const
 {
     std::vector<std::string> issues;
@@ -930,8 +874,8 @@ std::vector<std::string> SystemAssembly::validate(const juce::File& projectFolde
         {
             if (projectFolder.exists() && !def->referenceFile.empty())
             {
-                juce::File refFile = projectFolder.getChildFile(juce::String(def->referenceFile));
-                if (!refFile.existsAsFile() && !juce::File(juce::String(def->referenceFile)).existsAsFile())
+                juce::File refFile = resolveReferenceFile(def->referenceFile, projectFolder);
+                if (!refFile.existsAsFile())
                 {
                     issues.push_back("Subsystem definition '" + def->id + "' reference file not found: " + def->referenceFile);
                 }
@@ -941,12 +885,27 @@ std::vector<std::string> SystemAssembly::validate(const juce::File& projectFolde
 
     for (const auto& conn : connections)
     {
-        const auto* srcInst = findInstance(conn.fromInstance);
-        const auto* dstInst = findInstance(conn.toInstance);
+        auto systemPortExists = [this](const std::string& portName) {
+            return std::any_of(systemPorts.begin(), systemPorts.end(), [&](const SubsystemPort& p) { return p.name == portName; });
+        };
 
-        if (!srcInst)
+        const auto* srcInst = conn.fromInstance == "system" ? nullptr : findInstance(conn.fromInstance);
+        const auto* dstInst = conn.toInstance == "system" ? nullptr : findInstance(conn.toInstance);
+
+        if (conn.fromInstance == "system")
+        {
+            if (!systemPortExists(conn.fromPort))
+                issues.push_back("Connection references non-existent source system port: system." + conn.fromPort);
+        }
+        else if (!srcInst)
             issues.push_back("Connection references non-existent source instance: " + conn.fromInstance);
-        if (!dstInst)
+
+        if (conn.toInstance == "system")
+        {
+            if (!systemPortExists(conn.toPort))
+                issues.push_back("Connection references non-existent destination system port: system." + conn.toPort);
+        }
+        else if (!dstInst)
             issues.push_back("Connection references non-existent destination instance: " + conn.toInstance);
 
         if (srcInst)
@@ -1122,6 +1081,10 @@ bool SystemAssembly::loadFromFile(const juce::File& file, SystemAssembly& out, j
     }
 
     out = fromJson(parsed);
+    const auto base = file.getParentDirectory();
+    for (auto& def : out.definitions)
+        if (!def.referenceFile.empty() && !juce::File::isAbsolutePath(juce::String(def.referenceFile)))
+            def.referenceFile = base.getChildFile(juce::String(def.referenceFile)).getFullPathName().toStdString();
     return true;
 }
 
@@ -1182,8 +1145,9 @@ public:
             switch (state)
             {
                 case State::Off:
-                    trialState = State::Running;
-                    trialStartTime = t;
+                    trialState = start ? State::Running : State::Ready;
+                    if (start)
+                        trialStartTime = t;
                     break;
 
                 case State::Ready:
@@ -1454,7 +1418,87 @@ private:
 // Assembly Compiler Implementation
 // -----------------------------------------------------------------------------
 
-CompiledAssemblyCircuit AssemblyCompiler::compile(const SystemAssembly& assembly)
+namespace
+{
+std::string signalPath(const std::string& instance, const std::string& port)
+{
+    return (instance == "system" || instance.empty()) ? ("system." + port) : (instance + "." + port);
+}
+
+std::pair<std::string, std::string> splitSignalPath(const std::string& path)
+{
+    const auto dot = path.find('.');
+    if (dot == std::string::npos)
+        return { "system", path };
+    return { path.substr(0, dot), path.substr(dot + 1) };
+}
+
+std::string safeElementSuffix(const std::string& path)
+{
+    juce::String s(path);
+    return s.retainCharacters("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-.")
+            .replaceCharacter('.', '_')
+            .replaceCharacter('-', '_')
+            .toStdString();
+}
+
+juce::File resolveReferenceFile(const std::string& referenceFile, const juce::File& projectFolder)
+{
+    if (referenceFile.empty())
+        return {};
+
+    const juce::String ref(referenceFile);
+    if (juce::File::isAbsolutePath(ref))
+        return juce::File(ref);
+
+    if (projectFolder != juce::File())
+        return projectFolder.getChildFile(ref);
+
+    return juce::File(ref);
+}
+
+bool loadProgrammableDefinition(const SubsystemDefinition& def,
+                                const juce::File& projectFolder,
+                                frust_component::Definition& out,
+                                juce::File& definitionFile,
+                                juce::String& error)
+{
+    if (!def.referenceFile.empty())
+    {
+        const auto ref = resolveReferenceFile(def.referenceFile, projectFolder);
+        if (ref.existsAsFile())
+        {
+            if (!frust_component::load(ref, out, error))
+                return false;
+            definitionFile = ref;
+            return true;
+        }
+
+        if (!def.componentData.isObject())
+        {
+            error = "Programmable component definition file not found: " + ref.getFullPathName();
+            return false;
+        }
+    }
+
+    if (!def.componentData.isObject())
+    {
+        error = "Programmable component '" + juce::String(def.id) + "' has no component definition data or valid reference file.";
+        return false;
+    }
+
+    if (!frust_component::fromVar(def.componentData, out, error))
+    {
+        error = "Programmable component '" + juce::String(def.id) + "' definition is invalid: " + error;
+        return false;
+    }
+
+    definitionFile = resolveReferenceFile(def.referenceFile, projectFolder);
+    return true;
+}
+}
+
+CompiledAssemblyCircuit AssemblyCompiler::compile(const SystemAssembly& assembly, const juce::File& projectFolder)
 {
     CompiledAssemblyCircuit res;
     circuit_sim::Circuit& c = res.circuit;
@@ -1480,7 +1524,7 @@ CompiledAssemblyCircuit AssemblyCompiler::compile(const SystemAssembly& assembly
 
     for (const auto& conn : assembly.connections)
     {
-        uniteNets(conn.sourcePath(), conn.destPath());
+        uniteNets(signalPath(conn.fromInstance, conn.fromPort), signalPath(conn.toInstance, conn.toPort));
     }
 
     std::map<std::string, circuit_sim::Node> netToNode;
@@ -1502,6 +1546,12 @@ CompiledAssemblyCircuit AssemblyCompiler::compile(const SystemAssembly& assembly
         netToNode[root] = node;
         portNodes[fullPath] = node;
         return node;
+    };
+
+    auto bindExistingNode = [&](const std::string& path, circuit_sim::Node node) {
+        const auto root = findRoot(findRoot, path);
+        portNodes[path] = node;
+        netToNode[root] = node;
     };
 
     // Instantiate Master System-Level Inputs
@@ -1535,6 +1585,39 @@ CompiledAssemblyCircuit AssemblyCompiler::compile(const SystemAssembly& assembly
     res.signalNodes["system.stop"] = stopNode;
     res.signalNodes["system.estop"] = estopNode;
     res.signalNodes["system.reset"] = resetNode;
+
+    bindExistingNode("system.power", pwrNode);
+    bindExistingNode("system.start", startNode);
+    bindExistingNode("system.stop", stopNode);
+    bindExistingNode("system.estop", estopNode);
+    bindExistingNode("system.reset", resetNode);
+
+    auto addGenericVoltageInput = [&](const std::string& path, double defaultValue) {
+        if (res.inputElements.find(path) != res.inputElements.end())
+            return;
+        const auto [instance, port] = splitSignalPath(path);
+        const auto node = getNodeForPort(instance, port);
+        circuit_sim::Waveform dc;
+        dc.offset = defaultValue;
+        const int elem = c.addVoltageSource("V_IN_" + safeElementSuffix(path), node, 0, dc);
+        res.inputElements[path] = elem;
+        res.signalNodes[path] = node;
+        if (instance == "system")
+            res.inputElements[port] = elem;
+    };
+
+    for (const auto& port : assembly.systemPorts)
+    {
+        if (port.direction == PortDirection::Output)
+            continue;
+
+        const auto path = port.name.find('.') == std::string::npos ? ("system." + port.name) : port.name;
+        if (res.inputElements.find(path) != res.inputElements.end())
+            continue;
+
+        if (port.domain == PortDomain::SignalControl || port.domain == PortDomain::Electrical)
+            addGenericVoltageInput(path, 0.0);
+    }
 
     // Instantiate Subsystem Instances
     for (const auto& inst : assembly.instances)
@@ -1857,70 +1940,53 @@ CompiledAssemblyCircuit AssemblyCompiler::compile(const SystemAssembly& assembly
         }
         else if (def->kind == SubsystemKind::ProgrammableComponent)
         {
-            // User-defined Node Designer / FRust programmable component
-            const double kp = inst.getParam("kp", 0.08);
-            const double ki = inst.getParam("ki", 2.0);
-            const double kd = inst.getParam("kd", 0.0002);
-            const double vMax = inst.getParam("v_max", 18.0);
-            const double vMin = inst.getParam("v_min", 0.0);
-
-            auto ctlDev = std::make_shared<ModularMotorControllerDevice>(kp, ki, kd, vMax, vMin);
-
-            const auto nPwr = pwrNode;
-            const auto nStart = getNodeForPort(inst.instanceId, "start_in");
-            const auto nStop = getNodeForPort(inst.instanceId, "stop_in");
-            const auto nEstop = getNodeForPort(inst.instanceId, "estop_in");
-            const auto nReset = getNodeForPort(inst.instanceId, "reset_in");
-            const auto nSetpoint = getNodeForPort(inst.instanceId, "setpoint_in");
-            const auto nFeedback = getNodeForPort(inst.instanceId, "feedback_in");
-            const auto nDrive = getNodeForPort(inst.instanceId, "drive_out");
-            const auto nRunLamp = getNodeForPort(inst.instanceId, "run_lamp");
-            const auto nFaultLamp = getNodeForPort(inst.instanceId, "fault_lamp");
-
-            circuit_sim::Waveform dcSet;
-            const double initSetpoint = (inst.instanceId == "controllerB" || inst.instanceId.find("B") != std::string::npos) ? 2.0 : 3.0;
-            dcSet.offset = initSetpoint;
-            const int setpointElem = c.addVoltageSource("V_SET_" + inst.instanceId, nSetpoint, 0, dcSet);
-
-            res.inputElements[inst.instanceId + ".speed_setpoint"] = setpointElem;
-            res.inputElements[inst.instanceId + ".setpoint"] = setpointElem;
-            if (inst.instanceId == "controllerA")
+            frust_component::Definition componentDefinition;
+            juce::File definitionFile;
+            juce::String componentError;
+            if (!loadProgrammableDefinition(*def, projectFolder, componentDefinition, definitionFile, componentError))
             {
-                res.inputElements["motorA.speed_setpoint"] = setpointElem;
-                res.inputElements["motorDriveA.speed_setpoint"] = setpointElem;
-                res.inputElements["speed_setpoint"] = setpointElem;
-            }
-            else if (inst.instanceId == "controllerB")
-            {
-                res.inputElements["motorB.speed_setpoint"] = setpointElem;
-                res.inputElements["motorDriveB.speed_setpoint"] = setpointElem;
+                res.error = componentError.toStdString();
+                return res;
             }
 
-            c.addProgrammable("U_" + inst.instanceId,
-                             { nPwr, nStart, nStop, nEstop, nReset,
-                               nSetpoint, nFeedback, nDrive, nRunLamp, nFaultLamp },
-                             ctlDev);
-
-            // Pull-down terminations on indicator lamps
-            c.addResistor("R_RUN_" + inst.instanceId, nRunLamp, 0, 1000.0);
-            c.addResistor("R_FLT_" + inst.instanceId, nFaultLamp, 0, 1000.0);
-
-            res.signalNodes[inst.instanceId + ".setpoint"] = nSetpoint;
-            res.signalNodes[inst.instanceId + ".drive"] = nDrive;
-            res.signalNodes[inst.instanceId + ".running"] = nRunLamp;
-            res.signalNodes[inst.instanceId + ".fault"] = nFaultLamp;
-            res.signalNodes[inst.instanceId + ".feedback"] = nFeedback;
-
-            if (inst.instanceId == "controllerA")
+            const auto programFile = frust_component::programFileFor(componentDefinition, definitionFile, projectFolder);
+            if (!frust_component::compileProgramFile(componentDefinition, programFile, componentError))
             {
-                res.signalNodes["controllerA.drive"] = nDrive;
-                res.signalNodes["controllerA.setpoint"] = nSetpoint;
+                res.error = componentError.toStdString();
+                return res;
             }
-            else if (inst.instanceId == "controllerB")
+
+            std::map<juce::String, double> parameterValues;
+            for (const auto& p : componentDefinition.parameters)
             {
-                res.signalNodes["controllerB.drive"] = nDrive;
-                res.signalNodes["controllerB.setpoint"] = nSetpoint;
+                auto it = inst.numericParams.find(p.name.toStdString());
+                if (it != inst.numericParams.end())
+                    parameterValues[p.name] = it->second;
             }
+
+            auto device = frust_component::Library::instance().makeDevice(componentDefinition, parameterValues,
+                                                                          juce::String(inst.instanceId), componentError);
+            if (device == nullptr)
+            {
+                res.error = componentError.toStdString();
+                return res;
+            }
+
+            std::vector<circuit_sim::Node> pins;
+            for (const auto& pin : componentDefinition.pins)
+            {
+                const auto node = getNodeForPort(inst.instanceId, pin.id.toStdString());
+                pins.push_back(node);
+                res.signalNodes[inst.instanceId + "." + pin.id.toStdString()] = node;
+            }
+
+            if (pins.empty())
+            {
+                res.error = "Programmable component '" + inst.instanceId + "' exposes no pins.";
+                return res;
+            }
+
+            c.addProgrammable("U_" + inst.instanceId, pins, std::move(device));
         }
     }
 

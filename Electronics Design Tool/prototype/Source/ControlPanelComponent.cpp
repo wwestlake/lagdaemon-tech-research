@@ -143,6 +143,56 @@ private:
     bool active_ = false;
 };
 
+// Toggle switch drawn as a real operator switch rather than JUCE's checkbox.
+class ToggleSwitchComponent final : public juce::ToggleButton
+{
+public:
+    explicit ToggleSwitchComponent(const std::string& label)
+        : juce::ToggleButton(juce::String(label))
+    {
+        setClickingTogglesState(true);
+        setMouseCursor(juce::MouseCursor::PointingHandCursor);
+    }
+
+    void paintButton(juce::Graphics& g, bool shouldDrawButtonAsHighlighted, bool shouldDrawButtonAsDown) override
+    {
+        auto b = getLocalBounds().toFloat().reduced(4.0f);
+        const float trackW = 58.0f;
+        const float trackH = 28.0f;
+        const auto track = juce::Rectangle<float>(b.getX(), b.getCentreY() - trackH * 0.5f, trackW, trackH);
+        const bool on = getToggleState();
+
+        auto trackColour = on ? juce::Colour(0xff2fcb72) : juce::Colour(0xff343d4a);
+        if (shouldDrawButtonAsDown)
+            trackColour = trackColour.darker(0.25f);
+        else if (shouldDrawButtonAsHighlighted)
+            trackColour = trackColour.brighter(0.15f);
+
+        g.setColour(trackColour);
+        g.fillRoundedRectangle(track, trackH * 0.5f);
+        g.setColour(juce::Colour(0xff0d1118));
+        g.drawRoundedRectangle(track, trackH * 0.5f, 1.2f);
+
+        g.setFont(juce::Font(9.0f, juce::Font::bold));
+        g.setColour(on ? juce::Colour(0xff052411) : juce::Colour(0xffaeb8c5));
+        g.drawText(on ? "ON" : "OFF", track.reduced(8.0f, 0.0f).toNearestInt(), juce::Justification::centred);
+
+        const float knobSize = trackH - 6.0f;
+        const float knobX = on ? track.getRight() - knobSize - 3.0f : track.getX() + 3.0f;
+        const auto knob = juce::Rectangle<float>(knobX, track.getCentreY() - knobSize * 0.5f, knobSize, knobSize);
+        g.setColour(juce::Colour(0xffeef4f8));
+        g.fillEllipse(knob);
+        g.setColour(juce::Colour(0xff677282));
+        g.drawEllipse(knob, 1.0f);
+
+        g.setColour(juce::Colour(0xffc5d1de));
+        g.setFont(juce::Font(13.0f, juce::Font::bold));
+        g.drawText(getButtonText(), (int)(track.getRight() + 12.0f), 0,
+                   getWidth() - (int)(track.getRight() + 16.0f), getHeight(),
+                   juce::Justification::centredLeft);
+    }
+};
+
 // Custom Emergency Stop Button
 class EmergencyStopComponent final : public juce::Component
 {
@@ -391,7 +441,9 @@ ControlPanelComponent::ControlPanelComponent(std::shared_ptr<SystemSimulationSes
     addAndMakeVisible(inputViewport);
     addAndMakeVisible(outputViewport);
 
-    setLayout(ControlPanelLayout::createDefaultMotorPanel());
+    ControlPanelLayout blank;
+    blank.title = "No Active Machine";
+    setLayout(blank);
     startTimerHz(30); // 30 Hz UI refresh
 }
 
@@ -407,7 +459,16 @@ bool ControlPanelComponent::loadMachine(const machine_builder::MachineDesign& ma
         if (!machine.compileAndLoadIntoSession(*session_, error))
             return false;
     }
+    const auto rate = machine.simConfig.defaultRate;
+    const int rateId = rate <= 0.0 ? 6
+                     : rate <= 0.11 ? 1
+                     : rate <= 0.55 ? 2
+                     : rate <= 1.1 ? 3
+                     : rate <= 2.1 ? 4
+                     : 5;
+    rateBox.setSelectedId(rateId, juce::dontSendNotification);
     setLayout(machine.controlPanel);
+    statusLabel.setText("STOPPED", juce::dontSendNotification);
     return true;
 }
 
@@ -444,9 +505,11 @@ void ControlPanelComponent::buildWidgets()
             }
             else if (w.type == WidgetType::ToggleSwitch)
             {
-                auto tog = std::make_unique<juce::ToggleButton>(juce::String(w.title));
+                auto tog = std::make_unique<ToggleSwitchComponent>(w.title);
                 tog->setToggleState(w.defaultValue > 0.5, juce::dontSendNotification);
                 const auto sig = w.signalName;
+                if (session_)
+                    session_->setBooleanInput(sig, tog->getToggleState());
                 tog->onClick = [this, togPtr = tog.get(), sig] {
                     if (session_)
                         session_->setBooleanInput(sig, togPtr->getToggleState());
@@ -460,6 +523,8 @@ void ControlPanelComponent::buildWidgets()
                 ctrl->slider.setRange(w.minValue, w.maxValue, w.stepSize);
                 ctrl->slider.setValue(w.defaultValue, juce::dontSendNotification);
                 const auto sig = w.signalName;
+                if (session_)
+                    session_->setNumericInput(sig, ctrl->slider.getValue());
                 ctrl->slider.onValueChange = [this, sldPtr = &ctrl->slider, sig] {
                     if (session_)
                         session_->setNumericInput(sig, sldPtr->getValue());
@@ -471,6 +536,8 @@ void ControlPanelComponent::buildWidgets()
             {
                 auto estop = std::make_unique<EmergencyStopComponent>();
                 const auto sig = w.signalName;
+                if (session_)
+                    session_->setBooleanInput(sig, false);
                 estop->onStateChanged = [this, sig](bool latched) {
                     if (session_)
                         session_->setBooleanInput(sig, latched);
@@ -485,6 +552,8 @@ void ControlPanelComponent::buildWidgets()
                     cb->addItem(juce::String(w.options[i]), (int)i + 1);
                 cb->setSelectedId(1, juce::dontSendNotification);
                 const auto sig = w.signalName;
+                if (session_)
+                    session_->setNumericInput(sig, 0.0);
                 cb->onChange = [this, cbPtr = cb.get(), sig] {
                     if (session_)
                         session_->setNumericInput(sig, (double)(cbPtr->getSelectedId() - 1));
