@@ -1,4 +1,5 @@
 #include "ControlPanelComponent.h"
+#include "MachineModel.h"
 
 #include <cmath>
 #include <iomanip>
@@ -299,6 +300,39 @@ private:
     std::string label_, unit_, valText_ = "0.0";
 };
 
+// Composite Labeled Slider & Knob Widget with Clear Title & Engineering Unit
+class LabeledSliderComponent final : public juce::Component
+{
+public:
+    LabeledSliderComponent(const std::string& title, const std::string& unit, bool isKnob)
+    {
+        juce::String labelText = juce::String(title);
+        if (!unit.empty())
+            labelText << " (" << juce::String(unit) << ")";
+
+        addAndMakeVisible(label);
+        label.setFont(juce::Font(12.0f, juce::Font::bold));
+        label.setColour(juce::Label::textColourId, juce::Colour(0xffc5d1de));
+        label.setText(labelText, juce::dontSendNotification);
+
+        addAndMakeVisible(slider);
+        slider.setSliderStyle(isKnob ? juce::Slider::RotaryHorizontalVerticalDrag : juce::Slider::LinearHorizontal);
+        slider.setTextBoxStyle(juce::Slider::TextBoxRight, false, 65, 20);
+        if (!unit.empty())
+            slider.setTextValueSuffix(" " + juce::String(unit));
+    }
+
+    void resized() override
+    {
+        auto b = getLocalBounds();
+        label.setBounds(b.removeFromTop(18));
+        slider.setBounds(b);
+    }
+
+    juce::Label label;
+    juce::Slider slider;
+};
+
 } // namespace
 
 ControlPanelComponent::ControlPanelComponent()
@@ -309,8 +343,8 @@ ControlPanelComponent::ControlPanelComponent()
 ControlPanelComponent::ControlPanelComponent(std::shared_ptr<SystemSimulationSession> session)
     : session_(session)
 {
-    if (session_ && session_->simTime() == 0.0)
-        session_->setupDefaultMotorSystem();
+    // The active machine model must be loaded explicitly via loadMachine().
+    // Never silently substitute setupDefaultMotorSystem().
     // Setup Transport Buttons
     auto setupBtn = [this](juce::TextButton& btn, juce::Colour col) {
         addAndMakeVisible(btn);
@@ -366,6 +400,17 @@ ControlPanelComponent::~ControlPanelComponent()
     stopTimer();
 }
 
+bool ControlPanelComponent::loadMachine(const machine_builder::MachineDesign& machine, std::string* error)
+{
+    if (session_)
+    {
+        if (!machine.compileAndLoadIntoSession(*session_, error))
+            return false;
+    }
+    setLayout(machine.controlPanel);
+    return true;
+}
+
 void ControlPanelComponent::setLayout(const ControlPanelLayout& layout)
 {
     layout_ = layout;
@@ -411,18 +456,16 @@ void ControlPanelComponent::buildWidgets()
             }
             else if (w.type == WidgetType::Knob || w.type == WidgetType::Slider)
             {
-                auto sld = std::make_unique<juce::Slider>();
-                sld->setSliderStyle(w.type == WidgetType::Knob ? juce::Slider::RotaryHorizontalVerticalDrag : juce::Slider::LinearHorizontal);
-                sld->setTextBoxStyle(juce::Slider::TextBoxRight, false, 70, 20);
-                sld->setRange(w.minValue, w.maxValue, w.stepSize);
-                sld->setValue(w.defaultValue, juce::dontSendNotification);
+                auto ctrl = std::make_unique<LabeledSliderComponent>(w.title, w.unit, w.type == WidgetType::Knob);
+                ctrl->slider.setRange(w.minValue, w.maxValue, w.stepSize);
+                ctrl->slider.setValue(w.defaultValue, juce::dontSendNotification);
                 const auto sig = w.signalName;
-                sld->onValueChange = [this, sldPtr = sld.get(), sig] {
+                ctrl->slider.onValueChange = [this, sldPtr = &ctrl->slider, sig] {
                     if (session_)
                         session_->setNumericInput(sig, sldPtr->getValue());
                 };
-                inputContainer->addAndMakeVisible(*sld);
-                inputViews_.push_back({ w, std::move(sld) });
+                inputContainer->addAndMakeVisible(*ctrl);
+                inputViews_.push_back({ w, std::move(ctrl) });
             }
             else if (w.type == WidgetType::EmergencyStop)
             {

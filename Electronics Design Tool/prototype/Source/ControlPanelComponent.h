@@ -8,6 +8,11 @@
 #include <memory>
 #include <vector>
 
+namespace machine_builder
+{
+class MachineDesign;
+}
+
 namespace sim_panel
 {
 
@@ -28,6 +33,7 @@ public:
     SystemSimulationSession* getSession() const { return session_.get(); }
     void setSession(std::shared_ptr<SystemSimulationSession> session) { session_ = session; }
 
+    bool loadMachine(const machine_builder::MachineDesign& machine, std::string* error = nullptr);
     void setLayout(const ControlPanelLayout& layout);
     const ControlPanelLayout& getLayout() const { return layout_; }
 

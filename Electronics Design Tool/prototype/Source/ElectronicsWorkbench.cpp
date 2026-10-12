@@ -14937,6 +14937,7 @@ private:
                "Use agent_write_markdown when producing a durable report, derivation, or equation-rich explanation that should be saved and rendered in this agent window. "
                "Use research_web_search only when current external information, standards references, datasheets, or source links are needed; summarize sources conservatively. "
                "Use filesystem LiteSemRAG cards as retrieved guidance; do not assume Suite VFS storage. "
+               "When asked to demonstrate or operate a machine, invoke the demonstration tools (such as demo_run_synchronous, demo_start, demo_get_run) or machine/control panel tools to operate the real simulation and report actual measured outcomes. "
                "Be concise, report tool results plainly, and do not claim a circuit is complete or ready for solver-backed "
                "analysis until circuit_run_erc has passed or you have explicitly reported the remaining errors/warnings.";
     }
@@ -15064,6 +15065,8 @@ private:
         for (const auto& spec : mechanicalToolSpecs())
             definitions.push_back({ spec.name.toStdString(), spec.description.toStdString(), spec.schema.toStdString() });
         for (const auto& spec : machineToolSpecs())
+            definitions.push_back({ spec.name.toStdString(), spec.description.toStdString(), spec.schema.toStdString() });
+        for (const auto& spec : demoToolSpecs())
             definitions.push_back({ spec.name.toStdString(), spec.description.toStdString(), spec.schema.toStdString() });
         return definitions;
     }

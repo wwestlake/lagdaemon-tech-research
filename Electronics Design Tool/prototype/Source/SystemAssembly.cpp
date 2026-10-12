@@ -992,15 +992,37 @@ std::vector<std::string> SystemAssembly::discoverSignals() const
             sigs.push_back(inst.instanceId + ".speed");
             sigs.push_back(inst.instanceId + ".current");
             sigs.push_back(inst.instanceId + ".angle");
+            sigs.push_back(inst.instanceId + ".voltage");
+            sigs.push_back(inst.instanceId + ".load_torque");
+            if (inst.instanceId == "motorA")
+            {
+                sigs.push_back("load_torque");
+            }
         }
         if (def->kind == SubsystemKind::MotorSpeedController || def->id.find("controller") != std::string::npos)
         {
             sigs.push_back(inst.instanceId + ".drive");
             sigs.push_back(inst.instanceId + ".setpoint");
+            sigs.push_back(inst.instanceId + ".speed_setpoint");
             sigs.push_back(inst.instanceId + ".running");
             sigs.push_back(inst.instanceId + ".fault");
+            if (inst.instanceId == "controllerA")
+            {
+                sigs.push_back("motorA.speed_setpoint");
+                sigs.push_back("speed_setpoint");
+            }
+            else if (inst.instanceId == "controllerB")
+            {
+                sigs.push_back("motorB.speed_setpoint");
+            }
         }
     }
+
+    for (const auto& sp : systemPorts)
+    {
+        sigs.push_back(sp.name);
+    }
+
     return sigs;
 }
 

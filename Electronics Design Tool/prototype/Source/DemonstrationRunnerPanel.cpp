@@ -95,6 +95,11 @@ DemonstrationRunnerPanel::~DemonstrationRunnerPanel()
 void DemonstrationRunnerPanel::setMachine(const machine_builder::MachineDesign& machine)
 {
     runner_.setMachine(machine);
+    if (session_)
+    {
+        std::string err;
+        machine.compileAndLoadIntoSession(*session_, &err);
+    }
     if (mechanicalView_)
         mechanicalView_->setScene(machine.scene);
     if (controlPanel_)

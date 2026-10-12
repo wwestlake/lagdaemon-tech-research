@@ -71,8 +71,15 @@ void MachineBuilderPanel::setMachine(const MachineDesign& machine)
 {
     machine_ = machine;
     updateDiagnosticsDisplay();
+    if (session_ != nullptr)
+    {
+        std::string err;
+        machine_.compileAndLoadIntoSession(*session_, &err);
+    }
     if (mechanicalView_ != nullptr)
         mechanicalView_->setScene(machine_.scene);
+    if (controlPanel_ != nullptr)
+        controlPanel_->setLayout(machine_.controlPanel);
 }
 
 void MachineBuilderPanel::loadTemplate(const std::string& templateName)

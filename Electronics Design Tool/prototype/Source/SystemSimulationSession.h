@@ -104,10 +104,15 @@ public:
     StateSnapshot getSnapshot() const;
     void addEventLog(const std::string& message, const std::string& category = "INFO");
 
-    // Status queries
     bool isRunning() const { return isRunning_.load(); }
     bool isPaused() const { return isPaused_.load(); }
     double simTime() const { return currentSimTime_.load(); }
+
+    // Inspectable circuit and bindings
+    const circuit_sim::Circuit& baseCircuit() const { return baseCircuit_; }
+    const std::map<std::string, int>& inputElementBindings() const { return inputElementBindings_; }
+    const std::map<std::string, circuit_sim::Node>& outputNodeBindings() const { return outputNodeBindings_; }
+    const std::map<std::string, int>& outputBranchBindings() const { return outputBranchBindings_; }
 
 private:
     void workerThreadLoop();
