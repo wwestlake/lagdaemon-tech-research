@@ -203,6 +203,10 @@ target_sources(DjehutiElectronicsLab PRIVATE
     Source/MechanicalSceneModel.cpp
     Source/MechanicalViewComponent.h
     Source/MechanicalViewComponent.cpp
+    Source/MachineModel.h
+    Source/MachineModel.cpp
+    Source/MachineBuilderPanel.h
+    Source/MachineBuilderPanel.cpp
 )
 
 target_compile_definitions(DjehutiElectronicsLab PRIVATE
@@ -430,6 +434,8 @@ target_sources(ControlPanelTests PRIVATE
     Source/SystemAssembly.cpp
     Source/MechanicalSceneModel.h
     Source/MechanicalSceneModel.cpp
+    Source/MachineModel.h
+    Source/MachineModel.cpp
 )
 target_include_directories(ControlPanelTests PRIVATE Source)
 target_compile_definitions(ControlPanelTests PRIVATE JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0)

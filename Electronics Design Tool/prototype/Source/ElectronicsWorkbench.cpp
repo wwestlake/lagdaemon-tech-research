@@ -16,6 +16,8 @@
 #include "NodeDesignerPanel.h"
 #include "ControlPanelComponent.h"
 #include "MechanicalViewComponent.h"
+#include "MachineModel.h"
+#include "MachineBuilderPanel.h"
 #include "SystemSimulationSession.h"
 #include "SystemAssembly.h"
 #include "FrustExecution.h"
@@ -974,6 +976,113 @@ const std::vector<ToolSpecText>& mechanicalToolSpecs()
     return specs;
 }
 
+const std::vector<ToolSpecText>& machineToolSpecs()
+{
+    static const std::vector<ToolSpecText> specs = {
+        {
+            "machine_create",
+            "Create a new virtual machine design (blank, 'dual_motor', or 'robotic_arm' template).",
+            R"({"type":"object","properties":{"template":{"type":"string","description":"Optional template: 'blank', 'dual_motor', or 'robotic_arm'."},"name":{"type":"string","description":"Machine design display name."}},"additionalProperties":false})"
+        },
+        {
+            "machine_get",
+            "Retrieve complete integrated machine project document (assembly, scene, control panel, simConfig, diagnostics) in JSON.",
+            R"({"type":"object","properties":{},"additionalProperties":false})"
+        },
+        {
+            "machine_save",
+            "Save the active virtual machine design to a file (.machine.json).",
+            R"({"type":"object","properties":{"filePath":{"type":"string","description":"Target file path to save the machine design to."}},"additionalProperties":false})"
+        },
+        {
+            "machine_load",
+            "Load a virtual machine design from file or template into the Machine Builder.",
+            R"({"type":"object","properties":{"filePath":{"type":"string","description":"File path to load machine JSON from."},"template":{"type":"string","description":"Template name ('dual_motor' or 'robotic_arm')."}},"additionalProperties":false})"
+        },
+        {
+            "machine_validate",
+            "Perform comprehensive machine-level validation (subsystem ports, cycles, limits, missing programs, bindings).",
+            R"({"type":"object","properties":{},"additionalProperties":false})"
+        },
+        {
+            "machine_compile",
+            "Compile and load the machine design into the active simulation session and update 3D mechanical view.",
+            R"({"type":"object","properties":{},"additionalProperties":false})"
+        },
+        {
+            "machine_operate",
+            "Send an operational command (e.g. 'power_on', 'start', 'stop', 'estop', 'reset') or write signal input to the running machine.",
+            R"({"type":"object","properties":{"command":{"type":"string","description":"Command: power_on, power_off, start, stop, estop, reset."},"signal":{"type":"string","description":"Optional signal name to write."},"value":{"type":["number","boolean"],"description":"Value to write."}},"additionalProperties":false})"
+        },
+        {
+            "machine_add_subsystem",
+            "Add a reusable subsystem instance to the machine assembly.",
+            R"({"type":"object","properties":{"instanceId":{"type":"string","description":"Unique instance identifier."},"definitionId":{"type":"string","description":"Referenced subsystem definition ID."},"title":{"type":"string","description":"Optional display title."},"parameters":{"type":"object","description":"Optional numeric parameter overrides."}},"required":["instanceId","definitionId"],"additionalProperties":false})"
+        },
+        {
+            "machine_remove_subsystem",
+            "Remove a subsystem instance and its associated port connections from the machine assembly.",
+            R"({"type":"object","properties":{"instanceId":{"type":"string","description":"Instance ID to remove."}},"required":["instanceId"],"additionalProperties":false})"
+        },
+        {
+            "machine_set_parameter",
+            "Configure a parameter value on a subsystem instance.",
+            R"({"type":"object","properties":{"instanceId":{"type":"string","description":"Instance ID."},"parameter":{"type":"string","description":"Parameter name."},"value":{"type":"number","description":"Numeric parameter value."}},"required":["instanceId","parameter","value"],"additionalProperties":false})"
+        },
+        {
+            "machine_connect",
+            "Connect an output port of one subsystem to an input port of another subsystem.",
+            R"({"type":"object","properties":{"fromInstance":{"type":"string","description":"Source subsystem instance ID."},"fromPort":{"type":"string","description":"Source output port name."},"toInstance":{"type":"string","description":"Destination subsystem instance ID."},"toPort":{"type":"string","description":"Destination input port name."},"netName":{"type":"string","description":"Optional net name."}},"required":["fromInstance","fromPort","toInstance","toPort"],"additionalProperties":false})"
+        },
+        {
+            "machine_disconnect",
+            "Disconnect a port connection between two subsystems.",
+            R"({"type":"object","properties":{"fromInstance":{"type":"string","description":"Source instance ID."},"fromPort":{"type":"string","description":"Source port name."},"toInstance":{"type":"string","description":"Destination instance ID."},"toPort":{"type":"string","description":"Destination port name."}},"required":["fromInstance","fromPort","toInstance","toPort"],"additionalProperties":false})"
+        },
+        {
+            "machine_add_body",
+            "Add a rigid body to the mechanical scene hierarchy.",
+            R"({"type":"object","properties":{"bodyId":{"type":"string","description":"Unique rigid body ID."},"name":{"type":"string","description":"Display name."},"parentId":{"type":"string","description":"Optional parent rigid body ID."},"x":{"type":"number","description":"Local X position."},"y":{"type":"number","description":"Local Y position."},"z":{"type":"number","description":"Local Z position."}},"required":["bodyId"],"additionalProperties":false})"
+        },
+        {
+            "machine_remove_body",
+            "Remove a rigid body from the mechanical scene hierarchy.",
+            R"({"type":"object","properties":{"bodyId":{"type":"string","description":"Body ID to remove."}},"required":["bodyId"],"additionalProperties":false})"
+        },
+        {
+            "machine_add_joint",
+            "Create a mechanical joint (fixed, revolute, prismatic) connecting bodies.",
+            R"({"type":"object","properties":{"jointId":{"type":"string","description":"Unique joint ID."},"name":{"type":"string","description":"Display name."},"type":{"type":"string","description":"Joint type: 'fixed', 'revolute', or 'prismatic'."},"bodyId":{"type":"string","description":"Optional rigid body driven by this joint."},"axisX":{"type":"number","description":"Axis X component."},"axisY":{"type":"number","description":"Axis Y component."},"axisZ":{"type":"number","description":"Axis Z component."},"hasLimits":{"type":"boolean","description":"Whether joint travel limits are enabled."},"minLimit":{"type":"number","description":"Minimum travel limit."},"maxLimit":{"type":"number","description":"Maximum travel limit."}},"required":["jointId"],"additionalProperties":false})"
+        },
+        {
+            "machine_remove_joint",
+            "Remove a joint from the mechanical scene.",
+            R"({"type":"object","properties":{"jointId":{"type":"string","description":"Joint ID to remove."}},"required":["jointId"],"additionalProperties":false})"
+        },
+        {
+            "machine_bind_joint",
+            "Bind a mechanical joint to a simulation signal with scale and offset.",
+            R"({"type":"object","properties":{"jointId":{"type":"string","description":"Joint ID."},"signal":{"type":"string","description":"Simulation signal name."},"scale":{"type":"number","description":"Scale factor (default 1.0)."},"offset":{"type":"number","description":"Offset (default 0.0)."},"isVelocity":{"type":"boolean","description":"True if signal is velocity to integrate."}},"required":["jointId","signal"],"additionalProperties":false})"
+        },
+        {
+            "machine_add_geometry",
+            "Attach visual geometry primitive (box, cylinder, sphere, wheel, pointer) to a rigid body.",
+            R"({"type":"object","properties":{"bodyId":{"type":"string","description":"Rigid body ID."},"type":{"type":"string","description":"Primitive type: 'box', 'cylinder', 'sphere', 'wheel', 'pointer'."},"width":{"type":"number","description":"Width / dimension X."},"height":{"type":"number","description":"Height / dimension Y."},"depth":{"type":"number","description":"Depth / dimension Z."},"colorHex":{"type":"string","description":"Hex colour (e.g. #35c6ff)."}},"required":["bodyId","type"],"additionalProperties":false})"
+        },
+        {
+            "machine_list_definitions",
+            "List all available subsystem definitions (built-ins, project schematics, FRust components).",
+            R"({"type":"object","properties":{},"additionalProperties":false})"
+        },
+        {
+            "machine_list_signals",
+            "List all discoverable hierarchical signals across the assembled machine.",
+            R"({"type":"object","properties":{},"additionalProperties":false})"
+        }
+    };
+    return specs;
+}
+
 // Tool text with live registry values filled in, so lists such as the
 // placeable component ids never drift from what the application supports.
 std::string liveToolText(const char* text)
@@ -993,6 +1102,9 @@ bool isSchematicTool(const juce::String& name)
         if (name == spec.name)
             return true;
     for (const auto& spec : mechanicalToolSpecs())
+        if (name == spec.name)
+            return true;
+    for (const auto& spec : machineToolSpecs())
         if (name == spec.name)
             return true;
     return false;
@@ -14844,6 +14956,8 @@ private:
             definitions.push_back({ spec.name.toStdString(), spec.description.toStdString(), spec.schema.toStdString() });
         for (const auto& spec : mechanicalToolSpecs())
             definitions.push_back({ spec.name.toStdString(), spec.description.toStdString(), spec.schema.toStdString() });
+        for (const auto& spec : machineToolSpecs())
+            definitions.push_back({ spec.name.toStdString(), spec.description.toStdString(), spec.schema.toStdString() });
         return definitions;
     }
 
@@ -15774,6 +15888,8 @@ ElectronicsWorkbench::ElectronicsWorkbench()
             return assemblyTool(name, args);
         if (name.startsWith("mechanical_"))
             return mechanicalTool(name, args);
+        if (name.startsWith("machine_"))
+            return machineTool(name, args);
         return schematicPanel->runSchematicTool(name, args);
     };
     schematicPanel->outputDirectory = [this] { return generatedRunDirectory(); };
@@ -15803,6 +15919,9 @@ ElectronicsWorkbench::ElectronicsWorkbench()
     auto mechanicalViewOwner = std::make_unique<mechanical_scene::MechanicalViewComponent>(controlPanel ? std::shared_ptr<sim_panel::SystemSimulationSession>(controlPanel->getSession(), [](void*){}) : nullptr);
     mechanicalView = mechanicalViewOwner.get();
     mechanicalViewDockPanel = dockManager->registerPanel("mechanical_view", "Mechanical View", std::move(mechanicalViewOwner), CreationDock::DockTargetZone::CenterTab);
+    auto machineBuilderOwner = std::make_unique<machine_builder::MachineBuilderPanel>(controlPanel ? std::shared_ptr<sim_panel::SystemSimulationSession>(controlPanel->getSession(), [](void*){}) : nullptr, mechanicalView, controlPanel);
+    machineBuilder = machineBuilderOwner.get();
+    machineBuilderDockPanel = dockManager->registerPanel("machine_builder", "Machine Builder", std::move(machineBuilderOwner), CreationDock::DockTargetZone::CenterTab);
     // FRust node programs (the node-programming editor ported from FrustIDE),
     // saved in the open project's programs folder.
     auto nodeDesignerOwner = std::make_unique<NodeDesignerPanel>();
@@ -16538,6 +16657,8 @@ juce::String ElectronicsWorkbench::buildAssistantToolManifestJson() const
     for (const auto& spec : controlPanelToolSpecs())
         manifestSpecs.push_back(spec);
     for (const auto& spec : mechanicalToolSpecs())
+        manifestSpecs.push_back(spec);
+    for (const auto& spec : machineToolSpecs())
         manifestSpecs.push_back(spec);
     for (const auto& spec : manifestSpecs)
     {
@@ -18631,6 +18752,349 @@ juce::String ElectronicsWorkbench::mechanicalTool(const juce::String& name, cons
     }
 
     return "{ \"ok\": false, \"error\": \"Unknown mechanical tool: " + name + "\" }";
+}
+
+void ElectronicsWorkbench::showMachineBuilder()
+{
+    auto* panel = machineBuilderDockPanel.getComponent();
+    if (dockManager == nullptr || panel == nullptr)
+        return;
+    if (auto* zone = panel->findParentComponentOfClass<CreationDock::DockZone>())
+        zone->setActivePanel(panel);
+    if (auto* window = dynamic_cast<CreationDock::FloatingDockWindow*>(panel->getTopLevelComponent()))
+        window->toFront(true);
+}
+
+juce::String ElectronicsWorkbench::machineTool(const juce::String& name, const juce::var& args)
+{
+    if (name == "machine_view_open" || name == "machine_builder_open")
+    {
+        showMachineBuilder();
+        return R"({"ok": true, "tool": "machine_builder_open", "status": "opened"})";
+    }
+
+    if (machineBuilder == nullptr)
+        return R"({"ok": false, "error": "Machine builder component is unavailable."})";
+
+    auto& m = machineBuilder->getMachine();
+
+    if (name == "machine_create")
+    {
+        const auto tmpl = args.getProperty("template", "blank").toString().trim().toLowerCase();
+        const auto mName = args.getProperty("name", "Custom Machine").toString().trim();
+        if (tmpl == "dual_motor" || tmpl == "dual_motor_machine")
+            machineBuilder->setMachine(machine_builder::MachineDesign::createDualMotorMachineTemplate());
+        else if (tmpl == "robotic_arm" || tmpl == "robot_arm" || tmpl == "robotic_arm_machine")
+            machineBuilder->setMachine(machine_builder::MachineDesign::createRoboticArmMachineTemplate());
+        else
+            machineBuilder->setMachine(machine_builder::MachineDesign::createBlankMachine(mName.toStdString()));
+
+        return "{ \"ok\": true, \"tool\": \"machine_create\", \"name\": \"" + machineBuilder->getMachine().name + "\" }";
+    }
+
+    if (name == "machine_get")
+    {
+        juce::DynamicObject::Ptr root = new juce::DynamicObject();
+        root->setProperty("ok", true);
+        root->setProperty("tool", "machine_get");
+        root->setProperty("machine", m.toJson());
+        return juce::JSON::toString(juce::var(root.get()));
+    }
+
+    if (name == "machine_save")
+    {
+        juce::File targetFile;
+        if (args.hasProperty("filePath"))
+        {
+            targetFile = juce::File(args.getProperty("filePath", {}).toString());
+        }
+        else
+        {
+            const auto dir = generatedRunDirectory().getChildFile("machines");
+            dir.createDirectory();
+            targetFile = dir.getChildFile(m.id + ".machine.json");
+        }
+        juce::String saveErr;
+        if (!m.saveToFile(targetFile, saveErr))
+            return "{ \"ok\": false, \"error\": \"" + saveErr + "\" }";
+
+        return "{ \"ok\": true, \"tool\": \"machine_save\", \"filePath\": \"" + targetFile.getFullPathName() + "\" }";
+    }
+
+    if (name == "machine_load")
+    {
+        if (args.hasProperty("template"))
+        {
+            const auto tmpl = args.getProperty("template", {}).toString().trim().toLowerCase();
+            machineBuilder->loadTemplate(tmpl.toStdString());
+            return "{ \"ok\": true, \"tool\": \"machine_load\", \"source\": \"template\" }";
+        }
+        if (args.hasProperty("filePath"))
+        {
+            juce::File srcFile(args.getProperty("filePath", {}).toString());
+            machine_builder::MachineDesign loaded;
+            juce::String loadErr;
+            if (!machine_builder::MachineDesign::loadFromFile(srcFile, loaded, loadErr))
+                return "{ \"ok\": false, \"error\": \"" + loadErr + "\" }";
+            machineBuilder->setMachine(loaded);
+            return "{ \"ok\": true, \"tool\": \"machine_load\", \"filePath\": \"" + srcFile.getFullPathName() + "\" }";
+        }
+        return R"({"ok": false, "error": "Either 'template' or 'filePath' is required."})";
+    }
+
+    if (name == "machine_validate")
+    {
+        const auto diags = m.validate(project.isOpen() ? project.folder : juce::File());
+        juce::DynamicObject::Ptr root = new juce::DynamicObject();
+        root->setProperty("ok", m.isValid(project.isOpen() ? project.folder : juce::File()));
+        root->setProperty("tool", "machine_validate");
+        root->setProperty("valid", diags.empty());
+
+        juce::Array<juce::var> issues;
+        for (const auto& d : diags)
+            issues.add(d.toJson());
+        root->setProperty("diagnostics", juce::var(issues));
+
+        return juce::JSON::toString(juce::var(root.get()));
+    }
+
+    if (name == "machine_compile")
+    {
+        const bool success = machineBuilder->compileAndRun();
+        juce::DynamicObject::Ptr root = new juce::DynamicObject();
+        root->setProperty("ok", success);
+        root->setProperty("tool", "machine_compile");
+        root->setProperty("status", success ? "compiled" : "failed");
+        return juce::JSON::toString(juce::var(root.get()));
+    }
+
+    if (name == "machine_operate")
+    {
+        if (controlPanel == nullptr || controlPanel->getSession() == nullptr)
+            return R"({"ok": false, "error": "Simulation session unavailable."})";
+
+        auto* session = controlPanel->getSession();
+        const auto cmd = args.getProperty("command", {}).toString().trim().toLowerCase();
+        if (cmd.isNotEmpty())
+        {
+            if (cmd == "power_on") { session->setBooleanInput("system.power", true); session->setBooleanInput("power_switch", true); }
+            else if (cmd == "power_off") { session->setBooleanInput("system.power", false); session->setBooleanInput("power_switch", false); }
+            else if (cmd == "start") { session->setBooleanInput("system.start", true); session->setBooleanInput("start_button", true); }
+            else if (cmd == "stop") { session->setBooleanInput("system.stop", true); session->setBooleanInput("stop_button", true); }
+            else if (cmd == "estop") { session->setBooleanInput("system.estop", true); session->setBooleanInput("estop_button", true); }
+            else if (cmd == "reset") { session->setBooleanInput("system.reset", true); session->setBooleanInput("reset_button", true); }
+            else return "{ \"ok\": false, \"error\": \"Unknown command: " + cmd + "\" }";
+        }
+
+        if (args.hasProperty("signal"))
+        {
+            const auto sig = args.getProperty("signal", {}).toString().toStdString();
+            const auto valVar = args.getProperty("value", {});
+            if (valVar.isBool())
+                session->setBooleanInput(sig, (bool)valVar);
+            else
+                session->setNumericInput(sig, (double)valVar);
+        }
+
+        return "{ \"ok\": true, \"tool\": \"machine_operate\" }";
+    }
+
+    if (name == "machine_add_subsystem")
+    {
+        const auto instId = args.getProperty("instanceId", {}).toString().toStdString();
+        const auto defId = args.getProperty("definitionId", {}).toString().toStdString();
+        const auto title = args.getProperty("title", {}).toString().toStdString();
+        std::map<std::string, double> params;
+        if (const auto* pObj = args.getProperty("parameters", {}).getDynamicObject())
+            for (const auto& prop : pObj->getProperties())
+                params[prop.name.toString().toStdString()] = (double)prop.value;
+
+        std::string err;
+        if (!m.addSubsystemInstance(instId, defId, title, params, &err))
+            return "{ \"ok\": false, \"error\": \"" + juce::String(err) + "\" }";
+        machineBuilder->setMachine(m);
+        return "{ \"ok\": true, \"tool\": \"machine_add_subsystem\", \"instanceId\": \"" + juce::String(instId) + "\" }";
+    }
+
+    if (name == "machine_remove_subsystem")
+    {
+        const auto instId = args.getProperty("instanceId", {}).toString().toStdString();
+        std::string err;
+        if (!m.removeSubsystemInstance(instId, &err))
+            return "{ \"ok\": false, \"error\": \"" + juce::String(err) + "\" }";
+        machineBuilder->setMachine(m);
+        return "{ \"ok\": true, \"tool\": \"machine_remove_subsystem\", \"instanceId\": \"" + juce::String(instId) + "\" }";
+    }
+
+    if (name == "machine_set_parameter")
+    {
+        const auto instId = args.getProperty("instanceId", {}).toString().toStdString();
+        const auto param = args.getProperty("parameter", {}).toString().toStdString();
+        const double val = (double)args.getProperty("value", 0.0);
+        std::string err;
+        if (!m.setInstanceParameter(instId, param, val, &err))
+            return "{ \"ok\": false, \"error\": \"" + juce::String(err) + "\" }";
+        machineBuilder->setMachine(m);
+        return "{ \"ok\": true, \"tool\": \"machine_set_parameter\", \"instanceId\": \"" + juce::String(instId) + "\" }";
+    }
+
+    if (name == "machine_connect")
+    {
+        const auto fromInst = args.getProperty("fromInstance", {}).toString().toStdString();
+        const auto fromPort = args.getProperty("fromPort", {}).toString().toStdString();
+        const auto toInst = args.getProperty("toInstance", {}).toString().toStdString();
+        const auto toPort = args.getProperty("toPort", {}).toString().toStdString();
+        const auto netName = args.getProperty("netName", {}).toString().toStdString();
+        std::string err;
+        if (!m.connectPorts(fromInst, fromPort, toInst, toPort, netName, &err))
+            return "{ \"ok\": false, \"error\": \"" + juce::String(err) + "\" }";
+        machineBuilder->setMachine(m);
+        return "{ \"ok\": true, \"tool\": \"machine_connect\" }";
+    }
+
+    if (name == "machine_disconnect")
+    {
+        const auto fromInst = args.getProperty("fromInstance", {}).toString().toStdString();
+        const auto fromPort = args.getProperty("fromPort", {}).toString().toStdString();
+        const auto toInst = args.getProperty("toInstance", {}).toString().toStdString();
+        const auto toPort = args.getProperty("toPort", {}).toString().toStdString();
+        std::string err;
+        if (!m.disconnectPorts(fromInst, fromPort, toInst, toPort, &err))
+            return "{ \"ok\": false, \"error\": \"" + juce::String(err) + "\" }";
+        machineBuilder->setMachine(m);
+        return "{ \"ok\": true, \"tool\": \"machine_disconnect\" }";
+    }
+
+    if (name == "machine_add_body")
+    {
+        const auto bodyId = args.getProperty("bodyId", {}).toString().toStdString();
+        const auto bName = args.getProperty("name", juce::String(bodyId)).toString().toStdString();
+        const auto parentId = args.getProperty("parentId", "").toString().toStdString();
+        mechanical_scene::Vec3 pos {
+            (double)args.getProperty("x", 0.0),
+            (double)args.getProperty("y", 0.0),
+            (double)args.getProperty("z", 0.0)
+        };
+        std::string err;
+        if (!m.addRigidBody(bodyId, bName, parentId, pos, &err))
+            return "{ \"ok\": false, \"error\": \"" + juce::String(err) + "\" }";
+        machineBuilder->setMachine(m);
+        return "{ \"ok\": true, \"tool\": \"machine_add_body\", \"bodyId\": \"" + juce::String(bodyId) + "\" }";
+    }
+
+    if (name == "machine_remove_body")
+    {
+        const auto bodyId = args.getProperty("bodyId", {}).toString().toStdString();
+        std::string err;
+        if (!m.removeRigidBody(bodyId, &err))
+            return "{ \"ok\": false, \"error\": \"" + juce::String(err) + "\" }";
+        machineBuilder->setMachine(m);
+        return "{ \"ok\": true, \"tool\": \"machine_remove_body\", \"bodyId\": \"" + juce::String(bodyId) + "\" }";
+    }
+
+    if (name == "machine_add_joint")
+    {
+        const auto jId = args.getProperty("jointId", {}).toString().toStdString();
+        const auto jName = args.getProperty("name", juce::String(jId)).toString().toStdString();
+        const auto typeStr = args.getProperty("type", "revolute").toString().toLowerCase();
+        auto type = mechanical_scene::JointType::Revolute;
+        if (typeStr == "fixed") type = mechanical_scene::JointType::Fixed;
+        else if (typeStr == "prismatic") type = mechanical_scene::JointType::Prismatic;
+
+        const auto bodyId = args.getProperty("bodyId", "").toString().toStdString();
+        mechanical_scene::Vec3 axis {
+            (double)args.getProperty("axisX", 0.0),
+            (double)args.getProperty("axisY", 0.0),
+            (double)args.getProperty("axisZ", 1.0)
+        };
+        const bool hasLimits = (bool)args.getProperty("hasLimits", false);
+        const double minLim = (double)args.getProperty("minLimit", 0.0);
+        const double maxLim = (double)args.getProperty("maxLimit", 0.0);
+
+        std::string err;
+        if (!m.addJoint(jId, jName, type, bodyId, axis, hasLimits, minLim, maxLim, &err))
+            return "{ \"ok\": false, \"error\": \"" + juce::String(err) + "\" }";
+        machineBuilder->setMachine(m);
+        return "{ \"ok\": true, \"tool\": \"machine_add_joint\", \"jointId\": \"" + juce::String(jId) + "\" }";
+    }
+
+    if (name == "machine_remove_joint")
+    {
+        const auto jId = args.getProperty("jointId", {}).toString().toStdString();
+        std::string err;
+        if (!m.removeJoint(jId, &err))
+            return "{ \"ok\": false, \"error\": \"" + juce::String(err) + "\" }";
+        machineBuilder->setMachine(m);
+        return "{ \"ok\": true, \"tool\": \"machine_remove_joint\", \"jointId\": \"" + juce::String(jId) + "\" }";
+    }
+
+    if (name == "machine_bind_joint")
+    {
+        const auto jId = args.getProperty("jointId", {}).toString().toStdString();
+        const auto sig = args.getProperty("signal", {}).toString().toStdString();
+        const double scale = (double)args.getProperty("scale", 1.0);
+        const double offset = (double)args.getProperty("offset", 0.0);
+        const bool isVel = (bool)args.getProperty("isVelocity", false);
+
+        std::string err;
+        if (!m.bindJointSignal(jId, sig, scale, offset, isVel, &err))
+            return "{ \"ok\": false, \"error\": \"" + juce::String(err) + "\" }";
+        machineBuilder->setMachine(m);
+        return "{ \"ok\": true, \"tool\": \"machine_bind_joint\", \"jointId\": \"" + juce::String(jId) + "\" }";
+    }
+
+    if (name == "machine_add_geometry")
+    {
+        const auto bodyId = args.getProperty("bodyId", {}).toString().toStdString();
+        const auto typeStr = args.getProperty("type", "box").toString().toLowerCase();
+        auto type = mechanical_scene::PrimitiveType::Box;
+        if (typeStr == "cylinder") type = mechanical_scene::PrimitiveType::Cylinder;
+        else if (typeStr == "sphere") type = mechanical_scene::PrimitiveType::Sphere;
+        else if (typeStr == "wheel") type = mechanical_scene::PrimitiveType::Wheel;
+        else if (typeStr == "pointer") type = mechanical_scene::PrimitiveType::Pointer;
+
+        mechanical_scene::Vec3 size {
+            (double)args.getProperty("width", 0.1),
+            (double)args.getProperty("height", 0.1),
+            (double)args.getProperty("depth", 0.1)
+        };
+        auto col = juce::Colour::fromString(args.getProperty("colorHex", "#35c6ff").toString());
+
+        std::string err;
+        if (!m.addVisualGeometry(bodyId, type, size, { 0.0, 0.0, 0.0 }, col, juce::Colour(0), &err))
+            return "{ \"ok\": false, \"error\": \"" + juce::String(err) + "\" }";
+        machineBuilder->setMachine(m);
+        return "{ \"ok\": true, \"tool\": \"machine_add_geometry\", \"bodyId\": \"" + juce::String(bodyId) + "\" }";
+    }
+
+    if (name == "machine_list_definitions")
+    {
+        juce::DynamicObject::Ptr root = new juce::DynamicObject();
+        root->setProperty("ok", true);
+        root->setProperty("tool", "machine_list_definitions");
+
+        juce::Array<juce::var> defs;
+        for (const auto& d : m.assembly.definitions)
+            defs.add(d.toJson());
+        root->setProperty("definitions", juce::var(defs));
+        return juce::JSON::toString(juce::var(root.get()));
+    }
+
+    if (name == "machine_list_signals")
+    {
+        const auto sigs = m.assembly.discoverSignals();
+        juce::DynamicObject::Ptr root = new juce::DynamicObject();
+        root->setProperty("ok", true);
+        root->setProperty("tool", "machine_list_signals");
+
+        juce::Array<juce::var> list;
+        for (const auto& s : sigs)
+            list.add(juce::String(s));
+        root->setProperty("signals", juce::var(list));
+        return juce::JSON::toString(juce::var(root.get()));
+    }
+
+    return "{ \"ok\": false, \"error\": \"Unknown machine tool: " + name + "\" }";
 }
 
 analytics::Settings ElectronicsWorkbench::analyticsToolSettings(const juce::var& args) const

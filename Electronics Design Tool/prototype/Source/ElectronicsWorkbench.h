@@ -13,6 +13,7 @@ struct ComponentPinPlacement;
 namespace frust_component { struct Definition; }
 namespace sim_panel { class ControlPanelComponent; }
 namespace mechanical_scene { class MechanicalViewComponent; }
+namespace machine_builder { class MachineBuilderPanel; struct MachineDesign; }
 
 class ElectronicsWorkbench final : public juce::Component,
                                    public juce::DragAndDropContainer,
@@ -150,6 +151,7 @@ private:
     class AnalyticsPanel* analyticsPanel = nullptr;
     sim_panel::ControlPanelComponent* controlPanel = nullptr;
     mechanical_scene::MechanicalViewComponent* mechanicalView = nullptr;
+    machine_builder::MachineBuilderPanel* machineBuilder = nullptr;
     class FrustPanel* frustPanel = nullptr;
     class NodeDesignerPanel* nodeDesignerPanel = nullptr;
     class PcbPanel* pcbPanel = nullptr;
@@ -160,7 +162,9 @@ private:
     juce::String controlPanelTool(const juce::String& name, const juce::var& args);
     juce::String assemblyTool(const juce::String& name, const juce::var& args);
     juce::String mechanicalTool(const juce::String& name, const juce::var& args);
+    juce::String machineTool(const juce::String& name, const juce::var& args);
     void showMechanicalView();
+    void showMachineBuilder();
     // FRust execution and the debugger (FrustExecution): frust_run,
     // node_program_run and node_debug_* answer when the program reaches the
     // state asked for, never blocking the message thread.
@@ -205,6 +209,7 @@ private:
     juce::Component::SafePointer<CreationDock::DockPanel> analyticsDockPanel;
     juce::Component::SafePointer<CreationDock::DockPanel> controlPanelDockPanel;
     juce::Component::SafePointer<CreationDock::DockPanel> mechanicalViewDockPanel;
+    juce::Component::SafePointer<CreationDock::DockPanel> machineBuilderDockPanel;
     juce::Component::SafePointer<CreationDock::DockPanel> nodeDesignerDockPanel;
     void autoLayoutDiagram();
     void applySchematicZoom(float zoom);

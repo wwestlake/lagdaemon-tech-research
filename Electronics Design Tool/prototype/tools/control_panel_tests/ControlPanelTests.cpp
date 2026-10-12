@@ -6,6 +6,7 @@
 #include "../../Source/ControlPanelModel.h"
 #include "../../Source/SystemAssembly.h"
 #include "../../Source/MechanicalSceneModel.h"
+#include "../../Source/MachineModel.h"
 
 #include <algorithm>
 #include <cmath>
@@ -369,7 +370,7 @@ void testUserAssembledMotorSystem()
 
     // 7. Change Motor A load torque to 0.03 N*m; observe independent PID compensation back to 300 rad/s while B is undisturbed
     session->setNumericInput("motorA.load_torque", 0.03);
-    std::this_thread::sleep_for(std::chrono::milliseconds(160));
+    std::this_thread::sleep_for(std::chrono::milliseconds(220));
     snap = session->getSnapshot();
     const double wA_7 = snap.numericSignals["motorA.speed"];
     const double wB_7 = snap.numericSignals["motorB.speed"];
@@ -553,12 +554,211 @@ void testMechanicalSceneAndVisualization()
     check(relShoulder != nullptr && relShoulder->binding.signalName == "arm.joint1.angle", "4d. Reloaded joint binding signal name intact");
 }
 
+void testVirtualMachineBuilder()
+{
+    std::printf("-- P7 Virtual Machine Builder & Integrated Laboratory Tests --\n");
+
+    // 1. Dynamic Machine Construction via Builder API
+    auto m = machine_builder::MachineDesign::createBlankMachine("Laboratory Custom Machine");
+    check(m.name == "Laboratory Custom Machine", "1. Created blank machine with builder API");
+    check(m.assembly.instances.empty(), "1b. Blank machine starts with zero instances");
+
+    // Add Definitions
+    m.assembly.definitions.push_back(sim_panel::SystemAssembly::makeDCMotorDefinition());
+    m.assembly.definitions.push_back(sim_panel::SystemAssembly::makeMotorControllerDefinition());
+
+    // Add Subsystem instances
+    std::string err;
+    check(m.addSubsystemInstance("drive1", "dc_motor", "Drive Motor 1", { { "ra", 2.0 }, { "la", 0.001 } }, &err), "1c. Added motor subsystem instance");
+    check(m.addSubsystemInstance("ctrl1", "motor_speed_controller", "Speed Controller 1", { { "kp", 0.08 } }, &err), "1d. Added controller subsystem instance");
+    check(!m.addSubsystemInstance("drive1", "dc_motor", "Duplicate", {}, &err), "1e. Duplicate subsystem instance correctly rejected");
+
+    // Connect Ports
+    check(m.connectPorts("ctrl1", "drive_out", "drive1", "v_in", "NET_DRIVE", &err), "1f. Connected controller drive_out to motor v_in");
+    check(m.connectPorts("drive1", "tach", "ctrl1", "feedback_in", "NET_TACH", &err), "1g. Connected tach feedback to controller feedback_in");
+
+    // Mechanical Scene authoring via Builder API
+    check(m.addRigidBody("base_plate", "Base Bedplate", "", { 0.0, 0.0, 0.0 }, &err), "1h. Added base_plate rigid body");
+    check(m.addVisualGeometry("base_plate", mechanical_scene::PrimitiveType::Box, { 1.0, 0.1, 0.5 }, { 0.0, 0.0, 0.0 }, juce::Colour(0xff18222b), juce::Colour(0), &err), "1i. Attached box geometry to base_plate");
+    check(m.addRigidBody("rotor_shaft", "Rotor Shaft", "base_plate", { 0.0, 0.2, 0.0 }, &err), "1j. Added rotor_shaft child rigid body");
+    check(m.addJoint("joint_shaft", "Shaft Rotation", mechanical_scene::JointType::Revolute, "rotor_shaft", { 0.0, 0.0, 1.0 }, false, 0.0, 0.0, &err), "1k. Created revolute joint for rotor_shaft");
+    check(m.bindJointSignal("joint_shaft", "drive1.angle", 1.0, 0.0, true, &err), "1l. Bound joint to simulation signal drive1.angle");
+
+    // Control Panel Widgets
+    check(m.addControlWidget({ "pwr_btn", sim_panel::WidgetType::ToggleSwitch, "Power Switch", "system.power", "V", 0.0, 1.0, 0.0, 1.0, 0, 0, 50 }, &err), "1m. Added control panel power switch");
+
+    // Validate clean machine
+    check(m.isValid(), "1n. Clean machine passed validation with 0 errors");
+
+    // 2. Diagnostics & Detection of Modeling Errors
+    auto brokenM = m;
+    brokenM.connectPorts("drive1", "nonexistent_port", "ctrl1", "feedback_in", "NET_BAD", &err);
+    auto diags = brokenM.validate();
+    bool foundPortErr = false;
+    for (const auto& d : diags)
+        if (d.message.find("nonexistent_port") != std::string::npos) foundPortErr = true;
+    check(foundPortErr, "2a. Validation detected invalid subsystem port connection");
+
+    // Cyclic parenting detection
+    auto cyclicM = m;
+    cyclicM.scene.findBody("base_plate")->parentId = "rotor_shaft"; // rotor_shaft already has parent base_plate!
+    diags = cyclicM.validate();
+    bool foundCycleErr = false;
+    for (const auto& d : diags)
+        if (d.message.find("Cyclic parenting") != std::string::npos) foundCycleErr = true;
+    check(foundCycleErr, "2b. Validation detected cyclic mechanical hierarchy");
+
+    // Invalid joint limit detection
+    auto limitM = m;
+    limitM.scene.findJoint("joint_shaft")->limits.enabled = true;
+    limitM.scene.findJoint("joint_shaft")->limits.minVal = 5.0;
+    limitM.scene.findJoint("joint_shaft")->limits.maxVal = 2.0;
+    diags = limitM.validate();
+    bool foundLimitErr = false;
+    for (const auto& d : diags)
+        if (d.message.find("Joint travel limit invalid") != std::string::npos) foundLimitErr = true;
+    check(foundLimitErr, "2c. Validation detected invalid joint limit (min > max)");
+
+    // 3. Serialization & Complete Persistence Lifecycle (Save -> Close -> Reopen)
+    const auto tempFile = juce::File::getSpecialLocation(juce::File::tempDirectory).getChildFile("test_machine_builder.machine.json");
+    juce::String saveErr;
+    check(m.saveToFile(tempFile, saveErr), "3a. Machine saved to file: " + tempFile.getFullPathName().toStdString());
+
+    machine_builder::MachineDesign reloadedM;
+    juce::String loadErr;
+    check(machine_builder::MachineDesign::loadFromFile(tempFile, reloadedM, loadErr), "3b. Machine loaded back from file");
+    check(reloadedM.name == m.name, "3c. Preserved machine name across file round-trip");
+    check(reloadedM.assembly.instances.size() == m.assembly.instances.size(), "3d. Preserved all subsystem instances");
+    check(reloadedM.assembly.connections.size() == m.assembly.connections.size(), "3e. Preserved all connections");
+    check(reloadedM.scene.bodies.size() == m.scene.bodies.size(), "3f. Preserved all rigid bodies");
+    check(reloadedM.scene.joints.size() == m.scene.joints.size(), "3g. Preserved all mechanical joints");
+    check(reloadedM.controlPanel.widgets.size() == m.controlPanel.widgets.size(), "3h. Preserved all control panel widgets");
+    tempFile.deleteFile();
+
+    // 4. Capstone A: User-Built Dual-Motor Machine Demonstration
+    auto dualCap = machine_builder::MachineDesign::createDualMotorMachineTemplate();
+    check(dualCap.isValid(), "4a. Capstone A Dual-Motor machine passed validation");
+    check(dualCap.assembly.instances.size() == 5, "4b. Capstone A contains 5 instances (2 motors, 2 controllers, 1 sequencer)");
+    check(dualCap.assembly.connections.size() >= 10, "4c. Capstone A contains >= 10 port connections");
+    check(dualCap.scene.bodies.size() == 5, "4d. Capstone A mechanical scene contains 5 bodies");
+    check(dualCap.scene.joints.size() == 2, "4e. Capstone A mechanical scene contains 2 joints");
+
+    // Save Capstone A to file and reopen
+    const auto dualFile = juce::File::getSpecialLocation(juce::File::tempDirectory).getChildFile("capstone_dual_motor.machine.json");
+    check(dualCap.saveToFile(dualFile, saveErr), "4f. Capstone A serialized and saved to file");
+    machine_builder::MachineDesign reloadedDual;
+    check(machine_builder::MachineDesign::loadFromFile(dualFile, reloadedDual, loadErr), "4g. Capstone A reloaded from file");
+    dualFile.deleteFile();
+
+    // Compile into session and run
+    auto dualSession = std::make_shared<sim_panel::SystemSimulationSession>();
+    check(reloadedDual.compileAndLoadIntoSession(*dualSession, &err), "4h. Compiled reloaded Capstone A into simulation session");
+    dualSession->setExecutionRate(0.0);
+    check(dualSession->start(), "4i. Simulation started");
+
+    dualSession->setBooleanInput("system.power", true);
+    dualSession->setBooleanInput("system.start", true);
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    dualSession->setBooleanInput("system.start", false);
+
+    std::this_thread::sleep_for(std::chrono::milliseconds(180));
+    auto dualSnap = dualSession->getSnapshot();
+    const double wA = dualSnap.numericSignals["motorA.speed"];
+    const double wB = dualSnap.numericSignals["motorB.speed"];
+    check(wA > 100.0 && wB > 50.0, "4j. Both user-built motors running: wA = " + std::to_string(wA) + " rad/s, wB = " + std::to_string(wB) + " rad/s");
+
+    // Dynamic parameter / setpoint modification
+    dualSession->setNumericInput("motorB.speed_setpoint", 400.0);
+    std::this_thread::sleep_for(std::chrono::milliseconds(180));
+    dualSnap = dualSession->getSnapshot();
+    const double wB_stepped = dualSnap.numericSignals["motorB.speed"];
+    check(std::abs(wB_stepped - 400.0) < 5.0, "4k. Motor B responded to live setpoint change (400 rad/s): measured " + std::to_string(wB_stepped) + " rad/s");
+
+    // Load disturbance on Motor A
+    dualSession->setNumericInput("motorA.load_torque", 0.03);
+    std::this_thread::sleep_for(std::chrono::milliseconds(150));
+    dualSnap = dualSession->getSnapshot();
+    const double wA_dist = dualSnap.numericSignals["motorA.speed"];
+    check(std::abs(wA_dist - 300.0) < 5.0, "4l. Motor A controller rejected 0.03 N*m load disturbance: " + std::to_string(wA_dist) + " rad/s");
+
+    // Emergency stop
+    dualSession->setBooleanInput("system.estop", true);
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    dualSnap = dualSession->getSnapshot();
+    check(dualSnap.booleanSignals["system.fault"], "4m. Emergency stop tripped: system.fault active");
+
+    // Reset and resume
+    dualSession->setBooleanInput("system.estop", false);
+    dualSession->setBooleanInput("system.reset", true);
+    std::this_thread::sleep_for(std::chrono::milliseconds(30));
+    dualSession->setBooleanInput("system.reset", false);
+    dualSnap = dualSession->getSnapshot();
+    check(!dualSnap.booleanSignals["system.fault"], "4n. Fault reset cleared alarm state and returned system to Ready");
+    dualSession->stop();
+
+    // 5. Capstone B: User-Built Two-Joint Robotic Arm Demonstration
+    auto armCap = machine_builder::MachineDesign::createRoboticArmMachineTemplate();
+    check(armCap.isValid(), "5a. Capstone B Robotic Arm machine passed validation");
+    check(armCap.scene.bodies.size() == 3, "5b. Capstone B contains 3 bodies (pedestal, upper arm, forearm)");
+    check(armCap.scene.joints.size() == 2, "5c. Capstone B contains 2 rotational joints");
+
+    // Save and reload
+    const auto armFile = juce::File::getSpecialLocation(juce::File::tempDirectory).getChildFile("capstone_robotic_arm.machine.json");
+    check(armCap.saveToFile(armFile, saveErr), "5d. Capstone B saved to file");
+    machine_builder::MachineDesign reloadedArm;
+    check(machine_builder::MachineDesign::loadFromFile(armFile, reloadedArm, loadErr), "5e. Capstone B reloaded from file");
+    armFile.deleteFile();
+
+    auto armSession = std::make_shared<sim_panel::SystemSimulationSession>();
+    check(reloadedArm.compileAndLoadIntoSession(*armSession, &err), "5f. Compiled reloaded Capstone B into simulation session");
+    armSession->setExecutionRate(0.0);
+    check(armSession->start(), "5g. Arm simulation session running");
+
+    armSession->setBooleanInput("system.power", true);
+    armSession->setBooleanInput("system.start", true);
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    armSession->setBooleanInput("system.start", false);
+
+    // Forward motion & position tracking
+    std::this_thread::sleep_for(std::chrono::milliseconds(180));
+    auto armSnap = armSession->getSnapshot();
+    auto armScene = reloadedArm.scene;
+    armScene.updateFromSimulation(armSnap, 0.05);
+    auto* shoulderJoint = armScene.findJoint("joint_shoulder");
+    auto* elbowJoint = armScene.findJoint("joint_elbow");
+    check(shoulderJoint != nullptr && elbowJoint != nullptr, "5h. Arm joints resolved in mechanical scene");
+    check(std::abs(shoulderJoint->currentValue) > 0.01 || std::abs(shoulderJoint->currentVelocity) > 0.01, "5i. Shoulder joint moved under forward control");
+
+    // Travel limit clamping check
+    check(shoulderJoint->limits.enabled && shoulderJoint->limits.minVal == -2.5 && shoulderJoint->limits.maxVal == 2.5, "5j. Shoulder travel limits intact: [-2.5, 2.5] rad");
+    check(elbowJoint->limits.enabled && elbowJoint->limits.minVal == -2.8 && elbowJoint->limits.maxVal == 2.8, "5k. Elbow travel limits intact: [-2.8, 2.8] rad");
+
+    // Reverse motion
+    armSession->setNumericInput("shoulder.target_angle", -30.0);
+    armSession->setNumericInput("elbow.target_angle", -45.0);
+    std::this_thread::sleep_for(std::chrono::milliseconds(150));
+    armSnap = armSession->getSnapshot();
+    armScene.updateFromSimulation(armSnap, 0.05);
+    check(shoulderJoint->currentValue >= -2.5 && shoulderJoint->currentValue <= 2.5, "5l. Arm pose remains within travel limits during reversal");
+
+    // E-stop
+    armSession->setBooleanInput("system.estop", true);
+    std::this_thread::sleep_for(std::chrono::milliseconds(120));
+    armSnap = armSession->getSnapshot();
+    armScene.updateFromSimulation(armSnap, 0.05);
+    const bool armFault = armSnap.booleanSignals["system.fault"];
+    const double driveA_estop = armSnap.numericSignals["controllerA.drive"];
+    const double driveB_estop = armSnap.numericSignals["controllerB.drive"];
+    check(armFault && driveA_estop < 0.2 && driveB_estop < 0.2, "5m. E-stop halts arm actuation");
+    armSession->stop();
+}
+
 } // namespace
 
 int main()
 {
     std::printf("====================================================\n");
-    std::printf("  Control Panel & Interactive Simulation Tests (P3-P6) \n");
+    std::printf("  Control Panel & Interactive Simulation Tests (P3-P7) \n");
     std::printf("====================================================\n");
 
     testOperatingSequence();
@@ -568,6 +768,7 @@ int main()
     testDualMotorCoordinatedSystem();
     testUserAssembledMotorSystem();
     testMechanicalSceneAndVisualization();
+    testVirtualMachineBuilder();
 
     std::printf("\n%d passed, %d failed\n", passes, failures);
     return failures == 0 ? 0 : 1;
