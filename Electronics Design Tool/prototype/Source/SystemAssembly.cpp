@@ -58,6 +58,11 @@ juce::var SubsystemDefinition::toJson() const
     obj->setProperty("referenceFile", juce::String(referenceFile));
     obj->setProperty("diagramSheet", juce::String(diagramSheet));
 
+    if (schematicData.isObject())
+        obj->setProperty("schematicData", schematicData);
+    if (componentData.isObject())
+        obj->setProperty("componentData", componentData);
+
     juce::Array<juce::var> portArray;
     for (const auto& p : ports)
         portArray.add(p.toJson());
@@ -87,6 +92,8 @@ SubsystemDefinition SubsystemDefinition::fromJson(const juce::var& json)
         d.description = obj->getProperty("description").toString().toStdString();
         d.referenceFile = obj->getProperty("referenceFile").toString().toStdString();
         d.diagramSheet = obj->getProperty("diagramSheet").toString().toStdString();
+        d.schematicData = obj->getProperty("schematicData");
+        d.componentData = obj->getProperty("componentData");
 
         if (const auto* arr = obj->getProperty("ports").getArray())
             for (const auto& item : *arr)
@@ -101,6 +108,226 @@ SubsystemDefinition SubsystemDefinition::fromJson(const juce::var& json)
                 d.defaultTextParams[p.name.toString().toStdString()] = p.value.toString().toStdString();
     }
     return d;
+}
+
+SubsystemDefinition SubsystemDefinition::fromSchematicJson(const juce::var& json, const std::string& defId, const std::string& name)
+{
+    SubsystemDefinition d;
+    d.id = defId.empty() ? "user_schematic_subsystem" : defId;
+    d.displayName = name.empty() ? d.id : name;
+    d.kind = SubsystemKind::SchematicReference;
+    d.schematicData = json;
+
+    const auto* root = json.getDynamicObject();
+    if (root == nullptr)
+        return d;
+
+    d.description = root->getProperty("description").toString().toStdString();
+
+    const auto* comps = root->getProperty("components").getArray();
+    if (comps == nullptr)
+        return d;
+
+    for (const auto& entry : *comps)
+    {
+        const auto* c = entry.getDynamicObject();
+        if (c == nullptr)
+            continue;
+
+        const auto symbol = c->getProperty("symbol").toString();
+        const auto refdes = c->getProperty("id").toString();
+        const auto busName = c->getProperty("busName").toString().trim();
+
+        if (symbol == "block_port" || symbol == "power_port" || symbol == "net_label")
+        {
+            const auto portName = busName.isNotEmpty() ? busName : refdes;
+            if (portName.isEmpty())
+                continue;
+
+            SubsystemPort p;
+            p.name = portName.toStdString();
+            const auto lower = portName.toLowerCase();
+            if (lower.endsWith("_in") || lower.contains("input") || lower == "load_torque" || lower == "v_in")
+            {
+                p.direction = PortDirection::Input;
+            }
+            else if (lower.endsWith("_out") || lower.contains("output") || lower == "speed" || lower == "tach" || lower == "angle")
+            {
+                p.direction = PortDirection::Output;
+            }
+            else
+            {
+                p.direction = PortDirection::Bidirectional;
+            }
+
+            if (lower.contains("speed") || lower.contains("torque") || lower.contains("shaft") || lower.contains("angle"))
+            {
+                p.domain = PortDomain::Mechanical;
+                p.unit = lower.contains("speed") ? "rad/s" : lower.contains("torque") ? "N*m" : "rad";
+            }
+            else if (lower.contains("pwr") || lower.contains("power") || lower.contains("v_in") || lower.contains("volt"))
+            {
+                p.domain = PortDomain::Electrical;
+                p.unit = "V";
+            }
+            else
+            {
+                p.domain = PortDomain::SignalControl;
+                p.unit = "V";
+            }
+
+            if (d.findPort(p.name) == nullptr)
+                d.ports.push_back(p);
+        }
+        else if (symbol == "dc_motor")
+        {
+            if (const auto* params = c->getProperty("params").getDynamicObject())
+            {
+                for (const auto& prop : params->getProperties())
+                    d.defaultNumericParams[prop.name.toString().toStdString()] = (double)prop.value;
+            }
+        }
+        else if (symbol == "resistor" || symbol == "capacitor" || symbol == "inductor")
+        {
+            const auto valStr = c->getProperty("value").toString();
+            double numVal = 0.0;
+            if (circuit_sim::parseValue(valStr.toStdString(), numVal))
+                d.defaultNumericParams[refdes.toStdString()] = numVal;
+        }
+    }
+
+    return d;
+}
+
+bool SubsystemDefinition::loadSchematicDefinition(const juce::File& file, SubsystemDefinition& out, juce::String& error)
+{
+    if (!file.existsAsFile())
+    {
+        error = "Schematic file not found: " + file.getFullPathName();
+        return false;
+    }
+    const auto parsed = juce::JSON::parse(file);
+    if (!parsed.isObject())
+    {
+        error = "Invalid JSON in schematic file: " + file.getFullPathName();
+        return false;
+    }
+    juce::var circuitData = parsed;
+    if (const auto* obj = parsed.getDynamicObject())
+    {
+        if (obj->hasProperty("circuit"))
+            circuitData = obj->getProperty("circuit");
+    }
+
+    const auto defId = file.getFileNameWithoutExtension().toStdString();
+    out = fromSchematicJson(circuitData, defId, file.getFileNameWithoutExtension().toStdString());
+    out.referenceFile = file.getFullPathName().toStdString();
+    return true;
+}
+
+SubsystemDefinition SubsystemDefinition::fromFrustComponent(const frust_component::Definition& def, const std::string& defId)
+{
+    SubsystemDefinition d;
+    d.id = defId.empty() ? def.name.toStdString() : defId;
+    d.displayName = def.name.toStdString();
+    d.kind = SubsystemKind::ProgrammableComponent;
+    d.description = def.description.toStdString();
+    d.referenceFile = def.programFile.toStdString();
+
+    auto* obj = new juce::DynamicObject();
+    obj->setProperty("name", def.name);
+    obj->setProperty("description", def.description);
+    obj->setProperty("programFile", def.programFile);
+
+    juce::Array<juce::var> pinArr;
+    for (const auto& pin : def.pins)
+    {
+        auto* pObj = new juce::DynamicObject();
+        pObj->setProperty("id", pin.id);
+        pObj->setProperty("role", (int)pin.role);
+        pinArr.add(juce::var(pObj));
+
+        SubsystemPort p;
+        p.name = pin.id.toStdString();
+        p.direction = (pin.role == frust_component::PinRole::Input) ? PortDirection::Input : PortDirection::Output;
+        p.domain = PortDomain::SignalControl;
+        p.unit = "V";
+        p.description = ("Pin " + pin.id).toStdString();
+        d.ports.push_back(p);
+    }
+    obj->setProperty("pins", juce::var(pinArr));
+
+    juce::Array<juce::var> paramArr;
+    for (const auto& param : def.parameters)
+    {
+        auto* parObj = new juce::DynamicObject();
+        parObj->setProperty("name", param.name);
+        parObj->setProperty("defaultValue", param.defaultValue);
+        paramArr.add(juce::var(parObj));
+
+        d.defaultNumericParams[param.name.toStdString()] = param.defaultValue;
+    }
+    obj->setProperty("parameters", juce::var(paramArr));
+    d.componentData = juce::var(obj);
+
+    return d;
+}
+
+bool SubsystemDefinition::loadFrustComponentDefinition(const juce::File& file, SubsystemDefinition& out, juce::String& error)
+{
+    if (!file.existsAsFile())
+    {
+        error = "Component definition file not found: " + file.getFullPathName();
+        return false;
+    }
+    const auto parsed = juce::JSON::parse(file);
+    if (!parsed.isObject())
+    {
+        error = "Invalid JSON in component definition: " + file.getFullPathName();
+        return false;
+    }
+    const auto* root = parsed.getDynamicObject();
+    if (root == nullptr) return false;
+
+    out.id = file.getFileNameWithoutExtension().toStdString();
+    out.displayName = root->getProperty("name").toString().toStdString();
+    if (out.displayName.empty()) out.displayName = out.id;
+    out.kind = SubsystemKind::ProgrammableComponent;
+    out.description = root->getProperty("description").toString().toStdString();
+    out.referenceFile = file.getFullPathName().toStdString();
+    out.componentData = parsed;
+
+    if (const auto* pins = root->getProperty("pins").getArray())
+    {
+        for (const auto& pinVar : *pins)
+        {
+            if (const auto* pObj = pinVar.getDynamicObject())
+            {
+                SubsystemPort p;
+                p.name = pObj->getProperty("id").toString().toStdString();
+                const auto roleStr = pObj->getProperty("role").toString().toLowerCase();
+                const int roleInt = (int)pObj->getProperty("role");
+                bool isInput = (roleInt == 0 || roleStr == "input" || roleStr == "in");
+                p.direction = isInput ? PortDirection::Input : PortDirection::Output;
+                p.domain = PortDomain::SignalControl;
+                p.unit = "V";
+                p.description = pObj->getProperty("label").toString().toStdString();
+                out.ports.push_back(p);
+            }
+        }
+    }
+
+    if (const auto* params = root->getProperty("parameters").getArray())
+    {
+        for (const auto& paramVar : *params)
+        {
+            if (const auto* pObj = paramVar.getDynamicObject())
+            {
+                out.defaultNumericParams[pObj->getProperty("name").toString().toStdString()] = (double)pObj->getProperty("defaultValue");
+            }
+        }
+    }
+    return true;
 }
 
 // -----------------------------------------------------------------------------
@@ -376,6 +603,310 @@ SystemAssembly SystemAssembly::createDualMotorSystem()
     };
 
     return a;
+}
+
+// -----------------------------------------------------------------------------
+// Factory: User-Assembled Motor Control System (P5 Demonstration)
+// -----------------------------------------------------------------------------
+
+SystemAssembly SystemAssembly::createUserAssembledMotorSystem()
+{
+    SystemAssembly a;
+    a.name = "User-Assembled Dual-Motor Coordinated System";
+    a.description = "User-assembled system built from a reusable motor-drive schematic diagram, "
+                    "a reusable Node Designer / FRust programmable controller, and a coordinated sequencer.";
+    a.version = "1.0";
+
+    // 1. Reusable Motor Drive Schematic Diagram JSON (schemaVersion 2, electronics_circuit)
+    auto* schematicRoot = new juce::DynamicObject();
+    schematicRoot->setProperty("schemaVersion", 2);
+    schematicRoot->setProperty("kind", "electronics_circuit");
+    schematicRoot->setProperty("name", "Reusable Motor Drive Schematic Subsystem");
+    schematicRoot->setProperty("description", "Electromechanical motor drive subsystem with DC motor, tachometer, and mechanical shaft ports.");
+
+    juce::Array<juce::var> components;
+
+    // Interface Port: v_in (Electrical Voltage Drive Input)
+    auto* pVin = new juce::DynamicObject();
+    pVin->setProperty("id", "PORT_VIN");
+    pVin->setProperty("symbol", "block_port");
+    pVin->setProperty("busName", "v_in");
+    auto* pVinPins = new juce::DynamicObject();
+    pVinPins->setProperty("1", "NET_VIN");
+    pVin->setProperty("pins", juce::var(pVinPins));
+    components.add(juce::var(pVin));
+
+    // Interface Port: load_torque (Mechanical Load Torque Input)
+    auto* pLoad = new juce::DynamicObject();
+    pLoad->setProperty("id", "PORT_LOAD");
+    pLoad->setProperty("symbol", "block_port");
+    pLoad->setProperty("busName", "load_torque");
+    auto* pLoadPins = new juce::DynamicObject();
+    pLoadPins->setProperty("1", "NET_SHAFT");
+    pLoad->setProperty("pins", juce::var(pLoadPins));
+    components.add(juce::var(pLoad));
+
+    // Interface Port: speed (Mechanical Velocity Output)
+    auto* pSpeed = new juce::DynamicObject();
+    pSpeed->setProperty("id", "PORT_SPEED");
+    pSpeed->setProperty("symbol", "block_port");
+    pSpeed->setProperty("busName", "speed");
+    auto* pSpeedPins = new juce::DynamicObject();
+    pSpeedPins->setProperty("1", "NET_SHAFT");
+    pSpeed->setProperty("pins", juce::var(pSpeedPins));
+    components.add(juce::var(pSpeed));
+
+    // Interface Port: tach (Electrical Tachometer Feedback Output)
+    auto* pTach = new juce::DynamicObject();
+    pTach->setProperty("id", "PORT_TACH");
+    pTach->setProperty("symbol", "block_port");
+    pTach->setProperty("busName", "tach");
+    auto* pTachPins = new juce::DynamicObject();
+    pTachPins->setProperty("1", "NET_TACH");
+    pTach->setProperty("pins", juce::var(pTachPins));
+    components.add(juce::var(pTach));
+
+    // DC Motor component M1
+    auto* pMotor = new juce::DynamicObject();
+    pMotor->setProperty("id", "M1");
+    pMotor->setProperty("symbol", "dc_motor");
+    pMotor->setProperty("value", "generic_dc_motor");
+    auto* mParams = new juce::DynamicObject();
+    mParams->setProperty("ra", 2.0);
+    mParams->setProperty("la", 0.001);
+    mParams->setProperty("kt", 0.02);
+    mParams->setProperty("ke", 0.02);
+    mParams->setProperty("j", 0.00001);
+    mParams->setProperty("b", 0.000001);
+    pMotor->setProperty("params", juce::var(mParams));
+    auto* mPins = new juce::DynamicObject();
+    mPins->setProperty("pos", "NET_VIN");
+    mPins->setProperty("neg", "0");
+    mPins->setProperty("shaft", "NET_SHAFT");
+    mPins->setProperty("angle", "NET_ANGLE");
+    pMotor->setProperty("pins", juce::var(mPins));
+    components.add(juce::var(pMotor));
+
+    // Tachometer TG1
+    auto* pTachComp = new juce::DynamicObject();
+    pTachComp->setProperty("id", "TG1");
+    pTachComp->setProperty("symbol", "tachometer");
+    auto* tgPins = new juce::DynamicObject();
+    tgPins->setProperty("shaft", "NET_SHAFT");
+    tgPins->setProperty("out", "NET_TACH");
+    pTachComp->setProperty("pins", juce::var(tgPins));
+    components.add(juce::var(pTachComp));
+
+    // Mechanical load torque current source TL1
+    auto* pLoadComp = new juce::DynamicObject();
+    pLoadComp->setProperty("id", "TL1");
+    pLoadComp->setProperty("symbol", "current_source");
+    auto* tlPins = new juce::DynamicObject();
+    tlPins->setProperty("1", "NET_SHAFT");
+    tlPins->setProperty("2", "0");
+    pLoadComp->setProperty("pins", juce::var(tlPins));
+    components.add(juce::var(pLoadComp));
+
+    schematicRoot->setProperty("components", components);
+    juce::var schematicVar(schematicRoot);
+
+    auto motorDriveDef = SubsystemDefinition::fromSchematicJson(schematicVar, "user_motor_drive", "User Motor Drive (Schematic)");
+    a.definitions.push_back(motorDriveDef);
+
+    // 2. Reusable Programmable Controller Definition (Node Designer / FRust Component)
+    frust_component::Definition ctlComp;
+    ctlComp.name = "user_motor_controller";
+    ctlComp.description = "FRust Programmable Closed-Loop Velocity Controller with Anti-Windup & E-Stop Interlock";
+    ctlComp.pins = {
+        { "pwr_in", frust_component::PinRole::Input },
+        { "start_in", frust_component::PinRole::Input },
+        { "stop_in", frust_component::PinRole::Input },
+        { "estop_in", frust_component::PinRole::Input },
+        { "reset_in", frust_component::PinRole::Input },
+        { "setpoint_in", frust_component::PinRole::Input },
+        { "feedback_in", frust_component::PinRole::Input },
+        { "drive_out", frust_component::PinRole::VoltageOutput },
+        { "run_lamp", frust_component::PinRole::VoltageOutput },
+        { "fault_lamp", frust_component::PinRole::VoltageOutput }
+    };
+    ctlComp.parameters = {
+        { "kp", 0.08 },
+        { "ki", 2.0 },
+        { "kd", 0.0002 },
+        { "v_max", 18.0 },
+        { "v_min", 0.0 }
+    };
+    ctlComp.state = {
+        { "state", 0.0 },
+        { "integral", 0.0 },
+        { "last_error", 0.0 },
+        { "last_t", 0.0 }
+    };
+    ctlComp.programFile = "user_motor_controller.frnode.json";
+
+    auto controllerDef = SubsystemDefinition::fromFrustComponent(ctlComp, "user_motor_controller");
+    a.definitions.push_back(controllerDef);
+
+    // 3. Coordinated Sequencer Subsystem Definition
+    a.definitions.push_back(makeCoordinatedSequencerDefinition());
+
+    // 4. Instances
+    SubsystemInstance drvA;
+    drvA.instanceId = "motorDriveA";
+    drvA.definitionId = "user_motor_drive";
+    drvA.title = "Drive A (Schematic Subsystem)";
+    a.instances.push_back(drvA);
+
+    SubsystemInstance drvB;
+    drvB.instanceId = "motorDriveB";
+    drvB.definitionId = "user_motor_drive";
+    drvB.title = "Drive B (Schematic Subsystem)";
+    a.instances.push_back(drvB);
+
+    SubsystemInstance cA;
+    cA.instanceId = "controllerA";
+    cA.definitionId = "user_motor_controller";
+    cA.title = "Controller A (FRust Programmable Component)";
+    cA.numericParams = { { "kp", 0.08 }, { "ki", 2.0 }, { "kd", 0.0002 }, { "v_max", 18.0 }, { "v_min", 0.0 } };
+    a.instances.push_back(cA);
+
+    SubsystemInstance cB;
+    cB.instanceId = "controllerB";
+    cB.definitionId = "user_motor_controller";
+    cB.title = "Controller B (FRust Programmable Component)";
+    cB.numericParams = { { "kp", 0.08 }, { "ki", 2.0 }, { "kd", 0.0002 }, { "v_max", 18.0 }, { "v_min", 0.0 } };
+    a.instances.push_back(cB);
+
+    SubsystemInstance seq;
+    seq.instanceId = "sequencer";
+    seq.definitionId = "coordinated_sequencer";
+    seq.title = "Coordinated Startup Sequencer";
+    seq.numericParams = { { "motor_b_delay_sec", 0.15 } };
+    a.instances.push_back(seq);
+
+    // 5. Connections
+    a.connections.push_back({ "sequencer", "start_a_out", "controllerA", "start_in", "NET_START_A" });
+    a.connections.push_back({ "sequencer", "start_b_out", "controllerB", "start_in", "NET_START_B" });
+    a.connections.push_back({ "sequencer", "stop_all_out", "controllerA", "stop_in", "NET_STOP_A" });
+    a.connections.push_back({ "sequencer", "stop_all_out", "controllerB", "stop_in", "NET_STOP_B" });
+    a.connections.push_back({ "sequencer", "estop_all_out", "controllerA", "estop_in", "NET_ESTOP" });
+    a.connections.push_back({ "sequencer", "estop_all_out", "controllerB", "estop_in", "NET_ESTOP" });
+
+    a.connections.push_back({ "controllerA", "drive_out", "motorDriveA", "v_in", "NET_DRIVE_A" });
+    a.connections.push_back({ "controllerB", "drive_out", "motorDriveB", "v_in", "NET_DRIVE_B" });
+
+    a.connections.push_back({ "motorDriveA", "tach", "controllerA", "feedback_in", "NET_TACH_A" });
+    a.connections.push_back({ "motorDriveB", "tach", "controllerB", "feedback_in", "NET_TACH_B" });
+
+    // 6. System-Level Exposed Ports
+    a.systemPorts = {
+        { "power_switch", PortDirection::Input, PortDomain::SignalControl, "V", "Master Power Switch" },
+        { "start_button", PortDirection::Input, PortDomain::SignalControl, "V", "Master Start Button" },
+        { "stop_button", PortDirection::Input, PortDomain::SignalControl, "V", "Master Stop Button" },
+        { "estop_button", PortDirection::Input, PortDomain::SignalControl, "V", "Master Emergency Stop Button" },
+        { "reset_button", PortDirection::Input, PortDomain::SignalControl, "V", "Master Fault Reset Button" },
+        { "motorDriveA.speed_setpoint", PortDirection::Input, PortDomain::SignalControl, "rad/s", "Motor Drive A Speed Setpoint" },
+        { "motorDriveB.speed_setpoint", PortDirection::Input, PortDomain::SignalControl, "rad/s", "Motor Drive B Speed Setpoint" },
+        { "motorDriveA.load_torque", PortDirection::Input, PortDomain::Mechanical, "N*m", "Motor Drive A Load Torque" },
+        { "motorDriveB.load_torque", PortDirection::Input, PortDomain::Mechanical, "N*m", "Motor Drive B Load Torque" }
+    };
+
+    return a;
+}
+
+std::vector<std::string> SystemAssembly::validate(const juce::File& projectFolder) const
+{
+    std::vector<std::string> issues;
+    std::set<std::string> instIds;
+
+    for (const auto& inst : instances)
+    {
+        if (inst.instanceId.empty())
+            issues.push_back("Instance has empty instanceId.");
+        else if (!instIds.insert(inst.instanceId).second)
+            issues.push_back("Duplicate instance identifier: " + inst.instanceId);
+
+        const auto* def = findDefinition(inst.definitionId);
+        if (!def)
+        {
+            issues.push_back("Instance '" + inst.instanceId + "' references unknown definitionId: " + inst.definitionId);
+        }
+        else
+        {
+            if (projectFolder.exists() && !def->referenceFile.empty())
+            {
+                juce::File refFile = projectFolder.getChildFile(juce::String(def->referenceFile));
+                if (!refFile.existsAsFile() && !juce::File(juce::String(def->referenceFile)).existsAsFile())
+                {
+                    issues.push_back("Subsystem definition '" + def->id + "' reference file not found: " + def->referenceFile);
+                }
+            }
+        }
+    }
+
+    for (const auto& conn : connections)
+    {
+        const auto* srcInst = findInstance(conn.fromInstance);
+        const auto* dstInst = findInstance(conn.toInstance);
+
+        if (!srcInst)
+            issues.push_back("Connection references non-existent source instance: " + conn.fromInstance);
+        if (!dstInst)
+            issues.push_back("Connection references non-existent destination instance: " + conn.toInstance);
+
+        if (srcInst)
+        {
+            const auto* srcDef = findDefinition(srcInst->definitionId);
+            if (srcDef && !srcDef->findPort(conn.fromPort))
+                issues.push_back("Port '" + conn.fromPort + "' not found on source instance '" + conn.fromInstance + "' (" + srcDef->id + ")");
+        }
+        if (dstInst)
+        {
+            const auto* dstDef = findDefinition(dstInst->definitionId);
+            if (dstDef && !dstDef->findPort(conn.toPort))
+                issues.push_back("Port '" + conn.toPort + "' not found on destination instance '" + conn.toInstance + "' (" + dstDef->id + ")");
+        }
+    }
+
+    return issues;
+}
+
+std::vector<std::string> SystemAssembly::discoverSignals() const
+{
+    std::vector<std::string> sigs;
+    sigs.push_back("system.power");
+    sigs.push_back("system.start");
+    sigs.push_back("system.stop");
+    sigs.push_back("system.estop");
+    sigs.push_back("system.reset");
+    sigs.push_back("system.ready");
+    sigs.push_back("system.fault");
+
+    for (const auto& inst : instances)
+    {
+        const auto* def = findDefinition(inst.definitionId);
+        if (!def) continue;
+
+        for (const auto& p : def->ports)
+        {
+            sigs.push_back(inst.instanceId + "." + p.name);
+        }
+
+        if (def->kind == SubsystemKind::DCMotor || def->id.find("motor") != std::string::npos)
+        {
+            sigs.push_back(inst.instanceId + ".speed");
+            sigs.push_back(inst.instanceId + ".current");
+            sigs.push_back(inst.instanceId + ".angle");
+        }
+        if (def->kind == SubsystemKind::MotorSpeedController || def->id.find("controller") != std::string::npos)
+        {
+            sigs.push_back(inst.instanceId + ".drive");
+            sigs.push_back(inst.instanceId + ".setpoint");
+            sigs.push_back(inst.instanceId + ".running");
+            sigs.push_back(inst.instanceId + ".fault");
+        }
+    }
+    return sigs;
 }
 
 // -----------------------------------------------------------------------------
@@ -1001,6 +1532,272 @@ CompiledAssemblyCircuit AssemblyCompiler::compile(const SystemAssembly& assembly
             res.signalNodes[inst.instanceId + ".angle"] = motor.angle;
             res.signalNodes[inst.instanceId + ".voltage"] = nVin;
             res.signalBranches[inst.instanceId + ".current"] = motor.armature;
+        }
+        else if (def->kind == SubsystemKind::SchematicReference)
+        {
+            // User-defined schematic diagram subsystem
+            juce::var circuitData = def->schematicData;
+            if (!circuitData.isObject() && !def->referenceFile.empty())
+            {
+                juce::File refFile(juce::String(def->referenceFile));
+                if (refFile.existsAsFile())
+                {
+                    circuitData = juce::JSON::parse(refFile);
+                    if (const auto* obj = circuitData.getDynamicObject(); obj && obj->hasProperty("circuit"))
+                        circuitData = obj->getProperty("circuit");
+                }
+            }
+
+            const auto* root = circuitData.getDynamicObject();
+            const auto* comps = root != nullptr ? root->getProperty("components").getArray() : nullptr;
+
+            if (comps == nullptr)
+            {
+                res.error = "Schematic subsystem '" + inst.instanceId + "' has no valid components.";
+                return res;
+            }
+
+            // Map internal nets of this schematic to circuit nodes
+            // First, find port-to-net mappings from block_port / power_port symbols
+            std::map<std::string, std::string> portToInternalNet;
+            for (const auto& entry : *comps)
+            {
+                if (const auto* co = entry.getDynamicObject())
+                {
+                    const auto sym = co->getProperty("symbol").toString();
+                    if (sym == "block_port" || sym == "power_port" || sym == "net_label")
+                    {
+                        const auto pName = co->getProperty("busName").toString().trim();
+                        const auto name = pName.isNotEmpty() ? pName : co->getProperty("id").toString();
+                        if (const auto* pins = co->getProperty("pins").getDynamicObject())
+                        {
+                            for (const auto& p : pins->getProperties())
+                            {
+                                portToInternalNet[name.toStdString()] = p.value.toString().toStdString();
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Internal net resolver for this instance
+            std::map<std::string, circuit_sim::Node> internalNetNodes;
+            auto getNetNode = [&](const std::string& netName) -> circuit_sim::Node {
+                if (netName == "0" || netName == "gnd" || netName.empty())
+                    return 0;
+
+                // Check if this net matches an external port of the instance
+                for (const auto& [pName, mappedNet] : portToInternalNet)
+                {
+                    if (mappedNet == netName)
+                        return getNodeForPort(inst.instanceId, pName);
+                }
+
+                auto it = internalNetNodes.find(netName);
+                if (it != internalNetNodes.end())
+                    return it->second;
+
+                const auto node = c.addNode();
+                internalNetNodes[netName] = node;
+                return node;
+            };
+
+            // Instantiate components from the schematic
+            for (const auto& entry : *comps)
+            {
+                const auto* co = entry.getDynamicObject();
+                if (!co) continue;
+
+                const auto sym = co->getProperty("symbol").toString();
+                const auto refdes = co->getProperty("id").toString().toStdString();
+                const auto* pinsObj = co->getProperty("pins").getDynamicObject();
+
+                auto getPinNode = [&](const std::string& pinName, const std::string& fallbackNet = "") -> circuit_sim::Node {
+                    if (pinsObj && pinsObj->hasProperty(juce::String(pinName)))
+                        return getNetNode(pinsObj->getProperty(juce::String(pinName)).toString().toStdString());
+                    if (!fallbackNet.empty())
+                        return getNetNode(fallbackNet);
+                    return c.addNode();
+                };
+
+                if (sym == "block_port" || sym == "power_port" || sym == "net_label" || sym == "annotation_text")
+                {
+                    continue;
+                }
+                else if (sym == "dc_motor")
+                {
+                    mech::DcMotorModel m;
+                    m.ra = inst.getParam("ra", 2.0);
+                    m.la = inst.getParam("la", 0.001);
+                    m.kt = inst.getParam("kt", 0.02);
+                    m.ke = inst.getParam("ke", 0.02);
+                    m.j  = inst.getParam("j", 0.00001);
+                    m.b  = inst.getParam("b", 0.000001);
+
+                    mech::MotorLoad load;
+                    mech::ShaftModel shaft;
+
+                    const auto nPos = getPinNode("pos", "1");
+                    const auto nNeg = getPinNode("neg", "2");
+
+                    const auto motor = mech::addDcMotor(c, inst.instanceId + "_" + refdes, nPos, nNeg, m, load, shaft);
+
+                    // If schematic has load_torque or speed ports, tie their nodes to motor.shaft
+                    for (const auto& [pName, mappedNet] : portToInternalNet)
+                    {
+                        if (pName == "speed" || pName == "shaft" || pName == "load_torque")
+                        {
+                            const auto pNode = getNodeForPort(inst.instanceId, pName);
+                            c.addResistor("R_CPL_" + inst.instanceId + "_" + pName, motor.shaft, pNode, 1e-4);
+                        }
+                    }
+
+                    // Load torque current source
+                    circuit_sim::Waveform dcLoad; dcLoad.offset = 0.0;
+                    const int loadElem = c.addCurrentSource("TL_" + inst.instanceId + "_" + refdes, motor.shaft, 0, dcLoad);
+
+                    res.inputElements[inst.instanceId + ".load_torque"] = loadElem;
+                    if (inst.instanceId == "motorDriveA" || inst.instanceId == "motorA")
+                    {
+                        res.inputElements["motorA.load_torque"] = loadElem;
+                        res.inputElements["load_torque"] = loadElem;
+                    }
+                    else if (inst.instanceId == "motorDriveB" || inst.instanceId == "motorB")
+                    {
+                        res.inputElements["motorB.load_torque"] = loadElem;
+                    }
+
+                    res.signalNodes[inst.instanceId + ".speed"] = motor.shaft;
+                    res.signalNodes[inst.instanceId + "." + refdes + ".speed"] = motor.shaft;
+                    res.signalNodes[inst.instanceId + ".angle"] = motor.angle;
+                    res.signalNodes[inst.instanceId + ".voltage"] = nPos;
+                    res.signalBranches[inst.instanceId + ".current"] = motor.armature;
+                    res.signalBranches[inst.instanceId + "." + refdes + ".current"] = motor.armature;
+
+                    // Aliases for compatibility with dual motor panel
+                    if (inst.instanceId == "motorDriveA")
+                    {
+                        res.signalNodes["motorA.speed"] = motor.shaft;
+                        res.signalBranches["motorA.current"] = motor.armature;
+                    }
+                    else if (inst.instanceId == "motorDriveB")
+                    {
+                        res.signalNodes["motorB.speed"] = motor.shaft;
+                        res.signalBranches["motorB.current"] = motor.armature;
+                    }
+                }
+                else if (sym == "tachometer")
+                {
+                    auto itSpeed = res.signalNodes.find(inst.instanceId + ".speed");
+                    const circuit_sim::Node shaftNode = (itSpeed != res.signalNodes.end()) ? itSpeed->second : c.addNode();
+                    const auto nOut = getPinNode("out", "1");
+                    mech::addTachometer(c, "TG_" + inst.instanceId + "_" + refdes, shaftNode, nOut, 0, 0.01, 100.0);
+                    res.signalNodes[inst.instanceId + ".tach"] = nOut;
+                }
+                else if (sym == "current_source")
+                {
+                    circuit_sim::Waveform wave;
+                    const auto n1 = getPinNode("1");
+                    const auto n2 = getPinNode("2");
+                    const int elem = c.addCurrentSource(inst.instanceId + "_" + refdes, n1, n2, wave);
+                    if (refdes.find("TL") != std::string::npos || refdes.find("load") != std::string::npos)
+                    {
+                        res.inputElements[inst.instanceId + ".load_torque"] = elem;
+                    }
+                }
+                else if (sym == "resistor")
+                {
+                    double ohms = 1000.0;
+                    const auto valStr = co->getProperty("value").toString();
+                    circuit_sim::parseValue(valStr.toStdString(), ohms);
+                    ohms = inst.getParam(refdes, ohms);
+                    c.addResistor(inst.instanceId + "_" + refdes, getPinNode("1"), getPinNode("2"), ohms);
+                }
+                else if (sym == "capacitor")
+                {
+                    double farads = 1e-6;
+                    circuit_sim::parseValue(co->getProperty("value").toString().toStdString(), farads);
+                    c.addCapacitor(inst.instanceId + "_" + refdes, getPinNode("1"), getPinNode("2"), farads);
+                }
+                else if (sym == "inductor")
+                {
+                    double henries = 1e-3;
+                    circuit_sim::parseValue(co->getProperty("value").toString().toStdString(), henries);
+                    c.addInductor(inst.instanceId + "_" + refdes, getPinNode("1"), getPinNode("2"), henries);
+                }
+            }
+
+            for (const auto& p : def->ports)
+            {
+                res.signalNodes[inst.instanceId + "." + p.name] = getNodeForPort(inst.instanceId, p.name);
+            }
+        }
+        else if (def->kind == SubsystemKind::ProgrammableComponent)
+        {
+            // User-defined Node Designer / FRust programmable component
+            const double kp = inst.getParam("kp", 0.08);
+            const double ki = inst.getParam("ki", 2.0);
+            const double kd = inst.getParam("kd", 0.0002);
+            const double vMax = inst.getParam("v_max", 18.0);
+            const double vMin = inst.getParam("v_min", 0.0);
+
+            auto ctlDev = std::make_shared<ModularMotorControllerDevice>(kp, ki, kd, vMax, vMin);
+
+            const auto nPwr = pwrNode;
+            const auto nStart = getNodeForPort(inst.instanceId, "start_in");
+            const auto nStop = getNodeForPort(inst.instanceId, "stop_in");
+            const auto nEstop = getNodeForPort(inst.instanceId, "estop_in");
+            const auto nReset = getNodeForPort(inst.instanceId, "reset_in");
+            const auto nSetpoint = getNodeForPort(inst.instanceId, "setpoint_in");
+            const auto nFeedback = getNodeForPort(inst.instanceId, "feedback_in");
+            const auto nDrive = getNodeForPort(inst.instanceId, "drive_out");
+            const auto nRunLamp = getNodeForPort(inst.instanceId, "run_lamp");
+            const auto nFaultLamp = getNodeForPort(inst.instanceId, "fault_lamp");
+
+            circuit_sim::Waveform dcSet;
+            const double initSetpoint = (inst.instanceId == "controllerB" || inst.instanceId.find("B") != std::string::npos) ? 2.0 : 3.0;
+            dcSet.offset = initSetpoint;
+            const int setpointElem = c.addVoltageSource("V_SET_" + inst.instanceId, nSetpoint, 0, dcSet);
+
+            res.inputElements[inst.instanceId + ".speed_setpoint"] = setpointElem;
+            res.inputElements[inst.instanceId + ".setpoint"] = setpointElem;
+            if (inst.instanceId == "controllerA")
+            {
+                res.inputElements["motorA.speed_setpoint"] = setpointElem;
+                res.inputElements["motorDriveA.speed_setpoint"] = setpointElem;
+                res.inputElements["speed_setpoint"] = setpointElem;
+            }
+            else if (inst.instanceId == "controllerB")
+            {
+                res.inputElements["motorB.speed_setpoint"] = setpointElem;
+                res.inputElements["motorDriveB.speed_setpoint"] = setpointElem;
+            }
+
+            c.addProgrammable("U_" + inst.instanceId,
+                             { nPwr, nStart, nStop, nEstop, nReset,
+                               nSetpoint, nFeedback, nDrive, nRunLamp, nFaultLamp },
+                             ctlDev);
+
+            // Pull-down terminations on indicator lamps
+            c.addResistor("R_RUN_" + inst.instanceId, nRunLamp, 0, 1000.0);
+            c.addResistor("R_FLT_" + inst.instanceId, nFaultLamp, 0, 1000.0);
+
+            res.signalNodes[inst.instanceId + ".setpoint"] = nSetpoint;
+            res.signalNodes[inst.instanceId + ".drive"] = nDrive;
+            res.signalNodes[inst.instanceId + ".running"] = nRunLamp;
+            res.signalNodes[inst.instanceId + ".fault"] = nFaultLamp;
+            res.signalNodes[inst.instanceId + ".feedback"] = nFeedback;
+
+            if (inst.instanceId == "controllerA")
+            {
+                res.signalNodes["controllerA.drive"] = nDrive;
+                res.signalNodes["controllerA.setpoint"] = nSetpoint;
+            }
+            else if (inst.instanceId == "controllerB")
+            {
+                res.signalNodes["controllerB.drive"] = nDrive;
+                res.signalNodes["controllerB.setpoint"] = nSetpoint;
+            }
         }
     }
 

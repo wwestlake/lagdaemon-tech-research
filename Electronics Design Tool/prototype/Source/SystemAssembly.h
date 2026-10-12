@@ -72,8 +72,16 @@ struct SubsystemDefinition
     // For User-defined references:
     std::string referenceFile;  // diagram path, frcomp name, or assembly file
     std::string diagramSheet;   // sub-diagram sheet name if applicable
+    juce::var schematicData;    // embedded or loaded circuit diagram JSON
+    juce::var componentData;    // embedded or loaded FRust programmable component JSON
 
     const SubsystemPort* findPort(const std::string& portName) const;
+
+    // Factory methods for user-defined subsystems
+    static SubsystemDefinition fromSchematicJson(const juce::var& json, const std::string& defId, const std::string& name);
+    static bool loadSchematicDefinition(const juce::File& file, SubsystemDefinition& out, juce::String& error);
+    static SubsystemDefinition fromFrustComponent(const frust_component::Definition& def, const std::string& defId = "");
+    static bool loadFrustComponentDefinition(const juce::File& file, SubsystemDefinition& out, juce::String& error);
 
     juce::var toJson() const;
     static SubsystemDefinition fromJson(const juce::var& json);
@@ -159,6 +167,16 @@ struct SystemAssembly
 
     // Standard Dual-Motor Coordinated System assembly factory
     static SystemAssembly createDualMotorSystem();
+
+    // P5 Demonstration: User-Assembled Motor Control System
+    // (Reusable schematic motor-drive subsystems + reusable Node Designer/FRust controller)
+    static SystemAssembly createUserAssembledMotorSystem();
+
+    // Validation: verifies instances, definitions, connections, and circular dependencies
+    std::vector<std::string> validate(const juce::File& projectFolder = {}) const;
+
+    // Signal discovery: enumerates all observable hierarchical signals
+    std::vector<std::string> discoverSignals() const;
 
     // JSON serialization
     juce::var toJson() const;

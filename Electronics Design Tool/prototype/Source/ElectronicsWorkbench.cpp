@@ -18297,7 +18297,11 @@ juce::String ElectronicsWorkbench::assemblyTool(const juce::String& name, const 
         const auto asmName = args.getProperty("name", "dual_motor_coordinated").toString().trim();
         sim_panel::SystemAssembly assembly;
 
-        if (asmName == "dual_motor_coordinated" || asmName.isEmpty())
+        if (asmName == "user_assembled_dual_motor" || asmName == "user_assembled_motor_system")
+        {
+            assembly = sim_panel::SystemAssembly::createUserAssembledMotorSystem();
+        }
+        else if (asmName == "dual_motor_coordinated" || asmName.isEmpty())
         {
             assembly = sim_panel::SystemAssembly::createDualMotorSystem();
         }
@@ -18326,6 +18330,75 @@ juce::String ElectronicsWorkbench::assemblyTool(const juce::String& name, const 
         res->setProperty("subsystems", (int)assembly.instances.size());
         res->setProperty("connections", (int)assembly.connections.size());
         return juce::JSON::toString(juce::var(res.get()));
+    }
+
+    if (name == "assembly_discover_definitions")
+    {
+        juce::DynamicObject::Ptr root = new juce::DynamicObject();
+        root->setProperty("ok", true);
+        root->setProperty("tool", "assembly_discover_definitions");
+
+        juce::Array<juce::var> items;
+
+        // 1. Built-in definitions
+        const auto mDef = sim_panel::SystemAssembly::makeDCMotorDefinition();
+        items.add(mDef.toJson());
+        const auto cDef = sim_panel::SystemAssembly::makeMotorControllerDefinition();
+        items.add(cDef.toJson());
+        const auto sDef = sim_panel::SystemAssembly::makeCoordinatedSequencerDefinition();
+        items.add(sDef.toJson());
+
+        // 2. Project diagrams & user blocks
+        if (project.isOpen())
+        {
+            for (const auto& entry : project.diagrams)
+            {
+                auto* dObj = new juce::DynamicObject();
+                dObj->setProperty("id", entry.name);
+                dObj->setProperty("displayName", entry.name);
+                dObj->setProperty("kind", "schematic_reference");
+                dObj->setProperty("referenceFile", entry.file);
+                items.add(juce::var(dObj));
+            }
+
+            for (const auto& f : project_store::componentsDirectory(project).findChildFiles(juce::File::findFiles, false, "*.frcomp.json"))
+            {
+                frust_component::Definition d;
+                juce::String err;
+                if (frust_component::load(f, d, err))
+                {
+                    const auto subDef = sim_panel::SubsystemDefinition::fromFrustComponent(d);
+                    items.add(subDef.toJson());
+                }
+            }
+        }
+
+        root->setProperty("definitions", juce::var(items));
+        return juce::JSON::toString(juce::var(root.get()));
+    }
+
+    if (name == "assembly_validate")
+    {
+        const auto asmName = args.getProperty("name", "user_assembled_dual_motor").toString().trim();
+        sim_panel::SystemAssembly assembly;
+        if (asmName == "user_assembled_dual_motor" || asmName == "user_assembled_motor_system")
+            assembly = sim_panel::SystemAssembly::createUserAssembledMotorSystem();
+        else
+            assembly = sim_panel::SystemAssembly::createDualMotorSystem();
+
+        const auto issues = assembly.validate(project.isOpen() ? project.folder : juce::File());
+
+        juce::DynamicObject::Ptr root = new juce::DynamicObject();
+        root->setProperty("ok", issues.empty());
+        root->setProperty("tool", "assembly_validate");
+        root->setProperty("valid", issues.empty());
+
+        juce::Array<juce::var> errList;
+        for (const auto& issue : issues)
+            errList.add(juce::String(issue));
+        root->setProperty("issues", juce::var(errList));
+
+        return juce::JSON::toString(juce::var(root.get()));
     }
 
     if (name == "assembly_list_subsystems")
