@@ -5,6 +5,7 @@
 #include "../../Source/SystemSimulationSession.h"
 #include "../../Source/ControlPanelModel.h"
 #include "../../Source/SystemAssembly.h"
+#include "../../Source/MechanicalSceneModel.h"
 
 #include <algorithm>
 #include <cmath>
@@ -431,12 +432,133 @@ void testUserAssembledMotorSystem()
     check(reloadedSession->setupAssembly(reloadedAssembly), "13d. Reloaded assembly compiled into new simulation session successfully");
 }
 
+void testMechanicalSceneAndVisualization()
+{
+    std::printf("-- P6 Live Mechanical Visualization and Simulation Acceptance Tests --\n");
+
+    // 1. Scene Model Hierarchy & Visual Primitives
+    auto dualScene = mechanical_scene::MechanicalScene::createDualMotorShaftScene();
+    check(dualScene.id == "dual_motor_scene", "1. Dual motor shaft scene created with valid ID");
+    check(dualScene.bodies.size() == 5, "1b. Five rigid bodies defined in dual motor scene");
+    check(dualScene.joints.size() == 2, "1c. Two revolute joints defined with signal bindings");
+    check(dualScene.findBody("motorA_rotor") != nullptr, "1d. motorA_rotor rigid body resolved");
+    check(dualScene.findBody("motorB_rotor") != nullptr, "1e. motorB_rotor rigid body resolved");
+
+    // 2. Demonstration A: Dual Motor Simulation-Driven Animation
+    auto dualAssembly = sim_panel::SystemAssembly::createDualMotorSystem();
+    auto session = std::make_shared<sim_panel::SystemSimulationSession>();
+    check(session->setupAssembly(dualAssembly), "2. Dual motor assembly compiled into simulation session");
+    session->setExecutionRate(0.0);
+    check(session->start(), "2b. Simulation session started");
+
+    // Power up and start system
+    session->setBooleanInput("system.power", true);
+    session->setBooleanInput("system.start", true);
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    session->setBooleanInput("system.start", false);
+
+    // Let simulation run to establish motion
+    std::this_thread::sleep_for(std::chrono::milliseconds(180));
+    auto snap = session->getSnapshot();
+    const double wA = snap.numericSignals["motorA.speed"];
+    const double wB = snap.numericSignals["motorB.speed"];
+    check(wA > 100.0 && wB > 50.0, "2c. Motors in motion: Motor A = " + std::to_string(wA) + " rad/s, Motor B = " + std::to_string(wB) + " rad/s");
+
+    // Update scene kinematics from authoritative simulation snapshot
+    dualScene.updateFromSimulation(snap, 0.05);
+    auto* jA = dualScene.findJoint("joint_motorA");
+    auto* jB = dualScene.findJoint("joint_motorB");
+    check(jA != nullptr && jB != nullptr, "2d. Shaft joints resolved");
+    check(jA->currentVelocity > 50.0 && jB->currentVelocity > 25.0, "2e. Joint velocities updated from simulation signals");
+    check(std::abs(jA->currentValue) > 0.1 && std::abs(jB->currentValue) > 0.05, "2f. Joint angles advanced independently under simulation drive");
+
+    // Verify non-interference: snapshot numericSignals and session are unmodified by scene update
+    const auto snapAfter = session->getSnapshot();
+    const auto itAfter = snapAfter.numericSignals.find("motorA.speed");
+    const auto itBefore = snap.numericSignals.find("motorA.speed");
+    check(itAfter != snapAfter.numericSignals.end() && itBefore != snap.numericSignals.end() && itAfter->second == itBefore->second, "2g. Visualization update is non-interfering: simulation state unchanged");
+
+    // Apply mechanical disturbance
+    session->setNumericInput("motorA.load_torque", 0.03);
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    snap = session->getSnapshot();
+    dualScene.updateFromSimulation(snap, 0.05);
+    check(dualScene.findJoint("joint_motorA")->currentVelocity > 0.0, "2h. Shaft motion tracks disturbed simulation speed");
+
+    // Trip Emergency Stop
+    session->setBooleanInput("system.estop", true);
+    std::this_thread::sleep_for(std::chrono::milliseconds(120));
+    snap = session->getSnapshot();
+    dualScene.updateFromSimulation(snap, 0.05);
+    check(jA->currentVelocity < 5.0 && jB->currentVelocity < 5.0, "2i. E-stop halts shaft motion in visual scene (wA: " + std::to_string(jA->currentVelocity) + ", wB: " + std::to_string(jB->currentVelocity) + ")");
+
+    session->stop();
+
+    // 3. Demonstration B: Controlled 2-DOF Robotic Arm
+    auto armAssembly = sim_panel::SystemAssembly::createControlledArmSystem();
+    check(!armAssembly.instances.empty(), "3. Controlled 2-DOF robotic arm assembly instantiated");
+    check(armAssembly.mechanicalScene.id == "controlled_arm_scene", "3b. Robotic arm mechanical scene attached to assembly");
+    check(armAssembly.mechanicalScene.bodies.size() == 3, "3c. 3 rigid bodies in arm hierarchy (base, shoulder, forearm)");
+    check(armAssembly.mechanicalScene.joints.size() == 2, "3d. 2 rotational joints in arm (shoulder, elbow)");
+
+    auto armSession = std::make_shared<sim_panel::SystemSimulationSession>();
+    check(armSession->setupAssembly(armAssembly), "3e. Robotic arm assembly compiled into simulation session");
+    armSession->setExecutionRate(0.0);
+    check(armSession->start(), "3f. Robotic arm simulation session started");
+
+    armSession->setBooleanInput("system.power", true);
+    armSession->setBooleanInput("system.start", true);
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    armSession->setBooleanInput("system.start", false);
+
+    // Forward motion to commanded angles
+    std::this_thread::sleep_for(std::chrono::milliseconds(200));
+    auto armSnap = armSession->getSnapshot();
+    auto armScene = armAssembly.mechanicalScene;
+    armScene.updateFromSimulation(armSnap, 0.05);
+    auto* shoulderJoint = armScene.findJoint("joint_shoulder");
+    auto* elbowJoint = armScene.findJoint("joint_elbow");
+    check(shoulderJoint != nullptr && elbowJoint != nullptr, "3g. Arm joints resolved");
+    check(std::abs(shoulderJoint->currentValue) > 0.01 || std::abs(shoulderJoint->currentVelocity) > 0.01, "3h. Shoulder joint moved under forward control");
+    check(std::abs(elbowJoint->currentValue) > 0.01 || std::abs(elbowJoint->currentVelocity) > 0.01, "3i. Elbow joint moved under forward control");
+
+    // Travel limits verification
+    check(shoulderJoint->limits.enabled && shoulderJoint->limits.minVal == -2.5 && shoulderJoint->limits.maxVal == 2.5, "3j. Shoulder travel limits enforced [-2.5, +2.5] rad");
+    check(elbowJoint->limits.enabled && elbowJoint->limits.minVal == -2.8 && elbowJoint->limits.maxVal == 2.8, "3k. Elbow travel limits enforced [-2.8, +2.8] rad");
+
+    // Reverse motion
+    armSession->setNumericInput("shoulder.target_angle", -30.0);
+    armSession->setNumericInput("elbow.target_angle", -45.0);
+    std::this_thread::sleep_for(std::chrono::milliseconds(150));
+    armSnap = armSession->getSnapshot();
+    armScene.updateFromSimulation(armSnap, 0.05);
+    check(shoulderJoint->currentValue <= 2.5 && shoulderJoint->currentValue >= -2.5, "3l. Joint position stays strictly within travel limits during reversal");
+
+    // E-stop
+    armSession->setBooleanInput("system.estop", true);
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    armSnap = armSession->getSnapshot();
+    armScene.updateFromSimulation(armSnap, 0.05);
+    check(std::abs(shoulderJoint->currentVelocity) < 2.0 && std::abs(elbowJoint->currentVelocity) < 2.0, "3m. E-stop halts arm actuation");
+
+    armSession->stop();
+
+    // 4. JSON Serialization & Round-Trip Persistence
+    const auto armJson = armScene.toJson();
+    const auto reloadedArmScene = mechanical_scene::MechanicalScene::fromJson(armJson);
+    check(reloadedArmScene.id == armScene.id, "4. Mechanical scene JSON serialization & deserialization preserved ID");
+    check(reloadedArmScene.bodies.size() == armScene.bodies.size(), "4b. Reloaded scene preserved all rigid bodies and geometry primitives");
+    check(reloadedArmScene.joints.size() == armScene.joints.size(), "4c. Reloaded scene preserved all joints, signal bindings, and travel limits");
+    const auto* relShoulder = reloadedArmScene.findJoint("joint_shoulder");
+    check(relShoulder != nullptr && relShoulder->binding.signalName == "arm.joint1.angle", "4d. Reloaded joint binding signal name intact");
+}
+
 } // namespace
 
 int main()
 {
     std::printf("====================================================\n");
-    std::printf("  Control Panel & Interactive Simulation Tests (P3/P4/P5) \n");
+    std::printf("  Control Panel & Interactive Simulation Tests (P3-P6) \n");
     std::printf("====================================================\n");
 
     testOperatingSequence();
@@ -445,6 +567,7 @@ int main()
     testAssemblyPersistence();
     testDualMotorCoordinatedSystem();
     testUserAssembledMotorSystem();
+    testMechanicalSceneAndVisualization();
 
     std::printf("\n%d passed, %d failed\n", passes, failures);
     return failures == 0 ? 0 : 1;

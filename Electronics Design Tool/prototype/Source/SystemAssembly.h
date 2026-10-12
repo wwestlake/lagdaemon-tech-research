@@ -3,6 +3,7 @@
 #include "CircuitSolver.h"
 #include "Mechanical.h"
 #include "FrustComponent.h"
+#include "MechanicalSceneModel.h"
 
 #include <juce_core/juce_core.h>
 
@@ -156,6 +157,9 @@ struct SystemAssembly
     // External system-level ports/signals (exposed for operator panels or higher-level nesting)
     std::vector<SubsystemPort> systemPorts;
 
+    // P6: Associated mechanical visualization scene
+    mechanical_scene::MechanicalScene mechanicalScene;
+
     // Helper queries
     const SubsystemDefinition* findDefinition(const std::string& defId) const;
     const SubsystemInstance* findInstance(const std::string& instId) const;
@@ -171,6 +175,9 @@ struct SystemAssembly
     // P5 Demonstration: User-Assembled Motor Control System
     // (Reusable schematic motor-drive subsystems + reusable Node Designer/FRust controller)
     static SystemAssembly createUserAssembledMotorSystem();
+
+    // P6 Demonstration B: Controlled Mechanical Robotic Arm System
+    static SystemAssembly createControlledArmSystem();
 
     // Validation: verifies instances, definitions, connections, and circular dependencies
     std::vector<std::string> validate(const juce::File& projectFolder = {}) const;

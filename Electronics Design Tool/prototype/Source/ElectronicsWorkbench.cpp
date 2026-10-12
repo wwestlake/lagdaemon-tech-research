@@ -15,6 +15,7 @@
 #include "PcbPanel.h"
 #include "NodeDesignerPanel.h"
 #include "ControlPanelComponent.h"
+#include "MechanicalViewComponent.h"
 #include "SystemSimulationSession.h"
 #include "SystemAssembly.h"
 #include "FrustExecution.h"
@@ -941,6 +942,38 @@ const std::vector<ToolSpecText>& controlPanelToolSpecs()
     return specs;
 }
 
+const std::vector<ToolSpecText>& mechanicalToolSpecs()
+{
+    static const std::vector<ToolSpecText> specs = {
+        {
+            "mechanical_view_open",
+            "Open or bring to front the 3D mechanical visualization view.",
+            R"({"type":"object","properties":{},"additionalProperties":false})"
+        },
+        {
+            "mechanical_scene_get",
+            "Retrieve the full mechanical scene structure including bodies, visual geometries, and joint bindings in JSON format.",
+            R"({"type":"object","properties":{},"additionalProperties":false})"
+        },
+        {
+            "mechanical_scene_load",
+            "Load a predefined or custom mechanical scene ('dual_motor', 'controlled_arm', or custom JSON scene).",
+            R"({"type":"object","properties":{"name":{"type":"string","description":"Predefined scene name ('dual_motor' or 'controlled_arm')."},"scene":{"type":"object","description":"Optional custom mechanical scene definition."}},"additionalProperties":false})"
+        },
+        {
+            "mechanical_get_state",
+            "Retrieve live mechanical joint positions, velocities, and signal bindings evaluated from the active simulation.",
+            R"({"type":"object","properties":{},"additionalProperties":false})"
+        },
+        {
+            "mechanical_bind_joint",
+            "Bind a mechanical scene joint to a simulation signal with optional scale and offset.",
+            R"({"type":"object","properties":{"jointId":{"type":"string","description":"Joint ID in the mechanical scene."},"signal":{"type":"string","description":"Simulation signal name (e.g. motorA.angle, motorA.speed, arm.joint1.angle)."},"scale":{"type":"number","description":"Optional scale factor (default 1.0)."}},"required":["jointId","signal"],"additionalProperties":false})"
+        }
+    };
+    return specs;
+}
+
 // Tool text with live registry values filled in, so lists such as the
 // placeable component ids never drift from what the application supports.
 std::string liveToolText(const char* text)
@@ -957,6 +990,9 @@ bool isSchematicTool(const juce::String& name)
         if (name == spec.name)
             return true;
     for (const auto& spec : controlPanelToolSpecs())
+        if (name == spec.name)
+            return true;
+    for (const auto& spec : mechanicalToolSpecs())
         if (name == spec.name)
             return true;
     return false;
@@ -14806,6 +14842,8 @@ private:
             definitions.push_back({ spec.name.toStdString(), spec.description.toStdString(), spec.schema.toStdString() });
         for (const auto& spec : controlPanelToolSpecs())
             definitions.push_back({ spec.name.toStdString(), spec.description.toStdString(), spec.schema.toStdString() });
+        for (const auto& spec : mechanicalToolSpecs())
+            definitions.push_back({ spec.name.toStdString(), spec.description.toStdString(), spec.schema.toStdString() });
         return definitions;
     }
 
@@ -15734,6 +15772,8 @@ ElectronicsWorkbench::ElectronicsWorkbench()
             return controlPanelTool(name, args);
         if (name.startsWith("assembly_"))
             return assemblyTool(name, args);
+        if (name.startsWith("mechanical_"))
+            return mechanicalTool(name, args);
         return schematicPanel->runSchematicTool(name, args);
     };
     schematicPanel->outputDirectory = [this] { return generatedRunDirectory(); };
@@ -15760,6 +15800,9 @@ ElectronicsWorkbench::ElectronicsWorkbench()
     auto controlPanelOwner = std::make_unique<sim_panel::ControlPanelComponent>();
     controlPanel = controlPanelOwner.get();
     controlPanelDockPanel = dockManager->registerPanel("control_panel", "Control Panel", std::move(controlPanelOwner), CreationDock::DockTargetZone::CenterTab);
+    auto mechanicalViewOwner = std::make_unique<mechanical_scene::MechanicalViewComponent>(controlPanel ? std::shared_ptr<sim_panel::SystemSimulationSession>(controlPanel->getSession(), [](void*){}) : nullptr);
+    mechanicalView = mechanicalViewOwner.get();
+    mechanicalViewDockPanel = dockManager->registerPanel("mechanical_view", "Mechanical View", std::move(mechanicalViewOwner), CreationDock::DockTargetZone::CenterTab);
     // FRust node programs (the node-programming editor ported from FrustIDE),
     // saved in the open project's programs folder.
     auto nodeDesignerOwner = std::make_unique<NodeDesignerPanel>();
@@ -16493,6 +16536,8 @@ juce::String ElectronicsWorkbench::buildAssistantToolManifestJson() const
     for (const auto& spec : analyticsToolSpecs())
         manifestSpecs.push_back(spec);
     for (const auto& spec : controlPanelToolSpecs())
+        manifestSpecs.push_back(spec);
+    for (const auto& spec : mechanicalToolSpecs())
         manifestSpecs.push_back(spec);
     for (const auto& spec : manifestSpecs)
     {
@@ -18483,6 +18528,109 @@ juce::String ElectronicsWorkbench::assemblyTool(const juce::String& name, const 
     }
 
     return "{ \"ok\": false, \"error\": \"Unknown assembly tool: " + name + "\" }";
+}
+
+void ElectronicsWorkbench::showMechanicalView()
+{
+    auto* panel = mechanicalViewDockPanel.getComponent();
+    if (dockManager == nullptr || panel == nullptr)
+        return;
+    if (auto* zone = panel->findParentComponentOfClass<CreationDock::DockZone>())
+        zone->setActivePanel(panel);
+    if (auto* window = dynamic_cast<CreationDock::FloatingDockWindow*>(panel->getTopLevelComponent()))
+        window->toFront(true);
+}
+
+juce::String ElectronicsWorkbench::mechanicalTool(const juce::String& name, const juce::var& args)
+{
+    if (name == "mechanical_view_open")
+    {
+        showMechanicalView();
+        return R"({"ok": true, "tool": "mechanical_view_open", "status": "opened"})";
+    }
+
+    if (mechanicalView == nullptr)
+        return R"({"ok": false, "error": "Mechanical view component is unavailable."})";
+
+    if (name == "mechanical_scene_get")
+    {
+        const auto& sc = mechanicalView->getScene();
+        juce::DynamicObject::Ptr root = new juce::DynamicObject();
+        root->setProperty("ok", true);
+        root->setProperty("tool", "mechanical_scene_get");
+        root->setProperty("scene", sc.toJson());
+        return juce::JSON::toString(juce::var(root.get()));
+    }
+
+    if (name == "mechanical_scene_load")
+    {
+        const auto sceneName = args.getProperty("name", "dual_motor").toString().trim().toLowerCase();
+        if (sceneName == "dual_motor" || sceneName == "dual_motor_scene" || sceneName == "dual_motor_shaft")
+        {
+            mechanicalView->setScene(mechanical_scene::MechanicalScene::createDualMotorShaftScene());
+            return R"({"ok": true, "tool": "mechanical_scene_load", "scene": "dual_motor"})";
+        }
+        else if (sceneName == "arm" || sceneName == "controlled_arm" || sceneName == "robot_arm")
+        {
+            mechanicalView->setScene(mechanical_scene::MechanicalScene::createControlledArmScene());
+            return R"({"ok": true, "tool": "mechanical_scene_load", "scene": "controlled_arm"})";
+        }
+        else if (args.hasProperty("scene"))
+        {
+            auto sc = mechanical_scene::MechanicalScene::fromJson(args.getProperty("scene", {}));
+            mechanicalView->setScene(sc);
+            return R"({"ok": true, "tool": "mechanical_scene_load", "scene": "custom"})";
+        }
+        return "{ \"ok\": false, \"error\": \"Unknown scene name: " + sceneName + "\" }";
+    }
+
+    if (name == "mechanical_get_state")
+    {
+        const auto& sc = mechanicalView->getScene();
+        juce::DynamicObject::Ptr root = new juce::DynamicObject();
+        root->setProperty("ok", true);
+        root->setProperty("tool", "mechanical_get_state");
+        root->setProperty("sceneId", juce::String(sc.id));
+
+        juce::DynamicObject::Ptr jointsObj = new juce::DynamicObject();
+        for (const auto& j : sc.joints)
+        {
+            auto* jData = new juce::DynamicObject();
+            jData->setProperty("name", juce::String(j.name));
+            jData->setProperty("value", j.currentValue);
+            jData->setProperty("velocity", j.currentVelocity);
+            jData->setProperty("binding", juce::String(j.binding.signalName));
+            jointsObj->setProperty(juce::String(j.id), juce::var(jData));
+        }
+        root->setProperty("joints", juce::var(jointsObj.get()));
+
+        juce::Array<juce::var> bodiesList;
+        for (const auto& b : sc.bodies)
+            bodiesList.add(juce::String(b.id));
+        root->setProperty("bodies", juce::var(bodiesList));
+
+        return juce::JSON::toString(juce::var(root.get()));
+    }
+
+    if (name == "mechanical_bind_joint")
+    {
+        const auto jointId = args.getProperty("jointId", {}).toString().toStdString();
+        const auto signal = args.getProperty("signal", {}).toString().toStdString();
+        const double scale = (double)args.getProperty("scale", 1.0);
+
+        auto sc = mechanicalView->getScene();
+        auto* j = sc.findJoint(jointId);
+        if (j == nullptr)
+            return "{ \"ok\": false, \"error\": \"Joint not found: " + juce::String(jointId) + "\" }";
+
+        j->binding.signalName = signal;
+        j->binding.scale = scale;
+        mechanicalView->setScene(sc);
+
+        return "{ \"ok\": true, \"tool\": \"mechanical_bind_joint\", \"jointId\": \"" + juce::String(jointId) + "\", \"signal\": \"" + juce::String(signal) + "\" }";
+    }
+
+    return "{ \"ok\": false, \"error\": \"Unknown mechanical tool: " + name + "\" }";
 }
 
 analytics::Settings ElectronicsWorkbench::analyticsToolSettings(const juce::var& args) const

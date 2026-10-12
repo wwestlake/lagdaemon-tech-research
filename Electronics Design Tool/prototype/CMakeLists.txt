@@ -199,6 +199,10 @@ target_sources(DjehutiElectronicsLab PRIVATE
     Source/ControlPanelComponent.cpp
     Source/SystemAssembly.h
     Source/SystemAssembly.cpp
+    Source/MechanicalSceneModel.h
+    Source/MechanicalSceneModel.cpp
+    Source/MechanicalViewComponent.h
+    Source/MechanicalViewComponent.cpp
 )
 
 target_compile_definitions(DjehutiElectronicsLab PRIVATE
@@ -424,6 +428,8 @@ target_sources(ControlPanelTests PRIVATE
     Source/SystemSimulationSession.cpp
     Source/ControlPanelModel.cpp
     Source/SystemAssembly.cpp
+    Source/MechanicalSceneModel.h
+    Source/MechanicalSceneModel.cpp
 )
 target_include_directories(ControlPanelTests PRIVATE Source)
 target_compile_definitions(ControlPanelTests PRIVATE JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0)

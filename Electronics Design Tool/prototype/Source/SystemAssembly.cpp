@@ -602,6 +602,98 @@ SystemAssembly SystemAssembly::createDualMotorSystem()
         { "motorB.load_torque", PortDirection::Input, PortDomain::Mechanical, "N*m", "Motor B Load Torque" }
     };
 
+    // Attach P6 Mechanical Scene
+    a.mechanicalScene = mechanical_scene::MechanicalScene::createDualMotorShaftScene();
+
+    return a;
+}
+
+// -----------------------------------------------------------------------------
+// Factory: Controlled Robotic Arm System (P6 Demonstration B)
+// -----------------------------------------------------------------------------
+
+SystemAssembly SystemAssembly::createControlledArmSystem()
+{
+    SystemAssembly a;
+    a.name = "Controlled Articulated Robotic Arm (2-DOF)";
+    a.description = "Two-link articulated mechanical arm driven by closed-loop position controllers with joint limits.";
+    a.version = "1.0";
+
+    // Reusable Subsystem Definitions
+    SubsystemDefinition motorDef = makeDCMotorDefinition();
+    motorDef.id = "arm_motor_module";
+    a.definitions.push_back(motorDef);
+
+    SubsystemDefinition ctlDef = makeMotorControllerDefinition();
+    ctlDef.id = "arm_joint_controller";
+    a.definitions.push_back(ctlDef);
+
+    SubsystemDefinition seqDef = makeCoordinatedSequencerDefinition();
+    a.definitions.push_back(seqDef);
+
+    // Instances
+    SubsystemInstance m1;
+    m1.instanceId = "motorA";
+    m1.definitionId = "arm_motor_module";
+    m1.title = "Shoulder Joint Actuator";
+    m1.numericParams = { { "ra", 2.0 }, { "la", 0.001 }, { "kt", 0.02 }, { "ke", 0.02 }, { "j", 0.00005 }, { "b", 0.00001 } };
+    a.instances.push_back(m1);
+
+    SubsystemInstance m2;
+    m2.instanceId = "motorB";
+    m2.definitionId = "arm_motor_module";
+    m2.title = "Elbow Joint Actuator";
+    m2.numericParams = { { "ra", 2.0 }, { "la", 0.001 }, { "kt", 0.02 }, { "ke", 0.02 }, { "j", 0.00002 }, { "b", 0.00001 } };
+    a.instances.push_back(m2);
+
+    SubsystemInstance c1;
+    c1.instanceId = "controllerA";
+    c1.definitionId = "arm_joint_controller";
+    c1.title = "Shoulder Controller";
+    c1.numericParams = { { "kp", 0.1 }, { "ki", 1.5 }, { "kd", 0.0005 }, { "v_max", 12.0 }, { "v_min", 0.0 } };
+    a.instances.push_back(c1);
+
+    SubsystemInstance c2;
+    c2.instanceId = "controllerB";
+    c2.definitionId = "arm_joint_controller";
+    c2.title = "Elbow Controller";
+    c2.numericParams = { { "kp", 0.1 }, { "ki", 1.5 }, { "kd", 0.0005 }, { "v_max", 12.0 }, { "v_min", 0.0 } };
+    a.instances.push_back(c2);
+
+    SubsystemInstance seq;
+    seq.instanceId = "sequencer";
+    seq.definitionId = "coordinated_sequencer";
+    seq.title = "Arm Startup & Homing Sequencer";
+    seq.numericParams = { { "motor_b_delay_sec", 0.1 } };
+    a.instances.push_back(seq);
+
+    // Connections
+    a.connections.push_back({ "sequencer", "start_a_out", "controllerA", "start_in", "NET_START_A" });
+    a.connections.push_back({ "sequencer", "start_b_out", "controllerB", "start_in", "NET_START_B" });
+    a.connections.push_back({ "sequencer", "stop_all_out", "controllerA", "stop_in", "NET_STOP_A" });
+    a.connections.push_back({ "sequencer", "stop_all_out", "controllerB", "stop_in", "NET_STOP_B" });
+    a.connections.push_back({ "sequencer", "estop_all_out", "controllerA", "estop_in", "NET_ESTOP" });
+    a.connections.push_back({ "sequencer", "estop_all_out", "controllerB", "estop_in", "NET_ESTOP" });
+
+    a.connections.push_back({ "controllerA", "drive_out", "motorA", "v_in", "NET_DRIVE_A" });
+    a.connections.push_back({ "controllerB", "drive_out", "motorB", "v_in", "NET_DRIVE_B" });
+    a.connections.push_back({ "motorA", "tach", "controllerA", "feedback_in", "NET_TACH_A" });
+    a.connections.push_back({ "motorB", "tach", "controllerB", "feedback_in", "NET_TACH_B" });
+
+    // System Ports
+    a.systemPorts = {
+        { "power_switch", PortDirection::Input, PortDomain::SignalControl, "V", "Arm Master Power" },
+        { "start_button", PortDirection::Input, PortDomain::SignalControl, "V", "Arm Start / Home Sequence" },
+        { "stop_button", PortDirection::Input, PortDomain::SignalControl, "V", "Arm Stop" },
+        { "estop_button", PortDirection::Input, PortDomain::SignalControl, "V", "Arm Emergency Stop" },
+        { "reset_button", PortDirection::Input, PortDomain::SignalControl, "V", "Arm Fault Reset" },
+        { "motorA.speed_setpoint", PortDirection::Input, PortDomain::SignalControl, "rad/s", "Joint 1 Target" },
+        { "motorB.speed_setpoint", PortDirection::Input, PortDomain::SignalControl, "rad/s", "Joint 2 Target" }
+    };
+
+    // Attach P6 Mechanical Scene for Robotic Arm
+    a.mechanicalScene = mechanical_scene::MechanicalScene::createControlledArmScene();
+
     return a;
 }
 
@@ -811,6 +903,9 @@ SystemAssembly SystemAssembly::createUserAssembledMotorSystem()
         { "motorDriveB.load_torque", PortDirection::Input, PortDomain::Mechanical, "N*m", "Motor Drive B Load Torque" }
     };
 
+    // Attach P6 Mechanical Scene
+    a.mechanicalScene = mechanical_scene::MechanicalScene::createDualMotorShaftScene();
+
     return a;
 }
 
@@ -940,6 +1035,9 @@ juce::var SystemAssembly::toJson() const
         ports.add(p.toJson());
     obj->setProperty("systemPorts", juce::var(ports));
 
+    if (!mechanicalScene.bodies.empty() || !mechanicalScene.joints.empty())
+        obj->setProperty("mechanicalScene", mechanicalScene.toJson());
+
     return juce::var(obj);
 }
 
@@ -967,6 +1065,9 @@ SystemAssembly SystemAssembly::fromJson(const juce::var& json)
         if (const auto* ports = obj->getProperty("systemPorts").getArray())
             for (const auto& item : *ports)
                 a.systemPorts.push_back(SubsystemPort::fromJson(item));
+
+        if (obj->hasProperty("mechanicalScene"))
+            a.mechanicalScene = mechanical_scene::MechanicalScene::fromJson(obj->getProperty("mechanicalScene"));
     }
     return a;
 }
