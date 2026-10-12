@@ -18,6 +18,8 @@
 #include "MechanicalViewComponent.h"
 #include "MachineModel.h"
 #include "MachineBuilderPanel.h"
+#include "DemonstrationModel.h"
+#include "DemonstrationRunnerPanel.h"
 #include "SystemSimulationSession.h"
 #include "SystemAssembly.h"
 #include "FrustExecution.h"
@@ -1083,6 +1085,108 @@ const std::vector<ToolSpecText>& machineToolSpecs()
     return specs;
 }
 
+const std::vector<ToolSpecText>& demoToolSpecs()
+{
+    static const std::vector<ToolSpecText> specs = {
+        {
+            "demo_list_machines",
+            "List available machine templates and saved machine projects available for demonstration.",
+            R"({"type":"object","properties":{},"additionalProperties":false})"
+        },
+        {
+            "demo_list_definitions",
+            "List available demonstration definitions (e.g. Capstone A Dual-Motor, Capstone B Robotic Arm).",
+            R"({"type":"object","properties":{},"additionalProperties":false})"
+        },
+        {
+            "demo_create",
+            "Create a new demonstration definition with identifier, name, machine reference, and description.",
+            R"({"type":"object","properties":{"id":{"type":"string","description":"Unique demonstration ID."},"name":{"type":"string","description":"Demonstration name."},"machineRef":{"type":"string","description":"Referenced machine ID, template name, or file."},"description":{"type":"string","description":"Optional description."}},"required":["id","name","machineRef"],"additionalProperties":false})"
+        },
+        {
+            "demo_get",
+            "Inspect the active demonstration definition (actions, scheduling, conditions, expected results).",
+            R"({"type":"object","properties":{},"additionalProperties":false})"
+        },
+        {
+            "demo_save",
+            "Save the active demonstration definition to a file (.demo.json).",
+            R"({"type":"object","properties":{"filePath":{"type":"string","description":"Target file path."}},"required":["filePath"],"additionalProperties":false})"
+        },
+        {
+            "demo_load",
+            "Load a demonstration definition from file or preset template ('capstone_a_motor' or 'capstone_b_robotic_arm').",
+            R"({"type":"object","properties":{"filePath":{"type":"string","description":"File path to load from."},"template":{"type":"string","description":"Preset template name."}},"additionalProperties":false})"
+        },
+        {
+            "demo_add_action",
+            "Add an ordered action step to the demonstration (e.g. set input, wait condition, assert, estop, sample).",
+            R"({"type":"object","properties":{"actionId":{"type":"string","description":"Action ID."},"type":{"type":"string","description":"Action type: start_simulation, set_numeric_input, set_boolean_input, press_button, wait_duration, wait_condition, assert_condition, trigger_estop, reset_fault, record_measurement, annotate."},"description":{"type":"string","description":"Step description."},"targetSignal":{"type":"string","description":"Signal or control name."},"numericValue":{"type":"number","description":"Numeric parameter or setpoint."},"boolValue":{"type":"boolean","description":"Boolean input parameter."},"durationSeconds":{"type":"number","description":"Wait or pulse duration in seconds."},"condition":{"type":"object","description":"Condition for wait/assert: {signalName, op, threshold, tolerance, timeoutSeconds}."}},"required":["actionId","type"],"additionalProperties":false})"
+        },
+        {
+            "demo_remove_action",
+            "Remove an action step from the demonstration by ID.",
+            R"({"type":"object","properties":{"actionId":{"type":"string","description":"Action ID to remove."}},"required":["actionId"],"additionalProperties":false})"
+        },
+        {
+            "demo_start",
+            "Start the demonstration runner.",
+            R"({"type":"object","properties":{},"additionalProperties":false})"
+        },
+        {
+            "demo_pause",
+            "Pause the demonstration runner.",
+            R"({"type":"object","properties":{},"additionalProperties":false})"
+        },
+        {
+            "demo_resume",
+            "Resume the demonstration runner.",
+            R"({"type":"object","properties":{},"additionalProperties":false})"
+        },
+        {
+            "demo_stop",
+            "Stop or abort the active demonstration runner.",
+            R"({"type":"object","properties":{},"additionalProperties":false})"
+        },
+        {
+            "demo_reset",
+            "Reset the demonstration runner and simulation to initial states.",
+            R"({"type":"object","properties":{},"additionalProperties":false})"
+        },
+        {
+            "demo_step",
+            "Execute the next action step in the demonstration.",
+            R"({"type":"object","properties":{},"additionalProperties":false})"
+        },
+        {
+            "demo_get_progress",
+            "Get current demonstration execution progress, status, active step, and elapsed simulation time.",
+            R"({"type":"object","properties":{},"additionalProperties":false})"
+        },
+        {
+            "demo_get_run",
+            "Retrieve the complete structured demonstration run record (action logs, assertion results, measurements).",
+            R"({"type":"object","properties":{},"additionalProperties":false})"
+        },
+        {
+            "demo_run_synchronous",
+            "Execute the complete demonstration synchronously to completion and return the run record and metrics.",
+            R"({"type":"object","properties":{"timeoutSeconds":{"type":"number","description":"Maximum simulation timeout (default from demo config)."}},"additionalProperties":false})"
+        },
+        {
+            "demo_compare_runs",
+            "Compare two demonstration runs and return comparative performance metrics.",
+            R"({"type":"object","properties":{"runA":{"type":"object","description":"First run JSON."},"runB":{"type":"object","description":"Second run JSON."}},"required":["runA","runB"],"additionalProperties":false})"
+        },
+        {
+            "demo_generate_report",
+            "Generate a markdown engineering demonstration report from the current or specified run.",
+            R"({"type":"object","properties":{},"additionalProperties":false})"
+        }
+    };
+    return specs;
+}
+
 // Tool text with live registry values filled in, so lists such as the
 // placeable component ids never drift from what the application supports.
 std::string liveToolText(const char* text)
@@ -1105,6 +1209,9 @@ bool isSchematicTool(const juce::String& name)
         if (name == spec.name)
             return true;
     for (const auto& spec : machineToolSpecs())
+        if (name == spec.name)
+            return true;
+    for (const auto& spec : demoToolSpecs())
         if (name == spec.name)
             return true;
     return false;
@@ -15890,6 +15997,8 @@ ElectronicsWorkbench::ElectronicsWorkbench()
             return mechanicalTool(name, args);
         if (name.startsWith("machine_"))
             return machineTool(name, args);
+        if (name.startsWith("demo_"))
+            return demoTool(name, args);
         return schematicPanel->runSchematicTool(name, args);
     };
     schematicPanel->outputDirectory = [this] { return generatedRunDirectory(); };
@@ -15922,6 +16031,9 @@ ElectronicsWorkbench::ElectronicsWorkbench()
     auto machineBuilderOwner = std::make_unique<machine_builder::MachineBuilderPanel>(controlPanel ? std::shared_ptr<sim_panel::SystemSimulationSession>(controlPanel->getSession(), [](void*){}) : nullptr, mechanicalView, controlPanel);
     machineBuilder = machineBuilderOwner.get();
     machineBuilderDockPanel = dockManager->registerPanel("machine_builder", "Machine Builder", std::move(machineBuilderOwner), CreationDock::DockTargetZone::CenterTab);
+    auto demoRunnerOwner = std::make_unique<demo_system::DemonstrationRunnerPanel>(controlPanel ? std::shared_ptr<sim_panel::SystemSimulationSession>(controlPanel->getSession(), [](void*){}) : nullptr, mechanicalView, controlPanel);
+    demoRunnerPanel = demoRunnerOwner.get();
+    demoRunnerDockPanel = dockManager->registerPanel("demo_runner", "Demonstration Runner", std::move(demoRunnerOwner), CreationDock::DockTargetZone::CenterTab);
     // FRust node programs (the node-programming editor ported from FrustIDE),
     // saved in the open project's programs folder.
     auto nodeDesignerOwner = std::make_unique<NodeDesignerPanel>();
@@ -16659,6 +16771,8 @@ juce::String ElectronicsWorkbench::buildAssistantToolManifestJson() const
     for (const auto& spec : mechanicalToolSpecs())
         manifestSpecs.push_back(spec);
     for (const auto& spec : machineToolSpecs())
+        manifestSpecs.push_back(spec);
+    for (const auto& spec : demoToolSpecs())
         manifestSpecs.push_back(spec);
     for (const auto& spec : manifestSpecs)
     {
@@ -19095,6 +19209,358 @@ juce::String ElectronicsWorkbench::machineTool(const juce::String& name, const j
     }
 
     return "{ \"ok\": false, \"error\": \"Unknown machine tool: " + name + "\" }";
+}
+
+void ElectronicsWorkbench::showDemonstrationRunner()
+{
+    auto* panel = demoRunnerDockPanel.getComponent();
+    if (dockManager == nullptr || panel == nullptr)
+        return;
+    if (auto* zone = panel->findParentComponentOfClass<CreationDock::DockZone>())
+        zone->setActivePanel(panel);
+    if (auto* window = dynamic_cast<CreationDock::FloatingDockWindow*>(panel->getTopLevelComponent()))
+        window->toFront(true);
+}
+
+juce::String ElectronicsWorkbench::demoTool(const juce::String& name, const juce::var& args)
+{
+    if (name == "demo_runner_open")
+    {
+        showDemonstrationRunner();
+        return R"({"ok": true, "tool": "demo_runner_open", "status": "opened"})";
+    }
+
+    if (demoRunnerPanel == nullptr)
+        return R"({"ok": false, "error": "Demonstration runner component is unavailable."})";
+
+    auto& runner = demoRunnerPanel->getRunner();
+
+    if (name == "demo_list_machines")
+    {
+        juce::DynamicObject::Ptr root = new juce::DynamicObject();
+        root->setProperty("ok", true);
+        root->setProperty("tool", "demo_list_machines");
+        juce::Array<juce::var> machines;
+
+        auto* m1 = new juce::DynamicObject();
+        m1->setProperty("id", "dual_motor");
+        m1->setProperty("name", "Dual-Motor Coordinated Machine (Capstone A)");
+        m1->setProperty("template", true);
+        machines.add(juce::var(m1));
+
+        auto* m2 = new juce::DynamicObject();
+        m2->setProperty("id", "robotic_arm");
+        m2->setProperty("name", "Articulated Robotic Arm 2-DOF (Capstone B)");
+        m2->setProperty("template", true);
+        machines.add(juce::var(m2));
+
+        const auto mDir = generatedRunDirectory().getChildFile("machines");
+        if (mDir.isDirectory())
+        {
+            for (const auto& f : mDir.findChildFiles(juce::File::findFiles, false, "*.machine.json"))
+            {
+                auto* mf = new juce::DynamicObject();
+                mf->setProperty("id", f.getFileNameWithoutExtension());
+                mf->setProperty("filePath", f.getFullPathName());
+                mf->setProperty("template", false);
+                machines.add(juce::var(mf));
+            }
+        }
+        root->setProperty("machines", juce::var(machines));
+        return juce::JSON::toString(juce::var(root.get()));
+    }
+
+    if (name == "demo_list_definitions")
+    {
+        juce::DynamicObject::Ptr root = new juce::DynamicObject();
+        root->setProperty("ok", true);
+        root->setProperty("tool", "demo_list_definitions");
+        juce::Array<juce::var> defs;
+
+        auto* d1 = new juce::DynamicObject();
+        d1->setProperty("id", "capstone_a_motor");
+        d1->setProperty("name", "Dual-Motor Disturbance Rejection & Velocity Control Demo");
+        d1->setProperty("template", true);
+        defs.add(juce::var(d1));
+
+        auto* d2 = new juce::DynamicObject();
+        d2->setProperty("id", "capstone_b_robotic_arm");
+        d2->setProperty("name", "Articulated Robotic Arm Joint Sequencing & Travel Limit Demo");
+        d2->setProperty("template", true);
+        defs.add(juce::var(d2));
+
+        const auto dDir = generatedRunDirectory().getChildFile("demonstrations");
+        if (dDir.isDirectory())
+        {
+            for (const auto& f : dDir.findChildFiles(juce::File::findFiles, false, "*.demo.json"))
+            {
+                auto* df = new juce::DynamicObject();
+                df->setProperty("id", f.getFileNameWithoutExtension());
+                df->setProperty("filePath", f.getFullPathName());
+                df->setProperty("template", false);
+                defs.add(juce::var(df));
+            }
+        }
+        root->setProperty("definitions", juce::var(defs));
+        return juce::JSON::toString(juce::var(root.get()));
+    }
+
+    if (name == "demo_create")
+    {
+        const auto tmpl = args.getProperty("template", "capstone_a").toString().trim().toLowerCase();
+        const auto demoId = args.getProperty("id", "custom_demo").toString().toStdString();
+        const auto demoName = args.getProperty("name", "Custom Demonstration").toString().toStdString();
+
+        demo_system::DemonstrationDefinition def;
+        if (tmpl == "capstone_a" || tmpl == "motor" || tmpl == "dual_motor")
+            def = demo_system::DemonstrationDefinition::createCapstoneAMotorDemo();
+        else if (tmpl == "capstone_b" || tmpl == "arm" || tmpl == "robotic_arm")
+            def = demo_system::DemonstrationDefinition::createCapstoneBRoboticArmDemo();
+        else
+        {
+            def.id = demoId;
+            def.name = demoName;
+            def.machineRef = args.getProperty("machineId", "dual_motor").toString().toStdString();
+        }
+
+        demoRunnerPanel->setDemonstration(def);
+        juce::DynamicObject::Ptr root = new juce::DynamicObject();
+        root->setProperty("ok", true);
+        root->setProperty("tool", "demo_create");
+        root->setProperty("demonstration", def.toJson());
+        return juce::JSON::toString(juce::var(root.get()));
+    }
+
+    if (name == "demo_get")
+    {
+        juce::DynamicObject::Ptr root = new juce::DynamicObject();
+        root->setProperty("ok", true);
+        root->setProperty("tool", "demo_get");
+        root->setProperty("demonstration", runner.getDefinition().toJson());
+        return juce::JSON::toString(juce::var(root.get()));
+    }
+
+    if (name == "demo_save")
+    {
+        juce::File targetFile;
+        if (args.hasProperty("filePath"))
+        {
+            targetFile = juce::File(args.getProperty("filePath", {}).toString());
+        }
+        else
+        {
+            const auto dir = generatedRunDirectory().getChildFile("demonstrations");
+            dir.createDirectory();
+            targetFile = dir.getChildFile(runner.getDefinition().id + ".demo.json");
+        }
+        juce::String saveErr;
+        if (!runner.getDefinition().saveToFile(targetFile, saveErr))
+            return "{ \"ok\": false, \"error\": \"" + saveErr + "\" }";
+
+        return "{ \"ok\": true, \"tool\": \"demo_save\", \"filePath\": \"" + targetFile.getFullPathName() + "\" }";
+    }
+
+    if (name == "demo_load")
+    {
+        if (args.hasProperty("template"))
+        {
+            const auto tmpl = args.getProperty("template", {}).toString().trim().toLowerCase();
+            if (tmpl == "capstone_a" || tmpl == "motor" || tmpl == "dual_motor")
+            {
+                demoRunnerPanel->setMachine(machine_builder::MachineDesign::createDualMotorMachineTemplate());
+                demoRunnerPanel->setDemonstration(demo_system::DemonstrationDefinition::createCapstoneAMotorDemo());
+            }
+            else
+            {
+                demoRunnerPanel->setMachine(machine_builder::MachineDesign::createRoboticArmMachineTemplate());
+                demoRunnerPanel->setDemonstration(demo_system::DemonstrationDefinition::createCapstoneBRoboticArmDemo());
+            }
+            return "{ \"ok\": true, \"tool\": \"demo_load\", \"source\": \"template\" }";
+        }
+        if (args.hasProperty("filePath"))
+        {
+            juce::File srcFile(args.getProperty("filePath", {}).toString());
+            demo_system::DemonstrationDefinition loaded;
+            juce::String loadErr;
+            if (!demo_system::DemonstrationDefinition::loadFromFile(srcFile, loaded, loadErr))
+                return "{ \"ok\": false, \"error\": \"" + loadErr + "\" }";
+            demoRunnerPanel->setDemonstration(loaded);
+            return "{ \"ok\": true, \"tool\": \"demo_load\", \"source\": \"file\", \"filePath\": \"" + srcFile.getFullPathName() + "\" }";
+        }
+        return R"({"ok": false, "error": "Either 'template' or 'filePath' must be provided."})";
+    }
+
+    if (name == "demo_add_action")
+    {
+        if (!args.hasProperty("action"))
+            return R"({"ok": false, "error": "'action' object is required."})";
+
+        const auto actVar = args.getProperty("action", {});
+        const auto act = demo_system::DemonstrationAction::fromJson(actVar);
+        runner.getDefinition().actions.push_back(act);
+
+        juce::DynamicObject::Ptr root = new juce::DynamicObject();
+        root->setProperty("ok", true);
+        root->setProperty("tool", "demo_add_action");
+        root->setProperty("actionIndex", (int)runner.getDefinition().actions.size() - 1);
+        root->setProperty("actionsCount", (int)runner.getDefinition().actions.size());
+        return juce::JSON::toString(juce::var(root.get()));
+    }
+
+    if (name == "demo_remove_action")
+    {
+        const int idx = (int)args.getProperty("index", -1);
+        auto& actions = runner.getDefinition().actions;
+        if (idx < 0 || idx >= (int)actions.size())
+            return "{ \"ok\": false, \"error\": \"Action index out of range: " + juce::String(idx) + "\" }";
+
+        actions.erase(actions.begin() + idx);
+        juce::DynamicObject::Ptr root = new juce::DynamicObject();
+        root->setProperty("ok", true);
+        root->setProperty("tool", "demo_remove_action");
+        root->setProperty("actionsCount", (int)actions.size());
+        return juce::JSON::toString(juce::var(root.get()));
+    }
+
+    if (name == "demo_start")
+    {
+        demoRunnerPanel->startDemo();
+        juce::DynamicObject::Ptr root = new juce::DynamicObject();
+        root->setProperty("ok", true);
+        root->setProperty("tool", "demo_start");
+        root->setProperty("status", juce::String(demo_system::runStatusToString(runner.getStatus())));
+        return juce::JSON::toString(juce::var(root.get()));
+    }
+
+    if (name == "demo_pause")
+    {
+        demoRunnerPanel->pauseDemo();
+        juce::DynamicObject::Ptr root = new juce::DynamicObject();
+        root->setProperty("ok", true);
+        root->setProperty("tool", "demo_pause");
+        root->setProperty("status", juce::String(demo_system::runStatusToString(runner.getStatus())));
+        return juce::JSON::toString(juce::var(root.get()));
+    }
+
+    if (name == "demo_resume")
+    {
+        demoRunnerPanel->resumeDemo();
+        juce::DynamicObject::Ptr root = new juce::DynamicObject();
+        root->setProperty("ok", true);
+        root->setProperty("tool", "demo_resume");
+        root->setProperty("status", juce::String(demo_system::runStatusToString(runner.getStatus())));
+        return juce::JSON::toString(juce::var(root.get()));
+    }
+
+    if (name == "demo_stop")
+    {
+        demoRunnerPanel->stopDemo();
+        juce::DynamicObject::Ptr root = new juce::DynamicObject();
+        root->setProperty("ok", true);
+        root->setProperty("tool", "demo_stop");
+        root->setProperty("status", juce::String(demo_system::runStatusToString(runner.getStatus())));
+        return juce::JSON::toString(juce::var(root.get()));
+    }
+
+    if (name == "demo_reset")
+    {
+        demoRunnerPanel->resetDemo();
+        juce::DynamicObject::Ptr root = new juce::DynamicObject();
+        root->setProperty("ok", true);
+        root->setProperty("tool", "demo_reset");
+        root->setProperty("status", juce::String(demo_system::runStatusToString(runner.getStatus())));
+        return juce::JSON::toString(juce::var(root.get()));
+    }
+
+    if (name == "demo_step")
+    {
+        demoRunnerPanel->stepDemo();
+        juce::DynamicObject::Ptr root = new juce::DynamicObject();
+        root->setProperty("ok", true);
+        root->setProperty("tool", "demo_step");
+        root->setProperty("status", juce::String(demo_system::runStatusToString(runner.getStatus())));
+        root->setProperty("currentActionIndex", runner.getCurrentActionIndex());
+        return juce::JSON::toString(juce::var(root.get()));
+    }
+
+    if (name == "demo_get_progress")
+    {
+        juce::DynamicObject::Ptr root = new juce::DynamicObject();
+        root->setProperty("ok", true);
+        root->setProperty("tool", "demo_get_progress");
+        root->setProperty("status", juce::String(demo_system::runStatusToString(runner.getStatus())));
+        root->setProperty("currentActionIndex", runner.getCurrentActionIndex());
+        root->setProperty("totalActions", (int)runner.getDefinition().actions.size());
+        root->setProperty("simTime", runner.getCurrentSimTime());
+        return juce::JSON::toString(juce::var(root.get()));
+    }
+
+    if (name == "demo_get_run")
+    {
+        juce::DynamicObject::Ptr root = new juce::DynamicObject();
+        root->setProperty("ok", true);
+        root->setProperty("tool", "demo_get_run");
+        root->setProperty("run", runner.getCurrentRun().toJson());
+        return juce::JSON::toString(juce::var(root.get()));
+    }
+
+    if (name == "demo_run_synchronous")
+    {
+        const double timeout = (double)args.getProperty("maxTimeout", 30.0);
+        auto runResult = runner.runSynchronous(timeout);
+        juce::DynamicObject::Ptr root = new juce::DynamicObject();
+        root->setProperty("ok", true);
+        root->setProperty("tool", "demo_run_synchronous");
+        root->setProperty("run", runResult.toJson());
+        root->setProperty("report", juce::String(runResult.generateMarkdownReport()));
+        return juce::JSON::toString(juce::var(root.get()));
+    }
+
+    if (name == "demo_compare_runs")
+    {
+        demo_system::DemonstrationRun runA;
+        demo_system::DemonstrationRun runB;
+        juce::String err;
+
+        if (args.hasProperty("runA"))
+            runA = demo_system::DemonstrationRun::fromJson(args.getProperty("runA", {}));
+        else if (args.hasProperty("fileA"))
+            demo_system::DemonstrationRun::loadFromFile(juce::File(args.getProperty("fileA", {}).toString()), runA, err);
+        else
+            runA = runner.getCurrentRun();
+
+        if (args.hasProperty("runB"))
+            runB = demo_system::DemonstrationRun::fromJson(args.getProperty("runB", {}));
+        else if (args.hasProperty("fileB"))
+            demo_system::DemonstrationRun::loadFromFile(juce::File(args.getProperty("fileB", {}).toString()), runB, err);
+
+        const auto comparison = demo_system::DemonstrationRunner::compareRuns(runA, runB);
+        juce::DynamicObject::Ptr root = new juce::DynamicObject();
+        root->setProperty("ok", true);
+        root->setProperty("tool", "demo_compare_runs");
+        root->setProperty("comparison", juce::String(comparison));
+        return juce::JSON::toString(juce::var(root.get()));
+    }
+
+    if (name == "demo_generate_report")
+    {
+        demo_system::DemonstrationRun r = runner.getCurrentRun();
+        if (args.hasProperty("run"))
+            r = demo_system::DemonstrationRun::fromJson(args.getProperty("run", {}));
+        else if (args.hasProperty("filePath"))
+        {
+            juce::String err;
+            demo_system::DemonstrationRun::loadFromFile(juce::File(args.getProperty("filePath", {}).toString()), r, err);
+        }
+
+        juce::DynamicObject::Ptr root = new juce::DynamicObject();
+        root->setProperty("ok", true);
+        root->setProperty("tool", "demo_generate_report");
+        root->setProperty("report", juce::String(r.generateMarkdownReport()));
+        return juce::JSON::toString(juce::var(root.get()));
+    }
+
+    return "{ \"ok\": false, \"error\": \"Unknown demonstration tool: " + name + "\" }";
 }
 
 analytics::Settings ElectronicsWorkbench::analyticsToolSettings(const juce::var& args) const

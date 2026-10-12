@@ -7,6 +7,7 @@
 #include "../../Source/SystemAssembly.h"
 #include "../../Source/MechanicalSceneModel.h"
 #include "../../Source/MachineModel.h"
+#include "../../Source/DemonstrationModel.h"
 
 #include <algorithm>
 #include <cmath>
@@ -753,12 +754,175 @@ void testVirtualMachineBuilder()
     armSession->stop();
 }
 
+void testDemonstrationRunnerAndExperiments()
+{
+    std::printf("-- P8 Agent Demonstration Runner & Automated Experiment Tests --\n");
+
+    // 1. Definition Model & JSON / File Persistence Roundtrip
+    {
+        demo_system::DemonstrationDefinition def;
+        def.id = "test_custom_demo";
+        def.name = "Test Custom Demonstration Procedure";
+        def.description = "Test procedure validating action sequencing and assertions.";
+        def.machineRef = "dual_motor";
+        def.tags = { "test", "verification" };
+        def.targetExecutionRate = 0.0;
+        def.maxSimulationTime = 4.0;
+
+        demo_system::DemonstrationAction a1;
+        a1.id = "act_1";
+        a1.type = demo_system::ActionType::SetBooleanInput;
+        a1.targetSignal = "system.power";
+        a1.boolValue = true;
+        def.actions.push_back(a1);
+
+        demo_system::DemonstrationAction a2;
+        a2.id = "act_2";
+        a2.type = demo_system::ActionType::WaitCondition;
+        a2.condition.signalName = "motorA.speed";
+        a2.condition.op = demo_system::ComparisonOp::Near;
+        a2.condition.threshold = 300.0;
+        a2.condition.tolerance = 5.0;
+        a2.condition.timeoutSeconds = 0.8;
+        def.actions.push_back(a2);
+
+        demo_system::DemonstrationAction a3;
+        a3.id = "act_3";
+        a3.type = demo_system::ActionType::AssertCondition;
+        a3.condition.signalName = "motorA.speed";
+        a3.condition.op = demo_system::ComparisonOp::Near;
+        a3.condition.threshold = 300.0;
+        a3.condition.tolerance = 5.0;
+        def.actions.push_back(a3);
+
+        const auto json = def.toJson();
+        const auto restored = demo_system::DemonstrationDefinition::fromJson(json);
+        check(restored.id == def.id && restored.name == def.name && restored.actions.size() == 3,
+              "1a. DemonstrationDefinition JSON roundtrip preserves metadata and actions");
+        check(restored.actions[1].condition.op == demo_system::ComparisonOp::Near &&
+              restored.actions[1].condition.threshold == 300.0,
+              "1b. DemonstrationAction conditions properly restored from JSON");
+
+        const auto tempFile = juce::File::getSpecialLocation(juce::File::tempDirectory)
+                                  .getChildFile("test_demo_roundtrip.demo.json");
+        juce::String err;
+        check(def.saveToFile(tempFile, err), "1c. DemonstrationDefinition saved to file");
+
+        demo_system::DemonstrationDefinition loadedFromFile;
+        check(demo_system::DemonstrationDefinition::loadFromFile(tempFile, loadedFromFile, err),
+              "1d. DemonstrationDefinition loaded from file");
+        check(loadedFromFile.actions.size() == 3 && loadedFromFile.machineRef == "dual_motor",
+              "1e. Loaded definition matches saved data");
+        tempFile.deleteFile();
+    }
+
+    // 2. Step Response Calculator Helper (computeStepResponse)
+    {
+        std::vector<std::pair<double, double>> timeSeries;
+        const double stepTime = 0.1;
+        const double targetVal = 300.0;
+        for (double t = 0.0; t <= 1.0; t += 0.005)
+        {
+            double y = 0.0;
+            if (t >= stepTime)
+            {
+                const double tau = t - stepTime;
+                y = targetVal * (1.0 - std::exp(-15.0 * tau) * (std::cos(25.0 * tau) + 0.6 * std::sin(25.0 * tau)));
+            }
+            timeSeries.push_back({ t, y });
+        }
+
+        const auto metrics = demo_system::DemonstrationRunner::computeStepResponse(timeSeries, stepTime, 0.0, targetVal, 2.0);
+        check(std::abs(metrics.steadyStateError) < 5.0, "2a. Step response steady-state error calculated accurately",
+              "err=" + std::to_string(metrics.steadyStateError));
+        check(metrics.riseTimeSeconds > 0.01 && metrics.riseTimeSeconds < 0.2, "2b. Step response rise time identified",
+              "tr=" + std::to_string(metrics.riseTimeSeconds));
+        check(metrics.overshootPercent >= 0.0, "2c. Peak overshoot percentage computed",
+              "overshoot=" + std::to_string(metrics.overshootPercent));
+        check(metrics.settlingTimeSeconds > 0.05, "2d. Settling time within tolerance band identified",
+              "ts=" + std::to_string(metrics.settlingTimeSeconds));
+    }
+
+    // 3. Capstone A: Motor Controller Demonstration
+    demo_system::DemonstrationRun runA;
+    {
+        auto motorMachine = machine_builder::MachineDesign::createDualMotorMachineTemplate();
+        auto demoA = demo_system::DemonstrationDefinition::createCapstoneAMotorDemo();
+
+        demo_system::DemonstrationRunner runner;
+        runner.setMachine(motorMachine);
+        runner.setDefinition(demoA);
+
+        check(runner.getDefinition().actions.size() == 18, "3a. Capstone A demonstration actions configured (18 actions)");
+
+        runA = runner.runSynchronous(25.0);
+
+        check(runA.status == demo_system::RunStatus::Completed, "3b. Capstone A executed to completion",
+              "status=" + demo_system::runStatusToString(runA.status) + ", failure=" + runA.failureReason);
+        check(runA.passed(), "3c. Capstone A all assertions passed");
+        check(runA.failedAssertionsCount() == 0, "3d. Zero assertion failures during Capstone A");
+        check(runA.passedAssertionsCount() >= 4, "3e. Multiple rigorous assertions verified (Motor A, Motor B, isolation, E-stop)");
+        check(runA.actionsExecuted == runA.totalActions, "3f. All demonstration actions executed in scheduled simulation sequence");
+        check(runA.metrics.count("motorA.speed") > 0 || runA.metrics.count("motorB.speed") > 0, "3g. Step response metrics generated for motor speed");
+
+        const auto report = runA.generateMarkdownReport();
+        check(report.find("Capstone A") != std::string::npos, "3h. Markdown report includes Capstone A header");
+        check(report.find("Passed") != std::string::npos || report.find("passed") != std::string::npos,
+              "3i. Markdown report includes assertion outcomes");
+        check(report.find("Disturbance") != std::string::npos || report.find("disturbance") != std::string::npos ||
+              report.find("motorA") != std::string::npos,
+              "3j. Markdown report documents system behavior and disturbances");
+    }
+
+    // 4. Capstone B: Robotic Arm Demonstration
+    demo_system::DemonstrationRun runB;
+    {
+        auto armMachine = machine_builder::MachineDesign::createRoboticArmMachineTemplate();
+        auto demoB = demo_system::DemonstrationDefinition::createCapstoneBRoboticArmDemo();
+
+        demo_system::DemonstrationRunner runner;
+        runner.setMachine(armMachine);
+        runner.setDefinition(demoB);
+
+        check(runner.getDefinition().actions.size() == 13, "4a. Capstone B robotic arm actions configured (13 actions)");
+
+        runB = runner.runSynchronous(25.0);
+
+        for (const auto& asr : runB.assertionResults)
+        {
+            if (!asr.passed)
+                std::printf("  --> ASSERTION FAILURE in runB: %s (actual=%f, expected=%f)\n", asr.message.c_str(), asr.actualValue, asr.expectedValue);
+        }
+
+        check(runB.status == demo_system::RunStatus::Completed, "4b. Capstone B executed to completion",
+              "status=" + demo_system::runStatusToString(runB.status) + ", failure=" + runB.failureReason);
+        check(runB.passed(), "4c. Capstone B all assertions passed");
+        check(runB.failedAssertionsCount() == 0, "4d. Zero assertion failures during Capstone B");
+        check(runB.passedAssertionsCount() >= 3, "4e. Forward motion, limit compliance, and reverse limits verified");
+
+        const auto reportB = runB.generateMarkdownReport();
+        check(reportB.find("Capstone B") != std::string::npos || reportB.find("Robotic Arm") != std::string::npos,
+              "4f. Markdown report includes Capstone B robotic arm header");
+    }
+
+    // 5. Run Comparison Engine (compareRuns)
+    {
+        const auto selfDiff = demo_system::DemonstrationRunner::compareRuns(runA, runA);
+        check(selfDiff.find("Identical runs") != std::string::npos || selfDiff.find("Run Comparison") != std::string::npos,
+              "5a. Comparing identical runs reports matching status");
+
+        const auto crossDiff = demo_system::DemonstrationRunner::compareRuns(runA, runB);
+        check(crossDiff.find("Run A") != std::string::npos && crossDiff.find("Run B") != std::string::npos,
+              "5b. Comparing distinct runs reports run-to-run differences and metrics");
+    }
+}
+
 } // namespace
 
 int main()
 {
     std::printf("====================================================\n");
-    std::printf("  Control Panel & Interactive Simulation Tests (P3-P7) \n");
+    std::printf("  Control Panel & Interactive Simulation Tests (P3-P8) \n");
     std::printf("====================================================\n");
 
     testOperatingSequence();
@@ -769,6 +933,7 @@ int main()
     testUserAssembledMotorSystem();
     testMechanicalSceneAndVisualization();
     testVirtualMachineBuilder();
+    testDemonstrationRunnerAndExperiments();
 
     std::printf("\n%d passed, %d failed\n", passes, failures);
     return failures == 0 ? 0 : 1;
