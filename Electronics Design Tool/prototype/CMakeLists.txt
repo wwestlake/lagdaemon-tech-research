@@ -497,6 +497,44 @@ target_link_libraries(ModelDrivenSimulationTests PRIVATE
 juce_generate_juce_header(ModelDrivenSimulationTests)
 add_test(NAME ModelDrivenSimulationTests COMMAND ModelDrivenSimulationTests)
 
+juce_add_console_app(MachineBuilderSmokeTests PRODUCT_NAME "Machine Builder Smoke Tests")
+set_target_properties(MachineBuilderSmokeTests PROPERTIES
+    OUTPUT_NAME "machine_builder_smoke_tests"
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/bin")
+target_sources(MachineBuilderSmokeTests PRIVATE
+    tools/machine_builder_smoke_tests/MachineBuilderSmokeTests.cpp
+    Source/MachineBuilderPanel.cpp
+    Source/MachineModel.cpp
+    Source/SystemSimulationSession.cpp
+    Source/ControlPanelComponent.cpp
+    Source/ControlPanelModel.cpp
+    Source/MechanicalViewComponent.cpp
+    Source/MechanicalSceneModel.cpp
+    Source/PlotInstrument.cpp
+    Source/Analytics.cpp
+    Source/SignalMeasure.cpp
+    Source/SystemAssembly.cpp
+    Source/FrustComponent.cpp
+    Source/FrustComponentCompiler.cpp
+    Source/NodeDesignerPanel.cpp
+    Source/NodeCompiler.cpp
+    Source/FrustEngine.cpp
+    Source/SchematicSymbols.cpp
+)
+target_include_directories(MachineBuilderSmokeTests PRIVATE Source)
+target_compile_definitions(MachineBuilderSmokeTests PRIVATE JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0)
+target_link_libraries(MachineBuilderSmokeTests PRIVATE
+    circuit_sim
+    frust_plugin_host
+    juce::juce_core
+    juce::juce_events
+    juce::juce_graphics
+    juce::juce_data_structures
+    juce::juce_gui_basics
+)
+juce_generate_juce_header(MachineBuilderSmokeTests)
+add_test(NAME MachineBuilderSmokeTests COMMAND MachineBuilderSmokeTests)
+
 # Headless layout/routing preview: renders reference circuits to PNG and
 # prints readability metrics, without opening the app.
 juce_add_console_app(SchematicPreview PRODUCT_NAME "Schematic Preview")

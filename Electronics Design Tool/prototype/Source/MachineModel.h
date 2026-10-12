@@ -67,6 +67,9 @@ struct MachineDesign
                              const std::string& title, const std::map<std::string, double>& numericParams = {},
                              std::string* error = nullptr);
     bool removeSubsystemInstance(const std::string& instanceId, std::string* error = nullptr);
+    bool renameSubsystemInstance(const std::string& oldInstanceId, const std::string& newInstanceId,
+                                 const std::string& newTitle = {}, std::string* error = nullptr);
+    bool setInstanceLayout(const std::string& instanceId, double x, double y, std::string* error = nullptr);
     bool setInstanceParameter(const std::string& instanceId, const std::string& paramName,
                              double value, std::string* error = nullptr);
     bool connectPorts(const std::string& fromInstance, const std::string& fromPort,
@@ -75,6 +78,8 @@ struct MachineDesign
     bool disconnectPorts(const std::string& fromInstance, const std::string& fromPort,
                          const std::string& toInstance, const std::string& toPort,
                          std::string* error = nullptr);
+    bool addSystemPort(const sim_panel::SubsystemPort& port, std::string* error = nullptr);
+    bool removeSystemPort(const std::string& portName, std::string* error = nullptr);
 
     // Mechanical scene editing
     bool addRigidBody(const std::string& bodyId, const std::string& name,

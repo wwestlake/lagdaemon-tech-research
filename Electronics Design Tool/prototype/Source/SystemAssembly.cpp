@@ -279,6 +279,8 @@ juce::var SubsystemInstance::toJson() const
     obj->setProperty("instanceId", juce::String(instanceId));
     obj->setProperty("definitionId", juce::String(definitionId));
     obj->setProperty("title", juce::String(title));
+    obj->setProperty("canvasX", canvasX);
+    obj->setProperty("canvasY", canvasY);
 
     auto* numObj = new juce::DynamicObject();
     for (const auto& [k, v] : numericParams)
@@ -301,6 +303,8 @@ SubsystemInstance SubsystemInstance::fromJson(const juce::var& json)
         inst.instanceId = obj->getProperty("instanceId").toString().toStdString();
         inst.definitionId = obj->getProperty("definitionId").toString().toStdString();
         inst.title = obj->getProperty("title").toString().toStdString();
+        inst.canvasX = obj->hasProperty("canvasX") ? (double)obj->getProperty("canvasX") : 120.0;
+        inst.canvasY = obj->hasProperty("canvasY") ? (double)obj->getProperty("canvasY") : 120.0;
 
         if (const auto* numObj = obj->getProperty("numericParams").getDynamicObject())
             for (const auto& p : numObj->getProperties())
@@ -320,6 +324,10 @@ SubsystemInstance SubsystemInstance::fromJson(const juce::var& json)
 juce::var SignalConnection::toJson() const
 {
     auto* obj = new juce::DynamicObject();
+    const auto stableId = connectionId.empty()
+        ? fromInstance + "." + fromPort + "__to__" + toInstance + "." + toPort
+        : connectionId;
+    obj->setProperty("connectionId", juce::String(stableId));
     obj->setProperty("fromInstance", juce::String(fromInstance));
     obj->setProperty("fromPort", juce::String(fromPort));
     obj->setProperty("toInstance", juce::String(toInstance));
@@ -338,6 +346,9 @@ SignalConnection SignalConnection::fromJson(const juce::var& json)
         conn.toInstance = obj->getProperty("toInstance").toString().toStdString();
         conn.toPort = obj->getProperty("toPort").toString().toStdString();
         conn.netName = obj->getProperty("netName").toString().toStdString();
+        conn.connectionId = obj->getProperty("connectionId").toString().toStdString();
+        if (conn.connectionId.empty())
+            conn.connectionId = conn.fromInstance + "." + conn.fromPort + "__to__" + conn.toInstance + "." + conn.toPort;
     }
     return conn;
 }
@@ -851,6 +862,38 @@ SystemAssembly SystemAssembly::createUserAssembledMotorSystem()
 namespace
 {
 juce::File resolveReferenceFile(const std::string& referenceFile, const juce::File& projectFolder);
+
+const SubsystemPort* findSystemPort(const SystemAssembly& assembly, const std::string& portName)
+{
+    for (const auto& p : assembly.systemPorts)
+        if (p.name == portName)
+            return &p;
+    return nullptr;
+}
+
+bool canSourceFrom(const SubsystemPort& port, bool isSystemPort)
+{
+    if (isSystemPort)
+        return port.direction == PortDirection::Input || port.direction == PortDirection::Bidirectional;
+    return port.direction == PortDirection::Output || port.direction == PortDirection::Bidirectional;
+}
+
+bool canConnectTo(const SubsystemPort& port, bool isSystemPort)
+{
+    if (isSystemPort)
+        return port.direction == PortDirection::Output || port.direction == PortDirection::Bidirectional;
+    return port.direction == PortDirection::Input || port.direction == PortDirection::Bidirectional;
+}
+
+bool domainsCompatible(PortDomain a, PortDomain b)
+{
+    if (a == b)
+        return true;
+    const auto electricalLike = [](PortDomain d) {
+        return d == PortDomain::Electrical || d == PortDomain::SignalControl;
+    };
+    return electricalLike(a) && electricalLike(b);
+}
 }
 
 std::vector<std::string> SystemAssembly::validate(const juce::File& projectFolder) const
@@ -872,7 +915,8 @@ std::vector<std::string> SystemAssembly::validate(const juce::File& projectFolde
         }
         else
         {
-            if (projectFolder.exists() && !def->referenceFile.empty())
+            if (!def->referenceFile.empty()
+                && (projectFolder.exists() || juce::File::isAbsolutePath(juce::String(def->referenceFile))))
             {
                 juce::File refFile = resolveReferenceFile(def->referenceFile, projectFolder);
                 if (!refFile.existsAsFile())
@@ -885,16 +929,15 @@ std::vector<std::string> SystemAssembly::validate(const juce::File& projectFolde
 
     for (const auto& conn : connections)
     {
-        auto systemPortExists = [this](const std::string& portName) {
-            return std::any_of(systemPorts.begin(), systemPorts.end(), [&](const SubsystemPort& p) { return p.name == portName; });
-        };
-
         const auto* srcInst = conn.fromInstance == "system" ? nullptr : findInstance(conn.fromInstance);
         const auto* dstInst = conn.toInstance == "system" ? nullptr : findInstance(conn.toInstance);
+        const SubsystemPort* srcPort = nullptr;
+        const SubsystemPort* dstPort = nullptr;
 
         if (conn.fromInstance == "system")
         {
-            if (!systemPortExists(conn.fromPort))
+            srcPort = findSystemPort(*this, conn.fromPort);
+            if (srcPort == nullptr)
                 issues.push_back("Connection references non-existent source system port: system." + conn.fromPort);
         }
         else if (!srcInst)
@@ -902,7 +945,8 @@ std::vector<std::string> SystemAssembly::validate(const juce::File& projectFolde
 
         if (conn.toInstance == "system")
         {
-            if (!systemPortExists(conn.toPort))
+            dstPort = findSystemPort(*this, conn.toPort);
+            if (dstPort == nullptr)
                 issues.push_back("Connection references non-existent destination system port: system." + conn.toPort);
         }
         else if (!dstInst)
@@ -911,14 +955,35 @@ std::vector<std::string> SystemAssembly::validate(const juce::File& projectFolde
         if (srcInst)
         {
             const auto* srcDef = findDefinition(srcInst->definitionId);
-            if (srcDef && !srcDef->findPort(conn.fromPort))
-                issues.push_back("Port '" + conn.fromPort + "' not found on source instance '" + conn.fromInstance + "' (" + srcDef->id + ")");
+            if (srcDef)
+            {
+                srcPort = srcDef->findPort(conn.fromPort);
+                if (srcPort == nullptr)
+                    issues.push_back("Port '" + conn.fromPort + "' not found on source instance '" + conn.fromInstance + "' (" + srcDef->id + ")");
+            }
         }
         if (dstInst)
         {
             const auto* dstDef = findDefinition(dstInst->definitionId);
-            if (dstDef && !dstDef->findPort(conn.toPort))
-                issues.push_back("Port '" + conn.toPort + "' not found on destination instance '" + conn.toInstance + "' (" + dstDef->id + ")");
+            if (dstDef)
+            {
+                dstPort = dstDef->findPort(conn.toPort);
+                if (dstPort == nullptr)
+                    issues.push_back("Port '" + conn.toPort + "' not found on destination instance '" + conn.toInstance + "' (" + dstDef->id + ")");
+            }
+        }
+
+        if (srcPort != nullptr && !canSourceFrom(*srcPort, conn.fromInstance == "system"))
+        {
+            issues.push_back("Port '" + conn.sourcePath() + "' cannot drive a connection.");
+        }
+        if (dstPort != nullptr && !canConnectTo(*dstPort, conn.toInstance == "system"))
+        {
+            issues.push_back("Port '" + conn.destPath() + "' cannot receive a connection.");
+        }
+        if (srcPort != nullptr && dstPort != nullptr && !domainsCompatible(srcPort->domain, dstPort->domain))
+        {
+            issues.push_back("Connection '" + conn.sourcePath() + " -> " + conn.destPath() + "' has incompatible signal domains.");
         }
     }
 

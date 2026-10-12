@@ -16034,6 +16034,54 @@ ElectronicsWorkbench::ElectronicsWorkbench()
     mechanicalViewDockPanel = dockManager->registerPanel("mechanical_view", "Mechanical View", std::move(mechanicalViewOwner), CreationDock::DockTargetZone::CenterTab);
     auto machineBuilderOwner = std::make_unique<machine_builder::MachineBuilderPanel>(controlPanel ? std::shared_ptr<sim_panel::SystemSimulationSession>(controlPanel->getSession(), [](void*){}) : nullptr, mechanicalView, controlPanel);
     machineBuilder = machineBuilderOwner.get();
+    machineBuilder->openSchematicReference = [this](const juce::File& file) {
+        juce::String error;
+        if (!file.existsAsFile())
+        {
+            appendLog("Open machine schematic: file not found: " + file.getFullPathName());
+            return;
+        }
+        if (loadCircuitJson == nullptr || !loadCircuitJson(file.loadFileAsString(), error))
+        {
+            appendLog("Open machine schematic: " + error);
+            return;
+        }
+        auto* panel = schematicView.getComponent();
+        if (panel != nullptr)
+        {
+            if (auto* dockPanel = panel->findParentComponentOfClass<CreationDock::DockPanel>())
+                if (auto* zone = dockPanel->findParentComponentOfClass<CreationDock::DockZone>())
+                    zone->setActivePanel(dockPanel);
+            if (auto* window = dynamic_cast<CreationDock::FloatingDockWindow*>(panel->getTopLevelComponent()))
+                window->toFront(true);
+        }
+    };
+    machineBuilder->openComponentReference = [this](const juce::File& file) {
+        juce::String error;
+        frust_component::Definition d;
+        if (!frust_component::load(file, d, error))
+        {
+            appendLog("Open machine FRust component: " + error);
+            return;
+        }
+        if (nodeDesignerPanel == nullptr)
+        {
+            appendLog("Open machine FRust component: Node Designer is unavailable.");
+            return;
+        }
+        const auto program = file.getSiblingFile(d.programFile);
+        if (nodeDesignerPanel->currentFile() != program)
+            saveOpenComponentProgram();
+        juce::String problems;
+        if (nodeDesignerPanel->currentFile() != program && !nodeDesignerPanel->openFile(program, problems))
+        {
+            appendLog("Open machine FRust component: " + problems);
+            return;
+        }
+        nodeDesignerPanel->setComponentContext(d.compilerContext());
+        nodeDesignerPanel->setComponentDefinition(frust_component::toVar(d));
+        showNodeDesigner();
+    };
     machineBuilderDockPanel = dockManager->registerPanel("machine_builder", "Machine Builder", std::move(machineBuilderOwner), CreationDock::DockTargetZone::CenterTab);
     auto demoRunnerOwner = std::make_unique<demo_system::DemonstrationRunnerPanel>(controlPanel ? std::shared_ptr<sim_panel::SystemSimulationSession>(controlPanel->getSession(), [](void*){}) : nullptr, mechanicalView, controlPanel);
     demoRunnerPanel = demoRunnerOwner.get();
@@ -18934,7 +18982,7 @@ juce::String ElectronicsWorkbench::machineTool(const juce::String& name, const j
             targetFile = dir.getChildFile(m.id + ".machine.json");
         }
         juce::String saveErr;
-        if (!m.saveToFile(targetFile, saveErr))
+        if (!machineBuilder->saveMachineToFile(targetFile, saveErr))
             return "{ \"ok\": false, \"error\": \"" + saveErr + "\" }";
 
         return "{ \"ok\": true, \"tool\": \"machine_save\", \"filePath\": \"" + targetFile.getFullPathName() + "\" }";
@@ -18949,11 +18997,9 @@ juce::String ElectronicsWorkbench::machineTool(const juce::String& name, const j
         if (args.hasProperty("filePath"))
         {
             juce::File srcFile(args.getProperty("filePath", {}).toString());
-            machine_builder::MachineDesign loaded;
             juce::String loadErr;
-            if (!machine_builder::MachineDesign::loadFromFile(srcFile, loaded, loadErr))
+            if (!machineBuilder->loadMachineFromFile(srcFile, loadErr))
                 return "{ \"ok\": false, \"error\": \"" + loadErr + "\" }";
-            machineBuilder->setMachine(loaded);
             return "{ \"ok\": true, \"tool\": \"machine_load\", \"filePath\": \"" + srcFile.getFullPathName() + "\" }";
         }
         return R"({"ok": false, "error": "Either 'template' or 'filePath' is required."})";

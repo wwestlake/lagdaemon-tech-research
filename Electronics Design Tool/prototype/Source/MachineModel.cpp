@@ -27,6 +27,75 @@ bool hasSystemPort(const sim_panel::SystemAssembly& assembly, const std::string&
     return std::any_of(assembly.systemPorts.begin(), assembly.systemPorts.end(),
                        [&](const sim_panel::SubsystemPort& p) { return p.name == portName; });
 }
+
+sim_panel::SubsystemPort* findSystemPort(sim_panel::SystemAssembly& assembly, const std::string& portName)
+{
+    for (auto& p : assembly.systemPorts)
+        if (p.name == portName)
+            return &p;
+    return nullptr;
+}
+
+const sim_panel::SubsystemPort* findSystemPort(const sim_panel::SystemAssembly& assembly, const std::string& portName)
+{
+    for (const auto& p : assembly.systemPorts)
+        if (p.name == portName)
+            return &p;
+    return nullptr;
+}
+
+sim_panel::SubsystemInstance* findMutableInstance(sim_panel::SystemAssembly& assembly, const std::string& instanceId)
+{
+    for (auto& inst : assembly.instances)
+        if (inst.instanceId == instanceId)
+            return &inst;
+    return nullptr;
+}
+
+const sim_panel::SubsystemPort* findPort(const sim_panel::SystemAssembly& assembly,
+                                         const std::string& instanceId,
+                                         const std::string& portName)
+{
+    if (instanceId == "system")
+        return findSystemPort(assembly, portName);
+
+    const auto* inst = assembly.findInstance(instanceId);
+    if (inst == nullptr)
+        return nullptr;
+
+    const auto* def = assembly.findDefinition(inst->definitionId);
+    return def != nullptr ? def->findPort(portName) : nullptr;
+}
+
+bool canSourceFrom(const sim_panel::SubsystemPort& port, bool isSystemPort)
+{
+    if (isSystemPort)
+        return port.direction == sim_panel::PortDirection::Input || port.direction == sim_panel::PortDirection::Bidirectional;
+    return port.direction == sim_panel::PortDirection::Output || port.direction == sim_panel::PortDirection::Bidirectional;
+}
+
+bool canConnectTo(const sim_panel::SubsystemPort& port, bool isSystemPort)
+{
+    if (isSystemPort)
+        return port.direction == sim_panel::PortDirection::Output || port.direction == sim_panel::PortDirection::Bidirectional;
+    return port.direction == sim_panel::PortDirection::Input || port.direction == sim_panel::PortDirection::Bidirectional;
+}
+
+bool domainsCompatible(sim_panel::PortDomain a, sim_panel::PortDomain b)
+{
+    if (a == b)
+        return true;
+    const auto electricalLike = [](sim_panel::PortDomain d) {
+        return d == sim_panel::PortDomain::Electrical || d == sim_panel::PortDomain::SignalControl;
+    };
+    return electricalLike(a) && electricalLike(b);
+}
+
+std::string stableConnectionId(const std::string& fromInstance, const std::string& fromPort,
+                               const std::string& toInstance, const std::string& toPort)
+{
+    return fromInstance + "." + fromPort + "__to__" + toInstance + "." + toPort;
+}
 }
 
 // -----------------------------------------------------------------------------
@@ -133,7 +202,7 @@ std::vector<Diagnostic> MachineDesign::validate(const juce::File& projectFolder)
                || def->kind == sim_panel::SubsystemKind::ProgrammableComponent)
               && !def->referenceFile.empty())
         {
-            if (projectFolder != juce::File())
+            if (projectFolder != juce::File() || juce::File::isAbsolutePath(juce::String(def->referenceFile)))
             {
                 const auto ref = resolveReferenceFile(def->referenceFile, projectFolder);
                 if (!ref.existsAsFile())
@@ -148,10 +217,13 @@ std::vector<Diagnostic> MachineDesign::validate(const juce::File& projectFolder)
     {
         const auto* fromInst = conn.fromInstance == "system" ? nullptr : assembly.findInstance(conn.fromInstance);
         const auto* toInst = conn.toInstance == "system" ? nullptr : assembly.findInstance(conn.toInstance);
+        const sim_panel::SubsystemPort* fromPort = nullptr;
+        const sim_panel::SubsystemPort* toPort = nullptr;
 
         if (conn.fromInstance == "system")
         {
-            if (!hasSystemPort(assembly, conn.fromPort))
+            fromPort = findSystemPort(assembly, conn.fromPort);
+            if (fromPort == nullptr)
                 diags.push_back({ Diagnostic::Level::Error, "assembly", conn.sourcePath(),
                                   "Connection source system port not found: system." + conn.fromPort });
         }
@@ -163,7 +235,8 @@ std::vector<Diagnostic> MachineDesign::validate(const juce::File& projectFolder)
         else
         {
             const auto* def = assembly.findDefinition(fromInst->definitionId);
-            if (def != nullptr && def->findPort(conn.fromPort) == nullptr)
+            fromPort = def != nullptr ? def->findPort(conn.fromPort) : nullptr;
+            if (def != nullptr && fromPort == nullptr)
             {
                 diags.push_back({ Diagnostic::Level::Error, "assembly", conn.sourcePath(),
                                   "Source port '" + conn.fromPort + "' not found on definition '" + def->id + "'" });
@@ -172,7 +245,8 @@ std::vector<Diagnostic> MachineDesign::validate(const juce::File& projectFolder)
 
         if (conn.toInstance == "system")
         {
-            if (!hasSystemPort(assembly, conn.toPort))
+            toPort = findSystemPort(assembly, conn.toPort);
+            if (toPort == nullptr)
                 diags.push_back({ Diagnostic::Level::Error, "assembly", conn.destPath(),
                                   "Connection destination system port not found: system." + conn.toPort });
         }
@@ -184,11 +258,28 @@ std::vector<Diagnostic> MachineDesign::validate(const juce::File& projectFolder)
         else
         {
             const auto* def = assembly.findDefinition(toInst->definitionId);
-            if (def != nullptr && def->findPort(conn.toPort) == nullptr)
+            toPort = def != nullptr ? def->findPort(conn.toPort) : nullptr;
+            if (def != nullptr && toPort == nullptr)
             {
                 diags.push_back({ Diagnostic::Level::Error, "assembly", conn.destPath(),
                                   "Destination port '" + conn.toPort + "' not found on definition '" + def->id + "'" });
             }
+        }
+
+        if (fromPort != nullptr && !canSourceFrom(*fromPort, conn.fromInstance == "system"))
+        {
+            diags.push_back({ Diagnostic::Level::Error, "assembly", conn.sourcePath(),
+                              "Port cannot drive a connection from this endpoint." });
+        }
+        if (toPort != nullptr && !canConnectTo(*toPort, conn.toInstance == "system"))
+        {
+            diags.push_back({ Diagnostic::Level::Error, "assembly", conn.destPath(),
+                              "Port cannot receive a connection at this endpoint." });
+        }
+        if (fromPort != nullptr && toPort != nullptr && !domainsCompatible(fromPort->domain, toPort->domain))
+        {
+            diags.push_back({ Diagnostic::Level::Error, "assembly", conn.connectionId,
+                              "Connection has incompatible signal domains: " + conn.sourcePath() + " -> " + conn.destPath() });
         }
     }
 
@@ -346,6 +437,86 @@ bool MachineDesign::removeSubsystemInstance(const std::string& instanceId, std::
     return true;
 }
 
+bool MachineDesign::renameSubsystemInstance(const std::string& oldInstanceId, const std::string& newInstanceId,
+                                            const std::string& newTitle, std::string* error)
+{
+    if (oldInstanceId.empty() || newInstanceId.empty())
+    {
+        if (error) *error = "Instance ID cannot be empty.";
+        return false;
+    }
+
+    auto* inst = findMutableInstance(assembly, oldInstanceId);
+    if (inst == nullptr)
+    {
+        if (error) *error = "Subsystem instance '" + oldInstanceId + "' not found.";
+        return false;
+    }
+
+    if (oldInstanceId != newInstanceId && assembly.findInstance(newInstanceId) != nullptr)
+    {
+        if (error) *error = "Subsystem instance '" + newInstanceId + "' already exists.";
+        return false;
+    }
+
+    for (auto& conn : assembly.connections)
+    {
+        if (conn.fromInstance == oldInstanceId)
+            conn.fromInstance = newInstanceId;
+        if (conn.toInstance == oldInstanceId)
+            conn.toInstance = newInstanceId;
+        if (conn.connectionId.empty() || conn.connectionId.find(oldInstanceId + ".") != std::string::npos)
+            conn.connectionId = stableConnectionId(conn.fromInstance, conn.fromPort, conn.toInstance, conn.toPort);
+    }
+
+    for (auto& widget : controlPanel.widgets)
+    {
+        const auto oldPrefix = oldInstanceId + ".";
+        if (widget.signalName.rfind(oldPrefix, 0) == 0)
+            widget.signalName = newInstanceId + widget.signalName.substr(oldInstanceId.length());
+    }
+
+    std::map<std::string, double> renamedNumeric;
+    for (const auto& [signal, value] : simConfig.initialNumericInputs)
+    {
+        const auto oldPrefix = oldInstanceId + ".";
+        if (signal.rfind(oldPrefix, 0) == 0)
+            renamedNumeric[newInstanceId + signal.substr(oldInstanceId.length())] = value;
+        else
+            renamedNumeric[signal] = value;
+    }
+    simConfig.initialNumericInputs = std::move(renamedNumeric);
+
+    std::map<std::string, bool> renamedBoolean;
+    for (const auto& [signal, value] : simConfig.initialBooleanInputs)
+    {
+        const auto oldPrefix = oldInstanceId + ".";
+        if (signal.rfind(oldPrefix, 0) == 0)
+            renamedBoolean[newInstanceId + signal.substr(oldInstanceId.length())] = value;
+        else
+            renamedBoolean[signal] = value;
+    }
+    simConfig.initialBooleanInputs = std::move(renamedBoolean);
+
+    inst->instanceId = newInstanceId;
+    if (!newTitle.empty())
+        inst->title = newTitle;
+    return true;
+}
+
+bool MachineDesign::setInstanceLayout(const std::string& instanceId, double x, double y, std::string* error)
+{
+    auto* inst = findMutableInstance(assembly, instanceId);
+    if (inst == nullptr)
+    {
+        if (error) *error = "Subsystem instance '" + instanceId + "' not found.";
+        return false;
+    }
+    inst->canvasX = x;
+    inst->canvasY = y;
+    return true;
+}
+
 bool MachineDesign::setInstanceParameter(const std::string& instanceId, const std::string& paramName,
                                         double value, std::string* error)
 {
@@ -365,14 +536,41 @@ bool MachineDesign::connectPorts(const std::string& fromInstance, const std::str
                                 const std::string& toInstance, const std::string& toPort,
                                 const std::string& netName, std::string* error)
 {
-    if (assembly.findInstance(fromInstance) == nullptr)
+    if (fromInstance != "system" && assembly.findInstance(fromInstance) == nullptr)
     {
         if (error) *error = "Source instance '" + fromInstance + "' not found.";
         return false;
     }
-    if (assembly.findInstance(toInstance) == nullptr)
+    if (toInstance != "system" && assembly.findInstance(toInstance) == nullptr)
     {
         if (error) *error = "Destination instance '" + toInstance + "' not found.";
+        return false;
+    }
+    const auto* srcPort = findPort(assembly, fromInstance, fromPort);
+    if (srcPort == nullptr)
+    {
+        if (error) *error = "Source port '" + fromInstance + "." + fromPort + "' not found.";
+        return false;
+    }
+    const auto* dstPort = findPort(assembly, toInstance, toPort);
+    if (dstPort == nullptr)
+    {
+        if (error) *error = "Destination port '" + toInstance + "." + toPort + "' not found.";
+        return false;
+    }
+    if (!canSourceFrom(*srcPort, fromInstance == "system"))
+    {
+        if (error) *error = "Port '" + fromInstance + "." + fromPort + "' cannot drive a connection.";
+        return false;
+    }
+    if (!canConnectTo(*dstPort, toInstance == "system"))
+    {
+        if (error) *error = "Port '" + toInstance + "." + toPort + "' cannot receive a connection.";
+        return false;
+    }
+    if (!domainsCompatible(srcPort->domain, dstPort->domain))
+    {
+        if (error) *error = "Incompatible port domains for " + fromInstance + "." + fromPort + " -> " + toInstance + "." + toPort + ".";
         return false;
     }
 
@@ -387,6 +585,7 @@ bool MachineDesign::connectPorts(const std::string& fromInstance, const std::str
     }
 
     sim_panel::SignalConnection conn;
+    conn.connectionId = stableConnectionId(fromInstance, fromPort, toInstance, toPort);
     conn.fromInstance = fromInstance;
     conn.fromPort = fromPort;
     conn.toInstance = toInstance;
@@ -411,6 +610,50 @@ bool MachineDesign::disconnectPorts(const std::string& fromInstance, const std::
         return false;
     }
     assembly.connections.erase(it);
+    return true;
+}
+
+bool MachineDesign::addSystemPort(const sim_panel::SubsystemPort& port, std::string* error)
+{
+    if (port.name.empty())
+    {
+        if (error) *error = "System port name cannot be empty.";
+        return false;
+    }
+    if (hasSystemPort(assembly, port.name))
+    {
+        if (error) *error = "System port '" + port.name + "' already exists.";
+        return false;
+    }
+    assembly.systemPorts.push_back(port);
+    return true;
+}
+
+bool MachineDesign::removeSystemPort(const std::string& portName, std::string* error)
+{
+    auto it = std::find_if(assembly.systemPorts.begin(), assembly.systemPorts.end(),
+                           [&](const sim_panel::SubsystemPort& p) { return p.name == portName; });
+    if (it == assembly.systemPorts.end())
+    {
+        if (error) *error = "System port '" + portName + "' not found.";
+        return false;
+    }
+    assembly.systemPorts.erase(it);
+    assembly.connections.erase(
+        std::remove_if(assembly.connections.begin(), assembly.connections.end(),
+                       [&](const sim_panel::SignalConnection& c) {
+                           return (c.fromInstance == "system" && c.fromPort == portName)
+                               || (c.toInstance == "system" && c.toPort == portName);
+                       }),
+        assembly.connections.end());
+
+    const auto fullPath = "system." + portName;
+    controlPanel.widgets.erase(
+        std::remove_if(controlPanel.widgets.begin(), controlPanel.widgets.end(),
+                       [&](const sim_panel::WidgetConfig& w) { return w.signalName == fullPath; }),
+        controlPanel.widgets.end());
+    simConfig.initialNumericInputs.erase(fullPath);
+    simConfig.initialBooleanInputs.erase(fullPath);
     return true;
 }
 
@@ -659,6 +902,20 @@ MachineDesign MachineDesign::fromJson(const juce::var& json)
         m.scene = mechanical_scene::MechanicalScene::fromJson(obj->getProperty("scene"));
         m.controlPanel = sim_panel::ControlPanelLayout::fromJson(obj->getProperty("controlPanel"));
         m.simConfig = SimulationConfig::fromJson(obj->getProperty("simConfig"));
+
+        int index = 0;
+        for (auto& inst : m.assembly.instances)
+        {
+            if (inst.canvasX == 120.0 && inst.canvasY == 120.0 && m.assembly.instances.size() > 1)
+            {
+                inst.canvasX = 150.0 + (index % 3) * 230.0;
+                inst.canvasY = 120.0 + (index / 3) * 170.0;
+            }
+            ++index;
+        }
+        for (auto& conn : m.assembly.connections)
+            if (conn.connectionId.empty())
+                conn.connectionId = stableConnectionId(conn.fromInstance, conn.fromPort, conn.toInstance, conn.toPort);
     }
     return m;
 }

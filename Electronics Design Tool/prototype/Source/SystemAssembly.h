@@ -94,6 +94,8 @@ struct SubsystemInstance
     std::string instanceId;         // e.g. "motorA", "motorB", "controllerA", "sequencer"
     std::string definitionId;       // e.g. "dc_motor_module"
     std::string title;              // e.g. "Drive Motor A"
+    double canvasX = 120.0;         // Graphical Machine Builder layout; does not affect connectivity
+    double canvasY = 120.0;
 
     // Instance-specific parameter overrides
     std::map<std::string, double> numericParams;
@@ -127,6 +129,7 @@ struct SignalConnection
     std::string toPort;
 
     std::string netName;            // Optional shared net/bus name
+    std::string connectionId;       // Stable graphical/editor identity
 
     std::string sourcePath() const { return fromInstance + "." + fromPort; }
     std::string destPath() const { return toInstance + "." + toPort; }
