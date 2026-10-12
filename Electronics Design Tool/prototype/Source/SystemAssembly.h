@@ -117,6 +117,12 @@ struct SubsystemInstance
     static SubsystemInstance fromJson(const juce::var& json);
 };
 
+struct ConnectionRoutePoint
+{
+    double x = 0.0;
+    double y = 0.0;
+};
+
 // A connection connecting an output/bidirectional port of one subsystem to an input port of another
 struct SignalConnection
 {
@@ -130,6 +136,7 @@ struct SignalConnection
 
     std::string netName;            // Optional shared net/bus name
     std::string connectionId;       // Stable graphical/editor identity
+    std::vector<ConnectionRoutePoint> routePoints; // Visual-only routing waypoints
 
     std::string sourcePath() const { return fromInstance + "." + fromPort; }
     std::string destPath() const { return toInstance + "." + toPort; }

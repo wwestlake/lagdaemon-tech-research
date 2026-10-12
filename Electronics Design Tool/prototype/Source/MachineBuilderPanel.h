@@ -67,6 +67,8 @@ private:
     void chooseMachineSaveFile();
     void chooseMachineLoadFile();
     void showSystemPortDialog(bool input);
+    void resetToBlankMachine();
+    void fitMachineView();
     juce::File resolveReference(const std::string& referenceFile) const;
     juce::File referenceBaseFolder() const;
     juce::String selectedInstanceId() const { return juce::String(selectedInstanceId_); }
@@ -91,6 +93,7 @@ private:
     juce::TextButton removeBtn { "Remove" };
     juce::TextButton saveBtn { "Save" };
     juce::TextButton loadBtn { "Load" };
+    juce::TextButton fitAllBtn { "Fit All" };
     juce::TextButton validateBtn { "Validate" };
     juce::TextButton compileRunBtn { "Compile" };
     juce::TextButton startBtn { "Start" };

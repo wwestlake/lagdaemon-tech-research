@@ -333,6 +333,15 @@ juce::var SignalConnection::toJson() const
     obj->setProperty("toInstance", juce::String(toInstance));
     obj->setProperty("toPort", juce::String(toPort));
     obj->setProperty("netName", juce::String(netName));
+    juce::Array<juce::var> points;
+    for (const auto& p : routePoints)
+    {
+        auto* point = new juce::DynamicObject();
+        point->setProperty("x", p.x);
+        point->setProperty("y", p.y);
+        points.add(juce::var(point));
+    }
+    obj->setProperty("routePoints", juce::var(points));
     return juce::var(obj);
 }
 
@@ -349,6 +358,14 @@ SignalConnection SignalConnection::fromJson(const juce::var& json)
         conn.connectionId = obj->getProperty("connectionId").toString().toStdString();
         if (conn.connectionId.empty())
             conn.connectionId = conn.fromInstance + "." + conn.fromPort + "__to__" + conn.toInstance + "." + conn.toPort;
+        if (const auto* points = obj->getProperty("routePoints").getArray())
+        {
+            for (const auto& item : *points)
+            {
+                if (const auto* point = item.getDynamicObject())
+                    conn.routePoints.push_back({ (double)point->getProperty("x"), (double)point->getProperty("y") });
+            }
+        }
     }
     return conn;
 }
@@ -1043,9 +1060,7 @@ std::vector<std::string> SystemAssembly::discoverSignals() const
     }
 
     for (const auto& sp : systemPorts)
-    {
-        sigs.push_back(sp.name);
-    }
+        sigs.push_back("system." + sp.name);
 
     return sigs;
 }

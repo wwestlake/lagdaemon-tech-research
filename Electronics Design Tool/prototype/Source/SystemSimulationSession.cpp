@@ -225,6 +225,17 @@ void SystemSimulationSession::setupCircuit(circuit_sim::Circuit circuit,
     inputElementBindings_ = inputElementBindings;
     outputNodeBindings_ = outputNodeBindings;
     outputBranchBindings_ = outputBranchBindings;
+    currentSimTime_ = 0.0;
+    {
+        std::lock_guard<std::mutex> snapshotLock(snapshotMutex_);
+        latestSnapshot_.simTime = 0.0;
+        latestSnapshot_.running = false;
+        latestSnapshot_.paused = false;
+        latestSnapshot_.faulted = false;
+        latestSnapshot_.numericSignals.clear();
+        latestSnapshot_.booleanSignals.clear();
+        latestSnapshot_.textSignals.clear();
+    }
 }
 
 bool SystemSimulationSession::setupAssembly(const SystemAssembly& assembly, const juce::File& projectFolder)
@@ -242,6 +253,17 @@ bool SystemSimulationSession::setupAssembly(const SystemAssembly& assembly, cons
     inputElementBindings_ = std::move(compiled.inputElements);
     outputNodeBindings_ = std::move(compiled.signalNodes);
     outputBranchBindings_ = std::move(compiled.signalBranches);
+    currentSimTime_ = 0.0;
+    {
+        std::lock_guard<std::mutex> snapshotLock(snapshotMutex_);
+        latestSnapshot_.simTime = 0.0;
+        latestSnapshot_.running = false;
+        latestSnapshot_.paused = false;
+        latestSnapshot_.faulted = false;
+        latestSnapshot_.numericSignals.clear();
+        latestSnapshot_.booleanSignals.clear();
+        latestSnapshot_.textSignals.clear();
+    }
 
     addEventLog("System Assembly Loaded: " + assembly.name, "INFO");
     return true;
@@ -368,7 +390,12 @@ void SystemSimulationSession::resume()
 void SystemSimulationSession::stop()
 {
     if (!isRunning_.load() && !thread_)
+    {
+        std::lock_guard<std::mutex> snapshotLock(snapshotMutex_);
+        latestSnapshot_.running = false;
+        latestSnapshot_.paused = false;
         return;
+    }
 
     {
         std::lock_guard<std::mutex> lock(mutex_);
@@ -384,6 +411,12 @@ void SystemSimulationSession::stop()
 
     isRunning_ = false;
     isPaused_ = false;
+    {
+        std::lock_guard<std::mutex> snapshotLock(snapshotMutex_);
+        latestSnapshot_.running = false;
+        latestSnapshot_.paused = false;
+        latestSnapshot_.simTime = currentSimTime_.load();
+    }
     addEventLog("Simulation stopped", "CONTROL");
 }
 
@@ -395,6 +428,16 @@ void SystemSimulationSession::reset()
     {
         std::lock_guard<std::mutex> lock(mutex_);
         pendingInputs_.clear();
+    }
+    {
+        std::lock_guard<std::mutex> snapshotLock(snapshotMutex_);
+        latestSnapshot_.simTime = 0.0;
+        latestSnapshot_.running = false;
+        latestSnapshot_.paused = false;
+        latestSnapshot_.faulted = false;
+        latestSnapshot_.numericSignals.clear();
+        latestSnapshot_.booleanSignals.clear();
+        latestSnapshot_.textSignals.clear();
     }
     addEventLog("Simulation reset to t = 0.000s", "CONTROL");
 }

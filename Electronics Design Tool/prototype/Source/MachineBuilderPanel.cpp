@@ -135,6 +135,24 @@ sim_panel::WidgetType widgetTypeForSystemInput(const std::string& name)
     return sim_panel::WidgetType::Slider;
 }
 
+std::string widgetTitleForSystemPort(const std::string& name)
+{
+    const auto n = juce::String(name).toLowerCase();
+    if (n.contains("power"))
+        return "Master Power";
+    if (n == "start")
+        return "Start";
+    if (n == "stop")
+        return "Stop";
+    if (n == "estop" || n == "e_stop" || n.contains("emergency"))
+        return "E-Stop";
+    if (n == "reset")
+        return "Reset";
+    if (n == "speed_setpoint" || n == "speed setpoint")
+        return "Speed Command";
+    return juce::String(name).replaceCharacter('_', ' ').toStdString();
+}
+
 } // namespace
 
 class MachineBuilderPanel::AssemblyCanvas final : public juce::Component
@@ -145,31 +163,77 @@ public:
         setWantsKeyboardFocus(true);
     }
 
+    void resetView()
+    {
+        zoom = 1.0f;
+        viewOffset = {};
+        selectedWaypointIndex = -1;
+        repaint();
+    }
+
+    void fitMachine()
+    {
+        auto bounds = machineWorldBounds();
+        if (bounds.isEmpty() || getWidth() <= 0 || getHeight() <= 0)
+        {
+            resetView();
+            return;
+        }
+
+        bounds = bounds.expanded(80.0f);
+        const auto sx = (float)getWidth() / std::max(1.0f, bounds.getWidth());
+        const auto sy = (float)getHeight() / std::max(1.0f, bounds.getHeight());
+        zoom = std::clamp(std::min(sx, sy), minZoom, maxZoom);
+        const auto targetCentre = bounds.getCentre();
+        viewOffset = { (float)getWidth() * 0.5f - targetCentre.x * zoom,
+                       (float)getHeight() * 0.5f - targetCentre.y * zoom };
+        repaint();
+    }
+
     void paint(juce::Graphics& g) override
     {
-        endpointRects.clear();
-        cardRects.clear();
+        rebuildGeometry();
 
         g.fillAll(juce::Colour(0xff10171f));
         drawGrid(g);
         drawConnections(g);
+        drawDraggedWire(g);
         drawSystemPorts(g);
         drawInstances(g);
-        drawPendingWire(g);
+        drawWaypointHandles(g);
     }
 
     void mouseDown(const juce::MouseEvent& e) override
     {
-        const auto pos = e.position;
-        if (const auto endpoint = endpointAt(pos); endpoint.has_value())
+        grabKeyboardFocus();
+        rebuildGeometry();
+        mouseDownPos = e.position;
+        selectedWaypointIndex = -1;
+
+        if (const auto wp = waypointAt(e.position); wp.has_value())
         {
-            handleEndpointClick(*endpoint);
+            owner.selectConnection(wp->connectionId);
+            selectedWaypointIndex = wp->index;
+            draggingWaypoint = true;
+            repaint();
             return;
         }
 
-        pendingEndpoint.reset();
+        if (const auto endpoint = endpointAt(e.position); endpoint.has_value())
+        {
+            owner.selectInstance(endpoint->path());
+            if (endpoint->canSource())
+            {
+                draggingWire = true;
+                wireHasDragged = false;
+                wireStart = endpoint;
+                wireDragPos = e.position;
+            }
+            repaint();
+            return;
+        }
 
-        if (const auto conn = connectionAt(pos); conn.isNotEmpty())
+        if (const auto conn = connectionAt(e.position); conn.isNotEmpty())
         {
             owner.selectConnection(conn.toStdString());
             repaint();
@@ -178,11 +242,12 @@ public:
 
         for (const auto& card : cardRects)
         {
-            if (card.bounds.contains(pos))
+            if (card.screenBounds.contains(e.position))
             {
                 owner.selectInstance(card.instanceId);
                 draggingInstance = card.instanceId;
-                dragOffset = pos - card.bounds.getPosition();
+                dragStartMouseWorld = screenToWorld(e.position);
+                dragStartInstanceWorld = card.worldBounds.getPosition();
                 repaint();
                 return;
             }
@@ -190,24 +255,130 @@ public:
 
         owner.selectInstance({});
         owner.selectConnection({});
+        panning = true;
+        panStartMouse = e.position;
+        panStartOffset = viewOffset;
         repaint();
     }
 
     void mouseDrag(const juce::MouseEvent& e) override
     {
-        if (draggingInstance.empty())
+        if (draggingWire)
+        {
+            wireDragPos = e.position;
+            wireHasDragged = wireHasDragged || e.position.getDistanceFrom(mouseDownPos) > 4.0f;
+            repaint();
+            return;
+        }
+
+        if (draggingWaypoint)
+        {
+            if (auto* conn = selectedConnection())
+            {
+                if (selectedWaypointIndex >= 0 && selectedWaypointIndex < (int)conn->routePoints.size())
+                {
+                    const auto world = screenToWorld(e.position);
+                    conn->routePoints[(size_t)selectedWaypointIndex] = { world.x, world.y };
+                    owner.updateDiagnosticsDisplay();
+                    repaint();
+                }
+            }
+            return;
+        }
+
+        if (!draggingInstance.empty())
+        {
+            const auto delta = screenToWorld(e.position) - dragStartMouseWorld;
+            std::string ignored;
+            owner.machine_.setInstanceLayout(draggingInstance,
+                                             std::max(40.0f, dragStartInstanceWorld.x + delta.x),
+                                             std::max(30.0f, dragStartInstanceWorld.y + delta.y),
+                                             &ignored);
+            owner.updateDiagnosticsDisplay();
+            repaint();
+            return;
+        }
+
+        if (panning)
+        {
+            viewOffset = panStartOffset + (e.position - panStartMouse);
+            repaint();
+        }
+    }
+
+    void mouseUp(const juce::MouseEvent& e) override
+    {
+        if (draggingWire)
+        {
+            const auto start = wireStart;
+            draggingWire = false;
+            wireStart.reset();
+            if (wireHasDragged && start.has_value())
+                if (const auto target = endpointAt(e.position); target.has_value())
+                    completeWire(*start, *target);
+            repaint();
+        }
+
+        draggingWaypoint = false;
+        draggingInstance.clear();
+        panning = false;
+    }
+
+    void mouseDoubleClick(const juce::MouseEvent& e) override
+    {
+        rebuildGeometry();
+        const auto connId = connectionAt(e.position);
+        if (connId.isEmpty())
             return;
 
-        const auto newPos = e.position - dragOffset;
-        std::string ignored;
-        owner.machine_.setInstanceLayout(draggingInstance, std::max(80.0f, newPos.x), std::max(50.0f, newPos.y), &ignored);
-        owner.updateDiagnosticsDisplay();
+        if (auto* conn = findConnection(connId.toStdString()))
+        {
+            const auto world = screenToWorld(e.position);
+            conn->routePoints.push_back({ world.x, world.y });
+            owner.selectedConnectionId_ = conn->connectionId;
+            owner.selectedInstanceId_.clear();
+            selectedWaypointIndex = (int)conn->routePoints.size() - 1;
+            owner.refreshUi();
+            owner.updateDiagnosticsDisplay();
+            repaint();
+        }
+    }
+
+    void mouseWheelMove(const juce::MouseEvent& e, const juce::MouseWheelDetails& wheel) override
+    {
+        const auto before = screenToWorld(e.position);
+        const float factor = wheel.deltaY > 0.0f ? 1.1f : (1.0f / 1.1f);
+        zoom = std::clamp(zoom * factor, minZoom, maxZoom);
+        viewOffset += e.position - worldToScreen(before);
         repaint();
     }
 
-    void mouseUp(const juce::MouseEvent&) override
+    bool keyPressed(const juce::KeyPress& key) override
     {
-        draggingInstance.clear();
+        if (isTextEditingFocused())
+            return false;
+
+        if (key == juce::KeyPress::escapeKey)
+        {
+            draggingWire = false;
+            wireStart.reset();
+            selectedWaypointIndex = -1;
+            repaint();
+            return true;
+        }
+
+        if (key != juce::KeyPress::deleteKey && key != juce::KeyPress::backspaceKey)
+            return false;
+
+        if (removeSelectedWaypoint())
+            return true;
+
+        if (!owner.selectedConnectionId_.empty() || !owner.selectedInstanceId_.empty())
+        {
+            owner.removeSelected();
+            return true;
+        }
+        return false;
     }
 
 private:
@@ -216,7 +387,8 @@ private:
         std::string instanceId;
         std::string portName;
         sim_panel::SubsystemPort port;
-        juce::Rectangle<float> bounds;
+        juce::Point<float> worldCentre;
+        juce::Rectangle<float> screenBounds;
         bool system = false;
 
         std::string path() const { return instanceId + "." + portName; }
@@ -227,23 +399,62 @@ private:
     struct CardRect
     {
         std::string instanceId;
-        juce::Rectangle<float> bounds;
+        juce::Rectangle<float> worldBounds;
+        juce::Rectangle<float> screenBounds;
+    };
+
+    struct WaypointHit
+    {
+        std::string connectionId;
+        int index = -1;
     };
 
     MachineBuilderPanel& owner;
     std::vector<EndpointRect> endpointRects;
     std::vector<CardRect> cardRects;
-    std::optional<EndpointRect> pendingEndpoint;
+    std::optional<EndpointRect> wireStart;
+    juce::Point<float> wireDragPos;
+    bool draggingWire = false;
+    bool wireHasDragged = false;
+    bool draggingWaypoint = false;
+    int selectedWaypointIndex = -1;
     std::string draggingInstance;
-    juce::Point<float> dragOffset;
+    juce::Point<float> dragStartMouseWorld;
+    juce::Point<float> dragStartInstanceWorld;
+    bool panning = false;
+    juce::Point<float> panStartMouse;
+    juce::Point<float> panStartOffset;
+    juce::Point<float> mouseDownPos;
+    juce::Point<float> viewOffset;
+    float zoom = 1.0f;
+    static constexpr float minZoom = 0.25f;
+    static constexpr float maxZoom = 2.5f;
 
-    void drawGrid(juce::Graphics& g)
+    static bool isTextEditingFocused()
     {
-        g.setColour(juce::Colour(0xff18232e));
-        for (int x = 0; x < getWidth(); x += 24)
-            g.drawVerticalLine(x, 0.0f, (float)getHeight());
-        for (int y = 0; y < getHeight(); y += 24)
-            g.drawHorizontalLine(y, 0.0f, (float)getWidth());
+        if (auto* focused = juce::Component::getCurrentlyFocusedComponent())
+        {
+            return dynamic_cast<juce::TextEditor*>(focused) != nullptr
+                || dynamic_cast<juce::Label*>(focused) != nullptr
+                || focused->findParentComponentOfClass<juce::TextEditor>() != nullptr;
+        }
+        return false;
+    }
+
+    juce::Point<float> worldToScreen(juce::Point<float> world) const
+    {
+        return { world.x * zoom + viewOffset.x, world.y * zoom + viewOffset.y };
+    }
+
+    juce::Point<float> screenToWorld(juce::Point<float> screen) const
+    {
+        return { (screen.x - viewOffset.x) / zoom, (screen.y - viewOffset.y) / zoom };
+    }
+
+    juce::Rectangle<float> worldToScreen(juce::Rectangle<float> world) const
+    {
+        const auto p = worldToScreen(world.getPosition());
+        return { p.x, p.y, world.getWidth() * zoom, world.getHeight() * zoom };
     }
 
     juce::Rectangle<float> cardBoundsFor(const sim_panel::SubsystemInstance& inst, const sim_panel::SubsystemDefinition& def) const
@@ -252,10 +463,116 @@ private:
         return { (float)inst.canvasX, (float)inst.canvasY, cardWidth, cardHeaderHeight + 12.0f + (float)rows * portRowHeight };
     }
 
-    juce::Rectangle<float> systemPortBounds(int index, bool input) const
+    float systemOutputX() const
     {
-        const float x = input ? 24.0f : (float)getWidth() - 174.0f;
+        float x = 760.0f;
+        for (const auto& inst : owner.machine_.assembly.instances)
+            if (const auto* def = owner.machine_.assembly.findDefinition(inst.definitionId))
+                x = std::max(x, (float)inst.canvasX + cardBoundsFor(inst, *def).getWidth() + 140.0f);
+        return x;
+    }
+
+    juce::Rectangle<float> systemPortBoundsWorld(int index, bool input) const
+    {
+        const float x = input ? 24.0f : systemOutputX();
         return { x, 64.0f + (float)index * 34.0f, 150.0f, 24.0f };
+    }
+
+    void rebuildGeometry()
+    {
+        endpointRects.clear();
+        cardRects.clear();
+
+        int inputIndex = 0;
+        int outputIndex = 0;
+        for (const auto& port : owner.machine_.assembly.systemPorts)
+        {
+            const bool input = port.direction != sim_panel::PortDirection::Output;
+            const auto box = systemPortBoundsWorld(input ? inputIndex++ : outputIndex++, input);
+            const auto centre = input ? juce::Point<float>(box.getRight(), box.getCentreY())
+                                      : juce::Point<float>(box.getX(), box.getCentreY());
+            const auto screenCentre = worldToScreen(centre);
+            endpointRects.push_back({ "system", port.name, port, centre,
+                                      juce::Rectangle<float>(screenCentre.x - 8.0f, screenCentre.y - 8.0f, 16.0f, 16.0f), true });
+        }
+
+        for (const auto& inst : owner.machine_.assembly.instances)
+        {
+            const auto* def = owner.machine_.assembly.findDefinition(inst.definitionId);
+            if (def == nullptr)
+                continue;
+
+            const auto card = cardBoundsFor(inst, *def);
+            cardRects.push_back({ inst.instanceId, card, worldToScreen(card) });
+
+            int row = 0;
+            for (const auto& port : def->ports)
+            {
+                const bool inputSide = port.direction == sim_panel::PortDirection::Input;
+                const bool outputSide = port.direction == sim_panel::PortDirection::Output;
+                const auto y = card.getY() + cardHeaderHeight + 8.0f + (float)row * portRowHeight;
+                const auto centre = inputSide ? juce::Point<float>(card.getX(), y + 8.0f)
+                                  : outputSide ? juce::Point<float>(card.getRight(), y + 8.0f)
+                                               : juce::Point<float>(card.getRight(), y + 8.0f);
+                const auto screenCentre = worldToScreen(centre);
+                endpointRects.push_back({ inst.instanceId, port.name, port, centre,
+                                          juce::Rectangle<float>(screenCentre.x - 8.0f, screenCentre.y - 8.0f, 16.0f, 16.0f), false });
+                ++row;
+            }
+        }
+    }
+
+    juce::Rectangle<float> machineWorldBounds() const
+    {
+        bool any = false;
+        juce::Rectangle<float> bounds;
+        auto include = [&](juce::Rectangle<float> r) {
+            bounds = any ? bounds.getUnion(r) : r;
+            any = true;
+        };
+        auto includePoint = [&](juce::Point<float> p) {
+            include({ p.x - 1.0f, p.y - 1.0f, 2.0f, 2.0f });
+        };
+
+        int inputIndex = 0;
+        int outputIndex = 0;
+        for (const auto& port : owner.machine_.assembly.systemPorts)
+        {
+            const bool input = port.direction != sim_panel::PortDirection::Output;
+            include(systemPortBoundsWorld(input ? inputIndex++ : outputIndex++, input));
+        }
+
+        for (const auto& inst : owner.machine_.assembly.instances)
+            if (const auto* def = owner.machine_.assembly.findDefinition(inst.definitionId))
+                include(cardBoundsFor(inst, *def));
+
+        for (const auto& conn : owner.machine_.assembly.connections)
+            for (const auto& p : conn.routePoints)
+                includePoint({ (float)p.x, (float)p.y });
+
+        return bounds;
+    }
+
+    void drawGrid(juce::Graphics& g)
+    {
+        g.setColour(juce::Colour(0xff18232e));
+        const auto topLeft = screenToWorld({ 0.0f, 0.0f });
+        const auto bottomRight = screenToWorld({ (float)getWidth(), (float)getHeight() });
+        constexpr float step = 24.0f;
+        const int startX = (int)std::floor(topLeft.x / step) - 1;
+        const int endX = (int)std::ceil(bottomRight.x / step) + 1;
+        const int startY = (int)std::floor(topLeft.y / step) - 1;
+        const int endY = (int)std::ceil(bottomRight.y / step) + 1;
+        for (int x = startX; x <= endX; ++x)
+        {
+            const auto sx = worldToScreen(juce::Point<float> { (float)x * step, 0.0f }).x;
+            g.drawVerticalLine((int)std::round(sx), 0.0f, (float)getHeight());
+        }
+        for (int y = startY; y <= endY; ++y)
+        {
+            const auto sy = worldToScreen(juce::Point<float> { 0.0f, (float)y * step }).y;
+            g.drawHorizontalLine((int)std::round(sy), 0.0f, (float)getWidth());
+        }
     }
 
     void drawSystemPorts(juce::Graphics& g)
@@ -265,22 +582,19 @@ private:
         for (const auto& port : owner.machine_.assembly.systemPorts)
         {
             const bool input = port.direction != sim_panel::PortDirection::Output;
-            const auto box = systemPortBounds(input ? inputIndex++ : outputIndex++, input);
+            const auto box = worldToScreen(systemPortBoundsWorld(input ? inputIndex++ : outputIndex++, input));
             const bool selected = owner.selectedConnectionId_.empty() && owner.selectedInstanceId_ == std::string("system.") + port.name;
             g.setColour(selected ? juce::Colour(0xff315a6a) : juce::Colour(0xff1b2935));
             g.fillRoundedRectangle(box, 5.0f);
             g.setColour(juce::Colour(0xff456172));
             g.drawRoundedRectangle(box, 5.0f, 1.0f);
             g.setColour(juce::Colour(0xffdce9ee));
-            g.setFont(juce::Font(12.0f, juce::Font::bold));
+            g.setFont(juce::Font(std::max(10.0f, 12.0f * std::min(zoom, 1.2f)), juce::Font::bold));
             g.drawFittedText("system." + juce::String(port.name), box.reduced(8.0f, 0.0f).toNearestInt(),
                              juce::Justification::centredLeft, 1);
 
-            const auto centre = input ? juce::Point<float>(box.getRight(), box.getCentreY())
-                                      : juce::Point<float>(box.getX(), box.getCentreY());
-            drawPort(g, centre, port, true, pendingEndpoint.has_value() && pendingEndpoint->path() == "system." + port.name);
-            endpointRects.push_back({ "system", port.name, port,
-                                      juce::Rectangle<float>(centre.x - 8.0f, centre.y - 8.0f, 16.0f, 16.0f), true });
+            if (const auto endpoint = endpointFor("system", port.name); endpoint.has_value())
+                drawPort(g, endpoint->screenBounds.getCentre(), port, isCompatibleDropTarget(*endpoint));
         }
     }
 
@@ -292,208 +606,241 @@ private:
             if (def == nullptr)
                 continue;
 
-            const auto card = cardBoundsFor(inst, *def);
+            const auto card = worldToScreen(cardBoundsFor(inst, *def));
             auto box = card;
-            cardRects.push_back({ inst.instanceId, box });
-
             const bool selected = owner.selectedInstanceId_ == inst.instanceId;
             g.setColour(selected ? juce::Colour(0xff243f4a) : juce::Colour(0xff17212b));
             g.fillRoundedRectangle(card, 6.0f);
             g.setColour(selected ? juce::Colour(0xff7bdff2) : juce::Colour(0xff3b4d5e));
             g.drawRoundedRectangle(card, 6.0f, selected ? 2.0f : 1.0f);
 
-            auto header = box.removeFromTop(cardHeaderHeight);
+            auto header = box.removeFromTop(cardHeaderHeight * zoom);
             g.setColour(juce::Colour(0xff21303c));
             g.fillRoundedRectangle(header, 6.0f);
             g.setColour(juce::Colour(0xffdce9ee));
-            g.setFont(juce::Font(13.0f, juce::Font::bold));
+            g.setFont(juce::Font(std::max(10.0f, 13.0f * std::min(zoom, 1.2f)), juce::Font::bold));
             g.drawFittedText(juce::String(inst.title.empty() ? inst.instanceId : inst.title), header.reduced(8.0f, 0.0f).toNearestInt(),
                              juce::Justification::centredLeft, 1);
 
             g.setColour(juce::Colour(0xff9eb3c4));
-            g.setFont(juce::Font(11.0f));
-            g.drawText(kindName(def->kind), header.removeFromRight(72.0f).toNearestInt(), juce::Justification::centredRight);
+            g.setFont(juce::Font(std::max(9.0f, 11.0f * std::min(zoom, 1.2f))));
+            g.drawText(kindName(def->kind), header.removeFromRight(72.0f * zoom).toNearestInt(), juce::Justification::centredRight);
 
             int row = 0;
             for (const auto& port : def->ports)
             {
                 const bool inputSide = port.direction == sim_panel::PortDirection::Input;
-                const bool outputSide = port.direction == sim_panel::PortDirection::Output;
-                const auto y = box.getY() + 8.0f + (float)row * portRowHeight;
-                const auto centre = inputSide ? juce::Point<float>(card.getX(), y + 8.0f)
-                                  : outputSide ? juce::Point<float>(card.getRight(), y + 8.0f)
-                                               : juce::Point<float>(card.getRight(), y + 8.0f);
-                drawPort(g, centre, port, false, pendingEndpoint.has_value() && pendingEndpoint->path() == inst.instanceId + "." + port.name);
+                const auto worldY = (float)inst.canvasY + cardHeaderHeight + 8.0f + (float)row * portRowHeight;
+                const auto screenY = worldToScreen(juce::Point<float> { 0.0f, worldY }).y;
+                if (const auto endpoint = endpointFor(inst.instanceId, port.name); endpoint.has_value())
+                    drawPort(g, endpoint->screenBounds.getCentre(), port, isCompatibleDropTarget(*endpoint));
                 g.setColour(juce::Colour(0xffc7d4df));
-                g.setFont(juce::Font(11.0f));
-                const auto textArea = juce::Rectangle<float>(card.getX() + 12.0f, y, cardWidth - 24.0f, portRowHeight);
+                g.setFont(juce::Font(std::max(9.0f, 11.0f * std::min(zoom, 1.15f))));
+                const auto textArea = juce::Rectangle<float>(card.getX() + 12.0f * zoom, screenY,
+                                                             cardWidth * zoom - 24.0f * zoom, portRowHeight * zoom);
                 g.drawFittedText(juce::String(port.name) + "  " + directionName(port.direction), textArea.toNearestInt(),
                                  inputSide ? juce::Justification::centredLeft : juce::Justification::centredRight, 1);
-                endpointRects.push_back({ inst.instanceId, port.name, port,
-                                          juce::Rectangle<float>(centre.x - 8.0f, centre.y - 8.0f, 16.0f, 16.0f), false });
                 ++row;
             }
         }
     }
 
-    void drawPort(juce::Graphics& g, juce::Point<float> centre, const sim_panel::SubsystemPort& port, bool system, bool pending)
+    void drawPort(juce::Graphics& g, juce::Point<float> centre, const sim_panel::SubsystemPort& port, bool compatible)
     {
-        juce::ignoreUnused(system);
         juce::Colour colour = port.domain == sim_panel::PortDomain::Mechanical ? juce::Colour(0xfff4a261)
                             : port.domain == sim_panel::PortDomain::Electrical ? juce::Colour(0xff7bdff2)
                                                                                : juce::Colour(0xff80ed99);
-        if (pending)
+        if (compatible)
             colour = juce::Colour(0xffffd166);
+        const auto r = compatible ? portRadius + 2.0f : portRadius;
         g.setColour(colour);
-        g.fillEllipse(centre.x - portRadius, centre.y - portRadius, portRadius * 2.0f, portRadius * 2.0f);
+        g.fillEllipse(centre.x - r, centre.y - r, r * 2.0f, r * 2.0f);
         g.setColour(juce::Colour(0xff0c1117));
-        g.drawEllipse(centre.x - portRadius, centre.y - portRadius, portRadius * 2.0f, portRadius * 2.0f, 1.0f);
-    }
-
-    juce::Point<float> endpointCentre(const std::string& instance, const std::string& port) const
-    {
-        for (const auto& e : endpointRects)
-            if (e.instanceId == instance && e.portName == port)
-                return e.bounds.getCentre();
-        return {};
+        g.drawEllipse(centre.x - r, centre.y - r, r * 2.0f, r * 2.0f, 1.0f);
     }
 
     void drawConnections(juce::Graphics& g)
     {
-        // Build endpoint rectangles first, using an offscreen pass through the lightweight geometry.
-        for (const auto& port : owner.machine_.assembly.systemPorts)
-        {
-            const bool input = port.direction != sim_panel::PortDirection::Output;
-            static int dummyIndex = 0;
-            juce::ignoreUnused(input, dummyIndex);
-        }
-
-        std::vector<EndpointRect> savedEndpoints;
-        endpointRects.swap(savedEndpoints);
-        drawSystemPorts(g);
-        drawInstances(g);
-        const auto endpoints = endpointRects;
-        endpointRects.clear();
-        cardRects.clear();
-
-        auto centreFor = [&](const std::string& inst, const std::string& port) -> juce::Point<float> {
-            for (const auto& e : endpoints)
-                if (e.instanceId == inst && e.portName == port)
-                    return e.bounds.getCentre();
-            return {};
-        };
-
         for (const auto& conn : owner.machine_.assembly.connections)
         {
-            const auto from = centreFor(conn.fromInstance, conn.fromPort);
-            const auto to = centreFor(conn.toInstance, conn.toPort);
-            if (from == juce::Point<float>() || to == juce::Point<float>())
+            const auto points = connectionScreenPoints(conn);
+            if (points.size() < 2)
                 continue;
             const bool selected = conn.connectionId == owner.selectedConnectionId_;
             g.setColour(selected ? juce::Colour(0xffffd166) : juce::Colour(0xff6da5b8));
             juce::Path p;
-            p.startNewSubPath(from);
-            const float mid = std::max(50.0f, std::abs(to.x - from.x) * 0.45f);
-            p.cubicTo(from.x + mid, from.y, to.x - mid, to.y, to.x, to.y);
+            p.startNewSubPath(points.front());
+            if (conn.routePoints.empty() && points.size() == 2)
+            {
+                const auto from = points.front();
+                const auto to = points.back();
+                const float mid = std::max(50.0f, std::abs(to.x - from.x) * 0.45f);
+                p.cubicTo(from.x + mid, from.y, to.x - mid, to.y, to.x, to.y);
+            }
+            else
+            {
+                for (size_t i = 1; i < points.size(); ++i)
+                    p.lineTo(points[i]);
+            }
             g.strokePath(p, juce::PathStrokeType(selected ? 3.0f : 2.0f));
         }
-
-        endpointRects = std::move(savedEndpoints);
     }
 
-    void drawPendingWire(juce::Graphics& g)
+    void drawWaypointHandles(juce::Graphics& g)
     {
-        if (!pendingEndpoint.has_value())
+        if (owner.selectedConnectionId_.empty())
+            return;
+        const auto* conn = findConnection(owner.selectedConnectionId_);
+        if (conn == nullptr)
+            return;
+        for (int i = 0; i < (int)conn->routePoints.size(); ++i)
+        {
+            const auto screen = worldToScreen(juce::Point<float> { (float)conn->routePoints[(size_t)i].x, (float)conn->routePoints[(size_t)i].y });
+            g.setColour(i == selectedWaypointIndex ? juce::Colour(0xffffd166) : juce::Colour(0xffdce9ee));
+            g.fillEllipse(screen.x - 5.0f, screen.y - 5.0f, 10.0f, 10.0f);
+            g.setColour(juce::Colour(0xff0c1117));
+            g.drawEllipse(screen.x - 5.0f, screen.y - 5.0f, 10.0f, 10.0f, 1.0f);
+        }
+    }
+
+    void drawDraggedWire(juce::Graphics& g)
+    {
+        if (!draggingWire || !wireStart.has_value())
             return;
         g.setColour(juce::Colour(0xffffd166));
-        g.drawEllipse(pendingEndpoint->bounds.expanded(3.0f), 2.0f);
+        juce::Path p;
+        p.startNewSubPath(wireStart->screenBounds.getCentre());
+        p.lineTo(wireDragPos);
+        g.strokePath(p, juce::PathStrokeType(2.0f));
+    }
+
+    std::optional<EndpointRect> endpointFor(const std::string& instance, const std::string& port) const
+    {
+        for (const auto& e : endpointRects)
+            if (e.instanceId == instance && e.portName == port)
+                return e;
+        return std::nullopt;
     }
 
     std::optional<EndpointRect> endpointAt(juce::Point<float> p) const
     {
         for (const auto& e : endpointRects)
-            if (e.bounds.expanded(4.0f).contains(p))
+            if (e.screenBounds.expanded(4.0f).contains(p))
                 return e;
         return std::nullopt;
     }
 
+    std::vector<juce::Point<float>> connectionScreenPoints(const sim_panel::SignalConnection& conn) const
+    {
+        std::vector<juce::Point<float>> points;
+        const auto from = endpointFor(conn.fromInstance, conn.fromPort);
+        const auto to = endpointFor(conn.toInstance, conn.toPort);
+        if (!from.has_value() || !to.has_value())
+            return points;
+        points.push_back(from->screenBounds.getCentre());
+        for (const auto& p : conn.routePoints)
+            points.push_back(worldToScreen(juce::Point<float> { (float)p.x, (float)p.y }));
+        points.push_back(to->screenBounds.getCentre());
+        return points;
+    }
+
     juce::String connectionAt(juce::Point<float> p) const
     {
-        auto centreFor = [&](const std::string& inst, const std::string& port) -> juce::Point<float> {
-            for (const auto& e : endpointRects)
-                if (e.instanceId == inst && e.portName == port)
-                    return e.bounds.getCentre();
-            return {};
-        };
         for (const auto& conn : owner.machine_.assembly.connections)
         {
-            const auto a = centreFor(conn.fromInstance, conn.fromPort);
-            const auto b = centreFor(conn.toInstance, conn.toPort);
-            if (a == juce::Point<float>() || b == juce::Point<float>())
+            const auto points = connectionScreenPoints(conn);
+            if (points.size() < 2)
                 continue;
-            const auto line = juce::Line<float>(a, b);
-            juce::Point<float> nearest;
-            if (line.getDistanceFromPoint(p, nearest) < 7.0f)
-                return conn.connectionId;
+            for (size_t i = 1; i < points.size(); ++i)
+            {
+                juce::Point<float> nearest;
+                if (juce::Line<float>(points[i - 1], points[i]).getDistanceFromPoint(p, nearest) < 7.0f)
+                    return conn.connectionId;
+            }
         }
         return {};
     }
 
-    void handleEndpointClick(const EndpointRect& endpoint)
+    std::optional<WaypointHit> waypointAt(juce::Point<float> p) const
     {
-        owner.selectInstance(endpoint.path());
-        owner.selectConnection({});
-
-        if (!pendingEndpoint.has_value())
+        for (const auto& conn : owner.machine_.assembly.connections)
         {
-            pendingEndpoint = endpoint;
-            repaint();
+            for (int i = 0; i < (int)conn.routePoints.size(); ++i)
+            {
+                const auto screen = worldToScreen(juce::Point<float> { (float)conn.routePoints[(size_t)i].x, (float)conn.routePoints[(size_t)i].y });
+                if (screen.getDistanceFrom(p) <= 8.0f)
+                    return WaypointHit { conn.connectionId, i };
+            }
+        }
+        return std::nullopt;
+    }
+
+    bool isCompatibleDropTarget(const EndpointRect& endpoint) const
+    {
+        if (!draggingWire || !wireStart.has_value())
+            return false;
+        if (wireStart->path() == endpoint.path())
+            return false;
+        return wireStart->canSource() && endpoint.canDest()
+            && domainsCompatible(wireStart->port.domain, endpoint.port.domain);
+    }
+
+    void completeWire(const EndpointRect& start, const EndpointRect& target)
+    {
+        if (start.path() == target.path() || !start.canSource() || !target.canDest())
             return;
-        }
-
-        const auto first = *pendingEndpoint;
-        pendingEndpoint.reset();
-
-        std::string fromInst, fromPort, toInst, toPort;
-        if (first.canSource() && endpoint.canDest())
-        {
-            fromInst = first.instanceId; fromPort = first.portName;
-            toInst = endpoint.instanceId; toPort = endpoint.portName;
-        }
-        else if (endpoint.canSource() && first.canDest())
-        {
-            fromInst = endpoint.instanceId; fromPort = endpoint.portName;
-            toInst = first.instanceId; toPort = first.portName;
-        }
-        else
-        {
-            owner.statusLabel.setText("Those ports cannot be connected by direction.", juce::dontSendNotification);
-            owner.statusLabel.setColour(juce::Label::textColourId, juce::Colour(0xffff6b6b));
-            repaint();
-            return;
-        }
-
-        if (!domainsCompatible(first.port.domain, endpoint.port.domain))
+        if (!domainsCompatible(start.port.domain, target.port.domain))
         {
             owner.statusLabel.setText("Those ports have incompatible domains.", juce::dontSendNotification);
             owner.statusLabel.setColour(juce::Label::textColourId, juce::Colour(0xffff6b6b));
-            repaint();
             return;
         }
 
         std::string err;
-        if (!owner.machine_.connectPorts(fromInst, fromPort, toInst, toPort, {}, &err))
+        if (!owner.machine_.connectPorts(start.instanceId, start.portName, target.instanceId, target.portName, {}, &err))
         {
             owner.statusLabel.setText("Connect failed: " + juce::String(err), juce::dontSendNotification);
             owner.statusLabel.setColour(juce::Label::textColourId, juce::Colour(0xffff6b6b));
+            return;
         }
-        else
-        {
-            owner.selectedConnectionId_ = fromInst + "." + fromPort + "__to__" + toInst + "." + toPort;
-            owner.selectedInstanceId_.clear();
-            owner.syncAfterModelEdit();
-        }
+
+        owner.selectedConnectionId_ = start.instanceId + "." + start.portName + "__to__" + target.instanceId + "." + target.portName;
+        owner.selectedInstanceId_.clear();
+        selectedWaypointIndex = -1;
+        owner.syncAfterModelEdit();
+    }
+
+    sim_panel::SignalConnection* findConnection(const std::string& id)
+    {
+        for (auto& conn : owner.machine_.assembly.connections)
+            if (conn.connectionId == id)
+                return &conn;
+        return nullptr;
+    }
+
+    const sim_panel::SignalConnection* findConnection(const std::string& id) const
+    {
+        for (const auto& conn : owner.machine_.assembly.connections)
+            if (conn.connectionId == id)
+                return &conn;
+        return nullptr;
+    }
+
+    sim_panel::SignalConnection* selectedConnection()
+    {
+        return owner.selectedConnectionId_.empty() ? nullptr : findConnection(owner.selectedConnectionId_);
+    }
+
+    bool removeSelectedWaypoint()
+    {
+        auto* conn = selectedConnection();
+        if (conn == nullptr || selectedWaypointIndex < 0 || selectedWaypointIndex >= (int)conn->routePoints.size())
+            return false;
+        conn->routePoints.erase(conn->routePoints.begin() + selectedWaypointIndex);
+        selectedWaypointIndex = -1;
+        owner.updateDiagnosticsDisplay();
         repaint();
+        return true;
     }
 };
 
@@ -524,14 +871,11 @@ MachineBuilderPanel::MachineBuilderPanel(std::shared_ptr<sim_panel::SystemSimula
     };
 
     for (auto* b : { &newBlankBtn, &addSchematicBtn, &addFrustBtn, &addMotorBtn, &addInputBtn, &addOutputBtn,
-                    &removeBtn, &saveBtn, &loadBtn, &validateBtn, &compileRunBtn, &startBtn, &stopBtn,
+                    &removeBtn, &saveBtn, &loadBtn, &fitAllBtn, &validateBtn, &compileRunBtn, &startBtn, &stopBtn,
                     &resetBtn, &applyInspectorBtn, &openReferenceBtn })
         addButton(*b);
 
-    newBlankBtn.onClick = [this] {
-        currentMachineFile_ = {};
-        setMachine(MachineDesign::createBlankMachine("Custom Machine"));
-    };
+    newBlankBtn.onClick = [this] { resetToBlankMachine(); };
     addSchematicBtn.onClick = [this] { chooseSchematicFile(); };
     addFrustBtn.onClick = [this] { chooseFrustFile(); };
     addMotorBtn.onClick = [this] {
@@ -544,6 +888,7 @@ MachineBuilderPanel::MachineBuilderPanel(std::shared_ptr<sim_panel::SystemSimula
     removeBtn.onClick = [this] { removeSelected(); };
     saveBtn.onClick = [this] { chooseMachineSaveFile(); };
     loadBtn.onClick = [this] { chooseMachineLoadFile(); };
+    fitAllBtn.onClick = [this] { fitMachineView(); };
     validateBtn.onClick = [this] { updateDiagnosticsDisplay(); };
     compileRunBtn.onClick = [this] { compileAndRun(); };
     startBtn.onClick = [this] { startSimulation(); };
@@ -598,13 +943,14 @@ void MachineBuilderPanel::setMachine(const MachineDesign& machine)
         mechanicalView_->setScene(machine_.scene);
     if (controlPanel_ != nullptr)
         controlPanel_->setLayout(machine_.controlPanel);
+    if (canvas != nullptr)
+        canvas->fitMachine();
 }
 
 void MachineBuilderPanel::loadTemplate(const std::string& templateName)
 {
     juce::ignoreUnused(templateName);
-    currentMachineFile_ = {};
-    setMachine(MachineDesign::createBlankMachine("Custom Machine"));
+    resetToBlankMachine();
 }
 
 bool MachineBuilderPanel::compileAndRun()
@@ -663,6 +1009,39 @@ void MachineBuilderPanel::resetSimulation()
         session_->reset();
     statusLabel.setText("Simulation reset", juce::dontSendNotification);
     statusLabel.setColour(juce::Label::textColourId, juce::Colour(0xffdce9ee));
+}
+
+void MachineBuilderPanel::resetToBlankMachine()
+{
+    if (session_ != nullptr)
+    {
+        session_->stop();
+        session_->setupCircuit(circuit_sim::Circuit{}, {}, {}, {});
+        session_->reset();
+    }
+
+    currentMachineFile_ = {};
+    machine_ = MachineDesign::createBlankMachine("Custom Machine");
+    selectedInstanceId_.clear();
+    selectedConnectionId_.clear();
+    liveSignalsEditor.setText("t=0.000s stopped\n", juce::dontSendNotification);
+
+    if (mechanicalView_ != nullptr)
+        mechanicalView_->setScene(machine_.scene);
+    if (controlPanel_ != nullptr)
+        controlPanel_->setLayout(machine_.controlPanel);
+    if (canvas != nullptr)
+        canvas->resetView();
+
+    updateDiagnosticsDisplay();
+    refreshUi();
+    repaint();
+}
+
+void MachineBuilderPanel::fitMachineView()
+{
+    if (canvas != nullptr)
+        canvas->fitMachine();
 }
 
 bool MachineBuilderPanel::addSchematicSubsystemFromFile(const juce::File& file, std::string* error)
@@ -773,8 +1152,8 @@ bool MachineBuilderPanel::addSystemPort(const std::string& name, bool input, sim
     }
 
     sim_panel::WidgetConfig widget;
-    widget.id = safeIdStem(name);
-    widget.title = juce::String(name).replaceCharacter('_', ' ').toStdString();
+    widget.id = safeIdStem(juce::String(name).toLowerCase());
+    widget.title = widgetTitleForSystemPort(name);
     widget.signalName = "system." + name;
     widget.unit = unit;
     widget.type = input ? widgetTypeForSystemInput(name) : sim_panel::WidgetType::DigitalReadout;
@@ -1083,11 +1462,25 @@ void MachineBuilderPanel::showSystemPortDialog(bool input)
                                         juce::MessageBoxIconType::NoIcon);
     dialog->addTextEditor("name", input ? "input1" : "output1", "Port name");
     dialog->addTextEditor("unit", "V", "Unit");
+    if (auto* nameEditor = dialog->getTextEditor("name"))
+    {
+        nameEditor->setWantsKeyboardFocus(true);
+        nameEditor->setMouseClickGrabsKeyboardFocus(true);
+        nameEditor->setEscapeAndReturnKeysConsumed(false);
+    }
+    if (auto* unitEditor = dialog->getTextEditor("unit"))
+    {
+        unitEditor->setWantsKeyboardFocus(true);
+        unitEditor->setMouseClickGrabsKeyboardFocus(true);
+        unitEditor->setEscapeAndReturnKeysConsumed(false);
+    }
     dialog->addComboBox("domain", { "Signal/control", "Electrical", "Mechanical" }, "Domain");
     if (auto* combo = dialog->getComboBoxComponent("domain"))
         combo->setSelectedId(1, juce::dontSendNotification);
     dialog->addButton("Add", 1, juce::KeyPress(juce::KeyPress::returnKey));
     dialog->addButton("Cancel", 0, juce::KeyPress(juce::KeyPress::escapeKey));
+    if (auto* nameEditor = dialog->getTextEditor("name"))
+        nameEditor->grabKeyboardFocus();
     dialog->enterModalState(true, juce::ModalCallbackFunction::create(
         [safe = juce::Component::SafePointer<MachineBuilderPanel>(this), dialog, input](int result) {
             std::unique_ptr<juce::AlertWindow> cleanup(dialog);
@@ -1211,6 +1604,8 @@ void MachineBuilderPanel::resized()
     startBtn.setBounds(topBar.removeFromRight(70));
     topBar.removeFromRight(6);
     compileRunBtn.setBounds(topBar.removeFromRight(90));
+    topBar.removeFromRight(6);
+    fitAllBtn.setBounds(topBar.removeFromRight(80));
     topBar.removeFromRight(6);
     validateBtn.setBounds(topBar.removeFromRight(80));
 

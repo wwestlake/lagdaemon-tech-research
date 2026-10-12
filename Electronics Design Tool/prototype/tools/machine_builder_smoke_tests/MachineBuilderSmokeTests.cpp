@@ -113,6 +113,14 @@ int main()
         r.check(builder.connectPorts(drive->instanceId, "tach", controller->instanceId, "feedback_in", &err), "connect schematic tach to controller feedback");
     }
 
+    const auto diags = builder.getMachine().validate(example);
+    r.check(diags.empty(), "builder-created control bindings validate without warnings");
+    if (!builder.getMachine().assembly.connections.empty())
+        builder.getMachine().assembly.connections.front().routePoints.push_back({ 360.0, 180.0 });
+    r.check(!builder.getMachine().assembly.connections.empty()
+            && builder.getMachine().assembly.connections.front().routePoints.size() == 1,
+            "connection routing waypoint added as visual-only model data");
+
     const auto savedFile = outDir.getChildFile("graphical_builder_saved.machine.json");
     juce::String ioError;
     r.check(builder.saveMachineToFile(savedFile, ioError), "builder saves .machine.json with graphical layout");
@@ -125,6 +133,9 @@ int main()
     r.check(!reopened.getMachine().assembly.connections.empty()
             && !reopened.getMachine().assembly.connections.front().connectionId.empty(),
             "connections preserve stable identities");
+    r.check(!reopened.getMachine().assembly.connections.empty()
+            && reopened.getMachine().assembly.connections.front().routePoints.size() == 1,
+            "connection routing waypoints persist through save/load");
 
     const auto* reopenedDrive = findByKind(reopened.getMachine(), sim_panel::SubsystemKind::SchematicReference);
     const auto* reopenedController = findByKind(reopened.getMachine(), sim_panel::SubsystemKind::ProgrammableComponent);
@@ -158,6 +169,18 @@ int main()
         r.check(directDrive.connectPorts("system", "drive_voltage", builtInMotor->instanceId, "v_in", &err),
                 "second assembly wires system voltage to built-in motor");
     r.check(directDrive.compileAndRun(), "second materially different assembly compiles through same builder");
+
+    auto resetSession = std::make_shared<sim_panel::SystemSimulationSession>();
+    machine_builder::MachineBuilderPanel resetBuilder(resetSession, nullptr, nullptr);
+    resetBuilder.setMachine(builder.getMachine());
+    r.check(resetBuilder.compileAndRun(), "builder compiles before New Blank reset");
+    r.check(resetBuilder.startSimulation(), "builder starts simulation before New Blank reset");
+    resetBuilder.loadTemplate("blank");
+    r.check(resetBuilder.getMachine().assembly.instances.empty()
+            && resetBuilder.getMachine().assembly.connections.empty()
+            && resetBuilder.getMachine().controlPanel.widgets.empty(),
+            "New Blank clears machine graph and control layout immediately");
+    r.check(!resetSession->getSnapshot().running, "New Blank stops the active simulation session");
 
     std::cout << r.checks << " checks, " << r.failures << " failures\n";
     return r.failures == 0 ? 0 : 1;
