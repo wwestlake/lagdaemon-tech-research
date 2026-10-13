@@ -610,7 +610,17 @@ int main()
     {
         const double initialRatio = cpComp.getSplitRatio();
         const int initialSplitterX = cpComp.getSplitterX();
+        const auto initialPlotBounds = plotComp->getBounds();
+        const auto initialCpBounds = cpComp.getBounds();
+        const auto initialCanvasBounds = cpComp.getCanvasViewportBounds();
         const auto plotCenter = plotComp->getLocalBounds().getCentre();
+
+        // Capture initial diagnostic evidence
+        std::cout << "[Geometry Diagnostics - Pre-Interaction]\n"
+                  << "  ControlPanel: " << initialCpBounds.toString() << "\n"
+                  << "  SplitRatio: " << initialRatio << ", SplitterX: " << initialSplitterX << "\n"
+                  << "  CanvasViewport: " << initialCanvasBounds.toString() << "\n"
+                  << "  PlotContainer: " << initialPlotBounds.toString() << "\n";
 
         auto makeEv = [](juce::Component* comp, float x, float y) {
             auto src = juce::Desktop::getInstance().getMainMouseSource();
@@ -619,28 +629,115 @@ int main()
                                     comp, comp, t, { x, y }, t, 1, false);
         };
 
-        // 1. Mouse click, drag, and release inside plot area must NEVER move or resize splitter
+        // 1. Mouse click, drag, and release on plot container must NEVER move or resize splitter
         plotComp->mouseDown(makeEv(plotComp, (float)plotCenter.x, (float)plotCenter.y));
         plotComp->mouseDrag(makeEv(plotComp, (float)(plotCenter.x - 120), (float)(plotCenter.y + 60)));
         plotComp->mouseUp(makeEv(plotComp, (float)(plotCenter.x - 120), (float)(plotCenter.y + 60)));
-        r.check(std::abs(cpComp.getSplitRatio() - initialRatio) < 1.0e-6 && cpComp.getSplitterX() == initialSplitterX,
-                "mouse clicks and drags inside plot area do not move or resize the splitter");
+        r.check(std::abs(cpComp.getSplitRatio() - initialRatio) < 1.0e-6
+                && cpComp.getSplitterX() == initialSplitterX
+                && plotComp->getBounds() == initialPlotBounds,
+                "mouse clicks and drags inside plot container do not move or resize the splitter");
 
-        // 2. Mouse wheel inside plot area must NOT affect splitter position or split ratio
+        // 2. Mouse wheel on plot container must NOT affect splitter position, ratio, or plot width
         plotComp->mouseWheelMove(makeEv(plotComp, (float)plotCenter.x, (float)plotCenter.y),
                                  juce::MouseWheelDetails { 0.0f, 1.0f, false, false });
-        r.check(std::abs(cpComp.getSplitRatio() - initialRatio) < 1.0e-6 && cpComp.getSplitterX() == initialSplitterX,
-                "mouse wheel events inside plot area do not affect splitter position or split ratio");
+        r.check(std::abs(cpComp.getSplitRatio() - initialRatio) < 1.0e-6
+                && cpComp.getSplitterX() == initialSplitterX
+                && plotComp->getWidth() == initialPlotBounds.getWidth(),
+                "mouse wheel events inside plot container do not affect splitter position or split ratio");
 
-        // 3. Deliberate drag directly on the splitter handle resizes split smoothly
+        // Locate inner plot widget and child components (lanesViewport, lanesContainer)
+        auto* plotWidget = plotComp->getNumChildComponents() > 0 ? plotComp->getChildComponent(0) : nullptr;
+        r.check(plotWidget != nullptr, "plot container hosts child PlotPanelWidget");
+        juce::Viewport* lanesVp = nullptr;
+        if (plotWidget != nullptr)
+        {
+            for (int i = 0; i < plotWidget->getNumChildComponents(); ++i)
+            {
+                if (auto* vp = dynamic_cast<juce::Viewport*>(plotWidget->getChildComponent(i)))
+                {
+                    lanesVp = vp;
+                    break;
+                }
+            }
+        }
+        r.check(lanesVp != nullptr, "PlotPanelWidget contains lanes viewport");
+        auto* lanesContainer = lanesVp != nullptr ? lanesVp->getViewedComponent() : nullptr;
+        r.check(lanesContainer != nullptr, "lanes viewport views lanes container");
+
+        if (lanesContainer != nullptr)
+        {
+            const auto lcCenter = lanesContainer->getLocalBounds().getCentre();
+
+            // 3. Child component interaction: mouse clicks and waveform drags inside lanesContainer
+            lanesContainer->mouseDown(makeEv(lanesContainer, (float)lcCenter.x, (float)lcCenter.y));
+            lanesContainer->mouseDrag(makeEv(lanesContainer, (float)(lcCenter.x - 80), (float)lcCenter.y));
+            lanesContainer->mouseDrag(makeEv(lanesContainer, (float)(lcCenter.x + 80), (float)lcCenter.y));
+            lanesContainer->mouseUp(makeEv(lanesContainer, (float)(lcCenter.x + 80), (float)lcCenter.y));
+
+            r.check(std::abs(cpComp.getSplitRatio() - initialRatio) < 1.0e-6
+                    && cpComp.getSplitterX() == initialSplitterX
+                    && plotComp->getWidth() == initialPlotBounds.getWidth(),
+                    "direct clicking and dragging within strip-chart lanes does not alter panel split or plot width");
+
+            // 4. Repeated mouse-wheel zoom actions on lanesContainer and lanesViewport: assert ZERO cumulative shrinkage
+            for (int i = 0; i < 5; ++i)
+            {
+                lanesContainer->mouseWheelMove(makeEv(lanesContainer, (float)lcCenter.x, (float)lcCenter.y),
+                                               juce::MouseWheelDetails { 0.0f, 1.0f, false, false });
+            }
+            for (int i = 0; i < 5; ++i)
+            {
+                lanesContainer->mouseWheelMove(makeEv(lanesContainer, (float)lcCenter.x, (float)lcCenter.y),
+                                               juce::MouseWheelDetails { 0.0f, -1.0f, false, false });
+            }
+
+            r.check(std::abs(cpComp.getSplitRatio() - initialRatio) < 1.0e-6
+                    && cpComp.getSplitterX() == initialSplitterX
+                    && plotComp->getWidth() == initialPlotBounds.getWidth(),
+                    "repeated mouse-wheel zoom gestures produce zero cumulative shrinkage of the plot area");
+
+            // Capture post-interaction evidence
+            std::cout << "[Geometry Diagnostics - Post-Interaction]\n"
+                      << "  ControlPanel: " << cpComp.getBounds().toString() << "\n"
+                      << "  SplitRatio: " << cpComp.getSplitRatio() << ", SplitterX: " << cpComp.getSplitterX() << "\n"
+                      << "  CanvasViewport: " << cpComp.getCanvasViewportBounds().toString() << "\n"
+                      << "  PlotContainer: " << plotComp->getBounds().toString() << "\n"
+                      << "  PlotWidget: " << (plotWidget ? plotWidget->getBounds().toString() : "null") << "\n"
+                      << "  LanesViewport: " << (lanesVp ? lanesVp->getBounds().toString() : "null") << "\n";
+        }
+
+        auto makeDragEv = [](juce::Component* comp, float curX, float curY, float startX, float startY) {
+            auto src = juce::Desktop::getInstance().getMainMouseSource();
+            const auto t = juce::Time::getCurrentTime();
+            return juce::MouseEvent(src, { curX, curY }, juce::ModifierKeys::leftButtonModifier, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f,
+                                    comp, comp, t, { startX, startY }, t, 1, true);
+        };
+
+        // 5. Deliberate drag directly on splitter handle resizes split smoothly in BOTH directions
         const auto splitterCenter = splitterComp->getLocalBounds().getCentre();
+
+        // Drag right (+60 px) -> widens operator canvas, narrows plot
         splitterComp->mouseDown(makeEv(splitterComp, (float)splitterCenter.x, (float)splitterCenter.y));
-        splitterComp->mouseDrag(makeEv(splitterComp, (float)(splitterCenter.x + 60), (float)splitterCenter.y));
+        splitterComp->mouseDrag(makeDragEv(splitterComp, (float)(splitterCenter.x + 60), (float)splitterCenter.y,
+                                           (float)splitterCenter.x, (float)splitterCenter.y));
         splitterComp->mouseUp(makeEv(splitterComp, (float)(splitterCenter.x + 60), (float)splitterCenter.y));
         r.check(cpComp.getSplitterX() > initialSplitterX && cpComp.getSplitRatio() > initialRatio,
-                "deliberate drag on splitter handle resizes the split smoothly");
+                "deliberate drag on splitter handle to the right widens canvas and narrows plot");
 
-        // 4. Split ratio clamp limits [0.15, 0.85]
+        const double rightRatio = cpComp.getSplitRatio();
+        const int rightSplitterX = cpComp.getSplitterX();
+
+        // Drag left (-120 px) -> narrows operator canvas, widens plot smoothly
+        const auto newCenter = splitterComp->getLocalBounds().getCentre();
+        splitterComp->mouseDown(makeEv(splitterComp, (float)newCenter.x, (float)newCenter.y));
+        splitterComp->mouseDrag(makeDragEv(splitterComp, (float)(newCenter.x - 120), (float)newCenter.y,
+                                           (float)newCenter.x, (float)newCenter.y));
+        splitterComp->mouseUp(makeEv(splitterComp, (float)(newCenter.x - 120), (float)newCenter.y));
+        r.check(cpComp.getSplitterX() < rightSplitterX && cpComp.getSplitRatio() < rightRatio,
+                "deliberate drag on splitter handle to the left narrows canvas and restores/widens plot smoothly");
+
+        // 6. Split ratio clamp limits [0.15, 0.85]
         cpComp.setSplitRatio(0.99);
         r.check(cpComp.getSplitRatio() <= 0.85 + 1.0e-6, "splitter ratio clamps to maximum 0.85");
         cpComp.setSplitRatio(0.01);

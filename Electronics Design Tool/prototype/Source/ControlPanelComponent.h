@@ -135,6 +135,8 @@ public:
     juce::Component* getSplitterComponent() const;
     juce::Component* getPlotContainerComponent() const;
     bool hasPlotPanel() const;
+    juce::Rectangle<int> getCanvasViewportBounds() const;
+    juce::Rectangle<int> getPlotContainerBounds() const;
 
     // Dialog and Menu creation
     void showWidgetPropertiesDialog(const std::string& widgetId);

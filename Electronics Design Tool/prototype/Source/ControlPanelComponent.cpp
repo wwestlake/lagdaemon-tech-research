@@ -3150,6 +3150,12 @@ public:
     {
         setMouseCursor(juce::MouseCursor::LeftRightResizeCursor);
         setRepaintsOnMouseActivity(true);
+        setInterceptsMouseClicks(true, false);
+    }
+
+    bool hitTest(int x, int y) override
+    {
+        return x >= 0 && x < getWidth() && y >= 0 && y < getHeight();
     }
 
     void paint(juce::Graphics& g) override
@@ -3186,7 +3192,9 @@ public:
     {
         if (!isDragging_)
             return;
-        const int delta = e.getScreenX() - dragStartScreenX_;
+        int delta = e.getDistanceFromDragStartX();
+        if (delta == 0 && dragStartScreenX_ != 0)
+            delta = e.getScreenX() - dragStartScreenX_;
         if (onDragDelta_)
             onDragDelta_(delta);
     }
@@ -3196,6 +3204,7 @@ public:
         if (isDragging_)
         {
             isDragging_ = false;
+            dragStartScreenX_ = 0;
             if (onDragEnd_)
                 onDragEnd_();
             repaint();
@@ -3217,8 +3226,15 @@ private:
 class ControlPanelComponent::PlotContainerComponent final : public juce::Component
 {
 public:
+    PlotContainerComponent()
+    {
+        setInterceptsMouseClicks(true, true);
+    }
+
     void layoutChildren()
     {
+        if (inLayout_) return;
+        juce::ScopedValueSetter<bool> guard(inLayout_, true);
         auto b = getLocalBounds();
         for (int i = 0; i < getNumChildComponents(); ++i)
         {
@@ -3239,8 +3255,12 @@ public:
 
     void childBoundsChanged(juce::Component* child) override
     {
+        if (inLayout_) return;
         if (child != nullptr && child->getBounds() != getLocalBounds())
+        {
+            juce::ScopedValueSetter<bool> guard(inLayout_, true);
             child->setBounds(getLocalBounds());
+        }
     }
 
     void paint(juce::Graphics& g) override
@@ -3252,6 +3272,9 @@ public:
     void mouseDrag(const juce::MouseEvent&) override {}
     void mouseUp(const juce::MouseEvent&) override {}
     void mouseWheelMove(const juce::MouseEvent&, const juce::MouseWheelDetails&) override {}
+
+private:
+    bool inLayout_ = false;
 };
 
 namespace
@@ -4534,7 +4557,13 @@ void ControlPanelComponent::handleSplitterDragStart()
 
 void ControlPanelComponent::handleSplitterDrag(int deltaX)
 {
-    if (!hasPlotPanel() || dragStartAvailableW_ <= 100)
+    if (!hasPlotPanel())
+        return;
+
+    if (dragStartAvailableW_ <= 100)
+        handleSplitterDragStart();
+
+    if (dragStartAvailableW_ <= 100)
         return;
 
     const int minControlW = 180;
@@ -4586,6 +4615,16 @@ juce::Component* ControlPanelComponent::getSplitterComponent() const
 juce::Component* ControlPanelComponent::getPlotContainerComponent() const
 {
     return plotContainer_.get();
+}
+
+juce::Rectangle<int> ControlPanelComponent::getCanvasViewportBounds() const
+{
+    return canvasViewport.getBounds();
+}
+
+juce::Rectangle<int> ControlPanelComponent::getPlotContainerBounds() const
+{
+    return plotContainer_ ? plotContainer_->getBounds() : juce::Rectangle<int>();
 }
 
 bool ControlPanelComponent::hasPlotPanel() const
