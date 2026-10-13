@@ -78,7 +78,7 @@ OperatorPanelConfig OperatorPanelConfig::fromJson(const juce::var& json)
 void ControlPanelLayout::ensureDefaultPanel()
 {
     if (panels.empty())
-        panels.push_back({ "main", title.empty() ? std::string("Main") : title, 1, 1, 0.42, 8 });
+        panels.push_back({ "main", title.empty() ? std::string("Main") : title, 1, 1, 0.22, 6 });
     if (activePanelId.empty())
         activePanelId = panels.front().id;
     for (auto& w : widgets)
@@ -126,49 +126,49 @@ ControlPanelLayout ControlPanelLayout::createDefaultMotorPanel()
     // 1. Main Power Switch
     p.widgets.push_back({
         "pwr_sw", WidgetType::ToggleSwitch, "Main Power",
-        "power_switch", "", 0.0, 1.0, 0.0, 1.0, 0, 0, 50, {}
+        "power_switch", "", 0.0, 1.0, 0.0, 1.0, 0, 0, 28, {}
     });
 
     // 2. Start Button
     p.widgets.push_back({
         "btn_start", WidgetType::PushButton, "Start Motor",
-        "start_button", "", 0.0, 1.0, 0.0, 1.0, 0, 1, 45, {}
+        "start_button", "", 0.0, 1.0, 0.0, 1.0, 0, 1, 28, {}
     });
 
     // 3. Stop Button
     p.widgets.push_back({
         "btn_stop", WidgetType::PushButton, "Stop Motor",
-        "stop_button", "", 0.0, 1.0, 0.0, 1.0, 0, 2, 45, {}
+        "stop_button", "", 0.0, 1.0, 0.0, 1.0, 0, 2, 28, {}
     });
 
     // 4. Speed Setpoint Knob
     p.widgets.push_back({
         "knob_setpoint", WidgetType::Knob, "Speed Setpoint",
-        "speed_setpoint", "rad/s", 0.0, 600.0, 300.0, 5.0, 0, 3, 100, {}
+        "speed_setpoint", "rad/s", 0.0, 600.0, 300.0, 5.0, 0, 3, 36, {}
     });
 
     // 5. Mechanical Load Slider
     p.widgets.push_back({
         "slider_load", WidgetType::Slider, "Mechanical Load",
-        "load_torque", "N*m", 0.0, 0.05, 0.0, 0.001, 0, 4, 80, {}
+        "load_torque", "N*m", 0.0, 0.05, 0.0, 0.001, 0, 4, 36, {}
     });
 
     // 6. Mode Selector (Auto / Manual)
     p.widgets.push_back({
         "mode_sel", WidgetType::ModeSelector, "Control Mode",
-        "mode_select", "", 0.0, 1.0, 0.0, 1.0, 0, 5, 50, { "Manual", "Automatic" }
+        "mode_select", "", 0.0, 1.0, 0.0, 1.0, 0, 5, 28, { "Manual", "Automatic" }
     });
 
     // 7. Emergency Stop (Big Red E-Stop)
     p.widgets.push_back({
         "estop_btn", WidgetType::EmergencyStop, "EMERGENCY STOP",
-        "estop_button", "", 0.0, 1.0, 0.0, 1.0, 0, 6, 80, {}
+        "estop_button", "", 0.0, 1.0, 0.0, 1.0, 0, 6, 50, {}
     });
 
     // 8. Fault Reset
     p.widgets.push_back({
         "btn_reset", WidgetType::PushButton, "Fault Reset",
-        "reset_button", "", 0.0, 1.0, 0.0, 1.0, 0, 7, 45, {}
+        "reset_button", "", 0.0, 1.0, 0.0, 1.0, 0, 7, 28, {}
     });
 
     // --- Right Column: Outputs ---
@@ -237,55 +237,55 @@ ControlPanelLayout ControlPanelLayout::createDualMotorCoordinatedPanel()
     // 1. System Master Power
     p.widgets.push_back({
         "pwr_sw", WidgetType::ToggleSwitch, "Master System Power",
-        "system.power", "", 0.0, 1.0, 0.0, 1.0, 0, 0, 50, {}
+        "system.power", "", 0.0, 1.0, 0.0, 1.0, 0, 0, 28, {}
     });
 
     // 2. Coordinated System Start Button
     p.widgets.push_back({
         "btn_start", WidgetType::PushButton, "System Start (Coordinated)",
-        "system.start", "", 0.0, 1.0, 0.0, 1.0, 0, 1, 45, {}
+        "system.start", "", 0.0, 1.0, 0.0, 1.0, 0, 1, 28, {}
     });
 
     // 3. System Stop Button
     p.widgets.push_back({
         "btn_stop", WidgetType::PushButton, "System Stop All",
-        "system.stop", "", 0.0, 1.0, 0.0, 1.0, 0, 2, 45, {}
+        "system.stop", "", 0.0, 1.0, 0.0, 1.0, 0, 2, 28, {}
     });
 
     // 4. Motor A Speed Setpoint Knob
     p.widgets.push_back({
         "knob_setpoint_a", WidgetType::Knob, "Motor A Setpoint",
-        "motorA.speed_setpoint", "rad/s", 0.0, 600.0, 300.0, 5.0, 0, 3, 90, {}
+        "motorA.speed_setpoint", "rad/s", 0.0, 600.0, 300.0, 5.0, 0, 3, 36, {}
     });
 
     // 5. Motor A Mechanical Load Slider
     p.widgets.push_back({
         "slider_load_a", WidgetType::Slider, "Motor A Load Torque",
-        "motorA.load_torque", "N*m", 0.0, 0.05, 0.0, 0.001, 0, 4, 75, {}
+        "motorA.load_torque", "N*m", 0.0, 0.05, 0.0, 0.001, 0, 4, 36, {}
     });
 
     // 6. Motor B Speed Setpoint Knob
     p.widgets.push_back({
         "knob_setpoint_b", WidgetType::Knob, "Motor B Setpoint",
-        "motorB.speed_setpoint", "rad/s", 0.0, 600.0, 200.0, 5.0, 0, 5, 90, {}
+        "motorB.speed_setpoint", "rad/s", 0.0, 600.0, 200.0, 5.0, 0, 5, 36, {}
     });
 
     // 7. Motor B Mechanical Load Slider
     p.widgets.push_back({
         "slider_load_b", WidgetType::Slider, "Motor B Load Torque",
-        "motorB.load_torque", "N*m", 0.0, 0.05, 0.0, 0.001, 0, 6, 75, {}
+        "motorB.load_torque", "N*m", 0.0, 0.05, 0.0, 0.001, 0, 6, 36, {}
     });
 
     // 8. Emergency Stop (Big Red Mushroom)
     p.widgets.push_back({
         "estop_btn", WidgetType::EmergencyStop, "MASTER EMERGENCY STOP",
-        "system.estop", "", 0.0, 1.0, 0.0, 1.0, 0, 7, 80, {}
+        "system.estop", "", 0.0, 1.0, 0.0, 1.0, 0, 7, 50, {}
     });
 
     // 9. Master Fault Reset Button
     p.widgets.push_back({
         "btn_reset", WidgetType::PushButton, "Fault Reset",
-        "system.reset", "", 0.0, 1.0, 0.0, 1.0, 0, 8, 45, {}
+        "system.reset", "", 0.0, 1.0, 0.0, 1.0, 0, 8, 28, {}
     });
 
     // --- Right Column: Outputs ---

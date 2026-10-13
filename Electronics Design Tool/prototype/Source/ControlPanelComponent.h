@@ -95,6 +95,8 @@ public:
     bool setRecorderRecordingEnabled(const std::string& widgetId, bool enabled);
     bool setRecorderLaneCollapsed(const std::string& widgetId, int laneIndex, bool collapsed);
     bool setRecorderLaneHeight(const std::string& widgetId, int laneIndex, int heightPx);
+    bool zoomRecorderAtScreenX(const std::string& widgetId, int screenX, double factor);
+    bool fitRecorderRecording(const std::string& widgetId);
     bool exportRecorderCsv(const std::string& widgetId, const juce::File& file, juce::String& error) const;
 
     void paint(juce::Graphics& g) override;

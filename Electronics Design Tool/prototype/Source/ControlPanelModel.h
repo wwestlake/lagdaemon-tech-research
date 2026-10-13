@@ -65,7 +65,7 @@ struct WidgetConfig
     // Relative column and row inside the panel layout
     int column = 0; // 0 = Left (Inputs), 1 = Right (Outputs)
     int order = 0;
-    int height = 80;
+    int height = 32;
 
     std::vector<std::string> options; // for ModeSelector
 
@@ -87,8 +87,8 @@ struct OperatorPanelConfig
     std::string title = "Main";
     int controlColumns = 1;
     int instrumentColumns = 1;
-    double splitRatio = 0.42;
-    int spacing = 8;
+    double splitRatio = 0.22;
+    int spacing = 6;
 
     juce::var toJson() const;
     static OperatorPanelConfig fromJson(const juce::var& json);

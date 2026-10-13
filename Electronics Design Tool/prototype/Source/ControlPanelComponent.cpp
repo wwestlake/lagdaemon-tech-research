@@ -155,17 +155,18 @@ public:
     {
         setClickingTogglesState(true);
         setMouseCursor(juce::MouseCursor::PointingHandCursor);
+        setTooltip(juce::String(label) + " (Click to toggle)");
     }
 
     void paintButton(juce::Graphics& g, bool shouldDrawButtonAsHighlighted, bool shouldDrawButtonAsDown) override
     {
-        auto b = getLocalBounds().toFloat().reduced(4.0f);
-        const float trackW = 58.0f;
-        const float trackH = 28.0f;
-        const auto track = juce::Rectangle<float>(b.getX(), b.getCentreY() - trackH * 0.5f, trackW, trackH);
+        auto b = getLocalBounds().toFloat().reduced(2.0f);
+        const float trackW = 44.0f;
+        const float trackH = 20.0f;
+        const auto track = juce::Rectangle<float>(b.getX() + 2.0f, b.getCentreY() - trackH * 0.5f, trackW, trackH);
         const bool on = getToggleState();
 
-        auto trackColour = on ? juce::Colour(0xff2fcb72) : juce::Colour(0xff343d4a);
+        auto trackColour = on ? juce::Colour(0xff2fcb72) : juce::Colour(0xff2d3744);
         if (shouldDrawButtonAsDown)
             trackColour = trackColour.darker(0.25f);
         else if (shouldDrawButtonAsHighlighted)
@@ -176,28 +177,29 @@ public:
         g.setColour(juce::Colour(0xff0d1118));
         g.drawRoundedRectangle(track, trackH * 0.5f, 1.2f);
 
-        g.setFont(juce::Font(9.0f, juce::Font::bold));
+        g.setFont(juce::Font(8.5f, juce::Font::bold));
         g.setColour(on ? juce::Colour(0xff052411) : juce::Colour(0xffaeb8c5));
-        g.drawText(on ? "ON" : "OFF", track.reduced(8.0f, 0.0f).toNearestInt(), juce::Justification::centred);
+        g.drawText(on ? "ON" : "OFF", track.reduced(4.0f, 0.0f).toNearestInt(), juce::Justification::centred);
 
-        const float knobSize = trackH - 6.0f;
-        const float knobX = on ? track.getRight() - knobSize - 3.0f : track.getX() + 3.0f;
+        const float knobSize = trackH - 4.0f;
+        const float knobX = on ? track.getRight() - knobSize - 2.0f : track.getX() + 2.0f;
         const auto knob = juce::Rectangle<float>(knobX, track.getCentreY() - knobSize * 0.5f, knobSize, knobSize);
         g.setColour(juce::Colour(0xffeef4f8));
         g.fillEllipse(knob);
         g.setColour(juce::Colour(0xff677282));
         g.drawEllipse(knob, 1.0f);
 
-        g.setColour(juce::Colour(0xffc5d1de));
-        g.setFont(juce::Font(13.0f, juce::Font::bold));
-        g.drawText(getButtonText(), (int)(track.getRight() + 12.0f), 0,
-                   getWidth() - (int)(track.getRight() + 16.0f), getHeight(),
+        g.setColour(juce::Colour(0xffdbe5ee));
+        g.setFont(juce::Font(12.0f, juce::Font::bold));
+        g.drawText(getButtonText(), (int)(track.getRight() + 10.0f), 0,
+                   getWidth() - (int)(track.getRight() + 14.0f), getHeight(),
                    juce::Justification::centredLeft);
     }
 };
 
 // Custom Emergency Stop Button
-class EmergencyStopComponent final : public juce::Component
+class EmergencyStopComponent final : public juce::Component,
+                                     public juce::SettableTooltipClient
 {
 public:
     std::function<void(bool)> onStateChanged;
@@ -205,6 +207,7 @@ public:
     EmergencyStopComponent()
     {
         setMouseCursor(juce::MouseCursor::PointingHandCursor);
+        setTooltip("EMERGENCY STOP (Click to trip / click again to release)");
     }
 
     bool isLatched() const { return latched_; }
@@ -225,26 +228,55 @@ public:
 
     void paint(juce::Graphics& g) override
     {
-        auto bounds = getLocalBounds().toFloat().reduced(4.0f);
-        const float size = std::min(bounds.getWidth(), bounds.getHeight());
-        const auto center = bounds.getCentre();
+        auto bounds = getLocalBounds().toFloat().reduced(2.0f);
 
-        // Yellow background caution ring
+        // Industrial safety bezel
+        g.setColour(latched_ ? juce::Colour(0xff2d1215) : juce::Colour(0xff182028));
+        g.fillRoundedRectangle(bounds, 4.0f);
+
+        // Prominent caution yellow / warning border
+        g.setColour(latched_ ? juce::Colour(0xffff4444) : juce::Colour(0xfff4c430));
+        g.drawRoundedRectangle(bounds, 4.0f, latched_ ? 2.0f : 1.5f);
+
+        // Circular mushroom push button on the left
+        const float btnDiameter = std::min(bounds.getHeight() - 8.0f, 38.0f);
+        const float btnX = bounds.getX() + 6.0f;
+        const float btnY = bounds.getCentreY() - btnDiameter * 0.5f;
+        const auto btnRect = juce::Rectangle<float>(btnX, btnY, btnDiameter, btnDiameter);
+
+        // Yellow caution collar behind button
         g.setColour(juce::Colour(0xfff4c430));
-        g.fillEllipse(center.x - size * 0.48f, center.y - size * 0.48f, size * 0.96f, size * 0.96f);
+        g.fillEllipse(btnRect.expanded(2.0f));
         g.setColour(juce::Colours::black);
-        g.drawEllipse(center.x - size * 0.48f, center.y - size * 0.48f, size * 0.96f, size * 0.96f, 2.0f);
+        g.drawEllipse(btnRect.expanded(2.0f), 1.0f);
 
-        // Big Red Mushroom Head
-        const float mushroomRadius = size * (latched_ ? 0.36f : 0.40f);
-        g.setColour(latched_ ? juce::Colour(0xffb30000) : juce::Colour(0xffee1111));
-        g.fillEllipse(center.x - mushroomRadius, center.y - mushroomRadius, mushroomRadius * 2.0f, mushroomRadius * 2.0f);
+        // Mushroom head: deep crimson when latched, bright red when armed
+        const auto headRect = latched_ ? btnRect.reduced(2.0f) : btnRect;
+        g.setColour(latched_ ? juce::Colour(0xff990000) : juce::Colour(0xffe51c23));
+        g.fillEllipse(headRect);
         g.setColour(juce::Colour(0xff550000));
-        g.drawEllipse(center.x - mushroomRadius, center.y - mushroomRadius, mushroomRadius * 2.0f, mushroomRadius * 2.0f, 2.5f);
+        g.drawEllipse(headRect, 1.5f);
 
+        // Highlight sheen on head
+        g.setColour(juce::Colours::white.withAlpha(latched_ ? 0.2f : 0.45f));
+        g.fillEllipse(headRect.getX() + 4.0f, headRect.getY() + 3.0f, headRect.getWidth() * 0.4f, headRect.getHeight() * 0.25f);
+
+        // Centered button label inside head
         g.setColour(juce::Colours::white);
-        g.setFont(juce::Font(10.0f, juce::Font::bold));
-        g.drawText(latched_ ? "TRIPPED" : "E-STOP", center.x - 30.0f, center.y - 8.0f, 60.0f, 16.0f, juce::Justification::centred);
+        g.setFont(juce::Font(9.0f, juce::Font::bold));
+        g.drawText("STOP", headRect.toNearestInt(), juce::Justification::centred);
+
+        // Descriptive label text on the right side of bezel
+        const int textX = (int)(btnRect.getRight() + 10.0f);
+        const int textW = std::max(20, getWidth() - textX - 8);
+
+        g.setColour(latched_ ? juce::Colour(0xffff6666) : juce::Colour(0xfff4c430));
+        g.setFont(juce::Font(12.0f, juce::Font::bold));
+        g.drawText("EMERGENCY STOP", textX, (int)bounds.getY() + 6, textW, 16, juce::Justification::centredLeft);
+
+        g.setColour(latched_ ? juce::Colour(0xffff9999) : juce::Colour(0xffa8b8c8));
+        g.setFont(juce::Font(10.0f));
+        g.drawText(latched_ ? "LATCHED / TRIPPED" : "PULL / CLICK TO TRIP", textX, (int)bounds.getY() + 24, textW, 14, juce::Justification::centredLeft);
     }
 
 private:
@@ -358,19 +390,20 @@ class LabeledSliderComponent final : public juce::Component
 {
 public:
     LabeledSliderComponent(const std::string& title, const std::string& unit, bool isKnob)
+        : isKnob_(isKnob)
     {
         juce::String labelText = juce::String(title);
         if (!unit.empty())
-            labelText << " (" << juce::String(unit) << ")";
+            labelText << " [" << juce::String(unit) << "]";
 
         addAndMakeVisible(label);
-        label.setFont(juce::Font(12.0f, juce::Font::bold));
+        label.setFont(juce::Font(11.5f, juce::Font::bold));
         label.setColour(juce::Label::textColourId, juce::Colour(0xffc5d1de));
         label.setText(labelText, juce::dontSendNotification);
 
         addAndMakeVisible(slider);
         slider.setSliderStyle(isKnob ? juce::Slider::RotaryHorizontalVerticalDrag : juce::Slider::LinearHorizontal);
-        slider.setTextBoxStyle(juce::Slider::TextBoxRight, false, 65, 20);
+        slider.setTextBoxStyle(juce::Slider::TextBoxRight, false, 58, 18);
         if (!unit.empty())
             slider.setTextValueSuffix(" " + juce::String(unit));
     }
@@ -378,12 +411,26 @@ public:
     void resized() override
     {
         auto b = getLocalBounds();
-        label.setBounds(b.removeFromTop(18));
-        slider.setBounds(b);
+        if (isKnob_)
+        {
+            label.setBounds(b.removeFromTop(15));
+            slider.setBounds(b);
+        }
+        else
+        {
+            // Compact horizontal arrangement:
+            // Top: title label (15 px)
+            // Bottom: sleek horizontal slider track with right numeric readout (20 px)
+            label.setBounds(b.removeFromTop(15));
+            slider.setBounds(b.reduced(0, 1));
+        }
     }
 
     juce::Label label;
     juce::Slider slider;
+
+private:
+    bool isKnob_ = false;
 };
 
 double signalValue(const StateSnapshot& snap, const std::string& signal, bool* found = nullptr)
@@ -760,10 +807,17 @@ public:
             b.setColour(juce::TextButton::textColourOffId, juce::Colour(0xffdce9ee));
             addAndMakeVisible(b);
         };
+        prepButton(fitButton);
         prepButton(clearButton);
         prepButton(exportCsvButton);
         prepButton(saveSessionButton);
 
+        fitButton.setTooltip("Fit entire recording across visible plot width (no empty future time)");
+        clearButton.setTooltip("Clear recorded history");
+        exportCsvButton.setTooltip("Export recorded data to CSV");
+        saveSessionButton.setTooltip("Save plot recording session");
+
+        fitButton.onClick = [this] { fitRecording(); };
         clearButton.onClick = [this] {
             recording.clear();
             liveFollow_ = true;
@@ -822,29 +876,114 @@ public:
         applyTimebaseSecondsPerDiv(secPerDiv, true);
     }
 
-    void scrollHistoryToCenter(double centerTimeSec)
+    void scrollHistoryToStartTime(double startTime)
     {
-        liveFollow_ = false;
-        config.autoScroll = false;
-        liveFollowToggle.setToggleState(false, juce::dontSendNotification);
+        if (liveFollow_)
+        {
+            liveFollow_ = false;
+            config.autoScroll = false;
+            liveFollowToggle.setToggleState(false, juce::dontSendNotification);
+        }
 
         const double win = visibleWindowSeconds();
         const double t0 = recording.time.empty() ? 0.0 : recording.time.front();
         const double tLatest = recording.time.empty() ? win : std::max(t0 + win, recording.time.back());
-        const double minCenter = t0 + win * 0.5;
-        const double maxCenter = std::max(minCenter, tLatest - win * 0.5);
-        viewCenterTime_ = std::clamp(centerTimeSec, minCenter, maxCenter);
-        viewStartTime_ = std::max(t0, viewCenterTime_ - win * 0.5);
+
+        const double minStart = t0 - win * 0.8;
+        const double maxStart = tLatest - win * 0.2;
+        viewStartTime_ = std::clamp(startTime, minStart, std::max(minStart, maxStart));
+        viewCenterTime_ = viewStartTime_ + win * 0.5;
         frozenViewStartTime_ = viewStartTime_;
+
         if (configChanged)
             configChanged(config);
         updateSurface();
+    }
+
+    void scrollHistoryToCenter(double centerTimeSec)
+    {
+        scrollHistoryToStartTime(centerTimeSec - visibleWindowSeconds() * 0.5);
     }
 
     void panHistoryByDelta(double deltaSeconds)
     {
         const double currentCenter = viewStartTime_ + visibleWindowSeconds() * 0.5;
         scrollHistoryToCenter(currentCenter + deltaSeconds);
+    }
+
+    void zoomAtScreenX(int screenX, double factor, int waveformLeft = -1, int waveformWidth = -1)
+    {
+        if (waveformLeft < 0 || waveformWidth <= 0)
+        {
+            for (const auto& st : laneStates_)
+            {
+                if (!st.waveformBounds.isEmpty())
+                {
+                    waveformLeft = st.waveformBounds.getX();
+                    waveformWidth = st.waveformBounds.getWidth();
+                    break;
+                }
+            }
+        }
+        if (waveformWidth <= 10)
+            return;
+
+        const double currentWin = visibleWindowSeconds();
+        const double clampedX = (double)std::clamp(screenX, waveformLeft, waveformLeft + waveformWidth);
+        const double frac = (clampedX - (double)waveformLeft) / (double)waveformWidth;
+        const double tCursor = viewStartTime_ + frac * currentWin;
+
+        const double newWin = std::clamp(currentWin * factor, 0.01, 1000.0);
+        const double newSecPerDiv = newWin / (double)kTimeDivisions;
+
+        // Keep tCursor stationary at the exact same screen pixel
+        const double newStartTime = tCursor - frac * newWin;
+
+        if (liveFollow_)
+        {
+            liveFollow_ = false;
+            config.autoScroll = false;
+            liveFollowToggle.setToggleState(false, juce::dontSendNotification);
+        }
+
+        secondsPerDiv_ = newSecPerDiv;
+        config.visibleHistorySeconds = newWin;
+        viewStartTime_ = newStartTime;
+        viewCenterTime_ = newStartTime + newWin * 0.5;
+        frozenViewStartTime_ = viewStartTime_;
+
+        syncTimebaseCombo();
+        if (configChanged)
+            configChanged(config);
+        updateSurface();
+    }
+
+    void fitRecording()
+    {
+        if (recording.time.empty())
+            return;
+
+        const double t0 = recording.time.front();
+        const double tLatest = recording.time.back();
+        const double duration = std::max(0.01, tLatest - t0);
+
+        if (liveFollow_)
+        {
+            liveFollow_ = false;
+            config.autoScroll = false;
+            liveFollowToggle.setToggleState(false, juce::dontSendNotification);
+        }
+
+        secondsPerDiv_ = duration / (double)kTimeDivisions;
+        config.visibleHistorySeconds = duration;
+        viewStartTime_ = t0;
+        viewCenterTime_ = t0 + duration * 0.5;
+        frozenViewStartTime_ = viewStartTime_;
+
+        syncTimebaseCombo();
+        if (configChanged)
+            configChanged(config);
+        updateSurface();
     }
 
     void setLiveFollow(bool follow)
@@ -972,9 +1111,10 @@ public:
         pauseDisplayToggle.setBounds(top.removeFromLeft(88));
         markersToggle.setBounds(top.removeFromLeft(72));
 
-        saveSessionButton.setBounds(top.removeFromRight(52).reduced(2));
-        exportCsvButton.setBounds(top.removeFromRight(52).reduced(2));
-        clearButton.setBounds(top.removeFromRight(52).reduced(2));
+        saveSessionButton.setBounds(top.removeFromRight(48).reduced(2));
+        exportCsvButton.setBounds(top.removeFromRight(46).reduced(2));
+        clearButton.setBounds(top.removeFromRight(46).reduced(2));
+        fitButton.setBounds(top.removeFromRight(44).reduced(2));
 
         b.removeFromTop(4);
 
@@ -1064,10 +1204,17 @@ private:
             };
             prep(stepBackBtn);
             prep(stepFwdBtn);
+            prep(fitBtn);
             prep(toLiveBtn);
+
+            stepBackBtn.setTooltip("Pan view backward in time");
+            stepFwdBtn.setTooltip("Pan view forward in time");
+            fitBtn.setTooltip("Fit entire recording across visible plot width (no empty future time)");
+            toLiveBtn.setTooltip("Follow newest data at live edge");
 
             stepBackBtn.onClick = [this] { owner.panHistoryByDelta(-owner.visibleWindowSeconds() * 0.25); };
             stepFwdBtn.onClick = [this] { owner.panHistoryByDelta(owner.visibleWindowSeconds() * 0.25); };
+            fitBtn.onClick = [this] { owner.fitRecording(); };
             toLiveBtn.onClick = [this] { owner.setLiveFollow(true); };
         }
 
@@ -1075,8 +1222,9 @@ private:
         {
             auto b = getLocalBounds();
             auto leftControls = b.removeFromLeft(kLaneHeaderWidth);
-            stepBackBtn.setBounds(leftControls.removeFromLeft(36).reduced(1, 3));
-            stepFwdBtn.setBounds(leftControls.removeFromLeft(36).reduced(1, 3));
+            stepBackBtn.setBounds(leftControls.removeFromLeft(30).reduced(1, 3));
+            stepFwdBtn.setBounds(leftControls.removeFromLeft(30).reduced(1, 3));
+            fitBtn.setBounds(leftControls.removeFromLeft(48).reduced(1, 3));
             toLiveBtn.setBounds(leftControls.reduced(2, 3));
             scrubberBounds = b.reduced(6, 3);
         }
@@ -1112,7 +1260,7 @@ private:
         }
 
         PlotPanelWidget& owner;
-        juce::TextButton stepBackBtn { "<" }, stepFwdBtn { ">" }, toLiveBtn { "Live" };
+        juce::TextButton stepBackBtn { "<" }, stepFwdBtn { ">" }, fitBtn { "Fit" }, toLiveBtn { "Live" };
         juce::Rectangle<int> scrubberBounds;
     };
 
@@ -1135,51 +1283,60 @@ private:
         return std::max(0.01, secondsPerDiv_ * (double)kTimeDivisions);
     }
 
+    void syncTimebaseCombo()
+    {
+        int bestId = 0;
+        double bestDiff = 1.0e9;
+        for (size_t i = 0; i < std::size(kTimebasePresets); ++i)
+        {
+            const double d = std::abs(kTimebasePresets[i].secPerDiv - secondsPerDiv_);
+            if (d < bestDiff)
+            {
+                bestDiff = d;
+                bestId = (int)i + 1;
+            }
+        }
+        if (bestId > 0 && bestDiff <= kTimebasePresets[(size_t)(bestId - 1)].secPerDiv * 0.05)
+        {
+            timebaseBox.setSelectedId(bestId, juce::dontSendNotification);
+        }
+        else
+        {
+            timebaseBox.setSelectedId(0, juce::dontSendNotification);
+            timebaseBox.setText(juce::String(secondsPerDiv_, secondsPerDiv_ < 0.1 ? 3 : 2) + " s/div", juce::dontSendNotification);
+        }
+    }
+
     void applyTimebaseSecondsPerDiv(double secPerDiv, bool syncCombo)
     {
         const double clamped = std::clamp(secPerDiv, 0.001, 100.0);
         const double oldWin = visibleWindowSeconds();
         const double currentCenter = viewStartTime_ + oldWin * 0.5;
+        const double newWin = clamped * (double)kTimeDivisions;
 
         secondsPerDiv_ = clamped;
-        config.visibleHistorySeconds = secondsPerDiv_ * (double)kTimeDivisions;
+        config.visibleHistorySeconds = newWin;
 
         if (syncCombo)
-        {
-            int bestId = 0;
-            double bestDiff = 1.0e9;
-            for (size_t i = 0; i < std::size(kTimebasePresets); ++i)
-            {
-                const double d = std::abs(kTimebasePresets[i].secPerDiv - secondsPerDiv_);
-                if (d < bestDiff)
-                {
-                    bestDiff = d;
-                    bestId = (int)i + 1;
-                }
-            }
-            if (bestId > 0)
-                timebaseBox.setSelectedId(bestId, juce::dontSendNotification);
-        }
+            syncTimebaseCombo();
 
-        const double newWin = visibleWindowSeconds();
         const double t0 = recording.time.empty() ? 0.0 : recording.time.front();
         const double tLatest = recording.time.empty() ? 0.0 : recording.time.back();
 
-        if (!liveFollow_ || viewPaused_)
+        if (liveFollow_ && !viewPaused_)
         {
-            // Zoom around the current viewing position rather than jumping to latest sample
-            viewCenterTime_ = currentCenter;
-            const double maxStart = std::max(t0, tLatest - newWin);
-            viewStartTime_ = std::clamp(viewCenterTime_ - newWin * 0.5, t0, maxStart);
+            if (recording.time.empty() || (tLatest - t0) <= newWin)
+                viewStartTime_ = t0;
+            else
+                viewStartTime_ = tLatest - newWin;
+            viewCenterTime_ = viewStartTime_ + newWin * 0.5;
             frozenViewStartTime_ = viewStartTime_;
         }
         else
         {
-            if ((tLatest - t0) > newWin)
-                viewStartTime_ = tLatest - newWin;
-            else
-                viewStartTime_ = t0;
-            viewCenterTime_ = viewStartTime_ + newWin * 0.5;
+            viewStartTime_ = currentCenter - newWin * 0.5;
+            viewCenterTime_ = currentCenter;
+            frozenViewStartTime_ = viewStartTime_;
         }
 
         if (configChanged)
@@ -1318,8 +1475,9 @@ private:
         }
         else
         {
-            const double maxStart = std::max(t0, tLatest - win);
-            viewStartTime_ = std::clamp(viewCenterTime_ - win * 0.5, t0, maxStart);
+            // In history navigation mode, maintain the user's chosen viewStartTime_
+            viewCenterTime_ = viewStartTime_ + win * 0.5;
+            frozenViewStartTime_ = viewStartTime_;
         }
 
         const double viewEnd = viewStartTime_ + win;
@@ -1741,8 +1899,8 @@ private:
         {
             const int dx = e.x - panStartMouseX_;
             const double dt = -((double)dx / (double)panWaveformWidth_) * visibleWindowSeconds();
-            const double targetCenter = panStartViewTime_ + visibleWindowSeconds() * 0.5 + dt;
-            scrollHistoryToCenter(targetCenter);
+            const double targetStartTime = panStartViewTime_ + dt;
+            scrollHistoryToStartTime(targetStartTime);
         }
     }
 
@@ -1772,15 +1930,42 @@ private:
 
     void handleLanesMouseWheel(const juce::MouseEvent& e, const juce::MouseWheelDetails& wheel)
     {
-        bool overWaveform = false;
-        for (const auto& st : laneStates_)
-            if (st.waveformBounds.contains(e.getPosition()))
-                overWaveform = true;
+        if (std::abs(wheel.deltaY) <= 1.0e-4f)
+            return;
 
-        if (overWaveform && std::abs(wheel.deltaY) > 1.0e-4f)
+        int wfLeft = -1;
+        int wfWidth = -1;
+        bool overWaveform = false;
+
+        for (const auto& st : laneStates_)
+        {
+            if (st.waveformBounds.contains(e.getPosition()))
+            {
+                overWaveform = true;
+                wfLeft = st.waveformBounds.getX();
+                wfWidth = st.waveformBounds.getWidth();
+                break;
+            }
+        }
+
+        if (!overWaveform)
+        {
+            for (const auto& st : laneStates_)
+            {
+                if (!st.waveformBounds.isEmpty() && e.x >= st.waveformBounds.getX() && e.x <= st.waveformBounds.getRight())
+                {
+                    overWaveform = true;
+                    wfLeft = st.waveformBounds.getX();
+                    wfWidth = st.waveformBounds.getWidth();
+                    break;
+                }
+            }
+        }
+
+        if (overWaveform && wfWidth > 20)
         {
             const double factor = wheel.deltaY > 0.0f ? 0.8 : 1.25;
-            applyTimebaseSecondsPerDiv(secondsPerDiv_ * factor, true);
+            zoomAtScreenX(e.x, factor, wfLeft, wfWidth);
         }
     }
 
@@ -1837,7 +2022,7 @@ private:
     juce::Label title, timebaseLabel, info;
     juce::ComboBox modeBox, timebaseBox;
     juce::ToggleButton recordToggle, liveFollowToggle, pauseDisplayToggle, markersToggle;
-    juce::TextButton clearButton { "Clear" }, exportCsvButton { "CSV" }, saveSessionButton { "Save" };
+    juce::TextButton fitButton { "Fit" }, clearButton { "Clear" }, exportCsvButton { "CSV" }, saveSessionButton { "Save" };
 
     juce::Viewport lanesViewport;
     LanesContainerComponent lanesContainer;
@@ -2125,11 +2310,32 @@ void ControlPanelComponent::updateWidgetConfig(const WidgetConfig& config)
     {
         if (widget.id == config.id)
         {
+            const bool structuralChange = (widget.height != config.height
+                                           || widget.column != config.column
+                                           || widget.order != config.order
+                                           || widget.plotChannels.size() != config.plotChannels.size());
+            bool lanesHeightChange = false;
+            if (!structuralChange && widget.plotChannels.size() == config.plotChannels.size())
+            {
+                for (size_t c = 0; c < widget.plotChannels.size(); ++c)
+                {
+                    if (widget.plotChannels[c].laneHeight != config.plotChannels[c].laneHeight
+                        || widget.plotChannels[c].collapsed != config.plotChannels[c].collapsed)
+                    {
+                        lanesHeightChange = true;
+                        break;
+                    }
+                }
+            }
+
             widget = config;
             for (auto& ov : outputViews_)
                 if (ov.config.id == config.id)
                     ov.config = config;
-            resized();
+
+            if (structuralChange || lanesHeightChange)
+                resized();
+
             notifyLayoutChanged();
             return;
         }
@@ -2170,7 +2376,27 @@ void ControlPanelComponent::buildWidgets()
             if (w.type == WidgetType::PushButton)
             {
                 auto btn = std::make_unique<juce::TextButton>(juce::String(w.title));
-                btn->setColour(juce::TextButton::buttonColourId, juce::Colour(0xff2d4257));
+                const auto nameLower = juce::String(w.title).toLowerCase() + " " + juce::String(w.id).toLowerCase();
+                juce::Colour btnCol(0xff223344);
+                juce::Colour textCol(0xffe6f0f8);
+                if (nameLower.contains("start"))
+                {
+                    btnCol = juce::Colour(0xff1b5e20); // industrial dark green
+                    textCol = juce::Colour(0xffe8f5e9);
+                }
+                else if (nameLower.contains("stop"))
+                {
+                    btnCol = juce::Colour(0xff7f1d1d); // industrial stop red / maroon
+                    textCol = juce::Colour(0xffffebee);
+                }
+                else if (nameLower.contains("reset"))
+                {
+                    btnCol = juce::Colour(0xff2b3a4a); // industrial slate
+                    textCol = juce::Colour(0xffe3f2fd);
+                }
+                btn->setColour(juce::TextButton::buttonColourId, btnCol);
+                btn->setColour(juce::TextButton::textColourOffId, textCol);
+                btn->setTooltip(juce::String(w.title));
                 const auto sig = w.signalName;
                 btn->onStateChange = [this, btnPtr = btn.get(), sig] {
                     activeBooleanControlValues_[sig] = btnPtr->isDown();
@@ -2308,38 +2534,62 @@ void ControlPanelComponent::resized()
     b.removeFromTop(8);
 
     const auto& panel = activePanel();
-    const int gap = std::max(2, panel.spacing);
-    const int minControl = std::min(260, std::max(160, b.getWidth() / 4));
-    const int minInstr = std::min(320, std::max(180, b.getWidth() / 4));
-    const int wantedSplit = splitterX_ > 0 ? splitterX_ : (int)std::round((double)b.getWidth() * juce::jlimit(0.20, 0.80, panel.splitRatio));
-    const int controlWidth = juce::jlimit(minControl, std::max(minControl, b.getWidth() - minInstr - gap), wantedSplit);
+    const int gap = std::clamp(panel.spacing, 4, 12);
+    const int inputCols = std::max(1, panel.controlColumns);
+    const int outputCols = std::max(1, panel.instrumentColumns);
+
+    // Operator controls: compact and only take what they need (~200-240px width),
+    // giving strip-chart recorder and instruments ~75-80% of workspace.
+    const int minControl = 180;
+    const int minInstr = std::min(400, std::max(220, b.getWidth() / 3));
+    const double ratio = panel.splitRatio > 0.0 ? panel.splitRatio : 0.22;
+    const int desiredW = (int)std::round((double)b.getWidth() * juce::jlimit(0.15, 0.40, ratio));
+    const int autoControlWidth = std::clamp(desiredW, 190, std::max(210, inputCols * 220));
+    const int controlWidth = splitterX_ > 0
+                           ? juce::jlimit(minControl, std::max(minControl, b.getWidth() - minInstr - gap), splitterX_)
+                           : std::min(autoControlWidth, b.getWidth() - minInstr - gap);
+
     auto controlArea = b.removeFromLeft(controlWidth);
     b.removeFromLeft(gap);
     auto instrumentArea = b;
 
     inputViewport.setBounds(controlArea);
     outputViewport.setBounds(instrumentArea);
-    splitterX_ = controlArea.getRight() - getLocalBounds().getX();
+    if (splitterX_ > 0)
+        splitterX_ = controlArea.getRight() - getLocalBounds().getX();
 
-    // Layout controls/instruments in compact configurable columns.
-    const int inputCols = std::max(1, panel.controlColumns);
-    const int outputCols = std::max(1, panel.instrumentColumns);
-    const int inputInnerW = std::max(80, controlArea.getWidth() - 14);
-    const int outputInnerW = std::max(120, instrumentArea.getWidth() - 14);
-    const int inputColW = std::max(80, (inputInnerW - gap * (inputCols - 1)) / inputCols);
-    const int outputColW = std::max(120, (outputInnerW - gap * (outputCols - 1)) / outputCols);
+    // Layout controls in compact configurable columns.
+    const int padX = 8;
+    const int inputInnerW = std::max(80, controlArea.getWidth() - 4);
+    const int availInputW = std::max(60, inputInnerW - padX * 2 - gap * (inputCols - 1));
+    const int inputColW = std::max(60, availInputW / inputCols);
     std::vector<int> inputY((size_t)inputCols, 8);
-    std::vector<int> outputY((size_t)outputCols, 8);
     for (auto& iv : inputViews_)
     {
         const int col = juce::jlimit(0, inputCols - 1, iv.config.order % inputCols);
-        const int height = std::min(std::max(32, iv.config.height), iv.config.type == WidgetType::EmergencyStop ? 96 : 84);
-        iv.component->setBounds(8 + col * (inputColW + gap), inputY[(size_t)col], inputColW, height);
+        int h = iv.config.height;
+        if (iv.config.type == WidgetType::PushButton || iv.config.type == WidgetType::ToggleSwitch || iv.config.type == WidgetType::ModeSelector)
+            h = (h <= 0 || h >= 45) ? 28 : h;
+        else if (iv.config.type == WidgetType::Slider || iv.config.type == WidgetType::Knob)
+            h = (h <= 0 || h >= 60) ? 36 : h;
+        else if (iv.config.type == WidgetType::EmergencyStop)
+            h = (h <= 0 || h >= 75) ? 50 : h;
+        else
+            h = (h <= 0 || h > 60) ? 32 : h;
+
+        const int height = std::clamp(h, 24, 75);
+        iv.component->setBounds(padX + col * (inputColW + gap), inputY[(size_t)col], inputColW, height);
         inputY[(size_t)col] += height + gap;
     }
-    const auto inputHeight = *std::max_element(inputY.begin(), inputY.end());
+    const auto inputHeight = *std::max_element(inputY.begin(), inputY.end()) + 8;
     inputContainer->setBounds(0, 0, inputInnerW, std::max(inputHeight, inputViewport.getHeight()));
 
+    // Layout instruments/recorders.
+    const int outPadX = 8;
+    const int outputInnerW = std::max(120, instrumentArea.getWidth() - 4);
+    const int availOutputW = std::max(80, outputInnerW - outPadX * 2 - gap * (outputCols - 1));
+    const int outputColW = std::max(80, availOutputW / outputCols);
+    std::vector<int> outputY((size_t)outputCols, 8);
     for (auto& ov : outputViews_)
     {
         const int col = juce::jlimit(0, outputCols - 1, ov.config.order % outputCols);
@@ -2352,10 +2602,10 @@ void ControlPanelComponent::resized()
                 preferredH = plot->preferredRecorderHeight();
             height = std::max({ height, remainingH, preferredH });
         }
-        ov.component->setBounds(8 + col * (outputColW + gap), outputY[(size_t)col], outputColW, height);
+        ov.component->setBounds(outPadX + col * (outputColW + gap), outputY[(size_t)col], outputColW, height);
         outputY[(size_t)col] += height + gap;
     }
-    const auto outputHeight = *std::max_element(outputY.begin(), outputY.end());
+    const auto outputHeight = *std::max_element(outputY.begin(), outputY.end()) + 8;
     outputContainer->setBounds(0, 0, outputInnerW, std::max(outputHeight, outputViewport.getHeight()));
 }
 
@@ -2364,16 +2614,15 @@ void ControlPanelComponent::paint(juce::Graphics& g)
     g.fillAll(juce::Colour(0xff161a22));
     g.setColour(juce::Colour(0xff2b3442));
     g.drawRect(getLocalBounds(), 1.0f);
-    if (splitterX_ > 0)
-    {
-        g.setColour(juce::Colour(0xff314152));
-        g.fillRect(splitterX_ - 1, 44, 2, std::max(0, getHeight() - 52));
-    }
+    const int effectiveSplit = splitterX_ > 0 ? splitterX_ : (inputViewport.getRight() + 2);
+    g.setColour(juce::Colour(0xff314152));
+    g.fillRect(effectiveSplit - 1, 44, 2, std::max(0, getHeight() - 52));
 }
 
 void ControlPanelComponent::mouseDown(const juce::MouseEvent& e)
 {
-    draggingSplitter_ = splitterX_ > 0 && std::abs(e.x - splitterX_) <= 6 && e.y > 42;
+    const int effectiveSplit = splitterX_ > 0 ? splitterX_ : (inputViewport.getRight() + 2);
+    draggingSplitter_ = std::abs(e.x - effectiveSplit) <= 6 && e.y > 42;
     if (draggingSplitter_)
         setMouseCursor(juce::MouseCursor::LeftRightResizeCursor);
 }
@@ -2515,6 +2764,38 @@ bool ControlPanelComponent::setRecorderLaneHeight(const std::string& widgetId, i
         {
             if (widgetId.empty() || plot->widgetId() == widgetId)
                 return plot->setLaneHeight(laneIndex, heightPx);
+        }
+    }
+    return false;
+}
+
+bool ControlPanelComponent::zoomRecorderAtScreenX(const std::string& widgetId, int screenX, double factor)
+{
+    for (auto& ov : outputViews_)
+    {
+        if (auto* plot = dynamic_cast<PlotPanelWidget*>(ov.component.get()))
+        {
+            if (widgetId.empty() || plot->widgetId() == widgetId)
+            {
+                plot->zoomAtScreenX(screenX, factor);
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+bool ControlPanelComponent::fitRecorderRecording(const std::string& widgetId)
+{
+    for (auto& ov : outputViews_)
+    {
+        if (auto* plot = dynamic_cast<PlotPanelWidget*>(ov.component.get()))
+        {
+            if (widgetId.empty() || plot->widgetId() == widgetId)
+            {
+                plot->fitRecording();
+                return true;
+            }
         }
     }
     return false;

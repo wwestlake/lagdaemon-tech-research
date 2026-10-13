@@ -1263,7 +1263,6 @@ private:
 };
 
 class MachineBuilderPanel::ToolbarTooltipOverlay final : public juce::Component,
-                                                         public juce::MouseListener,
                                                          private juce::Timer
 {
 public:
@@ -1991,7 +1990,8 @@ bool MachineBuilderPanel::addSystemPort(const std::string& name, bool input, sim
     widget.type = input ? widgetTypeForSystemInput(name) : sim_panel::WidgetType::DigitalReadout;
     widget.column = input ? 0 : 1;
     widget.order = nextWidgetOrder(machine_.controlPanel, widget.column);
-    widget.height = widget.type == sim_panel::WidgetType::Slider ? 80 : 48;
+    widget.height = widget.type == sim_panel::WidgetType::Slider ? 36
+                  : (widget.type == sim_panel::WidgetType::EmergencyStop ? 50 : 28);
     widget.minValue = 0.0;
     widget.maxValue = unit == "rad/s" ? 600.0 : 1.0;
     widget.defaultValue = 0.0;

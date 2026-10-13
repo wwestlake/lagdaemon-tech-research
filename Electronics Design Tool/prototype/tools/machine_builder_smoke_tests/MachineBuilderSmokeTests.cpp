@@ -36,13 +36,19 @@ const sim_panel::SubsystemInstance* findByKind(const machine_builder::MachineDes
     return nullptr;
 }
 
-const sim_panel::WidgetConfig* findWidget(const machine_builder::MachineDesign& machine,
+const sim_panel::WidgetConfig* findWidget(const sim_panel::ControlPanelLayout& layout,
                                           sim_panel::WidgetType type)
 {
-    for (const auto& widget : machine.controlPanel.widgets)
+    for (const auto& widget : layout.widgets)
         if (widget.type == type)
             return &widget;
     return nullptr;
+}
+
+const sim_panel::WidgetConfig* findWidget(const machine_builder::MachineDesign& machine,
+                                          sim_panel::WidgetType type)
+{
+    return findWidget(machine.controlPanel, type);
 }
 
 double runMotor(machine_builder::MachineBuilderPanel& builder,
@@ -381,17 +387,19 @@ int main()
 
     auto stepAndSample = [&](int steps, int sampleEvery)
     {
-        double targetTime = cpSession->getSnapshot().simTime;
         for (int i = 1; i <= steps; ++i)
         {
-            targetTime += 0.001;
+            const double tStart = cpSession->getSnapshot().simTime;
             cpSession->stepSingle(0.001);
-            for (int spin = 0; spin < 100; ++spin)
+
+            const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(100);
+            while (std::chrono::steady_clock::now() < deadline)
             {
-                if (cpSession->getSnapshot().simTime + 1.0e-9 >= targetTime)
+                if (cpSession->getSnapshot().simTime > tStart + 1.0e-7)
                     break;
-                std::this_thread::sleep_for(std::chrono::milliseconds(1));
+                std::this_thread::yield();
             }
+
             if (i % sampleEvery == 0 || i == steps)
                 cpComp.sampleLatestNow();
         }
@@ -529,6 +537,90 @@ int main()
             && csvFile.existsAsFile()
             && csvFile.loadFileAsString().contains("time_s"),
             "strip-chart recorder exports recorded history to CSV");
+
+    // 5. Cursor-centered zoom, Fit Recording, and History persistence
+    recSnaps = cpComp.getStripChartRecorderSnapshots();
+    r.check(!recSnaps.empty() && !recSnaps.front().lanes.empty(), "recorder snapshot available for zoom tests");
+    if (!recSnaps.empty() && !recSnaps.front().lanes.empty())
+    {
+        const auto snapBefore = recSnaps.front();
+        const auto& lane0 = snapBefore.lanes[0];
+        const int wfLeft = lane0.waveformBounds.getX();
+        const int wfWidth = lane0.waveformBounds.getWidth();
+        const double winBefore = snapBefore.visibleWindowSeconds;
+        const int testScreenX = wfLeft + (int)std::round(0.40 * (double)wfWidth);
+        const double pixelFrac = (double)(testScreenX - wfLeft) / (double)wfWidth;
+        const double tCursorBefore = snapBefore.viewStartTime + pixelFrac * winBefore;
+
+        r.check(cpComp.zoomRecorderAtScreenX(plotWidgetId, testScreenX, 0.5),
+                "cursor-centered zoomAtScreenX executes cleanly");
+
+        recSnaps = cpComp.getStripChartRecorderSnapshots();
+        const auto& snapAfter = recSnaps.front();
+        const double winAfter = snapAfter.visibleWindowSeconds;
+        const double tCursorAfter = snapAfter.viewStartTime + pixelFrac * winAfter;
+
+        r.check(std::abs(tCursorAfter - tCursorBefore) < 1.0e-5,
+                "cursor-centered zoom keeps the time position beneath the mouse cursor stationary on screen");
+        r.check(!snapAfter.liveFollow,
+                "cursor-centered zoom automatically disengages Live/Follow");
+        r.check(snapAfter.totalSamples == countBeforeStop,
+                "zooming does not alter or clear acquired simulation samples");
+        r.check(snapAfter.recorderBounds == snapBefore.recorderBounds
+                && snapAfter.lanes[0].boundsInRecorder == snapBefore.lanes[0].boundsInRecorder,
+                "zooming operates strictly on time axis without resizing plot viewport, lanes, or panel layout");
+
+        // Fit Recording
+        r.check(cpComp.fitRecorderRecording(plotWidgetId), "fitRecorderRecording executes cleanly");
+        recSnaps = cpComp.getStripChartRecorderSnapshots();
+        const auto& snapFit = recSnaps.front();
+        const double fitDuration = snapFit.viewEndTime - snapFit.viewStartTime;
+
+        r.check(snapFit.viewStartTime <= 0.01
+                && std::abs(snapFit.viewEndTime - latestSimTime) < 0.05
+                && std::abs(fitDuration - latestSimTime) < 0.05
+                && !snapFit.liveFollow,
+                "Fit Recording spans entire recorded history with zero unnecessary empty future time");
+
+        // Panning through history and returning to Live
+        r.check(cpComp.scrollRecorderHistory(plotWidgetId, 0.20),
+                "operator pans history to target center");
+        recSnaps = cpComp.getStripChartRecorderSnapshots();
+        const double pannedStart = recSnaps.front().viewStartTime;
+        cpComp.sampleLatestNow(); // Simulate frame update
+        recSnaps = cpComp.getStripChartRecorderSnapshots();
+        r.check(std::abs(recSnaps.front().viewStartTime - pannedStart) < 1.0e-6,
+                "frame updates do not clobber user viewStartTime back to t0 in history mode");
+
+        r.check(cpComp.setRecorderLiveFollow(plotWidgetId, true), "re-engaging Live/Follow returns to live edge");
+        recSnaps = cpComp.getStripChartRecorderSnapshots();
+        r.check(recSnaps.front().liveFollow && std::abs(recSnaps.front().viewEndTime - latestSimTime) < 0.05,
+                "returning to Live/Follow re-anchors to latest samples");
+    }
+
+    // 6. Compact automatically generated Control Panel layout verification
+    const auto& defaultMotorLayout = sim_panel::ControlPanelLayout::createDefaultMotorPanel();
+    r.check(defaultMotorLayout.panels.size() >= 1, "default motor layout created");
+    if (!defaultMotorLayout.panels.empty())
+    {
+        const auto& opPanel = defaultMotorLayout.panels.front();
+        r.check(opPanel.splitRatio <= 0.25 && opPanel.spacing <= 8,
+                "operator panel config defaults to compact split ratio (~0.22) and tight spacing (~6 px)");
+
+        const auto* btnStart = findWidget(defaultMotorLayout, sim_panel::WidgetType::PushButton);
+        const auto* swPwr = findWidget(defaultMotorLayout, sim_panel::WidgetType::ToggleSwitch);
+        const auto* sliderLoad = findWidget(defaultMotorLayout, sim_panel::WidgetType::Slider);
+        const auto* estop = findWidget(defaultMotorLayout, sim_panel::WidgetType::EmergencyStop);
+
+        r.check(btnStart != nullptr && btnStart->height == 28,
+                "generated push buttons (Start/Stop/Reset) have compact standard height (28 px)");
+        r.check(swPwr != nullptr && swPwr->height == 28,
+                "generated toggle switches have compact standard height (28 px)");
+        r.check(sliderLoad != nullptr && sliderLoad->height == 36,
+                "generated sliders have compact horizontal height (36 px)");
+        r.check(estop != nullptr && estop->height == 50,
+                "generated emergency stop has compact prominent height (50 px)");
+    }
 
     std::cout << r.checks << " checks, " << r.failures << " failures\n";
     return r.failures == 0 ? 0 : 1;
