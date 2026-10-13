@@ -1262,6 +1262,173 @@ private:
     }
 };
 
+class MachineBuilderPanel::ToolbarTooltipOverlay final : public juce::Component,
+                                                         public juce::MouseListener,
+                                                         private juce::Timer
+{
+public:
+    explicit ToolbarTooltipOverlay(MachineBuilderPanel& ownerIn)
+        : owner_(ownerIn)
+    {
+        setAlwaysOnTop(true);
+        setInterceptsMouseClicks(false, false);
+    }
+
+    ~ToolbarTooltipOverlay() override
+    {
+        stopTimer();
+    }
+
+    void mouseEnter(const juce::MouseEvent& e) override
+    {
+        auto* btn = dynamic_cast<juce::TextButton*>(e.eventComponent);
+        if (btn == nullptr || btn->getTooltip().isEmpty())
+            return;
+
+        hoveredButton_ = btn;
+        hoverStartMs_ = juce::Time::getMillisecondCounter();
+
+        if (isVisible() || (hoverStartMs_ - lastHideMs_) <= 450)
+        {
+            showForButton(btn);
+            startTimer(30);
+        }
+        else
+        {
+            startTimer(20);
+        }
+    }
+
+    void mouseExit(const juce::MouseEvent& e) override
+    {
+        if (e.eventComponent == hoveredButton_)
+            hideTip();
+    }
+
+    void mouseDown(const juce::MouseEvent&) override
+    {
+        hideTip();
+    }
+
+    void showForButton(juce::TextButton* btn)
+    {
+        if (btn == nullptr || !btn->isVisible())
+        {
+            hideTip();
+            return;
+        }
+
+        const auto fullTip = btn->getTooltip().trim();
+        if (fullTip.isEmpty())
+        {
+            hideTip();
+            return;
+        }
+
+        const int sep = fullTip.indexOf(" - ");
+        if (sep > 0)
+        {
+            headline_ = fullTip.substring(0, sep).trim();
+            detail_ = fullTip.substring(sep + 3).trim();
+        }
+        else
+        {
+            headline_ = fullTip;
+            detail_.clear();
+        }
+
+        groupBadge_ = btn->getProperties()["toolbarGroup"].toString();
+
+        const juce::Font titleFont(12.0f, juce::Font::bold);
+        const juce::Font detailFont(11.0f, juce::Font::plain);
+        const juce::String headerLine = groupBadge_.isNotEmpty()
+                                      ? ("[" + groupBadge_ + "]  " + headline_)
+                                      : headline_;
+
+        const int titleW = titleFont.getStringWidth(headerLine);
+        const int detailW = detail_.isNotEmpty() ? detailFont.getStringWidth(detail_) : 0;
+        const int boxW = std::clamp(std::max(titleW, detailW) + 22, 160, std::max(180, owner_.getWidth() - 16));
+        const int boxH = detail_.isNotEmpty() ? 40 : 24;
+
+        const auto btnBounds = btn->getBounds();
+        const int x = std::clamp(btnBounds.getX(), 6, std::max(6, owner_.getWidth() - boxW - 6));
+        const int y = owner_.toolbarBounds_.getBottom() + 4;
+
+        setBounds(x, y, boxW, boxH);
+        setVisible(true);
+        toFront(false);
+        repaint();
+    }
+
+    void hideTip()
+    {
+        if (isVisible())
+        {
+            setVisible(false);
+            lastHideMs_ = juce::Time::getMillisecondCounter();
+        }
+        hoveredButton_ = nullptr;
+        stopTimer();
+    }
+
+    void paint(juce::Graphics& g) override
+    {
+        const auto b = getLocalBounds().toFloat().reduced(0.5f);
+        g.setColour(juce::Colour(0xf50e161e));
+        g.fillRoundedRectangle(b, 5.0f);
+        g.setColour(juce::Colour(0xff5bc0be));
+        g.drawRoundedRectangle(b, 5.0f, 1.2f);
+
+        auto textArea = getLocalBounds().reduced(10, 4);
+        const juce::String headerLine = groupBadge_.isNotEmpty()
+                                      ? ("[" + groupBadge_ + "]  " + headline_)
+                                      : headline_;
+
+        if (detail_.isNotEmpty())
+        {
+            auto topRow = textArea.removeFromTop(16);
+            g.setFont(juce::Font(12.0f, juce::Font::bold));
+            g.setColour(juce::Colour(0xffeaf4f8));
+            g.drawFittedText(headerLine, topRow, juce::Justification::centredLeft, 1);
+
+            g.setFont(juce::Font(11.0f, juce::Font::plain));
+            g.setColour(juce::Colour(0xff9eb6c7));
+            g.drawFittedText(detail_, textArea, juce::Justification::centredLeft, 1);
+        }
+        else
+        {
+            g.setFont(juce::Font(12.0f, juce::Font::bold));
+            g.setColour(juce::Colour(0xffeaf4f8));
+            g.drawFittedText(headerLine, textArea, juce::Justification::centredLeft, 1);
+        }
+    }
+
+private:
+    void timerCallback() override
+    {
+        if (hoveredButton_ == nullptr || !hoveredButton_->isShowing() || !hoveredButton_->isMouseOver(true))
+        {
+            hideTip();
+            return;
+        }
+
+        if (!isVisible())
+        {
+            const auto now = juce::Time::getMillisecondCounter();
+            if ((now - hoverStartMs_) >= 110)
+                showForButton(hoveredButton_);
+        }
+    }
+
+    MachineBuilderPanel& owner_;
+    juce::Component::SafePointer<juce::TextButton> hoveredButton_;
+    juce::uint32 hoverStartMs_ = 0;
+    juce::uint32 lastHideMs_ = 0;
+    juce::String groupBadge_;
+    juce::String headline_;
+    juce::String detail_;
+};
+
 MachineBuilderPanel::MachineBuilderPanel()
     : MachineBuilderPanel(nullptr, nullptr, nullptr)
 {
@@ -1271,6 +1438,7 @@ MachineBuilderPanel::MachineBuilderPanel(std::shared_ptr<sim_panel::SystemSimula
                                            mechanical_scene::MechanicalViewComponent* mechView,
                                            sim_panel::ControlPanelComponent* ctrlPanel)
     : session_(session), mechanicalView_(mechView), controlPanel_(ctrlPanel),
+      tooltipOverlay_(std::make_unique<ToolbarTooltipOverlay>(*this)),
       toolbarLookAndFeel_(std::make_unique<ToolbarIconLookAndFeel>())
 {
     machine_ = MachineDesign::createBlankMachine("Custom Machine");
@@ -1292,6 +1460,7 @@ MachineBuilderPanel::MachineBuilderPanel(std::shared_ptr<sim_panel::SystemSimula
         b.setLookAndFeel(toolbarLookAndFeel_.get());
         b.setTooltip(tooltip);
         b.setMouseCursor(juce::MouseCursor::PointingHandCursor);
+        b.addMouseListener(tooltipOverlay_.get(), false);
         addAndMakeVisible(b);
         toolbarItems_.push_back({ id, group, &b, 26 });
     };
@@ -1328,10 +1497,13 @@ MachineBuilderPanel::MachineBuilderPanel(std::shared_ptr<sim_panel::SystemSimula
     registerToolbarButton("apply", "Tools", applyInspectorBtn, "Apply Selection Edits - Commit inspector ID, title, reference, and parameter changes");
 
     overflowBtn.getProperties().set("toolbarIcon", "overflow");
+    overflowBtn.getProperties().set("toolbarGroup", "More");
     overflowBtn.setLookAndFeel(toolbarLookAndFeel_.get());
     overflowBtn.setTooltip("More Toolbar Commands - Show commands hidden by narrow window width");
     overflowBtn.setMouseCursor(juce::MouseCursor::PointingHandCursor);
+    overflowBtn.addMouseListener(tooltipOverlay_.get(), false);
     addChildComponent(overflowBtn);
+    addChildComponent(*tooltipOverlay_);
 
     newBlankBtn.onClick = [this] { resetToBlankMachine(); };
     addSchematicBtn.onClick = [this] { chooseSchematicFile(); };
@@ -1420,8 +1592,16 @@ MachineBuilderPanel::MachineBuilderPanel(std::shared_ptr<sim_panel::SystemSimula
 MachineBuilderPanel::~MachineBuilderPanel()
 {
     for (auto& item : toolbarItems_)
+    {
         if (item.button != nullptr)
+        {
+            if (tooltipOverlay_ != nullptr)
+                item.button->removeMouseListener(tooltipOverlay_.get());
             item.button->setLookAndFeel(nullptr);
+        }
+    }
+    if (tooltipOverlay_ != nullptr)
+        overflowBtn.removeMouseListener(tooltipOverlay_.get());
     overflowBtn.setLookAndFeel(nullptr);
 
     if (controlPanel_ != nullptr)

@@ -115,7 +115,8 @@ private:
     std::string selectedConnectionId_;
 
     // UI Controls & Compact Editing Toolbar
-    juce::SharedResourcePointer<juce::TooltipWindow> tooltipWindow_;
+    class ToolbarTooltipOverlay;
+    std::unique_ptr<ToolbarTooltipOverlay> tooltipOverlay_;
     std::unique_ptr<juce::LookAndFeel> toolbarLookAndFeel_;
     juce::Label titleLabel;
     juce::TextButton newBlankBtn { "New Blank" };
