@@ -18,8 +18,13 @@ namespace
 class AnalogGaugeComponent final : public juce::Component
 {
 public:
-    AnalogGaugeComponent(const std::string& title, const std::string& unit, double minVal, double maxVal)
-        : title_(title), unit_(unit), minVal_(minVal), maxVal_(maxVal) {}
+    AnalogGaugeComponent(const std::string& title, const std::string& unit, double minVal, double maxVal,
+                         int precision = 1,
+                         bool hasWarn = false, double warnMin = 0.0, double warnMax = 0.0,
+                         bool hasCrit = false, double critMin = 0.0, double critMax = 0.0)
+        : title_(title), unit_(unit), minVal_(minVal), maxVal_(maxVal), precision_(precision),
+          hasWarn_(hasWarn), warnMin_(warnMin), warnMax_(warnMax),
+          hasCrit_(hasCrit), critMin_(critMin), critMax_(critMax) {}
 
     void setValue(double val)
     {
@@ -50,6 +55,40 @@ public:
         g.setColour(juce::Colour(0xff2a3442));
         g.strokePath(arc, juce::PathStrokeType(4.0f));
 
+        auto toAngle = [&](double v) -> float {
+            const double span = std::max(1e-9, maxVal_ - minVal_);
+            const float norm = (float)std::clamp((v - minVal_) / span, 0.0, 1.0);
+            return startAngle + norm * totalAngle;
+        };
+
+        // Warning band
+        if (hasWarn_ && warnMax_ > warnMin_)
+        {
+            const float a0 = toAngle(warnMin_);
+            const float a1 = toAngle(warnMax_);
+            if (a1 > a0)
+            {
+                juce::Path warnArc;
+                warnArc.addCentredArc(center.x, center.y, radius * 0.85f, radius * 0.85f, 0.0f, a0, a1, true);
+                g.setColour(juce::Colour(0xfff39c12)); // amber
+                g.strokePath(warnArc, juce::PathStrokeType(4.5f));
+            }
+        }
+
+        // Critical band
+        if (hasCrit_ && critMax_ > critMin_)
+        {
+            const float a0 = toAngle(critMin_);
+            const float a1 = toAngle(critMax_);
+            if (a1 > a0)
+            {
+                juce::Path critArc;
+                critArc.addCentredArc(center.x, center.y, radius * 0.85f, radius * 0.85f, 0.0f, a0, a1, true);
+                g.setColour(juce::Colour(0xffe74c3c)); // red
+                g.strokePath(critArc, juce::PathStrokeType(4.5f));
+            }
+        }
+
         // Graduation tick marks
         const int numTicks = 10;
         for (int i = 0; i <= numTicks; ++i)
@@ -73,8 +112,16 @@ public:
         g.setFont(juce::Font(10.0f));
         g.drawText(juce::String(unit_), center.x - 50.0f, center.y + radius * 0.25f, 100.0f, 16.0f, juce::Justification::centred);
 
+        // Digital Readout at bottom of dial
+        std::ostringstream ss;
+        ss << std::fixed << std::setprecision(precision_) << val_;
+        g.setFont(juce::Font(juce::Font::getDefaultMonospacedFontName(), 11.0f, juce::Font::bold));
+        g.setColour(juce::Colour(0xff00ffcc));
+        g.drawText(ss.str(), center.x - 40.0f, center.y + radius * 0.45f, 80.0f, 16.0f, juce::Justification::centred);
+
         // Needle
-        const float norm = (float)((val_ - minVal_) / (maxVal_ - minVal_));
+        const double span = std::max(1e-9, maxVal_ - minVal_);
+        const float norm = (float)std::clamp((val_ - minVal_) / span, 0.0, 1.0);
         const float needleAngle = startAngle + norm * totalAngle - juce::MathConstants<float>::halfPi;
         const float nCos = std::cos(needleAngle);
         const float nSin = std::sin(needleAngle);
@@ -96,6 +143,11 @@ public:
 private:
     std::string title_, unit_;
     double minVal_ = 0.0, maxVal_ = 100.0, val_ = 0.0;
+    int precision_ = 1;
+    bool hasWarn_ = false;
+    double warnMin_ = 0.0, warnMax_ = 0.0;
+    bool hasCrit_ = false;
+    double critMin_ = 0.0, critMax_ = 0.0;
 };
 
 // Custom Indicator Lamp
@@ -355,12 +407,36 @@ private:
 class DigitalReadoutComponent final : public juce::Component
 {
 public:
-    DigitalReadoutComponent(const std::string& label, const std::string& unit)
-        : label_(label), unit_(unit) {}
+    DigitalReadoutComponent(const std::string& label, const std::string& unit,
+                            int precision = 1,
+                            bool hasWarn = false, double warnMin = 0.0, double warnMax = 0.0,
+                            bool hasCrit = false, double critMin = 0.0, double critMax = 0.0)
+        : label_(label), unit_(unit), precision_(precision),
+          hasWarn_(hasWarn), warnMin_(warnMin), warnMax_(warnMax),
+          hasCrit_(hasCrit), critMin_(critMin), critMax_(critMax) {}
 
     void setText(const std::string& valText)
     {
         valText_ = valText;
+        hasNumeric_ = false;
+        repaint();
+    }
+
+    void setValue(double val)
+    {
+        val_ = val;
+        hasNumeric_ = true;
+        std::ostringstream ss;
+        ss << std::fixed << std::setprecision(precision_) << val;
+        valText_ = ss.str();
+        repaint();
+    }
+
+    void setBooleanValue(bool b)
+    {
+        val_ = b ? 1.0 : 0.0;
+        hasNumeric_ = true;
+        valText_ = b ? "TRUE / HIGH" : "FALSE / LOW";
         repaint();
     }
 
@@ -374,23 +450,338 @@ public:
 
         g.setFont(juce::Font(11.0f));
         g.setColour(juce::Colour(0xff8294a6));
-        g.drawText(juce::String(label_), 8, 4, 150, 16, juce::Justification::centredLeft);
+        g.drawText(juce::String(label_), 8, 4, (int)b.getWidth() - 16, 16, juce::Justification::centredLeft);
 
-        g.setFont(juce::Font(18.0f, juce::Font::bold));
-        g.setColour(juce::Colour(0xff00ffcc));
-        g.drawText(juce::String(valText_) + " " + juce::String(unit_), 8, 16, (int)b.getWidth() - 16, (int)b.getHeight() - 20, juce::Justification::centredRight);
+        juce::Colour textCol(0xff00ffcc);
+        if (hasNumeric_)
+        {
+            if (hasCrit_ && val_ >= critMin_ && val_ <= critMax_)
+                textCol = juce::Colour(0xffff4444);
+            else if (hasWarn_ && val_ >= warnMin_ && val_ <= warnMax_)
+                textCol = juce::Colour(0xffffbb00);
+        }
+
+        g.setFont(juce::Font(juce::Font::getDefaultMonospacedFontName(), 17.0f, juce::Font::bold));
+        g.setColour(textCol);
+        juce::String disp = juce::String(valText_);
+        if (!unit_.empty())
+            disp << " " << juce::String(unit_);
+        g.drawText(disp, 8, 16, (int)b.getWidth() - 16, (int)b.getHeight() - 20, juce::Justification::centredRight);
     }
 
 private:
     std::string label_, unit_, valText_ = "0.0";
+    double val_ = 0.0;
+    bool hasNumeric_ = false;
+    int precision_ = 1;
+    bool hasWarn_ = false;
+    double warnMin_ = 0.0, warnMax_ = 0.0;
+    bool hasCrit_ = false;
+    double critMin_ = 0.0, critMax_ = 0.0;
+};
+
+// Custom Bar Gauge Component (Horizontal and Vertical)
+class BarGaugeComponent final : public juce::Component
+{
+public:
+    BarGaugeComponent(const std::string& title, const std::string& unit,
+                      double minVal, double maxVal, bool vertical = false,
+                      int precision = 1,
+                      bool hasWarn = false, double warnMin = 0.0, double warnMax = 0.0,
+                      bool hasCrit = false, double critMin = 0.0, double critMax = 0.0)
+        : title_(title), unit_(unit), minVal_(minVal), maxVal_(maxVal), vertical_(vertical),
+          precision_(precision), hasWarn_(hasWarn), warnMin_(warnMin), warnMax_(warnMax),
+          hasCrit_(hasCrit), critMin_(critMin), critMax_(critMax) {}
+
+    void setValue(double val)
+    {
+        val_ = std::clamp(val, minVal_, maxVal_);
+        repaint();
+    }
+
+    void paint(juce::Graphics& g) override
+    {
+        auto b = getLocalBounds().toFloat().reduced(2.0f);
+        g.setColour(juce::Colour(0xff12161c));
+        g.fillRoundedRectangle(b, 4.0f);
+        g.setColour(juce::Colour(0xff2a3442));
+        g.drawRoundedRectangle(b, 4.0f, 1.2f);
+
+        const double span = std::max(1e-9, maxVal_ - minVal_);
+        const float norm = (float)std::clamp((val_ - minVal_) / span, 0.0, 1.0);
+
+        std::ostringstream ss;
+        ss << std::fixed << std::setprecision(precision_) << val_;
+        if (!unit_.empty()) ss << " " << unit_;
+
+        if (vertical_)
+        {
+            // Title & Readout at top
+            g.setFont(juce::Font(10.5f, juce::Font::bold));
+            g.setColour(juce::Colour(0xffc5d1de));
+            g.drawText(juce::String(title_), b.getX() + 4.0f, b.getY() + 4.0f, b.getWidth() - 8.0f, 14.0f, juce::Justification::centred);
+
+            g.setFont(juce::Font(juce::Font::getDefaultMonospacedFontName(), 11.0f, juce::Font::bold));
+            g.setColour(juce::Colour(0xff00ffcc));
+            g.drawText(ss.str(), b.getX() + 4.0f, b.getY() + 18.0f, b.getWidth() - 8.0f, 14.0f, juce::Justification::centred);
+
+            // Vertical Bar Track
+            const float trackW = std::clamp(b.getWidth() * 0.35f, 14.0f, 32.0f);
+            const float trackX = b.getCentreX() - trackW * 0.5f;
+            const float trackY = b.getY() + 36.0f;
+            const float trackH = std::max(20.0f, b.getHeight() - 44.0f);
+            const auto trackRect = juce::Rectangle<float>(trackX, trackY, trackW, trackH);
+
+            g.setColour(juce::Colour(0xff0d1117));
+            g.fillRect(trackRect);
+            g.setColour(juce::Colour(0xff303d4e));
+            g.drawRect(trackRect, 1.0f);
+
+            // Fill from bottom up
+            const float fillH = norm * trackH;
+            const auto fillRect = juce::Rectangle<float>(trackX + 1.0f, trackRect.getBottom() - fillH, trackW - 2.0f, fillH);
+
+            juce::Colour barCol(0xff2ecc71); // normal green
+            if (hasCrit_ && val_ >= critMin_ && val_ <= critMax_)
+                barCol = juce::Colour(0xffe74c3c); // red
+            else if (hasWarn_ && val_ >= warnMin_ && val_ <= warnMax_)
+                barCol = juce::Colour(0xfff39c12); // amber
+
+            g.setColour(barCol);
+            g.fillRect(fillRect);
+
+            // Ticks
+            g.setColour(juce::Colour(0xff556677));
+            for (int i = 0; i <= 4; ++i)
+            {
+                float ty = trackRect.getBottom() - ((float)i / 4.0f) * trackH;
+                g.drawHorizontalLine((int)ty, trackX - 4.0f, trackX);
+            }
+        }
+        else
+        {
+            // Horizontal bar
+            // Top: Title on left, Readout on right
+            g.setFont(juce::Font(11.0f, juce::Font::bold));
+            g.setColour(juce::Colour(0xffc5d1de));
+            g.drawText(juce::String(title_), b.getX() + 8.0f, b.getY() + 4.0f, b.getWidth() * 0.55f, 14.0f, juce::Justification::centredLeft);
+
+            g.setFont(juce::Font(juce::Font::getDefaultMonospacedFontName(), 11.5f, juce::Font::bold));
+            g.setColour(juce::Colour(0xff00ffcc));
+            g.drawText(ss.str(), b.getRight() - b.getWidth() * 0.40f - 8.0f, b.getY() + 4.0f, b.getWidth() * 0.40f, 14.0f, juce::Justification::centredRight);
+
+            // Horizontal Track
+            const float trackX = b.getX() + 8.0f;
+            const float trackY = b.getY() + 20.0f;
+            const float trackW = b.getWidth() - 16.0f;
+            const float trackH = std::max(10.0f, b.getHeight() - 26.0f);
+            const auto trackRect = juce::Rectangle<float>(trackX, trackY, trackW, trackH);
+
+            g.setColour(juce::Colour(0xff0d1117));
+            g.fillRect(trackRect);
+            g.setColour(juce::Colour(0xff303d4e));
+            g.drawRect(trackRect, 1.0f);
+
+            // Fill from left to right
+            const float fillW = norm * trackW;
+            const auto fillRect = juce::Rectangle<float>(trackX + 1.0f, trackY + 1.0f, fillW, trackH - 2.0f);
+
+            juce::Colour barCol(0xff2ecc71);
+            if (hasCrit_ && val_ >= critMin_ && val_ <= critMax_)
+                barCol = juce::Colour(0xffe74c3c);
+            else if (hasWarn_ && val_ >= warnMin_ && val_ <= warnMax_)
+                barCol = juce::Colour(0xfff39c12);
+
+            g.setColour(barCol);
+            g.fillRect(fillRect);
+
+            // Ticks
+            g.setColour(juce::Colour(0xff556677));
+            for (int i = 0; i <= 4; ++i)
+            {
+                float tx = trackX + ((float)i / 4.0f) * trackW;
+                g.drawVerticalLine((int)tx, trackRect.getBottom(), trackRect.getBottom() + 3.0f);
+            }
+        }
+    }
+
+private:
+    std::string title_, unit_;
+    double minVal_ = 0.0, maxVal_ = 100.0, val_ = 0.0;
+    bool vertical_ = false;
+    int precision_ = 1;
+    bool hasWarn_ = false;
+    double warnMin_ = 0.0, warnMax_ = 0.0;
+    bool hasCrit_ = false;
+    double critMin_ = 0.0, critMax_ = 0.0;
+};
+
+// Custom Indicator Button Component (Pushbutton with integrated status LED lamp)
+class IndicatorButtonComponent final : public juce::Component
+{
+public:
+    std::function<void(bool)> onStateChange;
+
+    IndicatorButtonComponent(const std::string& label, bool latching = false)
+        : label_(label), latching_(latching)
+    {
+        setMouseCursor(juce::MouseCursor::PointingHandCursor);
+    }
+
+    bool isLatched() const { return latched_; }
+    void setLatched(bool l) { latched_ = l; repaint(); }
+    void setIndicatorActive(bool a) { indicatorActive_ = a; repaint(); }
+
+    void mouseDown(const juce::MouseEvent&) override
+    {
+        isDown_ = true;
+        if (latching_)
+            latched_ = !latched_;
+        repaint();
+        if (onStateChange)
+            onStateChange(latching_ ? latched_ : true);
+    }
+
+    void mouseUp(const juce::MouseEvent&) override
+    {
+        isDown_ = false;
+        repaint();
+        if (!latching_ && onStateChange)
+            onStateChange(false);
+    }
+
+    void paint(juce::Graphics& g) override
+    {
+        auto b = getLocalBounds().toFloat().reduced(2.0f);
+        const bool active = latching_ ? latched_ : isDown_;
+
+        // Button body
+        g.setColour(active ? juce::Colour(0xff1e3a5f) : juce::Colour(0xff22313d));
+        g.fillRoundedRectangle(b, 4.0f);
+        g.setColour(active ? juce::Colour(0xff4cc9f0) : juce::Colour(0xff3a4d5e));
+        g.drawRoundedRectangle(b, 4.0f, active ? 1.5f : 1.0f);
+
+        // Integrated indicator LED on left
+        const float ledSize = 10.0f;
+        const float ledX = b.getX() + 8.0f;
+        const float ledY = b.getCentreY() - ledSize * 0.5f;
+        const auto ledRect = juce::Rectangle<float>(ledX, ledY, ledSize, ledSize);
+
+        if (indicatorActive_ || (latching_ && latched_))
+        {
+            g.setColour(juce::Colour(0xff2ecc71).withAlpha(0.35f));
+            g.fillEllipse(ledRect.expanded(3.0f));
+            g.setColour(juce::Colour(0xff2ecc71));
+            g.fillEllipse(ledRect);
+        }
+        else
+        {
+            g.setColour(juce::Colour(0xff182028));
+            g.fillEllipse(ledRect);
+            g.setColour(juce::Colour(0xff3a4856));
+            g.drawEllipse(ledRect, 1.0f);
+        }
+
+        // Label
+        g.setFont(juce::Font(12.0f, juce::Font::bold));
+        g.setColour(active ? juce::Colour(0xffffffff) : juce::Colour(0xffdce9ee));
+        g.drawText(juce::String(label_), (int)(ledX + ledSize + 8.0f), 0,
+                   (int)(b.getWidth() - ledSize - 20.0f), (int)b.getHeight(),
+                   juce::Justification::centredLeft);
+    }
+
+private:
+    std::string label_;
+    bool latching_ = false;
+    bool latched_ = false;
+    bool isDown_ = false;
+    bool indicatorActive_ = false;
+};
+
+// Custom Multi-Position Selector Switch Component
+class SelectorSwitchComponent final : public juce::Component
+{
+public:
+    std::function<void(int)> onSelectionChanged;
+
+    SelectorSwitchComponent(const std::string& title, const std::vector<std::string>& options)
+        : title_(title), options_(options)
+    {
+        if (options_.empty())
+            options_ = { "OFF", "ON" };
+        setMouseCursor(juce::MouseCursor::PointingHandCursor);
+    }
+
+    int getSelectedIndex() const { return selectedIdx_; }
+    void setSelectedIndex(int idx)
+    {
+        if (idx >= 0 && idx < (int)options_.size())
+        {
+            selectedIdx_ = idx;
+            repaint();
+        }
+    }
+
+    void mouseDown(const juce::MouseEvent&) override
+    {
+        selectedIdx_ = (selectedIdx_ + 1) % (int)options_.size();
+        repaint();
+        if (onSelectionChanged)
+            onSelectionChanged(selectedIdx_);
+    }
+
+    void paint(juce::Graphics& g) override
+    {
+        auto b = getLocalBounds().toFloat().reduced(2.0f);
+        g.setColour(juce::Colour(0xff1a222d));
+        g.fillRoundedRectangle(b, 4.0f);
+        g.setColour(juce::Colour(0xff324354));
+        g.drawRoundedRectangle(b, 4.0f, 1.0f);
+
+        // Title
+        g.setFont(juce::Font(10.5f, juce::Font::bold));
+        g.setColour(juce::Colour(0xff9eb3c4));
+        g.drawText(juce::String(title_), (int)b.getX() + 6, (int)b.getY() + 3, (int)b.getWidth() - 12, 13, juce::Justification::centredLeft);
+
+        // Selector rotary dial / knob on left
+        const float knobSize = std::min(b.getHeight() - 16.0f, 26.0f);
+        const float knobX = b.getX() + 8.0f;
+        const float knobY = b.getY() + 16.0f + (b.getHeight() - 16.0f - knobSize) * 0.5f;
+        const auto knobRect = juce::Rectangle<float>(knobX, knobY, knobSize, knobSize);
+
+        g.setColour(juce::Colour(0xff2d3b4b));
+        g.fillEllipse(knobRect);
+        g.setColour(juce::Colour(0xff556a80));
+        g.drawEllipse(knobRect, 1.2f);
+
+        // Pointer
+        const float angle = -1.57f + (float)selectedIdx_ / (float)std::max(1, (int)options_.size() - 1) * 3.14f;
+        const float pX = knobRect.getCentreX() + std::cos(angle) * (knobSize * 0.4f);
+        const float pY = knobRect.getCentreY() + std::sin(angle) * (knobSize * 0.4f);
+        g.setColour(juce::Colour(0xff00ffcc));
+        g.drawLine(knobRect.getCentreX(), knobRect.getCentreY(), pX, pY, 2.0f);
+
+        // Option text
+        const juce::String opt = (selectedIdx_ >= 0 && selectedIdx_ < (int)options_.size()) ? options_[(size_t)selectedIdx_] : "";
+        g.setFont(juce::Font(12.0f, juce::Font::bold));
+        g.setColour(juce::Colour(0xffffffff));
+        g.drawText(opt, (int)(knobRect.getRight() + 8.0f), (int)knobY - 2,
+                   (int)(b.getWidth() - knobRect.getRight() - 12.0f), (int)knobSize + 4,
+                   juce::Justification::centredLeft);
+    }
+
+private:
+    std::string title_;
+    std::vector<std::string> options_;
+    int selectedIdx_ = 0;
 };
 
 // Composite Labeled Slider & Knob Widget with Clear Title & Engineering Unit
 class LabeledSliderComponent final : public juce::Component
 {
 public:
-    LabeledSliderComponent(const std::string& title, const std::string& unit, bool isKnob)
-        : isKnob_(isKnob)
+    LabeledSliderComponent(const std::string& title, const std::string& unit, bool isKnob, bool isVertical = false)
+        : isKnob_(isKnob), isVertical_(isVertical)
     {
         juce::String labelText = juce::String(title);
         if (!unit.empty())
@@ -402,8 +793,21 @@ public:
         label.setText(labelText, juce::dontSendNotification);
 
         addAndMakeVisible(slider);
-        slider.setSliderStyle(isKnob ? juce::Slider::RotaryHorizontalVerticalDrag : juce::Slider::LinearHorizontal);
-        slider.setTextBoxStyle(juce::Slider::TextBoxRight, false, 58, 18);
+        if (isKnob_)
+        {
+            slider.setSliderStyle(juce::Slider::RotaryHorizontalVerticalDrag);
+            slider.setTextBoxStyle(juce::Slider::TextBoxRight, false, 58, 18);
+        }
+        else if (isVertical_)
+        {
+            slider.setSliderStyle(juce::Slider::LinearVertical);
+            slider.setTextBoxStyle(juce::Slider::TextBoxBelow, false, 58, 18);
+        }
+        else
+        {
+            slider.setSliderStyle(juce::Slider::LinearHorizontal);
+            slider.setTextBoxStyle(juce::Slider::TextBoxRight, false, 58, 18);
+        }
         if (!unit.empty())
             slider.setTextValueSuffix(" " + juce::String(unit));
     }
@@ -415,6 +819,11 @@ public:
         {
             label.setBounds(b.removeFromTop(15));
             slider.setBounds(b);
+        }
+        else if (isVertical_)
+        {
+            label.setBounds(b.removeFromTop(15));
+            slider.setBounds(b.reduced(2, 0));
         }
         else
         {
@@ -431,6 +840,7 @@ public:
 
 private:
     bool isKnob_ = false;
+    bool isVertical_ = false;
 };
 
 double signalValue(const StateSnapshot& snap, const std::string& signal, bool* found = nullptr)
@@ -2036,7 +2446,675 @@ private:
     std::unique_ptr<juce::FileChooser> chooser;
 };
 
+// -----------------------------------------------------------------------------
+// Freeform Canvas & Item Wrapper
+// -----------------------------------------------------------------------------
+
+class DesignItemWrapper final : public juce::Component
+{
+public:
+    enum class HitZone
+    {
+        None,
+        Body,
+        TopLeft, TopMid, TopRight,
+        MidLeft, MidRight,
+        BottomLeft, BottomMid, BottomRight
+    };
+
+    WidgetConfig config;
+    std::unique_ptr<juce::Component> widget;
+    bool isSelected = false;
+    bool isDesignMode = false;
+
+    std::function<void(DesignItemWrapper*, const juce::MouseEvent&)> onMouseDownAction;
+    std::function<void(DesignItemWrapper*, const juce::MouseEvent&)> onMouseDragAction;
+    std::function<void(DesignItemWrapper*, const juce::MouseEvent&)> onMouseUpAction;
+    std::function<void(DesignItemWrapper*)> onOpenProperties;
+    std::function<void(DesignItemWrapper*)> onDelete;
+    std::function<void(DesignItemWrapper*)> onDuplicate;
+    std::function<void(DesignItemWrapper*)> onBringToFront;
+    std::function<void(DesignItemWrapper*)> onSendToBack;
+
+    DesignItemWrapper(WidgetConfig cfg, std::unique_ptr<juce::Component> comp)
+        : config(std::move(cfg)), widget(std::move(comp))
+    {
+        if (widget)
+            addAndMakeVisible(*widget);
+        updateMouseInterception();
+    }
+
+    juce::Component* getWidget() const { return widget.get(); }
+
+    void setDesignMode(bool dm)
+    {
+        isDesignMode = dm;
+        updateMouseInterception();
+        repaint();
+    }
+
+    void setSelected(bool s)
+    {
+        isSelected = s;
+        repaint();
+    }
+
+    void updateMouseInterception()
+    {
+        if (widget)
+            widget->setInterceptsMouseClicks(!isDesignMode, !isDesignMode);
+    }
+
+    void resized() override
+    {
+        if (widget)
+            widget->setBounds(getLocalBounds());
+    }
+
+    HitZone getHitZone(juce::Point<int> pos) const
+    {
+        const int h = 8;
+        const int w = getWidth();
+        const int ht = getHeight();
+
+        if (pos.x <= h && pos.y <= h) return HitZone::TopLeft;
+        if (pos.x >= w - h && pos.y <= h) return HitZone::TopRight;
+        if (pos.x <= h && pos.y >= ht - h) return HitZone::BottomLeft;
+        if (pos.x >= w - h && pos.y >= ht - h) return HitZone::BottomRight;
+
+        if (pos.y <= h && std::abs(pos.x - w / 2) <= h) return HitZone::TopMid;
+        if (pos.y >= ht - h && std::abs(pos.x - w / 2) <= h) return HitZone::BottomMid;
+        if (pos.x <= h && std::abs(pos.y - ht / 2) <= h) return HitZone::MidLeft;
+        if (pos.x >= w - h && std::abs(pos.y - ht / 2) <= h) return HitZone::MidRight;
+
+        return HitZone::Body;
+    }
+
+    void mouseMove(const juce::MouseEvent& e) override
+    {
+        if (!isDesignMode) return;
+        const auto zone = getHitZone(e.getPosition());
+        switch (zone)
+        {
+            case HitZone::TopLeft:
+            case HitZone::BottomRight:
+                setMouseCursor(juce::MouseCursor::TopLeftCornerResizeCursor);
+                break;
+            case HitZone::TopRight:
+            case HitZone::BottomLeft:
+                setMouseCursor(juce::MouseCursor::TopRightCornerResizeCursor);
+                break;
+            case HitZone::TopMid:
+            case HitZone::BottomMid:
+                setMouseCursor(juce::MouseCursor::UpDownResizeCursor);
+                break;
+            case HitZone::MidLeft:
+            case HitZone::MidRight:
+                setMouseCursor(juce::MouseCursor::LeftRightResizeCursor);
+                break;
+            case HitZone::Body:
+            default:
+                setMouseCursor(juce::MouseCursor::DraggingHandCursor);
+                break;
+        }
+    }
+
+    void mouseDown(const juce::MouseEvent& e) override
+    {
+        if (e.mods.isPopupMenu())
+        {
+            juce::PopupMenu menu;
+            menu.addItem("Properties & Connection...", [this] { if (onOpenProperties) onOpenProperties(this); });
+            menu.addSeparator();
+            menu.addItem("Bring to Front", [this] { if (onBringToFront) onBringToFront(this); });
+            menu.addItem("Send to Back", [this] { if (onSendToBack) onSendToBack(this); });
+            menu.addSeparator();
+            menu.addItem("Duplicate", [this] { if (onDuplicate) onDuplicate(this); });
+            menu.addItem("Delete", [this] { if (onDelete) onDelete(this); });
+            menu.showMenuAsync(juce::PopupMenu::Options().withTargetComponent(this));
+            return;
+        }
+
+        if (!isDesignMode) return;
+
+        activeDragZone_ = getHitZone(e.getPosition());
+        startDragBounds_ = getBounds();
+        mouseDownPos_ = e.getEventRelativeTo(getParentComponent()).getPosition();
+
+        if (onMouseDownAction)
+            onMouseDownAction(this, e);
+    }
+
+    void mouseDrag(const juce::MouseEvent& e) override
+    {
+        if (!isDesignMode) return;
+
+        const auto curPos = e.getEventRelativeTo(getParentComponent()).getPosition();
+        const int dx = curPos.x - mouseDownPos_.x;
+        const int dy = curPos.y - mouseDownPos_.y;
+
+        if (activeDragZone_ == HitZone::Body)
+        {
+            if (onMouseDragAction)
+                onMouseDragAction(this, e);
+        }
+        else
+        {
+            auto nb = startDragBounds_;
+            switch (activeDragZone_)
+            {
+                case HitZone::BottomRight:
+                    nb.setWidth(std::max(30, startDragBounds_.getWidth() + dx));
+                    nb.setHeight(std::max(24, startDragBounds_.getHeight() + dy));
+                    break;
+                case HitZone::BottomMid:
+                    nb.setHeight(std::max(24, startDragBounds_.getHeight() + dy));
+                    break;
+                case HitZone::MidRight:
+                    nb.setWidth(std::max(30, startDragBounds_.getWidth() + dx));
+                    break;
+                case HitZone::TopLeft:
+                {
+                    const int nw = std::max(30, startDragBounds_.getWidth() - dx);
+                    const int nh = std::max(24, startDragBounds_.getHeight() - dy);
+                    nb.setX(startDragBounds_.getRight() - nw);
+                    nb.setY(startDragBounds_.getBottom() - nh);
+                    nb.setWidth(nw);
+                    nb.setHeight(nh);
+                    break;
+                }
+                case HitZone::TopMid:
+                {
+                    const int nh = std::max(24, startDragBounds_.getHeight() - dy);
+                    nb.setY(startDragBounds_.getBottom() - nh);
+                    nb.setHeight(nh);
+                    break;
+                }
+                case HitZone::TopRight:
+                {
+                    const int nh = std::max(24, startDragBounds_.getHeight() - dy);
+                    nb.setY(startDragBounds_.getBottom() - nh);
+                    nb.setWidth(std::max(30, startDragBounds_.getWidth() + dx));
+                    nb.setHeight(nh);
+                    break;
+                }
+                case HitZone::MidLeft:
+                {
+                    const int nw = std::max(30, startDragBounds_.getWidth() - dx);
+                    nb.setX(startDragBounds_.getRight() - nw);
+                    nb.setWidth(nw);
+                    break;
+                }
+                case HitZone::BottomLeft:
+                {
+                    const int nw = std::max(30, startDragBounds_.getWidth() - dx);
+                    nb.setX(startDragBounds_.getRight() - nw);
+                    nb.setWidth(nw);
+                    nb.setHeight(std::max(24, startDragBounds_.getHeight() + dy));
+                    break;
+                }
+                default:
+                    break;
+            }
+            setBounds(nb);
+            config.x = nb.getX();
+            config.y = nb.getY();
+            config.width = nb.getWidth();
+            config.height = nb.getHeight();
+        }
+    }
+
+    void mouseUp(const juce::MouseEvent& e) override
+    {
+        if (!isDesignMode) return;
+        activeDragZone_ = HitZone::None;
+        if (onMouseUpAction)
+            onMouseUpAction(this, e);
+    }
+
+    void mouseDoubleClick(const juce::MouseEvent&) override
+    {
+        if (isDesignMode && onOpenProperties)
+            onOpenProperties(this);
+    }
+
+    void paintOverChildren(juce::Graphics& g) override
+    {
+        if (!isDesignMode) return;
+
+        if (isSelected)
+        {
+            g.setColour(juce::Colour(0xff00d4ff));
+            g.drawRect(getLocalBounds(), 1.5f);
+
+            const int s = 6;
+            const int w = getWidth();
+            const int ht = getHeight();
+            auto drawHandle = [&](int cx, int cy) {
+                g.setColour(juce::Colours::white);
+                g.fillRect(cx - s / 2, cy - s / 2, s, s);
+                g.setColour(juce::Colour(0xff0088cc));
+                g.drawRect(cx - s / 2, cy - s / 2, s, s, 1);
+            };
+
+            drawHandle(3, 3);
+            drawHandle(w / 2, 3);
+            drawHandle(w - 3, 3);
+            drawHandle(3, ht / 2);
+            drawHandle(w - 3, ht / 2);
+            drawHandle(3, ht - 3);
+            drawHandle(w / 2, ht - 3);
+            drawHandle(w - 3, ht - 3);
+        }
+        else
+        {
+            if (isMouseOver())
+            {
+                g.setColour(juce::Colour(0x6600d4ff));
+                g.drawRect(getLocalBounds(), 1.0f);
+            }
+        }
+    }
+
+private:
+    HitZone activeDragZone_ = HitZone::None;
+    juce::Rectangle<int> startDragBounds_;
+    juce::Point<int> mouseDownPos_;
+};
+
+// Properties and Connection Picker Dialog
+class WidgetPropertiesDialog final : public juce::Component
+{
+public:
+    WidgetPropertiesDialog(WidgetConfig config, std::vector<SignalDef> availableSignals,
+                           std::function<void(const WidgetConfig&)> onApplyCallback)
+        : cfg_(std::move(config)), signals_(std::move(availableSignals)), onApply_(std::move(onApplyCallback))
+    {
+        titleEd_.setText(juce::String(cfg_.title));
+        unitEd_.setText(juce::String(cfg_.unit));
+        minEd_.setText(juce::String(cfg_.minValue, 2));
+        maxEd_.setText(juce::String(cfg_.maxValue, 2));
+        defEd_.setText(juce::String(cfg_.defaultValue, 2));
+        stepEd_.setText(juce::String(cfg_.stepSize, 2));
+        precBox_.addItem("0 Decimals", 1);
+        precBox_.addItem("1 Decimal", 2);
+        precBox_.addItem("2 Decimals", 3);
+        precBox_.addItem("3 Decimals", 4);
+        precBox_.setSelectedId(std::clamp(cfg_.precision, 0, 3) + 1, juce::dontSendNotification);
+
+        sigEd_.setText(juce::String(cfg_.signalName));
+        secSigEd_.setText(juce::String(cfg_.secondarySignal));
+
+        momentaryBtn_.setButtonText("Momentary Action (Hold to activate)");
+        momentaryBtn_.setToggleState(cfg_.momentary, juce::dontSendNotification);
+
+        verticalBtn_.setButtonText("Vertical Orientation");
+        verticalBtn_.setToggleState(cfg_.vertical, juce::dontSendNotification);
+
+        hasWarnBtn_.setButtonText("Warning Range Zone");
+        hasWarnBtn_.setToggleState(cfg_.hasWarnRange, juce::dontSendNotification);
+        warnMinEd_.setText(juce::String(cfg_.warnMin, 2));
+        warnMaxEd_.setText(juce::String(cfg_.warnMax, 2));
+
+        hasCritBtn_.setButtonText("Critical Range Zone");
+        hasCritBtn_.setToggleState(cfg_.hasCritRange, juce::dontSendNotification);
+        critMinEd_.setText(juce::String(cfg_.critMin, 2));
+        critMaxEd_.setText(juce::String(cfg_.critMax, 2));
+
+        sigPickerBox_.addItem("-- Select from Available Simulation Connections --", 1);
+        int matchId = 1;
+        for (size_t i = 0; i < signals_.size(); ++i)
+        {
+            const auto& s = signals_[i];
+            juce::String itemText;
+            itemText << (s.isOutput ? "[OUT] " : "[IN] ") << juce::String(s.name);
+            if (!s.unit.empty())
+                itemText << " (" << juce::String(s.unit) << ")";
+            if (!s.description.empty())
+                itemText << " - " << juce::String(s.description);
+            sigPickerBox_.addItem(itemText, (int)i + 2);
+            if (s.name == cfg_.signalName)
+                matchId = (int)i + 2;
+        }
+        sigPickerBox_.setSelectedId(matchId, juce::dontSendNotification);
+        sigPickerBox_.onChange = [this] {
+            const int id = sigPickerBox_.getSelectedId();
+            if (id >= 2 && id - 2 < (int)signals_.size())
+            {
+                const auto& s = signals_[(size_t)(id - 2)];
+                sigEd_.setText(juce::String(s.name));
+                if (unitEd_.getText().isEmpty() && !s.unit.empty())
+                    unitEd_.setText(juce::String(s.unit));
+                updateCompatibilityLabel(s);
+            }
+        };
+
+        compatLabel_.setFont(juce::Font(11.0f, juce::Font::bold));
+        if (matchId >= 2 && matchId - 2 < (int)signals_.size())
+            updateCompatibilityLabel(signals_[(size_t)(matchId - 2)]);
+        else
+            compatLabel_.setText("Custom / Unbound signal identifier.", juce::dontSendNotification);
+
+        auto addField = [this](juce::Label& lbl, const juce::String& text, juce::Component& comp) {
+            lbl.setText(text, juce::dontSendNotification);
+            lbl.setFont(juce::Font(11.5f, juce::Font::bold));
+            lbl.setColour(juce::Label::textColourId, juce::Colour(0xffc5d1de));
+            addAndMakeVisible(lbl);
+            addAndMakeVisible(comp);
+        };
+
+        addField(lblTitle_, "Title / Label:", titleEd_);
+        addField(lblUnit_, "Unit:", unitEd_);
+        addField(lblMin_, "Min Value:", minEd_);
+        addField(lblMax_, "Max Value:", maxEd_);
+        addField(lblDef_, "Default:", defEd_);
+        addField(lblStep_, "Step Size:", stepEd_);
+        addField(lblPrec_, "Precision:", precBox_);
+        addField(lblSigPicker_, "Connection Picker:", sigPickerBox_);
+        addField(lblSig_, "Signal Name:", sigEd_);
+        addField(lblSecSig_, "Secondary Signal:", secSigEd_);
+
+        addAndMakeVisible(compatLabel_);
+        addAndMakeVisible(momentaryBtn_);
+        addAndMakeVisible(verticalBtn_);
+        addAndMakeVisible(hasWarnBtn_);
+        addAndMakeVisible(warnMinEd_);
+        addAndMakeVisible(warnMaxEd_);
+        addAndMakeVisible(hasCritBtn_);
+        addAndMakeVisible(critMinEd_);
+        addAndMakeVisible(critMaxEd_);
+
+        applyBtn_.setColour(juce::TextButton::buttonColourId, juce::Colour(0xff1b5e20));
+        applyBtn_.setColour(juce::TextButton::textColourOffId, juce::Colours::white);
+        applyBtn_.onClick = [this] {
+            cfg_.title = titleEd_.getText().toStdString();
+            cfg_.unit = unitEd_.getText().toStdString();
+            cfg_.minValue = minEd_.getText().getDoubleValue();
+            cfg_.maxValue = maxEd_.getText().getDoubleValue();
+            cfg_.defaultValue = defEd_.getText().getDoubleValue();
+            cfg_.stepSize = std::max(1e-6, stepEd_.getText().getDoubleValue());
+            cfg_.precision = precBox_.getSelectedId() - 1;
+            cfg_.signalName = sigEd_.getText().toStdString();
+            cfg_.secondarySignal = secSigEd_.getText().toStdString();
+            cfg_.momentary = momentaryBtn_.getToggleState();
+            cfg_.vertical = verticalBtn_.getToggleState();
+            cfg_.hasWarnRange = hasWarnBtn_.getToggleState();
+            cfg_.warnMin = warnMinEd_.getText().getDoubleValue();
+            cfg_.warnMax = warnMaxEd_.getText().getDoubleValue();
+            cfg_.hasCritRange = hasCritBtn_.getToggleState();
+            cfg_.critMin = critMinEd_.getText().getDoubleValue();
+            cfg_.critMax = critMaxEd_.getText().getDoubleValue();
+
+            if (onApply_)
+                onApply_(cfg_);
+
+            if (auto* dw = findParentComponentOfClass<juce::DialogWindow>())
+                dw->exitModalState(1);
+        };
+        addAndMakeVisible(applyBtn_);
+
+        cancelBtn_.setColour(juce::TextButton::buttonColourId, juce::Colour(0xff445261));
+        cancelBtn_.setColour(juce::TextButton::textColourOffId, juce::Colours::white);
+        cancelBtn_.onClick = [this] {
+            if (auto* dw = findParentComponentOfClass<juce::DialogWindow>())
+                dw->exitModalState(0);
+        };
+        addAndMakeVisible(cancelBtn_);
+    }
+
+    void updateCompatibilityLabel(const SignalDef& s)
+    {
+        const bool isInstrument = (cfg_.type == WidgetType::AnalogGauge || cfg_.type == WidgetType::DigitalReadout
+                                   || cfg_.type == WidgetType::BarGauge || cfg_.type == WidgetType::IndicatorLamp
+                                   || cfg_.type == WidgetType::TrendChart || cfg_.type == WidgetType::ClockDisplay);
+        if (isInstrument)
+        {
+            if (!s.isOutput)
+            {
+                compatLabel_.setColour(juce::Label::textColourId, juce::Colour(0xffffbb00));
+                compatLabel_.setText("[Notice: Connection is an operator input, but gauge reads outputs]", juce::dontSendNotification);
+            }
+            else if (cfg_.type == WidgetType::AnalogGauge && s.type == DataType::Boolean)
+            {
+                compatLabel_.setColour(juce::Label::textColourId, juce::Colour(0xffff6666));
+                compatLabel_.setText("[Incompatible: Boolean signal cannot drive analog dial gauge]", juce::dontSendNotification);
+            }
+            else
+            {
+                compatLabel_.setColour(juce::Label::textColourId, juce::Colour(0xff44ff88));
+                compatLabel_.setText("[Compatible simulation output connection verified]", juce::dontSendNotification);
+            }
+        }
+        else
+        {
+            if (s.isOutput)
+            {
+                compatLabel_.setColour(juce::Label::textColourId, juce::Colour(0xffffbb00));
+                compatLabel_.setText("[Notice: Connection is a simulation output, but control drives inputs]", juce::dontSendNotification);
+            }
+            else
+            {
+                compatLabel_.setColour(juce::Label::textColourId, juce::Colour(0xff44ff88));
+                compatLabel_.setText("[Compatible operator control connection verified]", juce::dontSendNotification);
+            }
+        }
+    }
+
+    void resized() override
+    {
+        auto b = getLocalBounds().reduced(16);
+        const int rowH = 24;
+        const int gap = 8;
+        const int lblW = 120;
+
+        auto addRow = [&](juce::Label& lbl, juce::Component& comp) {
+            auto r = b.removeFromTop(rowH);
+            lbl.setBounds(r.removeFromLeft(lblW));
+            comp.setBounds(r);
+            b.removeFromTop(gap);
+        };
+
+        addRow(lblTitle_, titleEd_);
+        addRow(lblUnit_, unitEd_);
+        addRow(lblMin_, minEd_);
+        addRow(lblMax_, maxEd_);
+        addRow(lblDef_, defEd_);
+        addRow(lblStep_, stepEd_);
+        addRow(lblPrec_, precBox_);
+        addRow(lblSigPicker_, sigPickerBox_);
+        addRow(lblSig_, sigEd_);
+
+        compatLabel_.setBounds(b.removeFromTop(20).withTrimmedLeft(lblW));
+        b.removeFromTop(gap);
+
+        addRow(lblSecSig_, secSigEd_);
+
+        auto rMode = b.removeFromTop(rowH);
+        momentaryBtn_.setBounds(rMode.removeFromLeft(rMode.getWidth() / 2));
+        verticalBtn_.setBounds(rMode);
+        b.removeFromTop(gap);
+
+        auto rWarn = b.removeFromTop(rowH);
+        hasWarnBtn_.setBounds(rWarn.removeFromLeft(lblW + 40));
+        warnMinEd_.setBounds(rWarn.removeFromLeft(70).reduced(2));
+        warnMaxEd_.setBounds(rWarn.removeFromLeft(70).reduced(2));
+        b.removeFromTop(gap);
+
+        auto rCrit = b.removeFromTop(rowH);
+        hasCritBtn_.setBounds(rCrit.removeFromLeft(lblW + 40));
+        critMinEd_.setBounds(rCrit.removeFromLeft(70).reduced(2));
+        critMaxEd_.setBounds(rCrit.removeFromLeft(70).reduced(2));
+        b.removeFromTop(gap * 2);
+
+        auto btnRow = b.removeFromTop(32);
+        applyBtn_.setBounds(btnRow.removeFromRight(100).reduced(2));
+        btnRow.removeFromRight(8);
+        cancelBtn_.setBounds(btnRow.removeFromRight(90).reduced(2));
+    }
+
+private:
+    WidgetConfig cfg_;
+    std::vector<SignalDef> signals_;
+    std::function<void(const WidgetConfig&)> onApply_;
+
+    juce::Label lblTitle_, lblUnit_, lblMin_, lblMax_, lblDef_, lblStep_, lblPrec_;
+    juce::Label lblSigPicker_, lblSig_, lblSecSig_;
+    juce::Label compatLabel_;
+
+    juce::TextEditor titleEd_, unitEd_, minEd_, maxEd_, defEd_, stepEd_;
+    juce::ComboBox precBox_;
+    juce::ComboBox sigPickerBox_;
+    juce::TextEditor sigEd_, secSigEd_;
+
+    juce::ToggleButton momentaryBtn_;
+    juce::ToggleButton verticalBtn_;
+    juce::ToggleButton hasWarnBtn_;
+    juce::TextEditor warnMinEd_, warnMaxEd_;
+    juce::ToggleButton hasCritBtn_;
+    juce::TextEditor critMinEd_, critMaxEd_;
+
+    juce::TextButton applyBtn_ { "Apply" };
+    juce::TextButton cancelBtn_ { "Cancel" };
+};
+
 } // namespace
+
+// -----------------------------------------------------------------------------
+// ControlPanelCanvas Implementation
+// -----------------------------------------------------------------------------
+
+class ControlPanelComponent::ControlPanelCanvas final : public juce::Component
+{
+public:
+    ControlPanelCanvas(ControlPanelComponent& owner) : owner_(owner) {}
+
+    void setDesignMode(bool dm)
+    {
+        designMode_ = dm;
+        if (!designMode_)
+            selectedWrappers_.clear();
+        for (int i = 0; i < getNumChildComponents(); ++i)
+        {
+            if (auto* w = dynamic_cast<DesignItemWrapper*>(getChildComponent(i)))
+                w->setDesignMode(dm);
+        }
+        repaint();
+    }
+
+    void selectWrapper(DesignItemWrapper* w, bool add)
+    {
+        if (!add)
+        {
+            for (auto* sw : selectedWrappers_)
+                sw->setSelected(false);
+            selectedWrappers_.clear();
+        }
+        if (w != nullptr)
+        {
+            if (std::find(selectedWrappers_.begin(), selectedWrappers_.end(), w) == selectedWrappers_.end())
+            {
+                selectedWrappers_.push_back(w);
+                w->setSelected(true);
+            }
+        }
+        repaint();
+    }
+
+    void deselectAll()
+    {
+        for (auto* sw : selectedWrappers_)
+            sw->setSelected(false);
+        selectedWrappers_.clear();
+        repaint();
+    }
+
+    std::vector<DesignItemWrapper*> getSelectedWrappers() const { return selectedWrappers_; }
+
+    void paint(juce::Graphics& g) override
+    {
+        g.fillAll(juce::Colour(0xff161a22));
+
+        if (designMode_)
+        {
+            g.setColour(juce::Colour(0x28a0c0e0));
+            const int step = 20;
+            for (int x = step; x < getWidth(); x += step)
+                for (int y = step; y < getHeight(); y += step)
+                    g.fillRect(x - 1, y - 1, 2, 2);
+
+            if (isMarqueeDragging_ && !marqueeRect_.isEmpty())
+            {
+                g.setColour(juce::Colour(0x3300d4ff));
+                g.fillRect(marqueeRect_);
+                g.setColour(juce::Colour(0xff00d4ff));
+                g.drawRect(marqueeRect_, 1.0f);
+            }
+        }
+    }
+
+    void mouseDown(const juce::MouseEvent& e) override
+    {
+        if (e.mods.isPopupMenu())
+        {
+            owner_.showAddWidgetMenu(e.getPosition());
+            return;
+        }
+
+        if (!designMode_) return;
+
+        if (!e.mods.isShiftDown() && !e.mods.isCommandDown())
+            deselectAll();
+
+        isMarqueeDragging_ = true;
+        marqueeStart_ = e.getPosition();
+        marqueeRect_ = juce::Rectangle<int>(marqueeStart_.x, marqueeStart_.y, 0, 0);
+    }
+
+    void mouseDrag(const juce::MouseEvent& e) override
+    {
+        if (!designMode_ || !isMarqueeDragging_) return;
+
+        const int mx = juce::jmin(marqueeStart_.x, e.getPosition().x);
+        const int my = juce::jmin(marqueeStart_.y, e.getPosition().y);
+        const int mw = std::abs(e.getPosition().x - marqueeStart_.x);
+        const int mh = std::abs(e.getPosition().y - marqueeStart_.y);
+        marqueeRect_ = juce::Rectangle<int>(mx, my, mw, mh);
+        for (int i = 0; i < getNumChildComponents(); ++i)
+        {
+            if (auto* w = dynamic_cast<DesignItemWrapper*>(getChildComponent(i)))
+            {
+                if (marqueeRect_.intersects(w->getBounds()))
+                {
+                    if (std::find(selectedWrappers_.begin(), selectedWrappers_.end(), w) == selectedWrappers_.end())
+                    {
+                        selectedWrappers_.push_back(w);
+                        w->setSelected(true);
+                    }
+                }
+            }
+        }
+        repaint();
+    }
+
+    void mouseUp(const juce::MouseEvent&) override
+    {
+        isMarqueeDragging_ = false;
+        marqueeRect_ = {};
+        repaint();
+    }
+
+private:
+    ControlPanelComponent& owner_;
+    bool designMode_ = false;
+    std::vector<DesignItemWrapper*> selectedWrappers_;
+    bool isMarqueeDragging_ = false;
+    juce::Point<int> marqueeStart_;
+    juce::Rectangle<int> marqueeRect_;
+};
+
+// -----------------------------------------------------------------------------
+// ControlPanelComponent Methods
+// -----------------------------------------------------------------------------
 
 ControlPanelComponent::ControlPanelComponent()
     : ControlPanelComponent(std::make_shared<SystemSimulationSession>())
@@ -2046,9 +3124,6 @@ ControlPanelComponent::ControlPanelComponent()
 ControlPanelComponent::ControlPanelComponent(std::shared_ptr<SystemSimulationSession> session)
     : session_(session)
 {
-    // The active machine model must be loaded explicitly via loadMachine().
-    // Never silently substitute setupDefaultMotorSystem().
-    // Setup Transport Buttons
     auto setupBtn = [this](juce::TextButton& btn, juce::Colour col) {
         addAndMakeVisible(btn);
         btn.setColour(juce::TextButton::buttonColourId, col);
@@ -2062,18 +3137,14 @@ ControlPanelComponent::ControlPanelComponent(std::shared_ptr<SystemSimulationSes
     setupBtn(resetButton, juce::Colour(0xff445261));
 
     runButton.onClick = [this] {
-        if (!session_)
-            return;
-        if (onEnsureCompiled)
-            onEnsureCompiled();
+        if (!session_) return;
+        if (onEnsureCompiled) onEnsureCompiled();
         session_->start();
     };
     pauseButton.onClick = [this] { if (session_) session_->pause(); };
     stepButton.onClick = [this] {
-        if (!session_)
-            return;
-        if (onEnsureCompiled)
-            onEnsureCompiled();
+        if (!session_) return;
+        if (onEnsureCompiled) onEnsureCompiled();
         session_->stepSingle(0.005);
     };
     stopButton.onClick = [this] { if (session_) session_->stop(); };
@@ -2114,9 +3185,7 @@ ControlPanelComponent::ControlPanelComponent(std::shared_ptr<SystemSimulationSes
     setupPanelBtn(renamePanelButton);
     setupPanelBtn(removePanelButton);
 
-    newPanelButton.onClick = [this] {
-        createNewPanel();
-    };
+    newPanelButton.onClick = [this] { createNewPanel(); };
     renamePanelButton.onClick = [this] {
         if (auto* panel = layout_.findPanel(layout_.activePanelId))
         {
@@ -2144,27 +3213,593 @@ ControlPanelComponent::ControlPanelComponent(std::shared_ptr<SystemSimulationSes
                 }), true);
         }
     };
-    removePanelButton.onClick = [this] {
-        removeActivePanel();
-    };
+    removePanelButton.onClick = [this] { removeActivePanel(); };
+
+    // Designer transport buttons
+    setupPanelBtn(modeButton);
+    modeButton.onClick = [this] { setDesignMode(!designMode_); };
+
+    setupPanelBtn(addWidgetButton);
+    addWidgetButton.onClick = [this] { showAddWidgetMenu(juce::Point<int>(60, 60)); };
+    addWidgetButton.setVisible(false);
+
+    setupPanelBtn(alignButton);
+    alignButton.onClick = [this] { showAlignMenu(); };
+    alignButton.setVisible(false);
 
     addAndMakeVisible(statusLabel);
     statusLabel.setFont(juce::Font(13.0f, juce::Font::bold));
     statusLabel.setColour(juce::Label::textColourId, juce::Colour(0xff66ff99));
     statusLabel.setText("STOPPED", juce::dontSendNotification);
 
-    addAndMakeVisible(inputViewport);
-    addAndMakeVisible(outputViewport);
+    canvasComponent = std::make_unique<ControlPanelCanvas>(*this);
+    addAndMakeVisible(canvasViewport);
+    canvasViewport.setViewedComponent(canvasComponent.get(), false);
+    canvasViewport.setScrollBarsShown(true, true);
 
     ControlPanelLayout blank;
     blank.title = "No Active Machine";
     setLayout(blank);
-    startTimerHz(30); // 30 Hz UI refresh
+    startTimerHz(30);
 }
 
 ControlPanelComponent::~ControlPanelComponent()
 {
     stopTimer();
+}
+
+void ControlPanelComponent::setDesignMode(bool isDesign)
+{
+    designMode_ = isDesign;
+    if (auto* panel = layout_.findPanel(layout_.activePanelId))
+        panel->designMode = isDesign;
+    if (canvasComponent)
+        canvasComponent->setDesignMode(isDesign);
+
+    modeButton.setButtonText(designMode_ ? "Run Mode" : "Design Mode");
+    modeButton.setColour(juce::TextButton::buttonColourId,
+                         designMode_ ? juce::Colour(0xffb86200) : juce::Colour(0xff22313d));
+    addWidgetButton.setVisible(designMode_);
+    alignButton.setVisible(designMode_);
+    resized();
+}
+
+bool ControlPanelComponent::addWidget(const WidgetConfig& config)
+{
+    auto copy = config;
+    if (copy.id.empty())
+        copy.id = "elem_" + juce::String(juce::Random::getSystemRandom().nextInt(999999)).toStdString();
+    if (copy.panelId.empty())
+        copy.panelId = layout_.activePanelId;
+
+    layout_.widgets.push_back(copy);
+    layout_.ensureWidgetBounds();
+    buildWidgets();
+    resized();
+    notifyLayoutChanged();
+    return true;
+}
+
+bool ControlPanelComponent::removeWidget(const std::string& widgetId)
+{
+    const auto initialSize = layout_.widgets.size();
+    layout_.widgets.erase(std::remove_if(layout_.widgets.begin(), layout_.widgets.end(),
+                                         [&](const auto& w) { return w.id == widgetId; }),
+                          layout_.widgets.end());
+    if (layout_.widgets.size() != initialSize)
+    {
+        buildWidgets();
+        resized();
+        notifyLayoutChanged();
+        return true;
+    }
+    return false;
+}
+
+bool ControlPanelComponent::configureWidget(const std::string& widgetId, const WidgetConfig& newConfig)
+{
+    for (auto& w : layout_.widgets)
+    {
+        if (w.id == widgetId)
+        {
+            w = newConfig;
+            updateWidgetConfig(newConfig);
+            return true;
+        }
+    }
+    return false;
+}
+
+const WidgetConfig* ControlPanelComponent::getWidgetConfig(const std::string& widgetId) const
+{
+    return layout_.findWidget(widgetId);
+}
+
+bool ControlPanelComponent::setWidgetBounds(const std::string& widgetId, int x, int y, int width, int height)
+{
+    for (auto& w : layout_.widgets)
+    {
+        if (w.id == widgetId)
+        {
+            w.x = x;
+            w.y = y;
+            w.width = width;
+            w.height = height;
+            for (auto& ov : outputViews_)
+            {
+                if (auto* wrapper = dynamic_cast<DesignItemWrapper*>(ov.component.get()))
+                {
+                    if (wrapper->config.id == widgetId)
+                    {
+                        wrapper->setBounds(x, y, width, height);
+                        wrapper->config = w;
+                        break;
+                    }
+                }
+            }
+            resized();
+            notifyLayoutChanged();
+            return true;
+        }
+    }
+    return false;
+}
+
+juce::Rectangle<int> ControlPanelComponent::getWidgetBounds(const std::string& widgetId) const
+{
+    for (const auto& w : layout_.widgets)
+        if (w.id == widgetId)
+            return { w.x, w.y, w.width, w.height };
+    return {};
+}
+
+void ControlPanelComponent::selectWidget(const std::string& widgetId, bool addToSelection)
+{
+    if (!canvasComponent) return;
+    for (int i = 0; i < canvasComponent->getNumChildComponents(); ++i)
+    {
+        if (auto* wrapper = dynamic_cast<DesignItemWrapper*>(canvasComponent->getChildComponent(i)))
+        {
+            if (wrapper->config.id == widgetId)
+            {
+                canvasComponent->selectWrapper(wrapper, addToSelection);
+                return;
+            }
+        }
+    }
+}
+
+void ControlPanelComponent::deselectAll()
+{
+    if (canvasComponent)
+        canvasComponent->deselectAll();
+}
+
+std::vector<std::string> ControlPanelComponent::getSelectedWidgetIds() const
+{
+    std::vector<std::string> ids;
+    if (canvasComponent)
+    {
+        for (auto* w : canvasComponent->getSelectedWrappers())
+            ids.push_back(w->config.id);
+    }
+    return ids;
+}
+
+bool ControlPanelComponent::alignSelectedWidgets(const std::string& alignment)
+{
+    if (!canvasComponent) return false;
+    const auto selected = canvasComponent->getSelectedWrappers();
+    if (selected.size() < 2) return false;
+
+    if (alignment == "left")
+    {
+        int minX = std::numeric_limits<int>::max();
+        for (auto* w : selected) minX = std::min(minX, w->getX());
+        for (auto* w : selected)
+        {
+            w->setTopLeftPosition(minX, w->getY());
+            w->config.x = minX;
+            updateWidgetConfig(w->config);
+        }
+    }
+    else if (alignment == "right")
+    {
+        int maxR = std::numeric_limits<int>::min();
+        for (auto* w : selected) maxR = std::max(maxR, w->getRight());
+        for (auto* w : selected)
+        {
+            w->setTopLeftPosition(maxR - w->getWidth(), w->getY());
+            w->config.x = maxR - w->getWidth();
+            updateWidgetConfig(w->config);
+        }
+    }
+    else if (alignment == "top")
+    {
+        int minY = std::numeric_limits<int>::max();
+        for (auto* w : selected) minY = std::min(minY, w->getY());
+        for (auto* w : selected)
+        {
+            w->setTopLeftPosition(w->getX(), minY);
+            w->config.y = minY;
+            updateWidgetConfig(w->config);
+        }
+    }
+    else if (alignment == "bottom")
+    {
+        int maxB = std::numeric_limits<int>::min();
+        for (auto* w : selected) maxB = std::max(maxB, w->getBottom());
+        for (auto* w : selected)
+        {
+            w->setTopLeftPosition(w->getX(), maxB - w->getHeight());
+            w->config.y = maxB - w->getHeight();
+            updateWidgetConfig(w->config);
+        }
+    }
+    else if (alignment == "sameWidth")
+    {
+        const int targetW = selected.front()->getWidth();
+        for (auto* w : selected)
+        {
+            w->setSize(targetW, w->getHeight());
+            w->config.width = targetW;
+            updateWidgetConfig(w->config);
+        }
+    }
+    else if (alignment == "sameHeight")
+    {
+        const int targetH = selected.front()->getHeight();
+        for (auto* w : selected)
+        {
+            w->setSize(w->getWidth(), targetH);
+            w->config.height = targetH;
+            updateWidgetConfig(w->config);
+        }
+    }
+
+    notifyLayoutChanged();
+    return true;
+}
+
+bool ControlPanelComponent::duplicateSelectedWidgets()
+{
+    const auto ids = getSelectedWidgetIds();
+    if (ids.empty()) return false;
+    for (const auto& id : ids)
+    {
+        if (const auto* cfg = getWidgetConfig(id))
+        {
+            auto copy = *cfg;
+            copy.id = copy.id + "_copy";
+            copy.x += 24;
+            copy.y += 24;
+            addWidget(copy);
+        }
+    }
+    return true;
+}
+
+bool ControlPanelComponent::deleteSelectedWidgets()
+{
+    const auto ids = getSelectedWidgetIds();
+    if (ids.empty()) return false;
+    for (const auto& id : ids)
+        removeWidget(id);
+    return true;
+}
+
+std::vector<SignalDef> ControlPanelComponent::getAvailableSignals() const
+{
+    std::vector<SignalDef> sigs;
+    std::map<std::string, bool> seen;
+
+    auto addSig = [&](const std::string& name, DataType dt, bool isOutput, const std::string& unit, const std::string& desc) {
+        if (name.empty() || seen.count(name) != 0) return;
+        seen[name] = true;
+        SignalDef def;
+        def.name = name;
+        def.type = dt;
+        def.isOutput = isOutput;
+        def.unit = unit;
+        def.description = desc;
+        sigs.push_back(def);
+    };
+
+    if (session_)
+    {
+        const auto snap = session_->getSnapshot();
+        for (const auto& [name, val] : snap.numericSignals)
+        {
+            const bool isInput = session_->inputElementBindings().count(name) != 0
+                                 || name.rfind("system.", 0) == 0
+                                 || name.find(".setpoint") != std::string::npos
+                                 || name.find(".load") != std::string::npos;
+            std::string unit;
+            if (name.find("speed") != std::string::npos) unit = "rad/s";
+            else if (name.find("torque") != std::string::npos || name.find("load") != std::string::npos) unit = "N*m";
+            else if (name.find("voltage") != std::string::npos || name.find("drive") != std::string::npos) unit = "V";
+            else if (name.find("current") != std::string::npos) unit = "A";
+            else if (name.find("angle") != std::string::npos) unit = "rad";
+
+            addSig(name, DataType::Numeric, !isInput, unit, isInput ? "Operator Numeric Input" : "Simulation Numeric Output");
+        }
+        for (const auto& [name, val] : snap.booleanSignals)
+        {
+            const bool isInput = name.rfind("system.", 0) == 0
+                                 || name.find("power") != std::string::npos
+                                 || name.find("start") != std::string::npos
+                                 || name.find("stop") != std::string::npos
+                                 || name.find("estop") != std::string::npos
+                                 || name.find("reset") != std::string::npos;
+            addSig(name, DataType::Boolean, !isInput, "", isInput ? "Operator Boolean Control" : "Simulation Status Output");
+        }
+    }
+
+    addSig("system.power", DataType::Boolean, false, "", "Master Power Switch");
+    addSig("system.start", DataType::Boolean, false, "", "Start Cycle Command");
+    addSig("system.stop", DataType::Boolean, false, "", "Stop Cycle Command");
+    addSig("system.estop", DataType::Boolean, false, "", "Emergency Stop");
+    addSig("system.reset", DataType::Boolean, false, "", "Fault Reset");
+    addSig("system.speed_setpoint", DataType::Numeric, false, "rad/s", "Speed Setpoint");
+    addSig("motor.load_torque", DataType::Numeric, false, "N*m", "Mechanical Load");
+    addSig("motor.speed", DataType::Numeric, true, "rad/s", "Motor Speed");
+    addSig("motor.angle", DataType::Numeric, true, "rad", "Rotor Angle");
+    addSig("motor.current", DataType::Numeric, true, "A", "Armature Current");
+    addSig("running", DataType::Boolean, true, "", "Running Status Indicator");
+    addSig("fault", DataType::Boolean, true, "", "Fault Alarm Indicator");
+
+    for (const auto& w : layout_.widgets)
+    {
+        if (!w.signalName.empty())
+        {
+            const bool isInput = (w.column == 0);
+            const DataType dt = (w.type == WidgetType::PushButton || w.type == WidgetType::ToggleSwitch
+                                 || w.type == WidgetType::IndicatorLamp || w.type == WidgetType::EmergencyStop)
+                              ? DataType::Boolean : DataType::Numeric;
+            addSig(w.signalName, dt, !isInput, w.unit, "Configured Widget Signal");
+        }
+    }
+
+    return sigs;
+}
+
+juce::Point<int> ControlPanelComponent::getCanvasScrollPosition() const
+{
+    return { canvasViewport.getViewPositionX(), canvasViewport.getViewPositionY() };
+}
+
+void ControlPanelComponent::setCanvasScrollPosition(int x, int y)
+{
+    canvasViewport.setViewPosition(x, y);
+}
+
+juce::Rectangle<int> ControlPanelComponent::getCanvasVisibleArea() const
+{
+    return canvasViewport.getViewArea();
+}
+
+juce::Rectangle<int> ControlPanelComponent::getCanvasTotalArea() const
+{
+    return canvasComponent ? canvasComponent->getBounds() : juce::Rectangle<int>();
+}
+
+std::unique_ptr<juce::Component> ControlPanelComponent::createWidgetPropertiesDialog(const std::string& widgetId)
+{
+    const auto* cfg = getWidgetConfig(widgetId);
+    if (cfg == nullptr) return nullptr;
+
+    return std::make_unique<WidgetPropertiesDialog>(
+        *cfg, getAvailableSignals(),
+        [this](const WidgetConfig& updated) {
+            configureWidget(updated.id, updated);
+        });
+}
+
+void ControlPanelComponent::showWidgetPropertiesDialog(const std::string& widgetId)
+{
+    const auto* cfg = getWidgetConfig(widgetId);
+    if (cfg == nullptr) return;
+
+    auto dialog = createWidgetPropertiesDialog(widgetId);
+    if (!dialog) return;
+
+    juce::DialogWindow::LaunchOptions opt;
+    opt.dialogTitle = "Widget Properties & Signal Connection - " + juce::String(cfg->id);
+    opt.content.setOwned(dialog.release());
+    opt.content->setSize(520, 560);
+    opt.dialogBackgroundColour = juce::Colour(0xff1b222c);
+    opt.escapeKeyTriggersCloseButton = true;
+    opt.useNativeTitleBar = true;
+    opt.resizable = false;
+    opt.launchAsync();
+}
+
+juce::Component* ControlPanelComponent::getWidgetComponent(const std::string& widgetId) const
+{
+    for (const auto& ov : outputViews_)
+    {
+        if (auto* wrapper = dynamic_cast<DesignItemWrapper*>(ov.component.get()))
+        {
+            if (wrapper->config.id == widgetId)
+                return wrapper->widget.get();
+        }
+    }
+    return nullptr;
+}
+
+void ControlPanelComponent::showAddWidgetMenu(juce::Point<int> canvasPos)
+{
+    juce::PopupMenu menu;
+    juce::PopupMenu instrMenu;
+    instrMenu.addItem("Analog Needle Gauge", [this, canvasPos] {
+        WidgetConfig w;
+        w.id = "gauge_" + juce::String(juce::Random::getSystemRandom().nextInt(9999)).toStdString();
+        w.type = WidgetType::AnalogGauge;
+        w.title = "Analog Gauge";
+        w.width = 180; w.height = 180;
+        w.x = canvasPos.x; w.y = canvasPos.y;
+        w.column = 1;
+        addWidget(w);
+    });
+    instrMenu.addItem("Digital Readout", [this, canvasPos] {
+        WidgetConfig w;
+        w.id = "num_" + juce::String(juce::Random::getSystemRandom().nextInt(9999)).toStdString();
+        w.type = WidgetType::DigitalReadout;
+        w.title = "Digital Readout";
+        w.width = 180; w.height = 48;
+        w.x = canvasPos.x; w.y = canvasPos.y;
+        w.column = 1;
+        addWidget(w);
+    });
+    instrMenu.addItem("Bar Gauge (Horizontal)", [this, canvasPos] {
+        WidgetConfig w;
+        w.id = "bar_" + juce::String(juce::Random::getSystemRandom().nextInt(9999)).toStdString();
+        w.type = WidgetType::BarGauge;
+        w.title = "Bar Gauge";
+        w.vertical = false;
+        w.width = 200; w.height = 42;
+        w.x = canvasPos.x; w.y = canvasPos.y;
+        w.column = 1;
+        addWidget(w);
+    });
+    instrMenu.addItem("Bar Gauge (Vertical)", [this, canvasPos] {
+        WidgetConfig w;
+        w.id = "bar_" + juce::String(juce::Random::getSystemRandom().nextInt(9999)).toStdString();
+        w.type = WidgetType::BarGauge;
+        w.title = "Bar Gauge";
+        w.vertical = true;
+        w.width = 80; w.height = 180;
+        w.x = canvasPos.x; w.y = canvasPos.y;
+        w.column = 1;
+        addWidget(w);
+    });
+    instrMenu.addItem("Indicator Lamp", [this, canvasPos] {
+        WidgetConfig w;
+        w.id = "lamp_" + juce::String(juce::Random::getSystemRandom().nextInt(9999)).toStdString();
+        w.type = WidgetType::IndicatorLamp;
+        w.title = "Indicator Lamp";
+        w.width = 180; w.height = 36;
+        w.x = canvasPos.x; w.y = canvasPos.y;
+        w.column = 1;
+        addWidget(w);
+    });
+    menu.addSubMenu("Add Instrument", instrMenu);
+
+    juce::PopupMenu ctrlMenu;
+    ctrlMenu.addItem("Momentary Pushbutton", [this, canvasPos] {
+        WidgetConfig w;
+        w.id = "btn_" + juce::String(juce::Random::getSystemRandom().nextInt(9999)).toStdString();
+        w.type = WidgetType::PushButton;
+        w.title = "Push Button";
+        w.momentary = true;
+        w.width = 160; w.height = 32;
+        w.x = canvasPos.x; w.y = canvasPos.y;
+        w.column = 0;
+        addWidget(w);
+    });
+    ctrlMenu.addItem("Latching Switch", [this, canvasPos] {
+        WidgetConfig w;
+        w.id = "latch_" + juce::String(juce::Random::getSystemRandom().nextInt(9999)).toStdString();
+        w.type = WidgetType::LatchingButton;
+        w.title = "Latching Switch";
+        w.momentary = false;
+        w.width = 160; w.height = 32;
+        w.x = canvasPos.x; w.y = canvasPos.y;
+        w.column = 0;
+        addWidget(w);
+    });
+    ctrlMenu.addItem("Toggle Switch", [this, canvasPos] {
+        WidgetConfig w;
+        w.id = "sw_" + juce::String(juce::Random::getSystemRandom().nextInt(9999)).toStdString();
+        w.type = WidgetType::ToggleSwitch;
+        w.title = "Toggle Switch";
+        w.width = 160; w.height = 32;
+        w.x = canvasPos.x; w.y = canvasPos.y;
+        w.column = 0;
+        addWidget(w);
+    });
+    ctrlMenu.addItem("Rotary Knob", [this, canvasPos] {
+        WidgetConfig w;
+        w.id = "knob_" + juce::String(juce::Random::getSystemRandom().nextInt(9999)).toStdString();
+        w.type = WidgetType::Knob;
+        w.title = "Control Knob";
+        w.width = 140; w.height = 64;
+        w.x = canvasPos.x; w.y = canvasPos.y;
+        w.column = 0;
+        addWidget(w);
+    });
+    ctrlMenu.addItem("Slider (Horizontal)", [this, canvasPos] {
+        WidgetConfig w;
+        w.id = "slider_" + juce::String(juce::Random::getSystemRandom().nextInt(9999)).toStdString();
+        w.type = WidgetType::Slider;
+        w.title = "Control Slider";
+        w.vertical = false;
+        w.width = 220; w.height = 42;
+        w.x = canvasPos.x; w.y = canvasPos.y;
+        w.column = 0;
+        addWidget(w);
+    });
+    ctrlMenu.addItem("Selector Switch", [this, canvasPos] {
+        WidgetConfig w;
+        w.id = "sel_" + juce::String(juce::Random::getSystemRandom().nextInt(9999)).toStdString();
+        w.type = WidgetType::ModeSelector;
+        w.title = "Mode Selector";
+        w.options = { "OFF", "MANUAL", "AUTO" };
+        w.width = 180; w.height = 42;
+        w.x = canvasPos.x; w.y = canvasPos.y;
+        w.column = 0;
+        addWidget(w);
+    });
+    ctrlMenu.addItem("Indicator Button", [this, canvasPos] {
+        WidgetConfig w;
+        w.id = "indbtn_" + juce::String(juce::Random::getSystemRandom().nextInt(9999)).toStdString();
+        w.type = WidgetType::IndicatorButton;
+        w.title = "Status Button";
+        w.width = 180; w.height = 36;
+        w.x = canvasPos.x; w.y = canvasPos.y;
+        w.column = 0;
+        addWidget(w);
+    });
+    ctrlMenu.addItem("Emergency Stop", [this, canvasPos] {
+        WidgetConfig w;
+        w.id = "estop_" + juce::String(juce::Random::getSystemRandom().nextInt(9999)).toStdString();
+        w.type = WidgetType::EmergencyStop;
+        w.title = "EMERGENCY STOP";
+        w.width = 220; w.height = 54;
+        w.x = canvasPos.x; w.y = canvasPos.y;
+        w.column = 0;
+        addWidget(w);
+    });
+    menu.addSubMenu("Add Control", ctrlMenu);
+
+    if (!clipboard_.empty())
+    {
+        menu.addSeparator();
+        menu.addItem("Paste", [this, canvasPos] {
+            for (auto item : clipboard_)
+            {
+                item.id = item.id + "_copy";
+                item.x = canvasPos.x;
+                item.y = canvasPos.y;
+                addWidget(item);
+            }
+        });
+    }
+
+    menu.showMenuAsync(juce::PopupMenu::Options().withTargetComponent(this));
+}
+
+void ControlPanelComponent::showAlignMenu()
+{
+    juce::PopupMenu menu;
+    menu.addItem("Align Left", [this] { alignSelectedWidgets("left"); });
+    menu.addItem("Align Right", [this] { alignSelectedWidgets("right"); });
+    menu.addItem("Align Top", [this] { alignSelectedWidgets("top"); });
+    menu.addItem("Align Bottom", [this] { alignSelectedWidgets("bottom"); });
+    menu.addSeparator();
+    menu.addItem("Make Same Width", [this] { alignSelectedWidgets("sameWidth"); });
+    menu.addItem("Make Same Height", [this] { alignSelectedWidgets("sameHeight"); });
+    menu.showMenuAsync(juce::PopupMenu::Options().withTargetComponent(&alignButton));
 }
 
 std::string ControlPanelComponent::createNewPanel(const std::string& title)
@@ -2253,6 +3888,7 @@ void ControlPanelComponent::setLayout(const ControlPanelLayout& layout)
         return;
     layout_ = layout;
     layout_.ensureDefaultPanel();
+    layout_.ensureWidgetBounds();
     rebuildPanelSelector();
     buildWidgets();
     resized();
@@ -2310,32 +3946,19 @@ void ControlPanelComponent::updateWidgetConfig(const WidgetConfig& config)
     {
         if (widget.id == config.id)
         {
-            const bool structuralChange = (widget.height != config.height
-                                           || widget.column != config.column
-                                           || widget.order != config.order
-                                           || widget.plotChannels.size() != config.plotChannels.size());
-            bool lanesHeightChange = false;
-            if (!structuralChange && widget.plotChannels.size() == config.plotChannels.size())
+            widget = config;
+            for (auto& ov : outputViews_)
             {
-                for (size_t c = 0; c < widget.plotChannels.size(); ++c)
+                if (auto* wrapper = dynamic_cast<DesignItemWrapper*>(ov.component.get()))
                 {
-                    if (widget.plotChannels[c].laneHeight != config.plotChannels[c].laneHeight
-                        || widget.plotChannels[c].collapsed != config.plotChannels[c].collapsed)
+                    if (wrapper->config.id == config.id)
                     {
-                        lanesHeightChange = true;
+                        wrapper->config = config;
+                        wrapper->setBounds(config.x, config.y, config.width, config.height);
                         break;
                     }
                 }
             }
-
-            widget = config;
-            for (auto& ov : outputViews_)
-                if (ov.config.id == config.id)
-                    ov.config = config;
-
-            if (structuralChange || lanesHeightChange)
-                resized();
-
             notifyLayoutChanged();
             return;
         }
@@ -2359,21 +3982,26 @@ bool& ControlPanelComponent::recordingEnabledFor(const std::string& widgetId)
 
 void ControlPanelComponent::buildWidgets()
 {
-    inputViews_.clear();
+    if (!canvasComponent)
+        return;
+
+    canvasComponent->removeAllChildren();
     outputViews_.clear();
 
-    inputContainer = std::make_unique<juce::Component>();
-    outputContainer = std::make_unique<juce::Component>();
     const auto panelId = layout_.activePanelId.empty() ? std::string("main") : layout_.activePanelId;
+    layout_.ensureDefaultPanel();
+    layout_.ensureWidgetBounds();
 
     for (const auto& w : layout_.widgets)
     {
         if (!w.panelId.empty() && w.panelId != panelId)
             continue;
 
-        if (w.column == 0) // Inputs
+        std::unique_ptr<juce::Component> comp;
+
+        if (w.type == WidgetType::PushButton)
         {
-            if (w.type == WidgetType::PushButton)
+            if (w.momentary)
             {
                 auto btn = std::make_unique<juce::TextButton>(juce::String(w.title));
                 const auto nameLower = juce::String(w.title).toLowerCase() + " " + juce::String(w.id).toLowerCase();
@@ -2381,17 +4009,17 @@ void ControlPanelComponent::buildWidgets()
                 juce::Colour textCol(0xffe6f0f8);
                 if (nameLower.contains("start"))
                 {
-                    btnCol = juce::Colour(0xff1b5e20); // industrial dark green
+                    btnCol = juce::Colour(0xff1b5e20);
                     textCol = juce::Colour(0xffe8f5e9);
                 }
                 else if (nameLower.contains("stop"))
                 {
-                    btnCol = juce::Colour(0xff7f1d1d); // industrial stop red / maroon
+                    btnCol = juce::Colour(0xff7f1d1d);
                     textCol = juce::Colour(0xffffebee);
                 }
                 else if (nameLower.contains("reset"))
                 {
-                    btnCol = juce::Colour(0xff2b3a4a); // industrial slate
+                    btnCol = juce::Colour(0xff2b3a4a);
                     textCol = juce::Colour(0xffe3f2fd);
                 }
                 btn->setColour(juce::TextButton::buttonColourId, btnCol);
@@ -2403,111 +4031,214 @@ void ControlPanelComponent::buildWidgets()
                     if (session_)
                         session_->setBooleanInput(sig, btnPtr->isDown());
                 };
-                inputContainer->addAndMakeVisible(*btn);
-                inputViews_.push_back({ w, std::move(btn) });
+                comp = std::move(btn);
             }
-            else if (w.type == WidgetType::ToggleSwitch)
+            else
             {
-                auto tog = std::make_unique<ToggleSwitchComponent>(w.title);
+                auto indBtn = std::make_unique<IndicatorButtonComponent>(w.title, true);
                 const auto sig = w.signalName;
                 const bool initState = activeBooleanControlValues_.count(sig) != 0
                                      ? activeBooleanControlValues_[sig]
                                      : (w.defaultValue > 0.5);
-                tog->setToggleState(initState, juce::dontSendNotification);
-                tog->onClick = [this, togPtr = tog.get(), sig] {
-                    activeBooleanControlValues_[sig] = togPtr->getToggleState();
-                    if (session_)
-                        session_->setBooleanInput(sig, togPtr->getToggleState());
-                };
-                inputContainer->addAndMakeVisible(*tog);
-                inputViews_.push_back({ w, std::move(tog) });
-            }
-            else if (w.type == WidgetType::Knob || w.type == WidgetType::Slider)
-            {
-                auto ctrl = std::make_unique<LabeledSliderComponent>(w.title, w.unit, w.type == WidgetType::Knob);
-                ctrl->slider.setRange(w.minValue, w.maxValue, w.stepSize);
-                const auto sig = w.signalName;
-                const double initVal = activeNumericControlValues_.count(sig) != 0
-                                     ? activeNumericControlValues_[sig]
-                                     : w.defaultValue;
-                ctrl->slider.setValue(initVal, juce::dontSendNotification);
-                ctrl->slider.onValueChange = [this, sldPtr = &ctrl->slider, sig] {
-                    activeNumericControlValues_[sig] = sldPtr->getValue();
-                    if (session_)
-                        session_->setNumericInput(sig, sldPtr->getValue());
-                };
-                inputContainer->addAndMakeVisible(*ctrl);
-                inputViews_.push_back({ w, std::move(ctrl) });
-            }
-            else if (w.type == WidgetType::EmergencyStop)
-            {
-                auto estop = std::make_unique<EmergencyStopComponent>();
-                const auto sig = w.signalName;
-                estop->onStateChanged = [this, sig](bool latched) {
+                indBtn->setLatched(initState);
+                indBtn->onStateChange = [this, sig](bool latched) {
                     activeBooleanControlValues_[sig] = latched;
                     if (session_)
                         session_->setBooleanInput(sig, latched);
                 };
-                inputContainer->addAndMakeVisible(*estop);
-                inputViews_.push_back({ w, std::move(estop) });
-            }
-            else if (w.type == WidgetType::ModeSelector)
-            {
-                auto cb = std::make_unique<juce::ComboBox>();
-                for (size_t i = 0; i < w.options.size(); ++i)
-                    cb->addItem(juce::String(w.options[i]), (int)i + 1);
-                cb->setSelectedId(1, juce::dontSendNotification);
-                const auto sig = w.signalName;
-                cb->onChange = [this, cbPtr = cb.get(), sig] {
-                    const double v = (double)(cbPtr->getSelectedId() - 1);
-                    activeNumericControlValues_[sig] = v;
-                    if (session_)
-                        session_->setNumericInput(sig, v);
-                };
-                inputContainer->addAndMakeVisible(*cb);
-                inputViews_.push_back({ w, std::move(cb) });
+                comp = std::move(indBtn);
             }
         }
-        else // Outputs
+        else if (w.type == WidgetType::LatchingButton)
         {
-            if (w.type == WidgetType::AnalogGauge)
-            {
-                auto gauge = std::make_unique<AnalogGaugeComponent>(w.title, w.unit, w.minValue, w.maxValue);
-                outputContainer->addAndMakeVisible(*gauge);
-                outputViews_.push_back({ w, std::move(gauge) });
-            }
-            else if (w.type == WidgetType::DigitalReadout || w.type == WidgetType::ClockDisplay)
-            {
-                auto num = std::make_unique<DigitalReadoutComponent>(w.title, w.unit);
-                outputContainer->addAndMakeVisible(*num);
-                outputViews_.push_back({ w, std::move(num) });
-            }
-            else if (w.type == WidgetType::IndicatorLamp)
-            {
-                juce::Colour c = w.id.find("fault") != std::string::npos ? juce::Colour(0xffff3333) : juce::Colour(0xff33dd55);
-                auto lamp = std::make_unique<IndicatorLampComponent>(w.title, c);
-                outputContainer->addAndMakeVisible(*lamp);
-                outputViews_.push_back({ w, std::move(lamp) });
-            }
-            else if (w.type == WidgetType::TrendChart)
-            {
-                auto chart = std::make_unique<TrendChartComponent>();
-                outputContainer->addAndMakeVisible(*chart);
-                outputViews_.push_back({ w, std::move(chart) });
-            }
-            else if (w.type == WidgetType::PlotPanel)
-            {
-                auto plot = std::make_unique<PlotPanelWidget>(
-                    w, recordingFor(w.id), recordingEnabledFor(w.id),
-                    [this](const WidgetConfig& config) { updateWidgetConfig(config); });
-                outputContainer->addAndMakeVisible(*plot);
-                outputViews_.push_back({ w, std::move(plot) });
-            }
+            auto indBtn = std::make_unique<IndicatorButtonComponent>(w.title, true);
+            const auto sig = w.signalName;
+            const bool initState = activeBooleanControlValues_.count(sig) != 0
+                                 ? activeBooleanControlValues_[sig]
+                                 : (w.defaultValue > 0.5);
+            indBtn->setLatched(initState);
+            indBtn->onStateChange = [this, sig](bool latched) {
+                activeBooleanControlValues_[sig] = latched;
+                if (session_)
+                    session_->setBooleanInput(sig, latched);
+            };
+            comp = std::move(indBtn);
+        }
+        else if (w.type == WidgetType::ToggleSwitch)
+        {
+            auto tog = std::make_unique<ToggleSwitchComponent>(w.title);
+            const auto sig = w.signalName;
+            const bool initState = activeBooleanControlValues_.count(sig) != 0
+                                 ? activeBooleanControlValues_[sig]
+                                 : (w.defaultValue > 0.5);
+            tog->setToggleState(initState, juce::dontSendNotification);
+            tog->onClick = [this, togPtr = tog.get(), sig] {
+                activeBooleanControlValues_[sig] = togPtr->getToggleState();
+                if (session_)
+                    session_->setBooleanInput(sig, togPtr->getToggleState());
+            };
+            comp = std::move(tog);
+        }
+        else if (w.type == WidgetType::Knob || w.type == WidgetType::Slider)
+        {
+            auto ctrl = std::make_unique<LabeledSliderComponent>(w.title, w.unit, w.type == WidgetType::Knob, w.vertical);
+            ctrl->slider.setRange(w.minValue, w.maxValue, w.stepSize);
+            const auto sig = w.signalName;
+            const double initVal = activeNumericControlValues_.count(sig) != 0
+                                 ? activeNumericControlValues_[sig]
+                                 : w.defaultValue;
+            ctrl->slider.setValue(initVal, juce::dontSendNotification);
+            ctrl->slider.onValueChange = [this, sldPtr = &ctrl->slider, sig] {
+                activeNumericControlValues_[sig] = sldPtr->getValue();
+                if (session_)
+                    session_->setNumericInput(sig, sldPtr->getValue());
+            };
+            comp = std::move(ctrl);
+        }
+        else if (w.type == WidgetType::EmergencyStop)
+        {
+            auto estop = std::make_unique<EmergencyStopComponent>();
+            const auto sig = w.signalName;
+            estop->onStateChanged = [this, sig](bool latched) {
+                activeBooleanControlValues_[sig] = latched;
+                if (session_)
+                    session_->setBooleanInput(sig, latched);
+            };
+            comp = std::move(estop);
+        }
+        else if (w.type == WidgetType::ModeSelector)
+        {
+            auto sel = std::make_unique<SelectorSwitchComponent>(w.title, w.options);
+            const auto sig = w.signalName;
+            const int initVal = activeNumericControlValues_.count(sig) != 0
+                              ? (int)activeNumericControlValues_[sig]
+                              : (int)w.defaultValue;
+            sel->setSelectedIndex(initVal);
+            sel->onSelectionChanged = [this, sig](int idx) {
+                activeNumericControlValues_[sig] = (double)idx;
+                if (session_)
+                    session_->setNumericInput(sig, (double)idx);
+            };
+            comp = std::move(sel);
+        }
+        else if (w.type == WidgetType::IndicatorButton)
+        {
+            auto indBtn = std::make_unique<IndicatorButtonComponent>(w.title, !w.momentary);
+            const auto sig = w.signalName;
+            indBtn->onStateChange = [this, sig](bool active) {
+                activeBooleanControlValues_[sig] = active;
+                if (session_)
+                    session_->setBooleanInput(sig, active);
+            };
+            comp = std::move(indBtn);
+        }
+        else if (w.type == WidgetType::AnalogGauge)
+        {
+            comp = std::make_unique<AnalogGaugeComponent>(
+                w.title, w.unit, w.minValue, w.maxValue, w.precision,
+                w.hasWarnRange, w.warnMin, w.warnMax,
+                w.hasCritRange, w.critMin, w.critMax);
+        }
+        else if (w.type == WidgetType::DigitalReadout || w.type == WidgetType::ClockDisplay)
+        {
+            comp = std::make_unique<DigitalReadoutComponent>(
+                w.title, w.unit, w.precision,
+                w.hasWarnRange, w.warnMin, w.warnMax,
+                w.hasCritRange, w.critMin, w.critMax);
+        }
+        else if (w.type == WidgetType::BarGauge)
+        {
+            comp = std::make_unique<BarGaugeComponent>(
+                w.title, w.unit, w.minValue, w.maxValue, w.vertical, w.precision,
+                w.hasWarnRange, w.warnMin, w.warnMax,
+                w.hasCritRange, w.critMin, w.critMax);
+        }
+        else if (w.type == WidgetType::IndicatorLamp)
+        {
+            juce::Colour c = (w.id.find("fault") != std::string::npos || w.title.find("Fault") != std::string::npos)
+                           ? juce::Colour(0xffff3333) : juce::Colour(0xff33dd55);
+            comp = std::make_unique<IndicatorLampComponent>(w.title, c);
+        }
+        else if (w.type == WidgetType::TrendChart)
+        {
+            comp = std::make_unique<TrendChartComponent>();
+        }
+        else if (w.type == WidgetType::PlotPanel)
+        {
+            comp = std::make_unique<PlotPanelWidget>(
+                w, recordingFor(w.id), recordingEnabledFor(w.id),
+                [this](const WidgetConfig& config) { updateWidgetConfig(config); });
+        }
+
+        if (comp != nullptr)
+        {
+            auto wrapper = std::make_unique<DesignItemWrapper>(w, std::move(comp));
+            wrapper->setBounds(w.x, w.y, w.width, w.height);
+            wrapper->setDesignMode(designMode_);
+
+            wrapper->onMouseDownAction = [this](DesignItemWrapper* item, const juce::MouseEvent& e) {
+                canvasComponent->selectWrapper(item, e.mods.isShiftDown() || e.mods.isCommandDown());
+            };
+            wrapper->onMouseDragAction = [this](DesignItemWrapper* item, const juce::MouseEvent& e) {
+                const auto selected = canvasComponent->getSelectedWrappers();
+                const auto cur = e.getEventRelativeTo(canvasComponent.get()).getPosition();
+                const auto start = e.getMouseDownPosition() + item->getPosition();
+                const int dx = cur.x - start.x;
+                const int dy = cur.y - start.y;
+                for (auto* sw : selected)
+                {
+                    const int nx = std::max(0, sw->config.x + dx);
+                    const int ny = std::max(0, sw->config.y + dy);
+                    sw->setTopLeftPosition(nx, ny);
+                }
+            };
+            wrapper->onMouseUpAction = [this](DesignItemWrapper*, const juce::MouseEvent&) {
+                for (auto* sw : canvasComponent->getSelectedWrappers())
+                {
+                    sw->config.x = sw->getX();
+                    sw->config.y = sw->getY();
+                    sw->config.width = sw->getWidth();
+                    sw->config.height = sw->getHeight();
+                    for (auto& wcfg : layout_.widgets)
+                    {
+                        if (wcfg.id == sw->config.id)
+                        {
+                            wcfg.x = sw->config.x;
+                            wcfg.y = sw->config.y;
+                            wcfg.width = sw->config.width;
+                            wcfg.height = sw->config.height;
+                            break;
+                        }
+                    }
+                }
+                notifyLayoutChanged();
+            };
+            wrapper->onOpenProperties = [this](DesignItemWrapper* item) {
+                showWidgetPropertiesDialog(item->config.id);
+            };
+            wrapper->onDelete = [this](DesignItemWrapper* item) {
+                removeWidget(item->config.id);
+            };
+            wrapper->onDuplicate = [this](DesignItemWrapper* item) {
+                auto dup = item->config;
+                dup.id = dup.id + "_copy";
+                dup.x += 24;
+                dup.y += 24;
+                addWidget(dup);
+            };
+            wrapper->onBringToFront = [this](DesignItemWrapper* item) {
+                item->toFront(false);
+                notifyLayoutChanged();
+            };
+            wrapper->onSendToBack = [this](DesignItemWrapper* item) {
+                item->toBack();
+                notifyLayoutChanged();
+            };
+
+            canvasComponent->addAndMakeVisible(*wrapper);
+            outputViews_.push_back({ w, std::unique_ptr<juce::Component>(wrapper.release()) });
         }
     }
-
-    inputViewport.setViewedComponent(inputContainer.get(), false);
-    outputViewport.setViewedComponent(outputContainer.get(), false);
 }
 
 void ControlPanelComponent::resized()
@@ -2516,97 +4247,43 @@ void ControlPanelComponent::resized()
 
     // Top Transport Bar
     auto topBar = b.removeFromTop(36);
-    runButton.setBounds(topBar.removeFromLeft(56).reduced(2));
-    pauseButton.setBounds(topBar.removeFromLeft(64).reduced(2));
-    stepButton.setBounds(topBar.removeFromLeft(58).reduced(2));
-    stopButton.setBounds(topBar.removeFromLeft(58).reduced(2));
-    resetButton.setBounds(topBar.removeFromLeft(64).reduced(2));
-    topBar.removeFromLeft(12);
-    rateBox.setBounds(topBar.removeFromLeft(132).reduced(2));
+    runButton.setBounds(topBar.removeFromLeft(54).reduced(2));
+    pauseButton.setBounds(topBar.removeFromLeft(58).reduced(2));
+    stepButton.setBounds(topBar.removeFromLeft(54).reduced(2));
+    stopButton.setBounds(topBar.removeFromLeft(54).reduced(2));
+    resetButton.setBounds(topBar.removeFromLeft(58).reduced(2));
     topBar.removeFromLeft(8);
-    panelBox.setBounds(topBar.removeFromLeft(140).reduced(2));
-    newPanelButton.setBounds(topBar.removeFromLeft(82).reduced(2));
-    renamePanelButton.setBounds(topBar.removeFromLeft(72).reduced(2));
-    removePanelButton.setBounds(topBar.removeFromLeft(74).reduced(2));
-    topBar.removeFromLeft(12);
+    rateBox.setBounds(topBar.removeFromLeft(125).reduced(2));
+    topBar.removeFromLeft(6);
+    panelBox.setBounds(topBar.removeFromLeft(130).reduced(2));
+    newPanelButton.setBounds(topBar.removeFromLeft(74).reduced(2));
+    renamePanelButton.setBounds(topBar.removeFromLeft(64).reduced(2));
+    removePanelButton.setBounds(topBar.removeFromLeft(64).reduced(2));
+    topBar.removeFromLeft(8);
+    modeButton.setBounds(topBar.removeFromLeft(95).reduced(2));
+    if (designMode_)
+    {
+        addWidgetButton.setBounds(topBar.removeFromLeft(95).reduced(2));
+        alignButton.setBounds(topBar.removeFromLeft(58).reduced(2));
+    }
+    topBar.removeFromLeft(8);
     statusLabel.setBounds(topBar);
 
-    b.removeFromTop(8);
+    b.removeFromTop(6);
 
-    const auto& panel = activePanel();
-    const int gap = std::clamp(panel.spacing, 4, 12);
-    const int inputCols = std::max(1, panel.controlColumns);
-    const int outputCols = std::max(1, panel.instrumentColumns);
+    // Freeform scrollable viewport & canvas
+    canvasViewport.setBounds(b);
 
-    // Operator controls: compact and only take what they need (~200-240px width),
-    // giving strip-chart recorder and instruments ~75-80% of workspace.
-    const int minControl = 180;
-    const int minInstr = std::min(400, std::max(220, b.getWidth() / 3));
-    const double ratio = panel.splitRatio > 0.0 ? panel.splitRatio : 0.22;
-    const int desiredW = (int)std::round((double)b.getWidth() * juce::jlimit(0.15, 0.40, ratio));
-    const int autoControlWidth = std::clamp(desiredW, 190, std::max(210, inputCols * 220));
-    const int controlWidth = splitterX_ > 0
-                           ? juce::jlimit(minControl, std::max(minControl, b.getWidth() - minInstr - gap), splitterX_)
-                           : std::min(autoControlWidth, b.getWidth() - minInstr - gap);
-
-    auto controlArea = b.removeFromLeft(controlWidth);
-    b.removeFromLeft(gap);
-    auto instrumentArea = b;
-
-    inputViewport.setBounds(controlArea);
-    outputViewport.setBounds(instrumentArea);
-    if (splitterX_ > 0)
-        splitterX_ = controlArea.getRight() - getLocalBounds().getX();
-
-    // Layout controls in compact configurable columns.
-    const int padX = 8;
-    const int inputInnerW = std::max(80, controlArea.getWidth() - 4);
-    const int availInputW = std::max(60, inputInnerW - padX * 2 - gap * (inputCols - 1));
-    const int inputColW = std::max(60, availInputW / inputCols);
-    std::vector<int> inputY((size_t)inputCols, 8);
-    for (auto& iv : inputViews_)
+    int canvasW = std::max(1600, activePanel().canvasWidth);
+    int canvasH = std::max(1000, activePanel().canvasHeight);
+    for (const auto& w : layout_.widgets)
     {
-        const int col = juce::jlimit(0, inputCols - 1, iv.config.order % inputCols);
-        int h = iv.config.height;
-        if (iv.config.type == WidgetType::PushButton || iv.config.type == WidgetType::ToggleSwitch || iv.config.type == WidgetType::ModeSelector)
-            h = (h <= 0 || h >= 45) ? 28 : h;
-        else if (iv.config.type == WidgetType::Slider || iv.config.type == WidgetType::Knob)
-            h = (h <= 0 || h >= 60) ? 36 : h;
-        else if (iv.config.type == WidgetType::EmergencyStop)
-            h = (h <= 0 || h >= 75) ? 50 : h;
-        else
-            h = (h <= 0 || h > 60) ? 32 : h;
-
-        const int height = std::clamp(h, 24, 75);
-        iv.component->setBounds(padX + col * (inputColW + gap), inputY[(size_t)col], inputColW, height);
-        inputY[(size_t)col] += height + gap;
+        canvasW = std::max(canvasW, w.x + w.width + 100);
+        canvasH = std::max(canvasH, w.y + w.height + 100);
     }
-    const auto inputHeight = *std::max_element(inputY.begin(), inputY.end()) + 8;
-    inputContainer->setBounds(0, 0, inputInnerW, std::max(inputHeight, inputViewport.getHeight()));
-
-    // Layout instruments/recorders.
-    const int outPadX = 8;
-    const int outputInnerW = std::max(120, instrumentArea.getWidth() - 4);
-    const int availOutputW = std::max(80, outputInnerW - outPadX * 2 - gap * (outputCols - 1));
-    const int outputColW = std::max(80, availOutputW / outputCols);
-    std::vector<int> outputY((size_t)outputCols, 8);
-    for (auto& ov : outputViews_)
-    {
-        const int col = juce::jlimit(0, outputCols - 1, ov.config.order % outputCols);
-        int height = std::max(32, ov.config.height);
-        if (ov.config.type == WidgetType::PlotPanel)
-        {
-            const int remainingH = std::max(380, outputViewport.getHeight() - outputY[(size_t)col] - 8);
-            int preferredH = height;
-            if (const auto* plot = dynamic_cast<const PlotPanelWidget*>(ov.component.get()))
-                preferredH = plot->preferredRecorderHeight();
-            height = std::max({ height, remainingH, preferredH });
-        }
-        ov.component->setBounds(outPadX + col * (outputColW + gap), outputY[(size_t)col], outputColW, height);
-        outputY[(size_t)col] += height + gap;
-    }
-    const auto outputHeight = *std::max_element(outputY.begin(), outputY.end()) + 8;
-    outputContainer->setBounds(0, 0, outputInnerW, std::max(outputHeight, outputViewport.getHeight()));
+    if (canvasComponent)
+        canvasComponent->setSize(std::max(canvasW, canvasViewport.getWidth()),
+                                 std::max(canvasH, canvasViewport.getHeight()));
 }
 
 void ControlPanelComponent::paint(juce::Graphics& g)
@@ -2614,38 +4291,11 @@ void ControlPanelComponent::paint(juce::Graphics& g)
     g.fillAll(juce::Colour(0xff161a22));
     g.setColour(juce::Colour(0xff2b3442));
     g.drawRect(getLocalBounds(), 1.0f);
-    const int effectiveSplit = splitterX_ > 0 ? splitterX_ : (inputViewport.getRight() + 2);
-    g.setColour(juce::Colour(0xff314152));
-    g.fillRect(effectiveSplit - 1, 44, 2, std::max(0, getHeight() - 52));
 }
 
-void ControlPanelComponent::mouseDown(const juce::MouseEvent& e)
-{
-    const int effectiveSplit = splitterX_ > 0 ? splitterX_ : (inputViewport.getRight() + 2);
-    draggingSplitter_ = std::abs(e.x - effectiveSplit) <= 6 && e.y > 42;
-    if (draggingSplitter_)
-        setMouseCursor(juce::MouseCursor::LeftRightResizeCursor);
-}
-
-void ControlPanelComponent::mouseDrag(const juce::MouseEvent& e)
-{
-    if (!draggingSplitter_)
-        return;
-    splitterX_ = juce::jlimit(180, std::max(181, getWidth() - 240), e.x);
-    if (auto* panel = layout_.findPanel(layout_.activePanelId))
-        panel->splitRatio = juce::jlimit(0.20, 0.80, (double)(splitterX_ - 8) / std::max(1, getWidth() - 16));
-    resized();
-    repaint();
-}
-
-void ControlPanelComponent::mouseUp(const juce::MouseEvent&)
-{
-    const bool changed = draggingSplitter_;
-    draggingSplitter_ = false;
-    setMouseCursor(juce::MouseCursor::NormalCursor);
-    if (changed)
-        notifyLayoutChanged();
-}
+void ControlPanelComponent::mouseDown(const juce::MouseEvent&) {}
+void ControlPanelComponent::mouseDrag(const juce::MouseEvent&) {}
+void ControlPanelComponent::mouseUp(const juce::MouseEvent&) {}
 
 void ControlPanelComponent::sampleLatestNow()
 {
@@ -2657,8 +4307,11 @@ std::vector<ControlPanelComponent::StripChartRecorderSnapshot> ControlPanelCompo
     std::vector<StripChartRecorderSnapshot> out;
     for (const auto& ov : outputViews_)
     {
-        if (const auto* plot = dynamic_cast<const PlotPanelWidget*>(ov.component.get()))
-            out.push_back(plot->getSnapshot());
+        if (const auto* wrapper = dynamic_cast<const DesignItemWrapper*>(ov.component.get()))
+        {
+            if (const auto* plot = dynamic_cast<const PlotPanelWidget*>(wrapper->getWidget()))
+                out.push_back(plot->getSnapshot());
+        }
     }
     return out;
 }
@@ -2667,12 +4320,15 @@ bool ControlPanelComponent::setRecorderTimebaseSecondsPerDiv(const std::string& 
 {
     for (auto& ov : outputViews_)
     {
-        if (auto* plot = dynamic_cast<PlotPanelWidget*>(ov.component.get()))
+        if (auto* wrapper = dynamic_cast<DesignItemWrapper*>(ov.component.get()))
         {
-            if (widgetId.empty() || plot->widgetId() == widgetId)
+            if (auto* plot = dynamic_cast<PlotPanelWidget*>(wrapper->getWidget()))
             {
-                plot->setTimebaseSecondsPerDiv(secondsPerDiv);
-                return true;
+                if (widgetId.empty() || plot->widgetId() == widgetId)
+                {
+                    plot->setTimebaseSecondsPerDiv(secondsPerDiv);
+                    return true;
+                }
             }
         }
     }
@@ -2683,12 +4339,15 @@ bool ControlPanelComponent::scrollRecorderHistory(const std::string& widgetId, d
 {
     for (auto& ov : outputViews_)
     {
-        if (auto* plot = dynamic_cast<PlotPanelWidget*>(ov.component.get()))
+        if (auto* wrapper = dynamic_cast<DesignItemWrapper*>(ov.component.get()))
         {
-            if (widgetId.empty() || plot->widgetId() == widgetId)
+            if (auto* plot = dynamic_cast<PlotPanelWidget*>(wrapper->getWidget()))
             {
-                plot->scrollHistoryToCenter(centerTimeSeconds);
-                return true;
+                if (widgetId.empty() || plot->widgetId() == widgetId)
+                {
+                    plot->scrollHistoryToCenter(centerTimeSeconds);
+                    return true;
+                }
             }
         }
     }
@@ -2699,12 +4358,15 @@ bool ControlPanelComponent::setRecorderLiveFollow(const std::string& widgetId, b
 {
     for (auto& ov : outputViews_)
     {
-        if (auto* plot = dynamic_cast<PlotPanelWidget*>(ov.component.get()))
+        if (auto* wrapper = dynamic_cast<DesignItemWrapper*>(ov.component.get()))
         {
-            if (widgetId.empty() || plot->widgetId() == widgetId)
+            if (auto* plot = dynamic_cast<PlotPanelWidget*>(wrapper->getWidget()))
             {
-                plot->setLiveFollow(liveFollow);
-                return true;
+                if (widgetId.empty() || plot->widgetId() == widgetId)
+                {
+                    plot->setLiveFollow(liveFollow);
+                    return true;
+                }
             }
         }
     }
@@ -2715,12 +4377,15 @@ bool ControlPanelComponent::setRecorderViewPaused(const std::string& widgetId, b
 {
     for (auto& ov : outputViews_)
     {
-        if (auto* plot = dynamic_cast<PlotPanelWidget*>(ov.component.get()))
+        if (auto* wrapper = dynamic_cast<DesignItemWrapper*>(ov.component.get()))
         {
-            if (widgetId.empty() || plot->widgetId() == widgetId)
+            if (auto* plot = dynamic_cast<PlotPanelWidget*>(wrapper->getWidget()))
             {
-                plot->setViewPaused(paused);
-                return true;
+                if (widgetId.empty() || plot->widgetId() == widgetId)
+                {
+                    plot->setViewPaused(paused);
+                    return true;
+                }
             }
         }
     }
@@ -2731,12 +4396,15 @@ bool ControlPanelComponent::setRecorderRecordingEnabled(const std::string& widge
 {
     for (auto& ov : outputViews_)
     {
-        if (auto* plot = dynamic_cast<PlotPanelWidget*>(ov.component.get()))
+        if (auto* wrapper = dynamic_cast<DesignItemWrapper*>(ov.component.get()))
         {
-            if (widgetId.empty() || plot->widgetId() == widgetId)
+            if (auto* plot = dynamic_cast<PlotPanelWidget*>(wrapper->getWidget()))
             {
-                plot->setRecordingEnabled(enabled);
-                return true;
+                if (widgetId.empty() || plot->widgetId() == widgetId)
+                {
+                    plot->setRecordingEnabled(enabled);
+                    return true;
+                }
             }
         }
     }
@@ -2747,10 +4415,13 @@ bool ControlPanelComponent::setRecorderLaneCollapsed(const std::string& widgetId
 {
     for (auto& ov : outputViews_)
     {
-        if (auto* plot = dynamic_cast<PlotPanelWidget*>(ov.component.get()))
+        if (auto* wrapper = dynamic_cast<DesignItemWrapper*>(ov.component.get()))
         {
-            if (widgetId.empty() || plot->widgetId() == widgetId)
-                return plot->setLaneCollapsed(laneIndex, collapsed);
+            if (auto* plot = dynamic_cast<PlotPanelWidget*>(wrapper->getWidget()))
+            {
+                if (widgetId.empty() || plot->widgetId() == widgetId)
+                    return plot->setLaneCollapsed(laneIndex, collapsed);
+            }
         }
     }
     return false;
@@ -2760,10 +4431,13 @@ bool ControlPanelComponent::setRecorderLaneHeight(const std::string& widgetId, i
 {
     for (auto& ov : outputViews_)
     {
-        if (auto* plot = dynamic_cast<PlotPanelWidget*>(ov.component.get()))
+        if (auto* wrapper = dynamic_cast<DesignItemWrapper*>(ov.component.get()))
         {
-            if (widgetId.empty() || plot->widgetId() == widgetId)
-                return plot->setLaneHeight(laneIndex, heightPx);
+            if (auto* plot = dynamic_cast<PlotPanelWidget*>(wrapper->getWidget()))
+            {
+                if (widgetId.empty() || plot->widgetId() == widgetId)
+                    return plot->setLaneHeight(laneIndex, heightPx);
+            }
         }
     }
     return false;
@@ -2773,12 +4447,15 @@ bool ControlPanelComponent::zoomRecorderAtScreenX(const std::string& widgetId, i
 {
     for (auto& ov : outputViews_)
     {
-        if (auto* plot = dynamic_cast<PlotPanelWidget*>(ov.component.get()))
+        if (auto* wrapper = dynamic_cast<DesignItemWrapper*>(ov.component.get()))
         {
-            if (widgetId.empty() || plot->widgetId() == widgetId)
+            if (auto* plot = dynamic_cast<PlotPanelWidget*>(wrapper->getWidget()))
             {
-                plot->zoomAtScreenX(screenX, factor);
-                return true;
+                if (widgetId.empty() || plot->widgetId() == widgetId)
+                {
+                    plot->zoomAtScreenX(screenX, factor);
+                    return true;
+                }
             }
         }
     }
@@ -2789,12 +4466,15 @@ bool ControlPanelComponent::fitRecorderRecording(const std::string& widgetId)
 {
     for (auto& ov : outputViews_)
     {
-        if (auto* plot = dynamic_cast<PlotPanelWidget*>(ov.component.get()))
+        if (auto* wrapper = dynamic_cast<DesignItemWrapper*>(ov.component.get()))
         {
-            if (widgetId.empty() || plot->widgetId() == widgetId)
+            if (auto* plot = dynamic_cast<PlotPanelWidget*>(wrapper->getWidget()))
             {
-                plot->fitRecording();
-                return true;
+                if (widgetId.empty() || plot->widgetId() == widgetId)
+                {
+                    plot->fitRecording();
+                    return true;
+                }
             }
         }
     }
@@ -2805,10 +4485,13 @@ bool ControlPanelComponent::exportRecorderCsv(const std::string& widgetId, const
 {
     for (const auto& ov : outputViews_)
     {
-        if (const auto* plot = dynamic_cast<const PlotPanelWidget*>(ov.component.get()))
+        if (const auto* wrapper = dynamic_cast<const DesignItemWrapper*>(ov.component.get()))
         {
-            if (widgetId.empty() || plot->widgetId() == widgetId)
-                return plot->exportCsvToFile(file, error);
+            if (const auto* plot = dynamic_cast<const PlotPanelWidget*>(wrapper->getWidget()))
+            {
+                if (widgetId.empty() || plot->widgetId() == widgetId)
+                    return plot->exportCsvToFile(file, error);
+            }
         }
     }
     error = "Plot recorder widget not found.";
@@ -2868,56 +4551,79 @@ void ControlPanelComponent::timerCallback()
             recordingFor(widget.id).append(snap, widget);
     }
 
-    // Update Output Views
+    // Update Output Views & Instruments
     for (auto& ov : outputViews_)
     {
-        if (ov.config.type == WidgetType::AnalogGauge)
+        auto* wrapper = dynamic_cast<DesignItemWrapper*>(ov.component.get());
+        if (!wrapper) continue;
+        auto* comp = wrapper->getWidget();
+        if (!comp) continue;
+        const auto& w = wrapper->config;
+
+        if (w.type == WidgetType::AnalogGauge)
         {
-            if (auto* g = dynamic_cast<AnalogGaugeComponent*>(ov.component.get()))
+            if (auto* g = dynamic_cast<AnalogGaugeComponent*>(comp))
             {
-                if (snap.numericSignals.count(ov.config.signalName))
-                    g->setValue(snap.numericSignals.at(ov.config.signalName));
+                if (snap.numericSignals.count(w.signalName))
+                    g->setValue(snap.numericSignals.at(w.signalName));
             }
         }
-        else if (ov.config.type == WidgetType::DigitalReadout)
+        else if (w.type == WidgetType::DigitalReadout)
         {
-            if (auto* dr = dynamic_cast<DigitalReadoutComponent*>(ov.component.get()))
+            if (auto* dr = dynamic_cast<DigitalReadoutComponent*>(comp))
             {
-                if (snap.numericSignals.count(ov.config.signalName))
-                {
-                    std::ostringstream ss;
-                    ss << std::fixed << std::setprecision(ov.config.stepSize < 0.1 ? 2 : 1) << snap.numericSignals.at(ov.config.signalName);
-                    dr->setText(ss.str());
-                }
+                if (snap.numericSignals.count(w.signalName))
+                    dr->setValue(snap.numericSignals.at(w.signalName));
+                else if (snap.booleanSignals.count(w.signalName))
+                    dr->setBooleanValue(snap.booleanSignals.at(w.signalName));
             }
         }
-        else if (ov.config.type == WidgetType::ClockDisplay)
+        else if (w.type == WidgetType::ClockDisplay)
         {
-            if (auto* dr = dynamic_cast<DigitalReadoutComponent*>(ov.component.get()))
+            if (auto* dr = dynamic_cast<DigitalReadoutComponent*>(comp))
             {
                 std::ostringstream ss;
-                ss << std::fixed << std::setprecision(3) << snap.simTime << " s";
+                ss << std::fixed << std::setprecision(3) << snap.simTime;
                 dr->setText(ss.str());
             }
         }
-        else if (ov.config.type == WidgetType::IndicatorLamp)
+        else if (w.type == WidgetType::BarGauge)
         {
-            if (auto* lamp = dynamic_cast<IndicatorLampComponent*>(ov.component.get()))
+            if (auto* bg = dynamic_cast<BarGaugeComponent*>(comp))
             {
-                if (snap.booleanSignals.count(ov.config.signalName))
-                    lamp->setActive(snap.booleanSignals.at(ov.config.signalName));
+                if (snap.numericSignals.count(w.signalName))
+                    bg->setValue(snap.numericSignals.at(w.signalName));
             }
         }
-        else if (ov.config.type == WidgetType::TrendChart)
+        else if (w.type == WidgetType::IndicatorLamp)
         {
-            if (auto* tc = dynamic_cast<TrendChartComponent*>(ov.component.get()))
+            if (auto* lamp = dynamic_cast<IndicatorLampComponent*>(comp))
             {
+                if (snap.booleanSignals.count(w.signalName))
+                    lamp->setActive(snap.booleanSignals.at(w.signalName));
+                else if (snap.numericSignals.count(w.signalName))
+                    lamp->setActive(snap.numericSignals.at(w.signalName) > 0.5);
+            }
+        }
+        else if (w.type == WidgetType::IndicatorButton)
+        {
+            if (auto* ib = dynamic_cast<IndicatorButtonComponent*>(comp))
+            {
+                const auto& indSig = w.secondarySignal.empty() ? w.signalName : w.secondarySignal;
+                if (snap.booleanSignals.count(indSig))
+                    ib->setIndicatorActive(snap.booleanSignals.at(indSig));
+                else if (snap.numericSignals.count(indSig))
+                    ib->setIndicatorActive(snap.numericSignals.at(indSig) > 0.5);
+            }
+        }
+        else if (w.type == WidgetType::TrendChart)
+        {
+            if (auto* tc = dynamic_cast<TrendChartComponent*>(comp))
                 tc->updateData(trendHistory_);
-            }
         }
-        else if (ov.config.type == WidgetType::PlotPanel)
+        else if (w.type == WidgetType::PlotPanel)
         {
-            if (auto* plot = dynamic_cast<PlotPanelWidget*>(ov.component.get()))
+            if (auto* plot = dynamic_cast<PlotPanelWidget*>(comp))
                 plot->updateDisplay();
         }
     }

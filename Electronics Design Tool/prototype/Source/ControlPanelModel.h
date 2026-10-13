@@ -27,7 +27,10 @@ enum class WidgetType
     TrendChart,
     ClockDisplay,
     EventLog,
-    PlotPanel
+    PlotPanel,
+    BarGauge,
+    LatchingButton,
+    IndicatorButton
 };
 
 struct PlotChannelConfig
@@ -62,7 +65,7 @@ struct WidgetConfig
     double defaultValue = 0.0;
     double stepSize = 1.0;
 
-    // Relative column and row inside the panel layout
+    // Relative column and row inside the panel layout (legacy)
     int column = 0; // 0 = Left (Inputs), 1 = Right (Outputs)
     int order = 0;
     int height = 32;
@@ -79,6 +82,28 @@ struct WidgetConfig
     double visibleHistorySeconds = 10.0;
     int maxSamples = 20000;
     bool autoScroll = true;
+
+    // Freeform layout geometry (0 or negative width triggers legacy auto-layout migration)
+    int x = 0;
+    int y = 0;
+    int width = 0;
+    int zOrder = 0;
+
+    // Extended styling & precision
+    int precision = 1;
+    bool vertical = false;         // for BarGauge and Slider (horizontal vs vertical)
+    bool momentary = true;         // for PushButton (momentary vs latching)
+
+    // Warning and critical ranges for gauges & readouts
+    double warnMin = 0.0;
+    double warnMax = 0.0;
+    bool hasWarnRange = false;
+    double critMin = 0.0;
+    double critMax = 0.0;
+    bool hasCritRange = false;
+
+    // Secondary signal (e.g. status indicator for IndicatorButton)
+    std::string secondarySignal;
 };
 
 struct OperatorPanelConfig
@@ -89,6 +114,9 @@ struct OperatorPanelConfig
     int instrumentColumns = 1;
     double splitRatio = 0.22;
     int spacing = 6;
+    int canvasWidth = 1600;
+    int canvasHeight = 1000;
+    bool designMode = false;
 
     juce::var toJson() const;
     static OperatorPanelConfig fromJson(const juce::var& json);
@@ -104,9 +132,12 @@ struct ControlPanelLayout
     static ControlPanelLayout createDefaultMotorPanel();
     static ControlPanelLayout createDualMotorCoordinatedPanel();
     void ensureDefaultPanel();
+    void ensureWidgetBounds();
     bool hasPanel(const std::string& panelId) const;
     const OperatorPanelConfig* findPanel(const std::string& panelId) const;
     OperatorPanelConfig* findPanel(const std::string& panelId);
+    WidgetConfig* findWidget(const std::string& widgetId);
+    const WidgetConfig* findWidget(const std::string& widgetId) const;
     juce::var toJson() const;
     static ControlPanelLayout fromJson(const juce::var& json);
 };

@@ -53,6 +53,9 @@ juce::var OperatorPanelConfig::toJson() const
     obj->setProperty("instrumentColumns", instrumentColumns);
     obj->setProperty("splitRatio", splitRatio);
     obj->setProperty("spacing", spacing);
+    obj->setProperty("canvasWidth", canvasWidth);
+    obj->setProperty("canvasHeight", canvasHeight);
+    obj->setProperty("designMode", designMode);
     return juce::var(obj);
 }
 
@@ -67,6 +70,9 @@ OperatorPanelConfig OperatorPanelConfig::fromJson(const juce::var& json)
         p.instrumentColumns = obj->hasProperty("instrumentColumns") ? std::max(1, (int)obj->getProperty("instrumentColumns")) : p.instrumentColumns;
         p.splitRatio = obj->hasProperty("splitRatio") ? juce::jlimit(0.20, 0.80, (double)obj->getProperty("splitRatio")) : p.splitRatio;
         p.spacing = obj->hasProperty("spacing") ? std::max(2, (int)obj->getProperty("spacing")) : p.spacing;
+        p.canvasWidth = obj->hasProperty("canvasWidth") ? std::max(400, (int)obj->getProperty("canvasWidth")) : p.canvasWidth;
+        p.canvasHeight = obj->hasProperty("canvasHeight") ? std::max(300, (int)obj->getProperty("canvasHeight")) : p.canvasHeight;
+        p.designMode = obj->hasProperty("designMode") ? (bool)obj->getProperty("designMode") : p.designMode;
     }
     if (p.id.empty())
         p.id = "main";
@@ -78,12 +84,79 @@ OperatorPanelConfig OperatorPanelConfig::fromJson(const juce::var& json)
 void ControlPanelLayout::ensureDefaultPanel()
 {
     if (panels.empty())
-        panels.push_back({ "main", title.empty() ? std::string("Main") : title, 1, 1, 0.22, 6 });
+        panels.push_back({ "main", title.empty() ? std::string("Main") : title, 1, 1, 0.22, 6, 1600, 1000, false });
     if (activePanelId.empty())
         activePanelId = panels.front().id;
     for (auto& w : widgets)
         if (w.panelId.empty())
             w.panelId = panels.front().id;
+}
+
+void ControlPanelLayout::ensureWidgetBounds()
+{
+    ensureDefaultPanel();
+    for (const auto& panel : panels)
+    {
+        int leftY = 24;
+        int rightY = 24;
+        for (auto& w : widgets)
+        {
+            if (w.panelId != panel.id && !(w.panelId.empty() && panel.id == "main"))
+                continue;
+
+            if (w.width <= 0 || w.height <= 0)
+            {
+                if (w.column == 0) // Left Column (Inputs)
+                {
+                    w.x = 24;
+                    w.width = 220;
+                    int h = w.height;
+                    if (w.type == WidgetType::PushButton || w.type == WidgetType::ToggleSwitch || w.type == WidgetType::ModeSelector || w.type == WidgetType::LatchingButton)
+                        h = (h <= 0 || h >= 45) ? 28 : h;
+                    else if (w.type == WidgetType::Slider || w.type == WidgetType::Knob)
+                        h = (h <= 0 || h >= 60) ? 36 : h;
+                    else if (w.type == WidgetType::EmergencyStop)
+                        h = (h <= 0 || h >= 75) ? 50 : h;
+                    else
+                        h = (h <= 0) ? 32 : h;
+                    w.height = h;
+                    w.y = leftY;
+                    leftY += w.height + 8;
+                }
+                else // Right Column (Outputs / Instruments)
+                {
+                    w.x = 264;
+                    if (w.type == WidgetType::PlotPanel)
+                    {
+                        w.width = 860;
+                        w.height = w.height > 0 ? w.height : 560;
+                    }
+                    else if (w.type == WidgetType::AnalogGauge)
+                    {
+                        w.width = 220;
+                        w.height = w.height > 0 ? w.height : 140;
+                    }
+                    else if (w.type == WidgetType::BarGauge)
+                    {
+                        w.width = 220;
+                        w.height = w.height > 0 ? w.height : (w.vertical ? 160 : 40);
+                    }
+                    else if (w.type == WidgetType::TrendChart || w.type == WidgetType::EventLog)
+                    {
+                        w.width = 440;
+                        w.height = w.height > 0 ? w.height : 140;
+                    }
+                    else
+                    {
+                        w.width = 220;
+                        w.height = w.height > 0 ? w.height : 40;
+                    }
+                    w.y = rightY;
+                    rightY += w.height + 8;
+                }
+            }
+        }
+    }
 }
 
 bool ControlPanelLayout::hasPanel(const std::string& panelId) const
@@ -113,6 +186,22 @@ OperatorPanelConfig* ControlPanelLayout::findPanel(const std::string& panelId)
             return &p;
     if (panelId.empty() || panelId == activePanelId)
         return panels.empty() ? nullptr : &panels.front();
+    return nullptr;
+}
+
+WidgetConfig* ControlPanelLayout::findWidget(const std::string& widgetId)
+{
+    for (auto& w : widgets)
+        if (w.id == widgetId)
+            return &w;
+    return nullptr;
+}
+
+const WidgetConfig* ControlPanelLayout::findWidget(const std::string& widgetId) const
+{
+    for (const auto& w : widgets)
+        if (w.id == widgetId)
+            return &w;
     return nullptr;
 }
 
@@ -393,6 +482,20 @@ juce::var ControlPanelLayout::toJson() const
         wo->setProperty("column", w.column);
         wo->setProperty("order", w.order);
         wo->setProperty("height", w.height);
+        wo->setProperty("x", w.x);
+        wo->setProperty("y", w.y);
+        wo->setProperty("width", w.width);
+        wo->setProperty("zOrder", w.zOrder);
+        wo->setProperty("precision", w.precision);
+        wo->setProperty("vertical", w.vertical);
+        wo->setProperty("momentary", w.momentary);
+        wo->setProperty("warnMin", w.warnMin);
+        wo->setProperty("warnMax", w.warnMax);
+        wo->setProperty("hasWarnRange", w.hasWarnRange);
+        wo->setProperty("critMin", w.critMin);
+        wo->setProperty("critMax", w.critMax);
+        wo->setProperty("hasCritRange", w.hasCritRange);
+        wo->setProperty("secondarySignal", juce::String(w.secondarySignal));
 
         juce::Array<juce::var> optArr;
         for (const auto& opt : w.options)
@@ -450,6 +553,20 @@ ControlPanelLayout ControlPanelLayout::fromJson(const juce::var& json)
             w.column = (int)wVar["column"];
             w.order = (int)wVar["order"];
             w.height = (int)wVar["height"];
+            w.x = (wo != nullptr && wo->hasProperty("x")) ? (int)wVar["x"] : 0;
+            w.y = (wo != nullptr && wo->hasProperty("y")) ? (int)wVar["y"] : 0;
+            w.width = (wo != nullptr && wo->hasProperty("width")) ? (int)wVar["width"] : 0;
+            w.zOrder = (wo != nullptr && wo->hasProperty("zOrder")) ? (int)wVar["zOrder"] : 0;
+            w.precision = (wo != nullptr && wo->hasProperty("precision")) ? (int)wVar["precision"] : 1;
+            w.vertical = (wo != nullptr && wo->hasProperty("vertical")) ? (bool)wVar["vertical"] : false;
+            w.momentary = (wo != nullptr && wo->hasProperty("momentary")) ? (bool)wVar["momentary"] : true;
+            w.warnMin = (wo != nullptr && wo->hasProperty("warnMin")) ? (double)wVar["warnMin"] : 0.0;
+            w.warnMax = (wo != nullptr && wo->hasProperty("warnMax")) ? (double)wVar["warnMax"] : 0.0;
+            w.hasWarnRange = (wo != nullptr && wo->hasProperty("hasWarnRange")) ? (bool)wVar["hasWarnRange"] : false;
+            w.critMin = (wo != nullptr && wo->hasProperty("critMin")) ? (double)wVar["critMin"] : 0.0;
+            w.critMax = (wo != nullptr && wo->hasProperty("critMax")) ? (double)wVar["critMax"] : 0.0;
+            w.hasCritRange = (wo != nullptr && wo->hasProperty("hasCritRange")) ? (bool)wVar["hasCritRange"] : false;
+            w.secondarySignal = (wo != nullptr && wo->hasProperty("secondarySignal")) ? wVar["secondarySignal"].toString().toStdString() : std::string();
             if (const auto* optArr = wVar["options"].getArray())
             {
                 for (const auto& o : *optArr)
@@ -475,6 +592,7 @@ ControlPanelLayout ControlPanelLayout::fromJson(const juce::var& json)
         }
     }
     p.ensureDefaultPanel();
+    p.ensureWidgetBounds();
     return p;
 }
 

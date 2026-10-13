@@ -77,6 +77,35 @@ public:
     std::function<void(const ControlPanelLayout&)> onLayoutChanged;
     std::function<bool()> onEnsureCompiled;
 
+    // Mode Control
+    void setDesignMode(bool isDesign);
+    bool isDesignMode() const { return designMode_; }
+
+    // Dynamic widget management & freeform placement
+    bool addWidget(const WidgetConfig& config);
+    bool removeWidget(const std::string& widgetId);
+    bool configureWidget(const std::string& widgetId, const WidgetConfig& newConfig);
+    const WidgetConfig* getWidgetConfig(const std::string& widgetId) const;
+    bool setWidgetBounds(const std::string& widgetId, int x, int y, int width, int height);
+    juce::Rectangle<int> getWidgetBounds(const std::string& widgetId) const;
+
+    // Selection, Alignment, and Clipboard
+    void selectWidget(const std::string& widgetId, bool addToSelection = false);
+    void deselectAll();
+    std::vector<std::string> getSelectedWidgetIds() const;
+    bool alignSelectedWidgets(const std::string& alignment); // "left", "top", "right", "bottom", "sameWidth", "sameHeight"
+    bool duplicateSelectedWidgets();
+    bool deleteSelectedWidgets();
+
+    // Signal Connection Discovery
+    std::vector<SignalDef> getAvailableSignals() const;
+
+    // Canvas scrolling & inspection
+    juce::Point<int> getCanvasScrollPosition() const;
+    void setCanvasScrollPosition(int x, int y);
+    juce::Rectangle<int> getCanvasVisibleArea() const;
+    juce::Rectangle<int> getCanvasTotalArea() const;
+
     // Panel management
     std::string createNewPanel(const std::string& title = {});
     bool renameActivePanel(const std::string& newTitle);
@@ -98,6 +127,13 @@ public:
     bool zoomRecorderAtScreenX(const std::string& widgetId, int screenX, double factor);
     bool fitRecorderRecording(const std::string& widgetId);
     bool exportRecorderCsv(const std::string& widgetId, const juce::File& file, juce::String& error) const;
+
+    // Dialog and Menu creation
+    void showWidgetPropertiesDialog(const std::string& widgetId);
+    std::unique_ptr<juce::Component> createWidgetPropertiesDialog(const std::string& widgetId);
+    void showAddWidgetMenu(juce::Point<int> canvasPos);
+    void showAlignMenu();
+    juce::Component* getWidgetComponent(const std::string& widgetId) const;
 
     void paint(juce::Graphics& g) override;
     void resized() override;
@@ -128,13 +164,15 @@ private:
     juce::TextButton newPanelButton { "New Panel" };
     juce::TextButton renamePanelButton { "Rename" };
     juce::TextButton removePanelButton { "Remove" };
+    juce::TextButton modeButton { "Design Mode" };
+    juce::TextButton addWidgetButton { "+ Add Element" };
+    juce::TextButton alignButton { "Align" };
     juce::Label statusLabel;
 
-    // Viewports for scrolling input/output columns
-    juce::Viewport inputViewport;
-    juce::Viewport outputViewport;
-    std::unique_ptr<juce::Component> inputContainer;
-    std::unique_ptr<juce::Component> outputContainer;
+    // Freeform scrollable canvas viewport
+    class ControlPanelCanvas;
+    juce::Viewport canvasViewport;
+    std::unique_ptr<ControlPanelCanvas> canvasComponent;
 
     // Interactive Widget references
     struct WidgetView
@@ -142,18 +180,17 @@ private:
         WidgetConfig config;
         std::unique_ptr<juce::Component> component;
     };
-    std::vector<WidgetView> inputViews_;
     std::vector<WidgetView> outputViews_;
 
     std::shared_ptr<SystemSimulationSession> session_;
     ControlPanelLayout layout_;
-    int splitterX_ = -1;
-    bool draggingSplitter_ = false;
+    bool designMode_ = false;
     bool notifyingLayout_ = false;
     std::map<std::string, std::unique_ptr<MachineRecording>> plotRecordings_;
     std::map<std::string, bool> plotRecordingEnabled_;
     std::map<std::string, double> activeNumericControlValues_;
     std::map<std::string, bool> activeBooleanControlValues_;
+    std::vector<WidgetConfig> clipboard_;
 
     // Historical data for trend chart
     std::deque<TrendPoint> trendHistory_;
