@@ -28,6 +28,7 @@ public:
     void setAcquisition(std::shared_ptr<const plot_instrument::Acquisition> acquisition, plot_instrument::Mode mode, Axes axes);
     void setMessage(const juce::String& text); // shown when there is nothing to plot
     void setMarkers(bool on);
+    void setTraceColours(std::vector<juce::Colour> colours);
     void setCamera(const plot_instrument::Camera& camera);
     const plot_instrument::Camera& camera() const { return view; }
     void resetView();
@@ -55,6 +56,7 @@ private:
     plot_instrument::Mode mode = plot_instrument::Mode::XY;
     Axes axes;
     std::vector<int> indices;
+    std::vector<juce::Colour> traceColoursOverride;
     plot_instrument::Camera view;
     juce::String message { "No data yet." };
     bool markers = false;

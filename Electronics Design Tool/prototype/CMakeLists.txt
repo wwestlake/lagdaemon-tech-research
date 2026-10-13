@@ -511,6 +511,7 @@ target_sources(MachineBuilderSmokeTests PRIVATE
     Source/MechanicalViewComponent.cpp
     Source/MechanicalSceneModel.cpp
     Source/PlotInstrument.cpp
+    Source/PlotInstrumentView.cpp
     Source/Analytics.cpp
     Source/SignalMeasure.cpp
     Source/SystemAssembly.cpp

@@ -30,7 +30,8 @@ enum class PortDomain
 {
     Electrical,     // Volts / Amps node
     Mechanical,     // Shaft speed / torque or angle
-    SignalControl   // 0-5V logical or continuous analog control
+    SignalControl,  // 0-5V logical or continuous analog control
+    Observable      // Passive instrument input that may watch any domain
 };
 
 struct SubsystemPort
@@ -52,7 +53,8 @@ enum class SubsystemKind
     CoordinatedSequencer,       // Built-in multi-device startup & interlock coordinator
     SchematicReference,         // User-defined schematic diagram (Sub-diagram / .diagram.json)
     ProgrammableComponent,      // User-defined Node Designer / FRust programmable component (.frcomp.json)
-    NestedAssembly              // Another complete SystemAssembly (.assembly.json)
+    NestedAssembly,             // Another complete SystemAssembly (.assembly.json)
+    PlotPanel                   // Passive N-channel plotting instrument
 };
 
 // Definition of a reusable subsystem module
@@ -178,6 +180,7 @@ struct SystemAssembly
     static SubsystemDefinition makeDCMotorDefinition();
     static SubsystemDefinition makeMotorControllerDefinition();
     static SubsystemDefinition makeCoordinatedSequencerDefinition();
+    static SubsystemDefinition makePlotPanelDefinition(int channelCount = 4);
 
     // Standard Dual-Motor Coordinated System assembly factory
     static SystemAssembly createDualMotorSystem();

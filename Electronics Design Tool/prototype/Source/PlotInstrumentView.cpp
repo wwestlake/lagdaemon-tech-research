@@ -59,6 +59,12 @@ void PlotSurface::setMarkers(bool on)
     repaint();
 }
 
+void PlotSurface::setTraceColours(std::vector<juce::Colour> colours)
+{
+    traceColoursOverride = std::move(colours);
+    repaint();
+}
+
 void PlotSurface::setCamera(const pi::Camera& camera)
 {
     if (dragging)
@@ -165,7 +171,7 @@ void PlotSurface::paint2D(juce::Graphics& g, juce::Rectangle<float> area)
                 if (pen) path.lineTo(p); else path.startNewSubPath(p);
                 pen = true;
             }
-            const auto colour = traceColours[k % 6];
+            const auto colour = k < traceColoursOverride.size() ? traceColoursOverride[k] : traceColours[k % 6];
             g.setColour(colour);
             g.strokePath(path, juce::PathStrokeType(1.4f));
             if (markers)
@@ -212,7 +218,7 @@ void PlotSurface::paint2D(juce::Graphics& g, juce::Rectangle<float> area)
         g.setFont(12.0f);
         for (size_t k = 0; k < axes.signals.size(); ++k)
         {
-            g.setColour(traceColours[k % 6]);
+            g.setColour(k < traceColoursOverride.size() ? traceColoursOverride[k] : traceColours[k % 6]);
             g.drawText(axisTitle(a, axes.signals[k]), juce::Rectangle<float>(plot.getX(), area.getY() + 16.0f * (float)k, plot.getWidth(), 16.0f),
                        juce::Justification::centredLeft);
         }

@@ -481,6 +481,35 @@ SubsystemDefinition SystemAssembly::makeCoordinatedSequencerDefinition()
     return d;
 }
 
+SubsystemDefinition SystemAssembly::makePlotPanelDefinition(int channelCount)
+{
+    channelCount = std::clamp(channelCount, 1, 16);
+
+    SubsystemDefinition d;
+    d.id = "plot_panel_" + juce::String(channelCount).toStdString() + "ch";
+    d.displayName = "Plot Panel";
+    d.kind = SubsystemKind::PlotPanel;
+    d.description = "Passive N-channel simulation plot instrument.";
+
+    for (int i = 0; i < channelCount; ++i)
+    {
+        const auto channel = juce::String(i + 1).toStdString();
+        d.ports.push_back({ "ch" + channel, PortDirection::Input, PortDomain::Observable, "", "Passive plot channel " + channel });
+    }
+
+    d.defaultNumericParams = {
+        { "channels", (double)channelCount },
+        { "retention_seconds", 60.0 },
+        { "timebase_seconds", 10.0 },
+        { "max_samples", 20000.0 }
+    };
+    d.defaultTextParams = {
+        { "mode", "Strip Chart" }
+    };
+
+    return d;
+}
+
 // -----------------------------------------------------------------------------
 // Factory: Dual-Motor Coordinated System Assembly
 // -----------------------------------------------------------------------------
@@ -904,6 +933,8 @@ bool canConnectTo(const SubsystemPort& port, bool isSystemPort)
 
 bool domainsCompatible(PortDomain a, PortDomain b)
 {
+    if (a == PortDomain::Observable || b == PortDomain::Observable)
+        return true;
     if (a == b)
         return true;
     const auto electricalLike = [](PortDomain d) {
@@ -1709,7 +1740,13 @@ CompiledAssemblyCircuit AssemblyCompiler::compile(const SystemAssembly& assembly
             return res;
         }
 
-        if (def->kind == SubsystemKind::CoordinatedSequencer)
+        if (def->kind == SubsystemKind::PlotPanel)
+        {
+            // Plot panels are passive observers. Their connections are used by
+            // the operator console recorder, not by the numerical circuit.
+            continue;
+        }
+        else if (def->kind == SubsystemKind::CoordinatedSequencer)
         {
             const double delaySec = inst.getParam("motor_b_delay_sec", 0.15);
             auto seqDev = std::make_shared<SequencerDevice>(delaySec);

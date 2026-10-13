@@ -36,6 +36,7 @@ public:
     bool addSchematicSubsystemFromFile(const juce::File& file, std::string* error = nullptr);
     bool addFrustSubsystemFromFile(const juce::File& file, std::string* error = nullptr);
     bool addBuiltInMotor(std::string* error = nullptr);
+    bool addPlotPanel(int channelCount = 4, std::string* error = nullptr);
     bool addSystemPort(const std::string& name, bool input, sim_panel::PortDomain domain,
                        const std::string& unit = {}, std::string* error = nullptr);
     bool connectPorts(const std::string& fromInstance, const std::string& fromPort,
@@ -64,11 +65,14 @@ private:
     void removeSelected();
     void chooseSchematicFile();
     void chooseFrustFile();
+    void showPlotPanelDialog();
     void chooseMachineSaveFile();
     void chooseMachineLoadFile();
     void showSystemPortDialog(bool input);
     void resetToBlankMachine();
     void fitMachineView();
+    void syncPlotPanelBindings();
+    void normalizePlotPanelInstance(const std::string& instanceId);
     juce::File resolveReference(const std::string& referenceFile) const;
     juce::File referenceBaseFolder() const;
     juce::String selectedInstanceId() const { return juce::String(selectedInstanceId_); }
@@ -88,6 +92,7 @@ private:
     juce::TextButton addSchematicBtn { "Add Schematic" };
     juce::TextButton addFrustBtn { "Add FRust" };
     juce::TextButton addMotorBtn { "Add Motor" };
+    juce::TextButton addPlotBtn { "Add Plot" };
     juce::TextButton addInputBtn { "Add Input" };
     juce::TextButton addOutputBtn { "Add Output" };
     juce::TextButton removeBtn { "Remove" };

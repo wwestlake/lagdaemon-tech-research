@@ -2,6 +2,8 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
+#include <iterator>
 #include <optional>
 #include <sstream>
 
@@ -25,6 +27,7 @@ juce::String kindName(sim_panel::SubsystemKind kind)
         case K::SchematicReference: return "Schematic";
         case K::ProgrammableComponent: return "FRust";
         case K::NestedAssembly: return "Assembly";
+        case K::PlotPanel: return "Plot Panel";
     }
     return "Subsystem";
 }
@@ -38,7 +41,7 @@ juce::String directionName(sim_panel::PortDirection d)
 juce::String domainName(sim_panel::PortDomain d)
 {
     using D = sim_panel::PortDomain;
-    return d == D::Electrical ? "electrical" : d == D::Mechanical ? "mechanical" : "signal";
+    return d == D::Electrical ? "electrical" : d == D::Mechanical ? "mechanical" : d == D::Observable ? "observable" : "signal";
 }
 
 std::string safeIdStem(juce::String text)
@@ -106,12 +109,63 @@ bool canConnectTo(const sim_panel::SubsystemPort& port, bool isSystem)
 
 bool domainsCompatible(sim_panel::PortDomain a, sim_panel::PortDomain b)
 {
+    if (a == sim_panel::PortDomain::Observable || b == sim_panel::PortDomain::Observable)
+        return true;
     if (a == b)
         return true;
     const auto electricalLike = [](sim_panel::PortDomain d) {
         return d == sim_panel::PortDomain::Electrical || d == sim_panel::PortDomain::SignalControl;
     };
     return electricalLike(a) && electricalLike(b);
+}
+
+bool isPlotDefinition(const sim_panel::SubsystemDefinition& def)
+{
+    return def.kind == sim_panel::SubsystemKind::PlotPanel;
+}
+
+std::string plotWidgetId(const std::string& instanceId)
+{
+    return "plot_" + instanceId;
+}
+
+int plotChannelIndexFromPort(const std::string& portName)
+{
+    const auto text = juce::String(portName).toLowerCase();
+    if (!text.startsWith("ch"))
+        return -1;
+    const int n = text.substring(2).getIntValue();
+    return n > 0 ? n - 1 : -1;
+}
+
+std::uint32_t defaultPlotColour(int index)
+{
+    static constexpr std::uint32_t colours[] {
+        0xffffd166, 0xff4cc9f0, 0xfff72585, 0xff80ed99,
+        0xffb8a1ff, 0xffff8c42, 0xffa7f3d0, 0xfffca5a5
+    };
+    return colours[(size_t)index % (sizeof(colours) / sizeof(colours[0]))];
+}
+
+std::string unitForSignal(const MachineDesign& machine, const std::string& signalPath)
+{
+    const auto dot = signalPath.find('.');
+    if (dot == std::string::npos)
+        return {};
+    const auto instance = signalPath.substr(0, dot);
+    const auto port = signalPath.substr(dot + 1);
+    if (instance == "system")
+    {
+        for (const auto& p : machine.assembly.systemPorts)
+            if (p.name == port)
+                return p.unit;
+        return {};
+    }
+    if (const auto* inst = machine.assembly.findInstance(instance))
+        if (const auto* def = machine.assembly.findDefinition(inst->definitionId))
+            if (const auto* p = def->findPort(port))
+                return p->unit;
+    return {};
 }
 
 int nextWidgetOrder(const sim_panel::ControlPanelLayout& layout, int column)
@@ -870,7 +924,7 @@ MachineBuilderPanel::MachineBuilderPanel(std::shared_ptr<sim_panel::SystemSimula
         addAndMakeVisible(b);
     };
 
-    for (auto* b : { &newBlankBtn, &addSchematicBtn, &addFrustBtn, &addMotorBtn, &addInputBtn, &addOutputBtn,
+    for (auto* b : { &newBlankBtn, &addSchematicBtn, &addFrustBtn, &addMotorBtn, &addPlotBtn, &addInputBtn, &addOutputBtn,
                     &removeBtn, &saveBtn, &loadBtn, &fitAllBtn, &validateBtn, &compileRunBtn, &startBtn, &stopBtn,
                     &resetBtn, &applyInspectorBtn, &openReferenceBtn })
         addButton(*b);
@@ -883,6 +937,7 @@ MachineBuilderPanel::MachineBuilderPanel(std::shared_ptr<sim_panel::SystemSimula
         if (!addBuiltInMotor(&err))
             statusLabel.setText("Add motor failed: " + juce::String(err), juce::dontSendNotification);
     };
+    addPlotBtn.onClick = [this] { showPlotPanelDialog(); };
     addInputBtn.onClick = [this] { showSystemPortDialog(true); };
     addOutputBtn.onClick = [this] { showSystemPortDialog(false); };
     removeBtn.onClick = [this] { removeSelected(); };
@@ -922,6 +977,31 @@ MachineBuilderPanel::MachineBuilderPanel(std::shared_ptr<sim_panel::SystemSimula
     referenceEditor.setTextToShowWhenEmpty("model reference", juce::Colour(0xff6f8291));
     paramsEditor.setTextToShowWhenEmpty("numeric parameters: name=value", juce::Colour(0xff6f8291));
 
+    if (controlPanel_ != nullptr)
+    {
+        controlPanel_->onLayoutChanged = [this](const sim_panel::ControlPanelLayout& layout) {
+            machine_.controlPanel = layout;
+            for (const auto& widget : machine_.controlPanel.widgets)
+            {
+                if (widget.type != sim_panel::WidgetType::PlotPanel || widget.id.rfind("plot_", 0) != 0)
+                    continue;
+                const auto instanceId = widget.id.substr(5);
+                for (auto& inst : machine_.assembly.instances)
+                {
+                    if (inst.instanceId != instanceId)
+                        continue;
+                    inst.textParams["mode"] = widget.plotMode;
+                    inst.numericParams["timebase_seconds"] = widget.visibleHistorySeconds;
+                    inst.numericParams["max_samples"] = (double)widget.maxSamples;
+                    break;
+                }
+            }
+            syncPlotPanelBindings();
+            updateDiagnosticsDisplay();
+        };
+        controlPanel_->setLayout(machine_.controlPanel);
+    }
+
     updateDiagnosticsDisplay();
     refreshUi();
     startTimerHz(10);
@@ -929,6 +1009,8 @@ MachineBuilderPanel::MachineBuilderPanel(std::shared_ptr<sim_panel::SystemSimula
 
 MachineBuilderPanel::~MachineBuilderPanel()
 {
+    if (controlPanel_ != nullptr)
+        controlPanel_->onLayoutChanged = nullptr;
     stopTimer();
 }
 
@@ -937,6 +1019,7 @@ void MachineBuilderPanel::setMachine(const MachineDesign& machine)
     machine_ = machine;
     selectedInstanceId_.clear();
     selectedConnectionId_.clear();
+    syncPlotPanelBindings();
     updateDiagnosticsDisplay();
     refreshUi();
     if (mechanicalView_ != nullptr)
@@ -1134,6 +1217,51 @@ bool MachineBuilderPanel::addBuiltInMotor(std::string* error)
     return true;
 }
 
+bool MachineBuilderPanel::addPlotPanel(int channelCount, std::string* error)
+{
+    channelCount = std::clamp(channelCount, 1, 16);
+    auto def = sim_panel::SystemAssembly::makePlotPanelDefinition(channelCount);
+    if (machine_.assembly.findDefinition(def.id) == nullptr)
+        machine_.assembly.definitions.push_back(def);
+
+    const auto instId = uniqueId(machine_.assembly.instances, "plot");
+    std::string err;
+    if (!machine_.addSubsystemInstance(instId, def.id, "Plot Panel", def.defaultNumericParams, &err))
+    {
+        if (error) *error = err;
+        return false;
+    }
+
+    if (auto* inst = const_cast<sim_panel::SubsystemInstance*>(machine_.assembly.findInstance(instId)))
+        inst->textParams["mode"] = "Strip Chart";
+
+    machine_.setInstanceLayout(instId, 720.0, 120.0 + machine_.assembly.instances.size() * 22.0, nullptr);
+
+    sim_panel::WidgetConfig widget;
+    widget.id = plotWidgetId(instId);
+    widget.title = "Plot Panel";
+    widget.type = sim_panel::WidgetType::PlotPanel;
+    widget.column = 1;
+    widget.order = nextWidgetOrder(machine_.controlPanel, 1);
+    widget.height = 260;
+    widget.panelId = machine_.controlPanel.activePanelId.empty() ? "main" : machine_.controlPanel.activePanelId;
+    widget.plotMode = "Strip Chart";
+    widget.visibleHistorySeconds = 10.0;
+    widget.maxSamples = 20000;
+    widget.autoScroll = true;
+    for (int i = 0; i < channelCount; ++i)
+    {
+        const auto n = juce::String(i + 1).toStdString();
+        widget.plotChannels.push_back({ "ch" + n, "Channel " + n, "", "", defaultPlotColour(i), 1.0, 0.0, 0.0, 1.0, true });
+    }
+    machine_.controlPanel.ensureDefaultPanel();
+    machine_.controlPanel.widgets.push_back(widget);
+
+    selectInstance(instId);
+    syncAfterModelEdit();
+    return true;
+}
+
 bool MachineBuilderPanel::addSystemPort(const std::string& name, bool input, sim_panel::PortDomain domain,
                                         const std::string& unit, std::string* error)
 {
@@ -1199,6 +1327,7 @@ bool MachineBuilderPanel::connectPorts(const std::string& fromInstance, const st
 
 bool MachineBuilderPanel::saveMachineToFile(const juce::File& file, juce::String& error)
 {
+    syncPlotPanelBindings();
     if (!machine_.saveToFile(file, error))
         return false;
     currentMachineFile_ = file;
@@ -1218,12 +1347,114 @@ bool MachineBuilderPanel::loadMachineFromFile(const juce::File& file, juce::Stri
 
 void MachineBuilderPanel::syncAfterModelEdit()
 {
+    syncPlotPanelBindings();
     updateDiagnosticsDisplay();
     refreshUi();
     if (canvas != nullptr)
         canvas->repaint();
     if (controlPanel_ != nullptr)
         controlPanel_->setLayout(machine_.controlPanel);
+}
+
+void MachineBuilderPanel::normalizePlotPanelInstance(const std::string& instanceId)
+{
+    auto* inst = const_cast<sim_panel::SubsystemInstance*>(machine_.assembly.findInstance(instanceId));
+    if (inst == nullptr)
+        return;
+    const auto* def = machine_.assembly.findDefinition(inst->definitionId);
+    if (def == nullptr || !isPlotDefinition(*def))
+        return;
+
+    const int channelCount = std::clamp((int)std::round(inst->getParam("channels", (double)def->ports.size())), 1, 16);
+    if ((int)def->ports.size() != channelCount)
+    {
+        auto resizedDef = sim_panel::SystemAssembly::makePlotPanelDefinition(channelCount);
+        if (machine_.assembly.findDefinition(resizedDef.id) == nullptr)
+            machine_.assembly.definitions.push_back(resizedDef);
+        inst->definitionId = resizedDef.id;
+        machine_.assembly.connections.erase(
+            std::remove_if(machine_.assembly.connections.begin(), machine_.assembly.connections.end(),
+                           [&](const auto& conn) {
+                               return conn.toInstance == instanceId && plotChannelIndexFromPort(conn.toPort) >= channelCount;
+                           }),
+            machine_.assembly.connections.end());
+    }
+
+    auto widgetIt = std::find_if(machine_.controlPanel.widgets.begin(), machine_.controlPanel.widgets.end(),
+                                 [&](const auto& w) { return w.id == plotWidgetId(instanceId); });
+    if (widgetIt == machine_.controlPanel.widgets.end())
+    {
+        sim_panel::WidgetConfig widget;
+        widget.id = plotWidgetId(instanceId);
+        widget.title = inst->title.empty() ? "Plot Panel" : inst->title;
+        widget.type = sim_panel::WidgetType::PlotPanel;
+        widget.column = 1;
+        widget.order = nextWidgetOrder(machine_.controlPanel, 1);
+        widget.height = 260;
+        machine_.controlPanel.widgets.push_back(widget);
+        widgetIt = std::prev(machine_.controlPanel.widgets.end());
+    }
+
+    widgetIt->type = sim_panel::WidgetType::PlotPanel;
+    widgetIt->signalName.clear();
+    widgetIt->height = std::max(widgetIt->height, 220);
+    widgetIt->maxSamples = std::max(100, (int)std::round(inst->getParam("max_samples", (double)widgetIt->maxSamples)));
+    widgetIt->visibleHistorySeconds = std::max(0.01, inst->getParam("timebase_seconds", widgetIt->visibleHistorySeconds));
+    if (const auto mode = inst->getTextParam("mode", widgetIt->plotMode); !mode.empty())
+        widgetIt->plotMode = mode;
+    if ((int)widgetIt->plotChannels.size() != channelCount)
+        widgetIt->plotChannels.resize((size_t)channelCount);
+    for (int i = 0; i < channelCount; ++i)
+    {
+        auto& ch = widgetIt->plotChannels[(size_t)i];
+        const auto n = juce::String(i + 1).toStdString();
+        if (ch.id.empty())
+            ch.id = "ch" + n;
+        if (ch.title.empty())
+            ch.title = "Channel " + n;
+        if (ch.colourArgb == 0)
+            ch.colourArgb = defaultPlotColour(i);
+    }
+}
+
+void MachineBuilderPanel::syncPlotPanelBindings()
+{
+    machine_.controlPanel.ensureDefaultPanel();
+
+    for (const auto& inst : machine_.assembly.instances)
+        if (const auto* def = machine_.assembly.findDefinition(inst.definitionId); def != nullptr && isPlotDefinition(*def))
+            normalizePlotPanelInstance(inst.instanceId);
+
+    for (auto& widget : machine_.controlPanel.widgets)
+    {
+        if (widget.type != sim_panel::WidgetType::PlotPanel)
+            continue;
+        for (auto& ch : widget.plotChannels)
+        {
+            ch.signalName.clear();
+            ch.unit.clear();
+        }
+    }
+
+    for (const auto& conn : machine_.assembly.connections)
+    {
+        const auto* dstInst = machine_.assembly.findInstance(conn.toInstance);
+        const auto* dstDef = dstInst != nullptr ? machine_.assembly.findDefinition(dstInst->definitionId) : nullptr;
+        if (dstDef == nullptr || !isPlotDefinition(*dstDef))
+            continue;
+
+        const int chIndex = plotChannelIndexFromPort(conn.toPort);
+        auto widgetIt = std::find_if(machine_.controlPanel.widgets.begin(), machine_.controlPanel.widgets.end(),
+                                     [&](const auto& w) { return w.id == plotWidgetId(conn.toInstance); });
+        if (widgetIt == machine_.controlPanel.widgets.end() || chIndex < 0 || chIndex >= (int)widgetIt->plotChannels.size())
+            continue;
+
+        auto& ch = widgetIt->plotChannels[(size_t)chIndex];
+        ch.signalName = conn.sourcePath();
+        ch.unit = unitForSignal(machine_, ch.signalName);
+        if (ch.title.empty() || ch.title.rfind("Channel ", 0) == 0)
+            ch.title = conn.sourcePath();
+    }
 }
 
 void MachineBuilderPanel::selectInstance(const std::string& instanceId)
@@ -1282,7 +1513,13 @@ void MachineBuilderPanel::refreshUi()
     if (const auto* def = machine_.assembly.findDefinition(inst->definitionId))
         for (const auto& [k, v] : def->defaultNumericParams)
             params << k << "=" << inst->getParam(k, v) << "\n";
+    if (const auto* def = machine_.assembly.findDefinition(inst->definitionId))
+        for (const auto& [k, v] : def->defaultTextParams)
+            params << k << "=" << inst->getTextParam(k, v) << "\n";
     for (const auto& [k, v] : inst->numericParams)
+        if (params.indexOf(juce::String(k) + "=") < 0)
+            params << k << "=" << v << "\n";
+    for (const auto& [k, v] : inst->textParams)
         if (params.indexOf(juce::String(k) + "=") < 0)
             params << k << "=" << v << "\n";
     paramsEditor.setText(params.trimEnd(), juce::dontSendNotification);
@@ -1327,14 +1564,25 @@ void MachineBuilderPanel::applyInspectorEdits()
         if (eq <= 0)
             continue;
         const auto key = line.substring(0, eq).trim().toStdString();
-        const double value = line.substring(eq + 1).trim().getDoubleValue();
-        machine_.setInstanceParameter(selectedInstanceId_, key, value, nullptr);
+        const auto valueText = line.substring(eq + 1).trim();
+        if (key == "mode")
+        {
+            for (auto& candidate : machine_.assembly.instances)
+                if (candidate.instanceId == selectedInstanceId_)
+                    candidate.textParams[key] = valueText.toStdString();
+        }
+        else
+        {
+            const double value = valueText.getDoubleValue();
+            machine_.setInstanceParameter(selectedInstanceId_, key, value, nullptr);
+        }
     }
 
     if (const auto refText = referenceEditor.getText().trim(); refText.isNotEmpty())
         if (auto* def = const_cast<sim_panel::SubsystemDefinition*>(machine_.assembly.findDefinition(selected->definitionId)); def != nullptr)
             def->referenceFile = refText.toStdString();
 
+    normalizePlotPanelInstance(selectedInstanceId_);
     syncAfterModelEdit();
 }
 
@@ -1417,6 +1665,33 @@ void MachineBuilderPanel::chooseFrustFile()
         if (!safe->addFrustSubsystemFromFile(file, &err))
             safe->statusLabel.setText("Add FRust failed: " + juce::String(err), juce::dontSendNotification);
     });
+}
+
+void MachineBuilderPanel::showPlotPanelDialog()
+{
+    auto* dialog = new juce::AlertWindow("Add Plot Panel",
+                                        "Create a passive N-channel plot instrument.",
+                                        juce::MessageBoxIconType::NoIcon);
+    dialog->addTextEditor("channels", "4", "Channels");
+    if (auto* editor = dialog->getTextEditor("channels"))
+    {
+        editor->setWantsKeyboardFocus(true);
+        editor->setMouseClickGrabsKeyboardFocus(true);
+        editor->setEscapeAndReturnKeysConsumed(false);
+        editor->grabKeyboardFocus();
+    }
+    dialog->addButton("Add", 1, juce::KeyPress(juce::KeyPress::returnKey));
+    dialog->addButton("Cancel", 0, juce::KeyPress(juce::KeyPress::escapeKey));
+    dialog->enterModalState(true, juce::ModalCallbackFunction::create(
+        [safe = juce::Component::SafePointer<MachineBuilderPanel>(this), dialog](int result) {
+            std::unique_ptr<juce::AlertWindow> cleanup(dialog);
+            if (safe == nullptr || result != 1)
+                return;
+            const int channels = std::clamp(dialog->getTextEditorContents("channels").getIntValue(), 1, 16);
+            std::string err;
+            if (!safe->addPlotPanel(channels, &err))
+                safe->statusLabel.setText("Add plot failed: " + juce::String(err), juce::dontSendNotification);
+        }), true);
 }
 
 void MachineBuilderPanel::chooseMachineSaveFile()
@@ -1628,10 +1903,14 @@ void MachineBuilderPanel::resized()
 
     side.removeFromTop(6);
     row = side.removeFromTop(28);
-    addMotorBtn.setBounds(row.removeFromLeft(90));
+    addMotorBtn.setBounds(row.removeFromLeft(78));
     row.removeFromLeft(6);
-    addInputBtn.setBounds(row.removeFromLeft(86));
+    addPlotBtn.setBounds(row.removeFromLeft(76));
     row.removeFromLeft(6);
+    addInputBtn.setBounds(row.removeFromLeft(76));
+
+    side.removeFromTop(6);
+    row = side.removeFromTop(28);
     addOutputBtn.setBounds(row.removeFromLeft(90));
 
     side.removeFromTop(6);

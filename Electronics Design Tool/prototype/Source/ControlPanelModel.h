@@ -2,6 +2,7 @@
 
 #include <juce_core/juce_core.h>
 
+#include <cstdint>
 #include <string>
 #include <vector>
 
@@ -25,7 +26,25 @@ enum class WidgetType
     StatusBadge,
     TrendChart,
     ClockDisplay,
-    EventLog
+    EventLog,
+    PlotPanel
+};
+
+struct PlotChannelConfig
+{
+    std::string id;
+    std::string title;
+    std::string signalName;
+    std::string unit;
+    std::uint32_t colourArgb = 0xff4cc9f0;
+    double scale = 1.0;
+    double offset = 0.0;
+    double minValue = 0.0;
+    double maxValue = 1.0;
+    bool visible = true;
+
+    juce::var toJson() const;
+    static PlotChannelConfig fromJson(const juce::var& json);
 };
 
 struct WidgetConfig
@@ -47,15 +66,44 @@ struct WidgetConfig
     int height = 80;
 
     std::vector<std::string> options; // for ModeSelector
+
+    // Extended operator-console metadata. Old machine files omit these and
+    // therefore continue to load into the default "main" panel.
+    std::string panelId = "main";
+    std::vector<PlotChannelConfig> plotChannels;
+    std::string plotMode = "Strip Chart";
+    int xChannel = 0;
+    int yChannel = 1;
+    double visibleHistorySeconds = 10.0;
+    int maxSamples = 20000;
+    bool autoScroll = true;
+};
+
+struct OperatorPanelConfig
+{
+    std::string id = "main";
+    std::string title = "Main";
+    int controlColumns = 1;
+    int instrumentColumns = 1;
+    double splitRatio = 0.42;
+    int spacing = 8;
+
+    juce::var toJson() const;
+    static OperatorPanelConfig fromJson(const juce::var& json);
 };
 
 struct ControlPanelLayout
 {
     std::string title = "Operator Control Panel";
+    std::string activePanelId = "main";
+    std::vector<OperatorPanelConfig> panels;
     std::vector<WidgetConfig> widgets;
 
     static ControlPanelLayout createDefaultMotorPanel();
     static ControlPanelLayout createDualMotorCoordinatedPanel();
+    void ensureDefaultPanel();
+    const OperatorPanelConfig* findPanel(const std::string& panelId) const;
+    OperatorPanelConfig* findPanel(const std::string& panelId);
     juce::var toJson() const;
     static ControlPanelLayout fromJson(const juce::var& json);
 };

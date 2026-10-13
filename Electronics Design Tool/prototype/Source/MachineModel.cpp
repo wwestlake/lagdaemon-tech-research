@@ -83,6 +83,8 @@ bool canConnectTo(const sim_panel::SubsystemPort& port, bool isSystemPort)
 
 bool domainsCompatible(sim_panel::PortDomain a, sim_panel::PortDomain b)
 {
+    if (a == sim_panel::PortDomain::Observable || b == sim_panel::PortDomain::Observable)
+        return true;
     if (a == b)
         return true;
     const auto electricalLike = [](sim_panel::PortDomain d) {
@@ -374,6 +376,24 @@ std::vector<Diagnostic> MachineDesign::validate(const juce::File& projectFolder)
             diags.push_back({ Diagnostic::Level::Warning, "control_panel", w.id,
                               "Widget '" + w.id + "' binds to signal '" + w.signalName + "' which is not currently discovered in assembly." });
         }
+
+        if (w.type == sim_panel::WidgetType::PlotPanel)
+        {
+            std::set<std::string> channelIds;
+            for (const auto& ch : w.plotChannels)
+            {
+                if (ch.id.empty())
+                    diags.push_back({ Diagnostic::Level::Error, "control_panel", w.id, "Plot Panel has a channel with an empty ID." });
+                else if (!channelIds.insert(ch.id).second)
+                    diags.push_back({ Diagnostic::Level::Error, "control_panel", w.id, "Plot Panel has duplicate channel ID: " + ch.id });
+
+                if (!ch.signalName.empty() && signalSet.count(ch.signalName) == 0)
+                {
+                    diags.push_back({ Diagnostic::Level::Warning, "control_panel", w.id,
+                                      "Plot channel '" + ch.id + "' binds to signal '" + ch.signalName + "' which is not currently discovered in assembly." });
+                }
+            }
+        }
     }
 
     return diags;
@@ -434,6 +454,11 @@ bool MachineDesign::removeSubsystemInstance(const std::string& instanceId, std::
                            return c.fromInstance == instanceId || c.toInstance == instanceId;
                        }),
         assembly.connections.end());
+
+    controlPanel.widgets.erase(
+        std::remove_if(controlPanel.widgets.begin(), controlPanel.widgets.end(),
+                       [&](const sim_panel::WidgetConfig& w) { return w.id == "plot_" + instanceId; }),
+        controlPanel.widgets.end());
     return true;
 }
 
@@ -474,6 +499,9 @@ bool MachineDesign::renameSubsystemInstance(const std::string& oldInstanceId, co
         const auto oldPrefix = oldInstanceId + ".";
         if (widget.signalName.rfind(oldPrefix, 0) == 0)
             widget.signalName = newInstanceId + widget.signalName.substr(oldInstanceId.length());
+        for (auto& channel : widget.plotChannels)
+            if (channel.signalName.rfind(oldPrefix, 0) == 0)
+                channel.signalName = newInstanceId + channel.signalName.substr(oldInstanceId.length());
     }
 
     std::map<std::string, double> renamedNumeric;

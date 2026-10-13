@@ -1,12 +1,110 @@
 #include "ControlPanelModel.h"
 
+#include <algorithm>
+
 namespace sim_panel
 {
+
+juce::var PlotChannelConfig::toJson() const
+{
+    auto* obj = new juce::DynamicObject();
+    obj->setProperty("id", juce::String(id));
+    obj->setProperty("title", juce::String(title));
+    obj->setProperty("signalName", juce::String(signalName));
+    obj->setProperty("unit", juce::String(unit));
+    obj->setProperty("colourArgb", (juce::int64)colourArgb);
+    obj->setProperty("scale", scale);
+    obj->setProperty("offset", offset);
+    obj->setProperty("minValue", minValue);
+    obj->setProperty("maxValue", maxValue);
+    obj->setProperty("visible", visible);
+    return juce::var(obj);
+}
+
+PlotChannelConfig PlotChannelConfig::fromJson(const juce::var& json)
+{
+    PlotChannelConfig c;
+    if (const auto* obj = json.getDynamicObject())
+    {
+        c.id = obj->getProperty("id").toString().toStdString();
+        c.title = obj->getProperty("title").toString().toStdString();
+        c.signalName = obj->getProperty("signalName").toString().toStdString();
+        c.unit = obj->getProperty("unit").toString().toStdString();
+        c.colourArgb = obj->hasProperty("colourArgb") ? (std::uint32_t)(juce::int64)obj->getProperty("colourArgb") : c.colourArgb;
+        c.scale = obj->hasProperty("scale") ? (double)obj->getProperty("scale") : c.scale;
+        c.offset = obj->hasProperty("offset") ? (double)obj->getProperty("offset") : c.offset;
+        c.minValue = obj->hasProperty("minValue") ? (double)obj->getProperty("minValue") : c.minValue;
+        c.maxValue = obj->hasProperty("maxValue") ? (double)obj->getProperty("maxValue") : c.maxValue;
+        c.visible = obj->hasProperty("visible") ? (bool)obj->getProperty("visible") : c.visible;
+    }
+    return c;
+}
+
+juce::var OperatorPanelConfig::toJson() const
+{
+    auto* obj = new juce::DynamicObject();
+    obj->setProperty("id", juce::String(id));
+    obj->setProperty("title", juce::String(title));
+    obj->setProperty("controlColumns", controlColumns);
+    obj->setProperty("instrumentColumns", instrumentColumns);
+    obj->setProperty("splitRatio", splitRatio);
+    obj->setProperty("spacing", spacing);
+    return juce::var(obj);
+}
+
+OperatorPanelConfig OperatorPanelConfig::fromJson(const juce::var& json)
+{
+    OperatorPanelConfig p;
+    if (const auto* obj = json.getDynamicObject())
+    {
+        p.id = obj->getProperty("id").toString().toStdString();
+        p.title = obj->getProperty("title").toString().toStdString();
+        p.controlColumns = obj->hasProperty("controlColumns") ? std::max(1, (int)obj->getProperty("controlColumns")) : p.controlColumns;
+        p.instrumentColumns = obj->hasProperty("instrumentColumns") ? std::max(1, (int)obj->getProperty("instrumentColumns")) : p.instrumentColumns;
+        p.splitRatio = obj->hasProperty("splitRatio") ? juce::jlimit(0.20, 0.80, (double)obj->getProperty("splitRatio")) : p.splitRatio;
+        p.spacing = obj->hasProperty("spacing") ? std::max(2, (int)obj->getProperty("spacing")) : p.spacing;
+    }
+    if (p.id.empty())
+        p.id = "main";
+    if (p.title.empty())
+        p.title = p.id;
+    return p;
+}
+
+void ControlPanelLayout::ensureDefaultPanel()
+{
+    if (panels.empty())
+        panels.push_back({ "main", title.empty() ? std::string("Main") : title, 1, 1, 0.42, 8 });
+    if (activePanelId.empty())
+        activePanelId = panels.front().id;
+    for (auto& w : widgets)
+        if (w.panelId.empty())
+            w.panelId = panels.front().id;
+}
+
+const OperatorPanelConfig* ControlPanelLayout::findPanel(const std::string& panelId) const
+{
+    const auto id = panelId.empty() ? activePanelId : panelId;
+    for (const auto& p : panels)
+        if (p.id == id)
+            return &p;
+    return panels.empty() ? nullptr : &panels.front();
+}
+
+OperatorPanelConfig* ControlPanelLayout::findPanel(const std::string& panelId)
+{
+    const auto id = panelId.empty() ? activePanelId : panelId;
+    for (auto& p : panels)
+        if (p.id == id)
+            return &p;
+    return panels.empty() ? nullptr : &panels.front();
+}
 
 ControlPanelLayout ControlPanelLayout::createDefaultMotorPanel()
 {
     ControlPanelLayout p;
     p.title = "Closed-Loop Motor Control & Automation Panel";
+    p.ensureDefaultPanel();
 
     // --- Left Column: Inputs ---
     // 1. Main Power Switch
@@ -109,6 +207,7 @@ ControlPanelLayout ControlPanelLayout::createDefaultMotorPanel()
         "", "", 0.0, 0.0, 0.0, 0.0, 1, 8, 120, {}
     });
 
+    p.ensureDefaultPanel();
     return p;
 }
 
@@ -116,6 +215,7 @@ ControlPanelLayout ControlPanelLayout::createDualMotorCoordinatedPanel()
 {
     ControlPanelLayout p;
     p.title = "Dual-Motor Coordinated System Control Panel";
+    p.ensureDefaultPanel();
 
     // --- Left Column: Inputs ---
     // 1. System Master Power
@@ -244,6 +344,7 @@ ControlPanelLayout ControlPanelLayout::createDualMotorCoordinatedPanel()
         "", "", 0.0, 0.0, 0.0, 0.0, 1, 12, 120, {}
     });
 
+    p.ensureDefaultPanel();
     return p;
 }
 
@@ -251,9 +352,17 @@ juce::var ControlPanelLayout::toJson() const
 {
     auto* obj = new juce::DynamicObject();
     obj->setProperty("title", juce::String(title));
+    obj->setProperty("activePanelId", juce::String(activePanelId));
+
+    juce::Array<juce::var> panelArray;
+    auto copy = *this;
+    copy.ensureDefaultPanel();
+    for (const auto& panel : copy.panels)
+        panelArray.add(panel.toJson());
+    obj->setProperty("panels", panelArray);
 
     juce::Array<juce::var> wArray;
-    for (const auto& w : widgets)
+    for (const auto& w : copy.widgets)
     {
         auto* wo = new juce::DynamicObject();
         wo->setProperty("id", juce::String(w.id));
@@ -274,6 +383,19 @@ juce::var ControlPanelLayout::toJson() const
             optArr.add(juce::String(opt));
         wo->setProperty("options", optArr);
 
+        wo->setProperty("panelId", juce::String(w.panelId));
+        wo->setProperty("plotMode", juce::String(w.plotMode));
+        wo->setProperty("xChannel", w.xChannel);
+        wo->setProperty("yChannel", w.yChannel);
+        wo->setProperty("visibleHistorySeconds", w.visibleHistorySeconds);
+        wo->setProperty("maxSamples", w.maxSamples);
+        wo->setProperty("autoScroll", w.autoScroll);
+
+        juce::Array<juce::var> channelArray;
+        for (const auto& channel : w.plotChannels)
+            channelArray.add(channel.toJson());
+        wo->setProperty("plotChannels", channelArray);
+
         wArray.add(juce::var(wo));
     }
     obj->setProperty("widgets", wArray);
@@ -288,11 +410,17 @@ ControlPanelLayout ControlPanelLayout::fromJson(const juce::var& json)
         return p;
 
     p.title = json["title"].toString().toStdString();
+    p.activePanelId = json["activePanelId"].toString().toStdString();
+    if (const auto* panelArr = json["panels"].getArray())
+        for (const auto& panelVar : *panelArr)
+            p.panels.push_back(OperatorPanelConfig::fromJson(panelVar));
+
     if (const auto* arr = json["widgets"].getArray())
     {
         for (const auto& wVar : *arr)
         {
             if (!wVar.isObject()) continue;
+            const auto* wo = wVar.getDynamicObject();
             WidgetConfig w;
             w.id = wVar["id"].toString().toStdString();
             w.type = (WidgetType)(int)wVar["type"];
@@ -311,9 +439,26 @@ ControlPanelLayout ControlPanelLayout::fromJson(const juce::var& json)
                 for (const auto& o : *optArr)
                     w.options.push_back(o.toString().toStdString());
             }
+            w.panelId = wVar["panelId"].toString().toStdString();
+            if (wo != nullptr && wo->hasProperty("plotMode"))
+                w.plotMode = wVar["plotMode"].toString().toStdString();
+            if (wo != nullptr && wo->hasProperty("xChannel"))
+                w.xChannel = (int)wVar["xChannel"];
+            if (wo != nullptr && wo->hasProperty("yChannel"))
+                w.yChannel = (int)wVar["yChannel"];
+            if (wo != nullptr && wo->hasProperty("visibleHistorySeconds"))
+                w.visibleHistorySeconds = (double)wVar["visibleHistorySeconds"];
+            if (wo != nullptr && wo->hasProperty("maxSamples"))
+                w.maxSamples = (int)wVar["maxSamples"];
+            if (wo != nullptr && wo->hasProperty("autoScroll"))
+                w.autoScroll = (bool)wVar["autoScroll"];
+            if (const auto* channelArr = wVar["plotChannels"].getArray())
+                for (const auto& channelVar : *channelArr)
+                    w.plotChannels.push_back(PlotChannelConfig::fromJson(channelVar));
             p.widgets.push_back(w);
         }
     }
+    p.ensureDefaultPanel();
     return p;
 }
 

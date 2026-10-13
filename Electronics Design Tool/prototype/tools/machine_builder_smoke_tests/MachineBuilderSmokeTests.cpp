@@ -36,6 +36,15 @@ const sim_panel::SubsystemInstance* findByKind(const machine_builder::MachineDes
     return nullptr;
 }
 
+const sim_panel::WidgetConfig* findWidget(const machine_builder::MachineDesign& machine,
+                                          sim_panel::WidgetType type)
+{
+    for (const auto& widget : machine.controlPanel.widgets)
+        if (widget.type == type)
+            return &widget;
+    return nullptr;
+}
+
 double runMotor(machine_builder::MachineBuilderPanel& builder,
                 sim_panel::SystemSimulationSession& session,
                 const std::string& speedSignal,
@@ -143,6 +152,78 @@ int main()
     const auto driveSignal = reopenedController != nullptr ? reopenedController->instanceId + ".drive_out" : std::string();
     const auto nominalSpeed = runMotor(reopened, *sessionReloaded, speedSignal, driveSignal);
     r.check(nominalSpeed > 20.0, "reopened graphical machine executes real saved schematic and FRust controller");
+
+    auto plotSession = std::make_shared<sim_panel::SystemSimulationSession>();
+    machine_builder::MachineBuilderPanel plotBuilder(plotSession, nullptr, nullptr);
+    plotBuilder.setMachine(reopened.getMachine());
+    r.check(plotBuilder.addPlotPanel(3, &err), "builder adds passive N-channel Plot Panel instrument");
+    const auto* plot = findByKind(plotBuilder.getMachine(), sim_panel::SubsystemKind::PlotPanel);
+    const auto* plotDrive = findByKind(plotBuilder.getMachine(), sim_panel::SubsystemKind::SchematicReference);
+    const auto* plotController = findByKind(plotBuilder.getMachine(), sim_panel::SubsystemKind::ProgrammableComponent);
+    if (plot != nullptr && plotDrive != nullptr && plotController != nullptr)
+    {
+        r.check(plotBuilder.connectPorts(plotDrive->instanceId, "speed", plot->instanceId, "ch1", &err),
+                "connect motor speed to Plot Panel channel 1");
+        r.check(plotBuilder.connectPorts(plotDrive->instanceId, "tach", plot->instanceId, "ch2", &err),
+                "connect tach voltage to Plot Panel channel 2");
+        r.check(plotBuilder.connectPorts(plotController->instanceId, "drive_out", plot->instanceId, "ch3", &err),
+                "connect controller drive voltage to Plot Panel channel 3");
+    }
+    const auto* plotWidget = findWidget(plotBuilder.getMachine(), sim_panel::WidgetType::PlotPanel);
+    r.check(plotWidget != nullptr && plotWidget->plotChannels.size() == 3,
+            "Plot Panel creates an operator-console plot widget with three channels");
+    const auto expectedSpeedBinding = plotDrive != nullptr ? plotDrive->instanceId + ".speed" : std::string();
+    const auto expectedDriveBinding = plotController != nullptr ? plotController->instanceId + ".drive_out" : std::string();
+    r.check(plotWidget != nullptr && plotWidget->plotChannels.size() >= 3
+            && plotWidget->plotChannels[0].signalName == expectedSpeedBinding
+            && plotWidget->plotChannels[2].signalName == expectedDriveBinding,
+            "Plot Panel channel bindings follow diagram wires");
+    r.check(plotBuilder.getMachine().validate(example).empty(),
+            "Plot Panel observer bindings validate without warnings");
+
+    const auto plotSpeed = runMotor(plotBuilder, *plotSession, speedSignal, driveSignal);
+    r.check(std::abs(plotSpeed - nominalSpeed) < 1.0e-6,
+            "adding wired Plot Panel does not change simulated motor result");
+
+    auto& plotMachine = plotBuilder.getMachine();
+    plotMachine.controlPanel.ensureDefaultPanel();
+    sim_panel::OperatorPanelConfig instrumentsPanel;
+    instrumentsPanel.id = "instruments";
+    instrumentsPanel.title = "Instrumentation";
+    instrumentsPanel.controlColumns = 1;
+    instrumentsPanel.instrumentColumns = 2;
+    instrumentsPanel.splitRatio = 0.34;
+    plotMachine.controlPanel.panels.push_back(instrumentsPanel);
+    plotMachine.controlPanel.activePanelId = instrumentsPanel.id;
+    for (auto& widget : plotMachine.controlPanel.widgets)
+    {
+        if (widget.type == sim_panel::WidgetType::PlotPanel)
+        {
+            widget.panelId = instrumentsPanel.id;
+            widget.plotMode = "XY Plot";
+            widget.xChannel = 0;
+            widget.yChannel = 2;
+        }
+    }
+    if (plot != nullptr)
+        for (auto& inst : plotMachine.assembly.instances)
+            if (inst.instanceId == plot->instanceId)
+                inst.textParams["mode"] = "XY Plot";
+
+    const auto savedPlotFile = outDir.getChildFile("graphical_builder_with_plot.machine.json");
+    r.check(plotBuilder.saveMachineToFile(savedPlotFile, ioError), "builder saves Plot Panel configuration");
+    auto plotReloadSession = std::make_shared<sim_panel::SystemSimulationSession>();
+    machine_builder::MachineBuilderPanel plotReopened(plotReloadSession, nullptr, nullptr);
+    r.check(plotReopened.loadMachineFromFile(savedPlotFile, ioError), "builder reloads Plot Panel configuration");
+    const auto* reloadedPlotWidget = findWidget(plotReopened.getMachine(), sim_panel::WidgetType::PlotPanel);
+    r.check(reloadedPlotWidget != nullptr && reloadedPlotWidget->plotMode == "XY Plot"
+            && reloadedPlotWidget->plotChannels.size() == 3
+            && reloadedPlotWidget->plotChannels[0].signalName == expectedSpeedBinding,
+            "Plot Panel mode and channel bindings survive save/load");
+    r.check(plotReopened.getMachine().controlPanel.activePanelId == instrumentsPanel.id
+            && plotReopened.getMachine().controlPanel.findPanel(instrumentsPanel.id) != nullptr
+            && reloadedPlotWidget != nullptr && reloadedPlotWidget->panelId == instrumentsPanel.id,
+            "operator panel definitions and Plot Panel assignment survive save/load");
 
     if (reopenedController != nullptr)
         reopened.getMachine().setInstanceParameter(reopenedController->instanceId, "kp", 4.0, nullptr);

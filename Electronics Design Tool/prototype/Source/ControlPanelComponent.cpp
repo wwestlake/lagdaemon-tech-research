@@ -1,9 +1,12 @@
 #include "ControlPanelComponent.h"
 #include "MachineModel.h"
+#include "PlotInstrumentView.h"
 
 #include <cmath>
 #include <iomanip>
+#include <limits>
 #include <sstream>
+#include <utility>
 
 namespace sim_panel
 {
@@ -383,6 +386,363 @@ public:
     juce::Slider slider;
 };
 
+double signalValue(const StateSnapshot& snap, const std::string& signal, bool* found = nullptr)
+{
+    if (const auto it = snap.numericSignals.find(signal); it != snap.numericSignals.end())
+    {
+        if (found != nullptr) *found = true;
+        return it->second;
+    }
+    if (const auto it = snap.booleanSignals.find(signal); it != snap.booleanSignals.end())
+    {
+        if (found != nullptr) *found = true;
+        return it->second ? 1.0 : 0.0;
+    }
+    if (found != nullptr) *found = false;
+    return std::numeric_limits<double>::quiet_NaN();
+}
+
+juce::String csvCell(juce::String text)
+{
+    text = text.replace("\"", "\"\"");
+    return "\"" + text + "\"";
+}
+
+} // namespace
+
+struct MachineRecording
+{
+    std::vector<double> time;
+    std::vector<std::vector<double>> values;
+    double lastTime = -std::numeric_limits<double>::infinity();
+
+    void ensureChannels(size_t channels)
+    {
+        if (values.size() != channels)
+            values.assign(channels, {});
+    }
+
+    void clear()
+    {
+        time.clear();
+        values.clear();
+        lastTime = -std::numeric_limits<double>::infinity();
+    }
+
+    void append(const StateSnapshot& snap, const WidgetConfig& config)
+    {
+        if (snap.simTime + 1.0e-12 < lastTime)
+            clear();
+        if (!(snap.simTime > lastTime))
+            return;
+
+        ensureChannels(config.plotChannels.size());
+        time.push_back(snap.simTime);
+        for (size_t i = 0; i < config.plotChannels.size(); ++i)
+        {
+            const auto& ch = config.plotChannels[i];
+            bool ok = false;
+            const auto raw = ch.signalName.empty() ? std::numeric_limits<double>::quiet_NaN()
+                                                   : signalValue(snap, ch.signalName, &ok);
+            values[i].push_back(ok ? raw * ch.scale + ch.offset : std::numeric_limits<double>::quiet_NaN());
+        }
+        lastTime = snap.simTime;
+
+        const size_t maxSamples = (size_t)std::max(100, config.maxSamples);
+        while (time.size() > maxSamples)
+            popFront();
+
+        const auto retention = std::max(0.0, config.visibleHistorySeconds * 6.0);
+        while (retention > 0.0 && time.size() > 2 && time.back() - time.front() > retention)
+            popFront();
+    }
+
+    void popFront()
+    {
+        time.erase(time.begin());
+        for (auto& v : values)
+            if (!v.empty())
+                v.erase(v.begin());
+    }
+
+    std::shared_ptr<plot_instrument::Acquisition> acquisition(const WidgetConfig& config) const
+    {
+        auto acq = std::make_shared<plot_instrument::Acquisition>();
+        acq->ok = true;
+        acq->time = time;
+        acq->values = values;
+        for (size_t i = 0; i < config.plotChannels.size(); ++i)
+        {
+            const auto& ch = config.plotChannels[i];
+            acq->labels.push_back(ch.title.empty() ? juce::String("Channel ") + juce::String((int)i + 1) : juce::String(ch.title));
+            acq->units.push_back(juce::String(ch.unit));
+        }
+        return acq;
+    }
+
+    bool writeCsv(const juce::File& file, const WidgetConfig& config, juce::String& error) const
+    {
+        juce::String text;
+        text << "time_s";
+        for (const auto& ch : config.plotChannels)
+            text << "," << csvCell(ch.title.empty() ? juce::String(ch.id) : juce::String(ch.title));
+        text << "\n";
+        for (size_t i = 0; i < time.size(); ++i)
+        {
+            text << juce::String(time[i], 9);
+            for (const auto& channelValues : values)
+            {
+                text << ",";
+                if (i < channelValues.size() && std::isfinite(channelValues[i]))
+                    text << juce::String(channelValues[i], 12);
+            }
+            text << "\n";
+        }
+        if (!file.replaceWithText(text))
+        {
+            error = "Could not write " + file.getFullPathName();
+            return false;
+        }
+        return true;
+    }
+
+    bool saveJson(const juce::File& file, const WidgetConfig& config, juce::String& error) const
+    {
+        auto* root = new juce::DynamicObject();
+        root->setProperty("kind", "machine_plot_recording");
+        root->setProperty("title", juce::String(config.title));
+        root->setProperty("mode", juce::String(config.plotMode));
+
+        juce::Array<juce::var> channels;
+        for (const auto& ch : config.plotChannels)
+            channels.add(ch.toJson());
+        root->setProperty("channels", channels);
+
+        juce::Array<juce::var> samples;
+        for (size_t i = 0; i < time.size(); ++i)
+        {
+            auto* sample = new juce::DynamicObject();
+            sample->setProperty("time", time[i]);
+            juce::Array<juce::var> vals;
+            for (const auto& channelValues : values)
+                vals.add(i < channelValues.size() && std::isfinite(channelValues[i]) ? juce::var(channelValues[i]) : juce::var());
+            sample->setProperty("values", vals);
+            samples.add(juce::var(sample));
+        }
+        root->setProperty("samples", samples);
+
+        if (!file.replaceWithText(juce::JSON::toString(juce::var(root), true)))
+        {
+            error = "Could not write " + file.getFullPathName();
+            return false;
+        }
+        return true;
+    }
+};
+
+namespace
+{
+
+plot_instrument::Range combinedRange(const plot_instrument::Acquisition& acq, const std::vector<int>& signals)
+{
+    std::vector<double> all;
+    for (auto signal : signals)
+        if (signal >= 0 && signal < (int)acq.values.size())
+            all.insert(all.end(), acq.values[(size_t)signal].begin(), acq.values[(size_t)signal].end());
+    return plot_instrument::autoRange(all);
+}
+
+plot_instrument::Range channelRange(const plot_instrument::Acquisition& acq, const WidgetConfig& config, int channel)
+{
+    auto range = plot_instrument::autoRange(acq.values[(size_t)channel]);
+    if (channel >= 0 && channel < (int)config.plotChannels.size())
+    {
+        const auto& ch = config.plotChannels[(size_t)channel];
+        if (ch.minValue < ch.maxValue)
+            range = { ch.minValue, ch.maxValue, true };
+    }
+    return range;
+}
+
+class PlotPanelWidget final : public juce::Component
+{
+public:
+    PlotPanelWidget(WidgetConfig configIn, MachineRecording& recordingIn, bool& recordEnabledIn,
+                    std::function<void(const WidgetConfig&)> configChangedIn)
+        : config(std::move(configIn)), recording(recordingIn), recordEnabled(recordEnabledIn),
+          configChanged(std::move(configChangedIn))
+    {
+        addAndMakeVisible(title);
+        title.setText(juce::String(config.title.empty() ? "Plot Panel" : config.title), juce::dontSendNotification);
+        title.setColour(juce::Label::textColourId, juce::Colour(0xffdce9ee));
+        title.setFont(juce::Font(13.0f, juce::Font::bold));
+
+        addAndMakeVisible(modeBox);
+        modeBox.addItem("Strip Chart", 1);
+        modeBox.addItem("XY Plot", 2);
+        modeBox.setSelectedId(config.plotMode == "XY Plot" ? 2 : 1, juce::dontSendNotification);
+        modeBox.onChange = [this] {
+            config.plotMode = modeBox.getSelectedId() == 2 ? "XY Plot" : "Strip Chart";
+            if (configChanged)
+                configChanged(config);
+            updateSurface();
+        };
+
+        addAndMakeVisible(recordToggle);
+        recordToggle.setButtonText("Record");
+        recordToggle.setToggleState(recordEnabled, juce::dontSendNotification);
+        recordToggle.onClick = [this] { recordEnabled = recordToggle.getToggleState(); };
+
+        addAndMakeVisible(pauseDisplayToggle);
+        pauseDisplayToggle.setButtonText("Pause View");
+
+        addAndMakeVisible(markersToggle);
+        markersToggle.setButtonText("Markers");
+        markersToggle.onClick = [this] { surface.setMarkers(markersToggle.getToggleState()); };
+
+        auto prepButton = [this](juce::TextButton& b) {
+            b.setColour(juce::TextButton::buttonColourId, juce::Colour(0xff22313d));
+            b.setColour(juce::TextButton::textColourOffId, juce::Colour(0xffdce9ee));
+            addAndMakeVisible(b);
+        };
+        prepButton(clearButton);
+        prepButton(exportCsvButton);
+        prepButton(saveSessionButton);
+
+        clearButton.onClick = [this] { recording.clear(); updateSurface(); };
+        exportCsvButton.onClick = [this] { chooseCsvExport(); };
+        saveSessionButton.onClick = [this] { chooseSessionSave(); };
+
+        addAndMakeVisible(info);
+        info.setColour(juce::Label::textColourId, juce::Colour(0xff9eb3c4));
+        info.setFont(juce::Font(11.0f));
+
+        addAndMakeVisible(surface);
+        surface.setMessage("No recorded samples yet.");
+    }
+
+    void updateDisplay()
+    {
+        if (!pauseDisplayToggle.getToggleState())
+            updateSurface();
+    }
+
+    void paint(juce::Graphics& g) override
+    {
+        g.fillAll(juce::Colour(0xff10161d));
+        g.setColour(juce::Colour(0xff2b3747));
+        g.drawRoundedRectangle(getLocalBounds().toFloat().reduced(1.0f), 4.0f, 1.0f);
+    }
+
+    void resized() override
+    {
+        auto b = getLocalBounds().reduced(8);
+        auto top = b.removeFromTop(28);
+        title.setBounds(top.removeFromLeft(std::min(180, top.getWidth() / 3)));
+        modeBox.setBounds(top.removeFromLeft(118).reduced(2));
+        recordToggle.setBounds(top.removeFromLeft(82));
+        pauseDisplayToggle.setBounds(top.removeFromLeft(106));
+        markersToggle.setBounds(top.removeFromLeft(82));
+        saveSessionButton.setBounds(top.removeFromRight(68).reduced(2));
+        exportCsvButton.setBounds(top.removeFromRight(72).reduced(2));
+        clearButton.setBounds(top.removeFromRight(58).reduced(2));
+        info.setBounds(b.removeFromBottom(18));
+        b.removeFromBottom(4);
+        surface.setBounds(b);
+    }
+
+private:
+    void updateSurface()
+    {
+        const auto acq = recording.acquisition(config);
+        if (acq->time.empty() || acq->values.empty())
+        {
+            surface.setMessage("No recorded samples yet.");
+            info.setText("0 samples", juce::dontSendNotification);
+            surface.setAcquisition(nullptr, plot_instrument::Mode::Time, {});
+            return;
+        }
+
+        std::vector<int> visible;
+        for (int i = 0; i < (int)config.plotChannels.size(); ++i)
+            if (config.plotChannels[(size_t)i].visible && i < (int)acq->values.size())
+                visible.push_back(i);
+        if (visible.empty())
+            visible.push_back(0);
+
+        PlotSurface::Axes axes;
+        const bool xy = modeBox.getSelectedId() == 2;
+        if (xy && acq->values.size() >= 2)
+        {
+            const int x = juce::jlimit(0, (int)acq->values.size() - 1, config.xChannel);
+            const int y = juce::jlimit(0, (int)acq->values.size() - 1, config.yChannel);
+            axes.signals = { x, y };
+            axes.ranges = { channelRange(*acq, config, x), channelRange(*acq, config, y) };
+            surface.setTraceColours({ juce::Colour(config.plotChannels[(size_t)x].colourArgb),
+                                      juce::Colour(config.plotChannels[(size_t)y].colourArgb) });
+            surface.setAcquisition(acq, plot_instrument::Mode::XY, axes);
+        }
+        else
+        {
+            axes.signals = visible;
+            const auto latest = acq->time.back();
+            const auto history = std::max(0.01, config.visibleHistorySeconds);
+            const double minT = (config.autoScroll && latest > history) ? latest - history : acq->time.front();
+            axes.ranges = { { minT, std::max(minT + 1.0e-9, latest), true }, combinedRange(*acq, visible) };
+            std::vector<juce::Colour> colours;
+            for (auto signal : visible)
+                colours.push_back(juce::Colour(config.plotChannels[(size_t)signal].colourArgb));
+            surface.setTraceColours(std::move(colours));
+            surface.setAcquisition(acq, plot_instrument::Mode::Time, axes);
+        }
+
+        juce::String summary;
+        summary << (int)acq->time.size() << " samples";
+        if (!acq->time.empty())
+            summary << "  t=" << juce::String(acq->time.back(), 3) << "s";
+        info.setText(summary, juce::dontSendNotification);
+    }
+
+    void chooseCsvExport()
+    {
+        chooser = std::make_unique<juce::FileChooser>("Export plot CSV", juce::File::getSpecialLocation(juce::File::userDocumentsDirectory),
+                                                      "*.csv");
+        chooser->launchAsync(juce::FileBrowserComponent::saveMode | juce::FileBrowserComponent::canSelectFiles,
+                             [safe = juce::Component::SafePointer<PlotPanelWidget>(this)](const juce::FileChooser& fc) {
+            if (safe == nullptr || fc.getResult() == juce::File())
+                return;
+            juce::String error;
+            safe->recording.writeCsv(fc.getResult(), safe->config, error);
+            safe->info.setText(error.isEmpty() ? "CSV exported" : error, juce::dontSendNotification);
+        });
+    }
+
+    void chooseSessionSave()
+    {
+        chooser = std::make_unique<juce::FileChooser>("Save plot recording", juce::File::getSpecialLocation(juce::File::userDocumentsDirectory),
+                                                      "*.plotrecording.json;*.json");
+        chooser->launchAsync(juce::FileBrowserComponent::saveMode | juce::FileBrowserComponent::canSelectFiles,
+                             [safe = juce::Component::SafePointer<PlotPanelWidget>(this)](const juce::FileChooser& fc) {
+            if (safe == nullptr || fc.getResult() == juce::File())
+                return;
+            juce::String error;
+            safe->recording.saveJson(fc.getResult(), safe->config, error);
+            safe->info.setText(error.isEmpty() ? "Recording saved" : error, juce::dontSendNotification);
+        });
+    }
+
+    WidgetConfig config;
+    MachineRecording& recording;
+    bool& recordEnabled;
+    std::function<void(const WidgetConfig&)> configChanged;
+    juce::Label title, info;
+    juce::ComboBox modeBox;
+    juce::ToggleButton recordToggle, pauseDisplayToggle, markersToggle;
+    juce::TextButton clearButton { "Clear" }, exportCsvButton { "CSV" }, saveSessionButton { "Save" };
+    PlotSurface surface;
+    std::unique_ptr<juce::FileChooser> chooser;
+};
+
 } // namespace
 
 ControlPanelComponent::ControlPanelComponent()
@@ -433,6 +793,84 @@ ControlPanelComponent::ControlPanelComponent(std::shared_ptr<SystemSimulationSes
         else if (id == 6) session_->setExecutionRate(0.0);
     };
 
+    addAndMakeVisible(panelBox);
+    panelBox.onChange = [this] {
+        const int index = panelBox.getSelectedItemIndex();
+        if (index >= 0 && index < (int)layout_.panels.size())
+            setActivePanel(layout_.panels[(size_t)index].id);
+    };
+
+    auto setupPanelBtn = [this](juce::TextButton& btn) {
+        addAndMakeVisible(btn);
+        btn.setColour(juce::TextButton::buttonColourId, juce::Colour(0xff22313d));
+        btn.setColour(juce::TextButton::textColourOffId, juce::Colour(0xffdce9ee));
+    };
+    setupPanelBtn(newPanelButton);
+    setupPanelBtn(renamePanelButton);
+    setupPanelBtn(removePanelButton);
+
+    newPanelButton.onClick = [this] {
+        layout_.ensureDefaultPanel();
+        int n = (int)layout_.panels.size() + 1;
+        OperatorPanelConfig panel;
+        do
+        {
+            panel.id = "panel_" + juce::String(n).toStdString();
+            panel.title = "Panel " + juce::String(n).toStdString();
+            ++n;
+        } while (layout_.findPanel(panel.id) != nullptr);
+        layout_.panels.push_back(panel);
+        setActivePanel(panel.id);
+    };
+    renamePanelButton.onClick = [this] {
+        if (auto* panel = layout_.findPanel(layout_.activePanelId))
+        {
+            auto* dialog = new juce::AlertWindow("Rename Panel", "Enter the operator panel name.",
+                                                 juce::MessageBoxIconType::NoIcon);
+            dialog->addTextEditor("title", panel->title.empty() ? juce::String(panel->id) : juce::String(panel->title), "Name");
+            if (auto* editor = dialog->getTextEditor("title"))
+            {
+                editor->setWantsKeyboardFocus(true);
+                editor->setMouseClickGrabsKeyboardFocus(true);
+                editor->setEscapeAndReturnKeysConsumed(false);
+                editor->selectAll();
+                editor->grabKeyboardFocus();
+            }
+            dialog->addButton("Rename", 1, juce::KeyPress(juce::KeyPress::returnKey));
+            dialog->addButton("Cancel", 0, juce::KeyPress(juce::KeyPress::escapeKey));
+            dialog->enterModalState(true, juce::ModalCallbackFunction::create(
+                [safe = juce::Component::SafePointer<ControlPanelComponent>(this), dialog](int result) {
+                    std::unique_ptr<juce::AlertWindow> cleanup(dialog);
+                    if (safe == nullptr || result != 1)
+                        return;
+                    if (auto* active = safe->layout_.findPanel(safe->layout_.activePanelId))
+                    {
+                        const auto titleText = dialog->getTextEditorContents("title").trim();
+                        if (titleText.isNotEmpty())
+                        {
+                            active->title = titleText.toStdString();
+                            safe->rebuildPanelSelector();
+                            safe->notifyLayoutChanged();
+                        }
+                    }
+                }), true);
+        }
+    };
+    removePanelButton.onClick = [this] {
+        layout_.ensureDefaultPanel();
+        if (layout_.panels.size() <= 1)
+            return;
+        const auto removed = layout_.activePanelId;
+        layout_.panels.erase(std::remove_if(layout_.panels.begin(), layout_.panels.end(),
+                                            [&](const auto& panel) { return panel.id == removed; }),
+                             layout_.panels.end());
+        const auto fallback = layout_.panels.front().id;
+        for (auto& widget : layout_.widgets)
+            if (widget.panelId == removed)
+                widget.panelId = fallback;
+        setActivePanel(fallback);
+    };
+
     addAndMakeVisible(statusLabel);
     statusLabel.setFont(juce::Font(13.0f, juce::Font::bold));
     statusLabel.setColour(juce::Label::textColourId, juce::Colour(0xff66ff99));
@@ -475,8 +913,78 @@ bool ControlPanelComponent::loadMachine(const machine_builder::MachineDesign& ma
 void ControlPanelComponent::setLayout(const ControlPanelLayout& layout)
 {
     layout_ = layout;
+    layout_.ensureDefaultPanel();
+    rebuildPanelSelector();
     buildWidgets();
     resized();
+}
+
+void ControlPanelComponent::rebuildPanelSelector()
+{
+    panelBox.clear(juce::dontSendNotification);
+    layout_.ensureDefaultPanel();
+    int selected = 1;
+    for (size_t i = 0; i < layout_.panels.size(); ++i)
+    {
+        const auto& panel = layout_.panels[i];
+        panelBox.addItem(panel.title.empty() ? juce::String(panel.id) : juce::String(panel.title), (int)i + 1);
+        if (panel.id == layout_.activePanelId)
+            selected = (int)i + 1;
+    }
+    panelBox.setSelectedId(selected, juce::dontSendNotification);
+}
+
+void ControlPanelComponent::setActivePanel(const std::string& panelId)
+{
+    if (panelId.empty() || layout_.activePanelId == panelId)
+        return;
+    layout_.activePanelId = panelId;
+    rebuildPanelSelector();
+    buildWidgets();
+    resized();
+    notifyLayoutChanged();
+}
+
+const OperatorPanelConfig& ControlPanelComponent::activePanel() const
+{
+    static const OperatorPanelConfig fallback;
+    if (const auto* panel = layout_.findPanel(layout_.activePanelId))
+        return *panel;
+    return fallback;
+}
+
+void ControlPanelComponent::notifyLayoutChanged()
+{
+    if (onLayoutChanged)
+        onLayoutChanged(layout_);
+}
+
+void ControlPanelComponent::updateWidgetConfig(const WidgetConfig& config)
+{
+    for (auto& widget : layout_.widgets)
+    {
+        if (widget.id == config.id)
+        {
+            widget = config;
+            notifyLayoutChanged();
+            return;
+        }
+    }
+}
+
+MachineRecording& ControlPanelComponent::recordingFor(const std::string& widgetId)
+{
+    auto& ptr = plotRecordings_[widgetId];
+    if (ptr == nullptr)
+        ptr = std::make_unique<MachineRecording>();
+    return *ptr;
+}
+
+bool& ControlPanelComponent::recordingEnabledFor(const std::string& widgetId)
+{
+    auto [it, inserted] = plotRecordingEnabled_.try_emplace(widgetId, true);
+    juce::ignoreUnused(inserted);
+    return it->second;
 }
 
 void ControlPanelComponent::buildWidgets()
@@ -486,9 +994,13 @@ void ControlPanelComponent::buildWidgets()
 
     inputContainer = std::make_unique<juce::Component>();
     outputContainer = std::make_unique<juce::Component>();
+    const auto panelId = layout_.activePanelId.empty() ? std::string("main") : layout_.activePanelId;
 
     for (const auto& w : layout_.widgets)
     {
+        if (!w.panelId.empty() && w.panelId != panelId)
+            continue;
+
         if (w.column == 0) // Inputs
         {
             if (w.type == WidgetType::PushButton)
@@ -589,6 +1101,14 @@ void ControlPanelComponent::buildWidgets()
                 outputContainer->addAndMakeVisible(*chart);
                 outputViews_.push_back({ w, std::move(chart) });
             }
+            else if (w.type == WidgetType::PlotPanel)
+            {
+                auto plot = std::make_unique<PlotPanelWidget>(
+                    w, recordingFor(w.id), recordingEnabledFor(w.id),
+                    [this](const WidgetConfig& config) { updateWidgetConfig(config); });
+                outputContainer->addAndMakeVisible(*plot);
+                outputViews_.push_back({ w, std::move(plot) });
+            }
         }
     }
 
@@ -602,41 +1122,65 @@ void ControlPanelComponent::resized()
 
     // Top Transport Bar
     auto topBar = b.removeFromTop(36);
-    runButton.setBounds(topBar.removeFromLeft(70).reduced(2));
-    pauseButton.setBounds(topBar.removeFromLeft(70).reduced(2));
-    stepButton.setBounds(topBar.removeFromLeft(70).reduced(2));
-    stopButton.setBounds(topBar.removeFromLeft(70).reduced(2));
-    resetButton.setBounds(topBar.removeFromLeft(70).reduced(2));
+    runButton.setBounds(topBar.removeFromLeft(56).reduced(2));
+    pauseButton.setBounds(topBar.removeFromLeft(64).reduced(2));
+    stepButton.setBounds(topBar.removeFromLeft(58).reduced(2));
+    stopButton.setBounds(topBar.removeFromLeft(58).reduced(2));
+    resetButton.setBounds(topBar.removeFromLeft(64).reduced(2));
     topBar.removeFromLeft(12);
-    rateBox.setBounds(topBar.removeFromLeft(150).reduced(2));
+    rateBox.setBounds(topBar.removeFromLeft(132).reduced(2));
+    topBar.removeFromLeft(8);
+    panelBox.setBounds(topBar.removeFromLeft(140).reduced(2));
+    newPanelButton.setBounds(topBar.removeFromLeft(82).reduced(2));
+    renamePanelButton.setBounds(topBar.removeFromLeft(72).reduced(2));
+    removePanelButton.setBounds(topBar.removeFromLeft(74).reduced(2));
     topBar.removeFromLeft(12);
     statusLabel.setBounds(topBar);
 
     b.removeFromTop(8);
 
-    // Two equal columns: Left (Inputs), Right (Outputs)
-    const int colWidth = (b.getWidth() - 12) / 2;
-    inputViewport.setBounds(b.removeFromLeft(colWidth));
-    b.removeFromLeft(12);
-    outputViewport.setBounds(b);
+    const auto& panel = activePanel();
+    const int gap = std::max(2, panel.spacing);
+    const int minControl = std::min(260, std::max(160, b.getWidth() / 4));
+    const int minInstr = std::min(320, std::max(180, b.getWidth() / 4));
+    const int wantedSplit = splitterX_ > 0 ? splitterX_ : (int)std::round((double)b.getWidth() * juce::jlimit(0.20, 0.80, panel.splitRatio));
+    const int controlWidth = juce::jlimit(minControl, std::max(minControl, b.getWidth() - minInstr - gap), wantedSplit);
+    auto controlArea = b.removeFromLeft(controlWidth);
+    b.removeFromLeft(gap);
+    auto instrumentArea = b;
 
-    // Layout Input Widgets vertically
-    int inY = 8;
+    inputViewport.setBounds(controlArea);
+    outputViewport.setBounds(instrumentArea);
+    splitterX_ = controlArea.getRight() - getLocalBounds().getX();
+
+    // Layout controls/instruments in compact configurable columns.
+    const int inputCols = std::max(1, panel.controlColumns);
+    const int outputCols = std::max(1, panel.instrumentColumns);
+    const int inputInnerW = std::max(80, controlArea.getWidth() - 14);
+    const int outputInnerW = std::max(120, instrumentArea.getWidth() - 14);
+    const int inputColW = std::max(80, (inputInnerW - gap * (inputCols - 1)) / inputCols);
+    const int outputColW = std::max(120, (outputInnerW - gap * (outputCols - 1)) / outputCols);
+    std::vector<int> inputY((size_t)inputCols, 8);
+    std::vector<int> outputY((size_t)outputCols, 8);
     for (auto& iv : inputViews_)
     {
-        iv.component->setBounds(12, inY, colWidth - 36, iv.config.height);
-        inY += iv.config.height + 10;
+        const int col = juce::jlimit(0, inputCols - 1, iv.config.order % inputCols);
+        const int height = std::min(std::max(32, iv.config.height), iv.config.type == WidgetType::EmergencyStop ? 96 : 84);
+        iv.component->setBounds(8 + col * (inputColW + gap), inputY[(size_t)col], inputColW, height);
+        inputY[(size_t)col] += height + gap;
     }
-    inputContainer->setBounds(0, 0, colWidth - 10, std::max(inY, inputViewport.getHeight()));
+    const auto inputHeight = *std::max_element(inputY.begin(), inputY.end());
+    inputContainer->setBounds(0, 0, inputInnerW, std::max(inputHeight, inputViewport.getHeight()));
 
-    // Layout Output Widgets vertically
-    int outY = 8;
     for (auto& ov : outputViews_)
     {
-        ov.component->setBounds(12, outY, colWidth - 36, ov.config.height);
-        outY += ov.config.height + 10;
+        const int col = juce::jlimit(0, outputCols - 1, ov.config.order % outputCols);
+        const int height = std::max(32, ov.config.height);
+        ov.component->setBounds(8 + col * (outputColW + gap), outputY[(size_t)col], outputColW, height);
+        outputY[(size_t)col] += height + gap;
     }
-    outputContainer->setBounds(0, 0, colWidth - 10, std::max(outY, outputViewport.getHeight()));
+    const auto outputHeight = *std::max_element(outputY.begin(), outputY.end());
+    outputContainer->setBounds(0, 0, outputInnerW, std::max(outputHeight, outputViewport.getHeight()));
 }
 
 void ControlPanelComponent::paint(juce::Graphics& g)
@@ -644,6 +1188,38 @@ void ControlPanelComponent::paint(juce::Graphics& g)
     g.fillAll(juce::Colour(0xff161a22));
     g.setColour(juce::Colour(0xff2b3442));
     g.drawRect(getLocalBounds(), 1.0f);
+    if (splitterX_ > 0)
+    {
+        g.setColour(juce::Colour(0xff314152));
+        g.fillRect(splitterX_ - 1, 44, 2, std::max(0, getHeight() - 52));
+    }
+}
+
+void ControlPanelComponent::mouseDown(const juce::MouseEvent& e)
+{
+    draggingSplitter_ = splitterX_ > 0 && std::abs(e.x - splitterX_) <= 6 && e.y > 42;
+    if (draggingSplitter_)
+        setMouseCursor(juce::MouseCursor::LeftRightResizeCursor);
+}
+
+void ControlPanelComponent::mouseDrag(const juce::MouseEvent& e)
+{
+    if (!draggingSplitter_)
+        return;
+    splitterX_ = juce::jlimit(180, std::max(181, getWidth() - 240), e.x);
+    if (auto* panel = layout_.findPanel(layout_.activePanelId))
+        panel->splitRatio = juce::jlimit(0.20, 0.80, (double)(splitterX_ - 8) / std::max(1, getWidth() - 16));
+    resized();
+    repaint();
+}
+
+void ControlPanelComponent::mouseUp(const juce::MouseEvent&)
+{
+    const bool changed = draggingSplitter_;
+    draggingSplitter_ = false;
+    setMouseCursor(juce::MouseCursor::NormalCursor);
+    if (changed)
+        notifyLayoutChanged();
 }
 
 void ControlPanelComponent::timerCallback()
@@ -693,6 +1269,12 @@ void ControlPanelComponent::timerCallback()
     while (trendHistory_.size() > 400 || (trendHistory_.size() > 50 && (trendHistory_.back().time - trendHistory_.front().time) > 10.0))
         trendHistory_.pop_front();
 
+    for (const auto& widget : layout_.widgets)
+    {
+        if (widget.type == WidgetType::PlotPanel && recordingEnabledFor(widget.id))
+            recordingFor(widget.id).append(snap, widget);
+    }
+
     // Update Output Views
     for (auto& ov : outputViews_)
     {
@@ -739,6 +1321,11 @@ void ControlPanelComponent::timerCallback()
             {
                 tc->updateData(trendHistory_);
             }
+        }
+        else if (ov.config.type == WidgetType::PlotPanel)
+        {
+            if (auto* plot = dynamic_cast<PlotPanelWidget*>(ov.component.get()))
+                plot->updateDisplay();
         }
     }
 }
