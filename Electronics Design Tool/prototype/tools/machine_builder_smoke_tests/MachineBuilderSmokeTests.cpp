@@ -315,6 +315,221 @@ int main()
             && builder.triggerToolbarCommand("validate"),
             "toolbar view and validation commands execute cleanly");
 
+    // =========================================================================
+    // Control Panel & Multichannel Strip-Chart Recorder Verification
+    // =========================================================================
+    auto cpSession = std::make_shared<sim_panel::SystemSimulationSession>();
+    machine_builder::MachineBuilderPanel cpBuilder(cpSession, nullptr, nullptr);
+    cpBuilder.setMachine(reopened.getMachine());
+    r.check(cpBuilder.addPlotPanel(4, &err), "builder adds 4-channel strip-chart Plot Panel");
+
+    const auto* cpPlot = findByKind(cpBuilder.getMachine(), sim_panel::SubsystemKind::PlotPanel);
+    const auto* cpDrive = findByKind(cpBuilder.getMachine(), sim_panel::SubsystemKind::SchematicReference);
+    const auto* cpCtrl = findByKind(cpBuilder.getMachine(), sim_panel::SubsystemKind::ProgrammableComponent);
+    if (cpPlot != nullptr && cpDrive != nullptr && cpCtrl != nullptr)
+    {
+        r.check(cpBuilder.connectPorts(cpDrive->instanceId, "speed", cpPlot->instanceId, "ch1", &err),
+                "wire motor speed to strip-chart channel 1");
+        r.check(cpBuilder.connectPorts(cpDrive->instanceId, "tach", cpPlot->instanceId, "ch2", &err),
+                "wire motor tach voltage to strip-chart channel 2");
+        r.check(cpBuilder.connectPorts(cpCtrl->instanceId, "drive_out", cpPlot->instanceId, "ch3", &err),
+                "wire controller drive_out to strip-chart channel 3");
+        r.check(cpBuilder.connectPorts(cpCtrl->instanceId, "fault_lamp", cpPlot->instanceId, "ch4", &err),
+                "wire zero-valued fault_lamp to strip-chart channel 4");
+    }
+
+    sim_panel::ControlPanelComponent cpComp(cpSession);
+    cpComp.setBounds(0, 0, 1280, 860);
+    cpComp.setLayout(cpBuilder.getMachine().controlPanel);
+
+    // 1. New Panel creation, selection, renaming, and removal without freezing
+    const int initialPanels = cpComp.getPanelCount();
+    const auto panel2Id = cpComp.createNewPanel("Test Panel 2");
+    const auto panel3Id = cpComp.createNewPanel("Test Panel 3");
+    r.check(!panel2Id.empty() && !panel3Id.empty() && panel2Id != panel3Id
+            && cpComp.getPanelCount() == initialPanels + 2,
+            "New Panel creates distinct panel IDs and increments panel count without freezing");
+    cpComp.setActivePanel(panel2Id);
+    r.check(cpComp.getActivePanelId() == panel2Id,
+            "selecting an operator panel switches active panel");
+    r.check(cpComp.renameActivePanel("Diagnostics Console")
+            && cpComp.getLayout().findPanel(panel2Id) != nullptr
+            && cpComp.getLayout().findPanel(panel2Id)->title == "Diagnostics Console",
+            "renaming active panel updates panel title cleanly");
+    r.check(cpComp.removeActivePanel() && cpComp.getPanelCount() == initialPanels + 1
+            && !cpComp.getLayout().hasPanel(panel2Id),
+            "removing active panel deletes it and selects a valid remaining panel");
+    cpComp.setActivePanel(panel3Id);
+    r.check(cpComp.removeActivePanel() && cpComp.getPanelCount() == initialPanels,
+            "removing third panel restores original panel count");
+
+    // 2. Signal acquisition, 4 stacked lanes, and fixed timebase from first sample
+    const auto* cpPlotWidget = findWidget(cpBuilder.getMachine(), sim_panel::WidgetType::PlotPanel);
+    const std::string plotWidgetId = cpPlotWidget != nullptr ? cpPlotWidget->id : std::string();
+    r.check(!plotWidgetId.empty(), "ControlPanelComponent hosts the 4-channel PlotPanel widget");
+
+    r.check(cpBuilder.compileAndRun(), "4-channel strip-chart machine compiles cleanly");
+    r.check(cpComp.setRecorderTimebaseSecondsPerDiv(plotWidgetId, 0.05),
+            "operator sets horizontal timebase to 50 ms/div (0.5 s visible window)");
+
+    cpSession->setBooleanInput("system.power", true);
+    cpSession->setBooleanInput("system.start", true);
+    cpSession->setBooleanInput("system.stop", false);
+    cpSession->setBooleanInput("system.estop", false);
+    cpSession->setBooleanInput("system.reset", false);
+    cpSession->setNumericInput("system.speed_setpoint", 300.0);
+
+    auto stepAndSample = [&](int steps, int sampleEvery)
+    {
+        double targetTime = cpSession->getSnapshot().simTime;
+        for (int i = 1; i <= steps; ++i)
+        {
+            targetTime += 0.001;
+            cpSession->stepSingle(0.001);
+            for (int spin = 0; spin < 100; ++spin)
+            {
+                if (cpSession->getSnapshot().simTime + 1.0e-9 >= targetTime)
+                    break;
+                std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            }
+            if (i % sampleEvery == 0 || i == steps)
+                cpComp.sampleLatestNow();
+        }
+    };
+
+    stepAndSample(5, 1);
+    auto recSnaps = cpComp.getStripChartRecorderSnapshots();
+    r.check(!recSnaps.empty()
+            && recSnaps.front().totalSamples >= 1
+            && std::abs(recSnaps.front().secondsPerDivision - 0.05) < 1.0e-6
+            && std::abs(recSnaps.front().visibleWindowSeconds - 0.5) < 1.0e-6
+            && std::abs((recSnaps.front().viewEndTime - recSnaps.front().viewStartTime) - 0.5) < 1.0e-6,
+            "selected horizontal timebase applies immediately from the first sample without compression");
+
+    // Advance past the 0.5 s window so continuous scrolling engages
+    stepAndSample(650, 5);
+    const double latestSimTime = cpSession->getSnapshot().simTime;
+    recSnaps = cpComp.getStripChartRecorderSnapshots();
+    r.check(!recSnaps.empty() && recSnaps.front().lanes.size() == 4,
+            "strip-chart recorder renders 4 independent channel lanes");
+
+    if (!recSnaps.empty() && recSnaps.front().lanes.size() == 4)
+    {
+        const auto& snap = recSnaps.front();
+        const auto& l0 = snap.lanes[0];
+        const auto& l1 = snap.lanes[1];
+        const auto& l2 = snap.lanes[2];
+        const auto& l3 = snap.lanes[3];
+
+        r.check(l0.signalAvailable && l1.signalAvailable && l2.signalAvailable && l3.signalAvailable
+                && l0.finiteSampleCount > 50 && l1.finiteSampleCount > 50
+                && l2.finiteSampleCount > 50 && l3.finiteSampleCount > 50,
+                "all 4 connected channels acquire valid finite samples from the simulation");
+
+        r.check(l0.latestValue > 20.0 && l1.latestValue > 0.05 && l2.latestValue > 0.5,
+                "motor speed, schematic tach port, and FRust controller drive_out produce real non-zero waveforms");
+
+        r.check(std::abs(l3.latestValue) < 1.0e-9 && l3.yMin < 0.0 && l3.yMax > 0.0,
+                "valid zero-valued signal (fault_lamp = 0) has centered vertical scale and renders as flat trace");
+
+        r.check(l0.boundsInRecorder.getHeight() >= 150 && l0.boundsInRecorder.getHeight() <= 200
+                && l0.boundsInRecorder.getBottom() <= l1.boundsInRecorder.getY()
+                && l1.boundsInRecorder.getBottom() <= l2.boundsInRecorder.getY()
+                && l2.boundsInRecorder.getBottom() <= l3.boundsInRecorder.getY(),
+                "4 channels are vertically stacked in independent non-overlapping DAW-style lanes (~165 px each)");
+
+        r.check(std::abs(l0.yMax - l1.yMax) > 1.0,
+                "each channel lane scales its vertical axis independently");
+
+        // Continuous scrolling once visible window fills
+        r.check(snap.liveFollow
+                && latestSimTime > 0.55
+                && snap.viewStartTime > 0.05
+                && std::abs((snap.viewEndTime - snap.viewStartTime) - 0.5) < 1.0e-6
+                && std::abs(snap.viewEndTime - latestSimTime) < 1.0e-2,
+                "once visible time window fills, strip chart scrolls continuously at fixed timebase");
+    }
+
+    // 3. Lane height adjustment and individual channel collapse/expand
+    r.check(cpComp.setRecorderLaneHeight(plotWidgetId, 0, 210)
+            && cpComp.setRecorderLaneCollapsed(plotWidgetId, 1, true),
+            "operator adjusts lane height and collapses individual channel lane");
+    recSnaps = cpComp.getStripChartRecorderSnapshots();
+    r.check(!recSnaps.empty() && recSnaps.front().lanes.size() == 4
+            && recSnaps.front().lanes[0].boundsInRecorder.getHeight() == 210
+            && recSnaps.front().lanes[1].collapsed
+            && recSnaps.front().lanes[1].boundsInRecorder.getHeight() <= 36,
+            "lane height resize and collapse update strip-chart lane geometry");
+    r.check(cpComp.setRecorderLaneCollapsed(plotWidgetId, 1, false),
+            "operator re-expands collapsed channel lane");
+
+    // 4. Historical navigation, zoom around current view, Pause View vs Record, and Stopped review
+    r.check(cpComp.scrollRecorderHistory(plotWidgetId, 0.25),
+            "operator scrolls backward into recorded history");
+    recSnaps = cpComp.getStripChartRecorderSnapshots();
+    const double scrolledCenter = !recSnaps.empty()
+        ? 0.5 * (recSnaps.front().viewStartTime + recSnaps.front().viewEndTime)
+        : 0.0;
+    const int countBeforeZoom = !recSnaps.empty() ? recSnaps.front().totalSamples : 0;
+    r.check(!recSnaps.empty()
+            && !recSnaps.front().liveFollow
+            && recSnaps.front().viewEndTime < latestSimTime - 0.10,
+            "scrolling into history automatically disengages Live/Follow");
+
+    r.check(cpComp.setRecorderTimebaseSecondsPerDiv(plotWidgetId, 0.02),
+            "operator changes timebase to 20 ms/div while reviewing history");
+    recSnaps = cpComp.getStripChartRecorderSnapshots();
+    const double zoomedCenter = !recSnaps.empty()
+        ? 0.5 * (recSnaps.front().viewStartTime + recSnaps.front().viewEndTime)
+        : 0.0;
+    r.check(!recSnaps.empty()
+            && !recSnaps.front().liveFollow
+            && std::abs((recSnaps.front().viewEndTime - recSnaps.front().viewStartTime) - 0.2) < 1.0e-6
+            && std::abs(zoomedCenter - scrolledCenter) < 0.05
+            && recSnaps.front().totalSamples == countBeforeZoom,
+            "changing timebase in history zooms around current view center without jumping to latest or losing samples");
+
+    r.check(cpComp.setRecorderLiveFollow(plotWidgetId, true),
+            "Live/Follow control returns view to newest data");
+    recSnaps = cpComp.getStripChartRecorderSnapshots();
+    r.check(!recSnaps.empty()
+            && recSnaps.front().liveFollow
+            && std::abs(recSnaps.front().viewEndTime - latestSimTime) < 1.0e-2,
+            "re-engaging Live/Follow aligns view end with newest sample");
+
+    // Pausing view must not pause simulation or recording
+    r.check(cpComp.setRecorderViewPaused(plotWidgetId, true), "operator pauses display view");
+    const double pausedViewEnd = recSnaps.front().viewEndTime;
+    const int countBeforeViewPauseStep = recSnaps.front().totalSamples;
+    stepAndSample(40, 2);
+    recSnaps = cpComp.getStripChartRecorderSnapshots();
+    r.check(!recSnaps.empty()
+            && recSnaps.front().viewPaused
+            && recSnaps.front().totalSamples > countBeforeViewPauseStep
+            && std::abs(recSnaps.front().viewEndTime - pausedViewEnd) < 1.0e-6,
+            "pausing view keeps display window fixed while simulation and recording continue");
+    cpComp.setRecorderViewPaused(plotWidgetId, false);
+    cpComp.setRecorderLiveFollow(plotWidgetId, true);
+
+    // Stopping simulation preserves recorded data and allows historical navigation & export
+    recSnaps = cpComp.getStripChartRecorderSnapshots();
+    const int countBeforeStop = !recSnaps.empty() ? recSnaps.front().totalSamples : 0;
+    cpSession->stop();
+    cpComp.sampleLatestNow();
+    r.check(cpComp.scrollRecorderHistory(plotWidgetId, 0.30)
+            && cpComp.setRecorderTimebaseSecondsPerDiv(plotWidgetId, 0.05),
+            "operator scrolls and changes timebase after simulation is stopped");
+    recSnaps = cpComp.getStripChartRecorderSnapshots();
+    r.check(!recSnaps.empty() && recSnaps.front().totalSamples == countBeforeStop,
+            "stopping simulation preserves recorded history for inspection");
+
+    const auto csvFile = outDir.getChildFile("strip_chart_export.csv");
+    csvFile.deleteFile();
+    r.check(cpComp.exportRecorderCsv(plotWidgetId, csvFile, ioError)
+            && csvFile.existsAsFile()
+            && csvFile.loadFileAsString().contains("time_s"),
+            "strip-chart recorder exports recorded history to CSV");
+
     std::cout << r.checks << " checks, " << r.failures << " failures\n";
     return r.failures == 0 ? 0 : 1;
 }

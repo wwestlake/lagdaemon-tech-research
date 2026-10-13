@@ -540,7 +540,12 @@ void SystemSimulationSession::publishSnapshot(const circuit_sim::TransientSteppe
     for (const auto& [name, node] : outputNodeBindings_)
     {
         double val = stepper.voltage(node);
-        if (name == "motor.speed" || name.find(".speed") != std::string::npos)
+        if (name == "controller.setpoint" || name.find(".setpoint") != std::string::npos
+            || name.find("speed_setpoint") != std::string::npos)
+        {
+            latestSnapshot_.numericSignals[name] = val / 0.01; // rad/s
+        }
+        else if (name == "motor.speed" || name.find(".speed") != std::string::npos)
         {
             latestSnapshot_.numericSignals[name] = val; // rad/s
             if (name == "motor.speed")
@@ -550,21 +555,19 @@ void SystemSimulationSession::publishSnapshot(const circuit_sim::TransientSteppe
         {
             latestSnapshot_.numericSignals[name] = val; // rad
         }
-        else if (name == "controller.setpoint" || name.find(".setpoint") != std::string::npos)
-        {
-            latestSnapshot_.numericSignals[name] = val / 0.01; // rad/s
-        }
         else if (name == "lamp.running" || name.find(".running") != std::string::npos)
         {
             const bool active = (val > 2.5);
             latestSnapshot_.booleanSignals[name] = active;
             latestSnapshot_.booleanSignals["running"] = active;
+            latestSnapshot_.numericSignals[name] = val;
         }
         else if (name == "lamp.fault" || name.find(".fault") != std::string::npos)
         {
             const bool active = (val > 2.5);
             latestSnapshot_.booleanSignals[name] = active;
             latestSnapshot_.booleanSignals["fault"] = active;
+            latestSnapshot_.numericSignals[name] = val;
         }
         else if (name == "system.power" || name == "power_switch")
         {
@@ -576,10 +579,12 @@ void SystemSimulationSession::publishSnapshot(const circuit_sim::TransientSteppe
         else if (name == "system.ready")
         {
             latestSnapshot_.booleanSignals[name] = (val > 2.5);
+            latestSnapshot_.numericSignals[name] = val;
         }
         else if (name == "system.estop" || name == "estop_button")
         {
             latestSnapshot_.booleanSignals[name] = (val > 2.5);
+            latestSnapshot_.numericSignals[name] = val;
         }
         else
         {

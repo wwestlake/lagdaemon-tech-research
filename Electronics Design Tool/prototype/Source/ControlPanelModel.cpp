@@ -18,6 +18,8 @@ juce::var PlotChannelConfig::toJson() const
     obj->setProperty("minValue", minValue);
     obj->setProperty("maxValue", maxValue);
     obj->setProperty("visible", visible);
+    obj->setProperty("laneHeight", laneHeight);
+    obj->setProperty("collapsed", collapsed);
     return juce::var(obj);
 }
 
@@ -36,6 +38,8 @@ PlotChannelConfig PlotChannelConfig::fromJson(const juce::var& json)
         c.minValue = obj->hasProperty("minValue") ? (double)obj->getProperty("minValue") : c.minValue;
         c.maxValue = obj->hasProperty("maxValue") ? (double)obj->getProperty("maxValue") : c.maxValue;
         c.visible = obj->hasProperty("visible") ? (bool)obj->getProperty("visible") : c.visible;
+        c.laneHeight = obj->hasProperty("laneHeight") ? std::clamp((int)obj->getProperty("laneHeight"), 64, 480) : c.laneHeight;
+        c.collapsed = obj->hasProperty("collapsed") ? (bool)obj->getProperty("collapsed") : c.collapsed;
     }
     return c;
 }
@@ -82,13 +86,23 @@ void ControlPanelLayout::ensureDefaultPanel()
             w.panelId = panels.front().id;
 }
 
+bool ControlPanelLayout::hasPanel(const std::string& panelId) const
+{
+    for (const auto& p : panels)
+        if (p.id == panelId)
+            return true;
+    return false;
+}
+
 const OperatorPanelConfig* ControlPanelLayout::findPanel(const std::string& panelId) const
 {
     const auto id = panelId.empty() ? activePanelId : panelId;
     for (const auto& p : panels)
         if (p.id == id)
             return &p;
-    return panels.empty() ? nullptr : &panels.front();
+    if (panelId.empty() || panelId == activePanelId)
+        return panels.empty() ? nullptr : &panels.front();
+    return nullptr;
 }
 
 OperatorPanelConfig* ControlPanelLayout::findPanel(const std::string& panelId)
@@ -97,7 +111,9 @@ OperatorPanelConfig* ControlPanelLayout::findPanel(const std::string& panelId)
     for (auto& p : panels)
         if (p.id == id)
             return &p;
-    return panels.empty() ? nullptr : &panels.front();
+    if (panelId.empty() || panelId == activePanelId)
+        return panels.empty() ? nullptr : &panels.front();
+    return nullptr;
 }
 
 ControlPanelLayout ControlPanelLayout::createDefaultMotorPanel()

@@ -40,8 +40,10 @@ struct PlotChannelConfig
     double scale = 1.0;
     double offset = 0.0;
     double minValue = 0.0;
-    double maxValue = 1.0;
+    double maxValue = 0.0;
     bool visible = true;
+    int laneHeight = 165;
+    bool collapsed = false;
 
     juce::var toJson() const;
     static PlotChannelConfig fromJson(const juce::var& json);
@@ -102,6 +104,7 @@ struct ControlPanelLayout
     static ControlPanelLayout createDefaultMotorPanel();
     static ControlPanelLayout createDualMotorCoordinatedPanel();
     void ensureDefaultPanel();
+    bool hasPanel(const std::string& panelId) const;
     const OperatorPanelConfig* findPanel(const std::string& panelId) const;
     OperatorPanelConfig* findPanel(const std::string& panelId);
     juce::var toJson() const;

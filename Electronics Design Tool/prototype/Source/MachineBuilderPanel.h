@@ -113,6 +113,7 @@ private:
     juce::File currentMachineFile_;
     std::string selectedInstanceId_;
     std::string selectedConnectionId_;
+    bool sessionCompiled_ = false;
 
     // UI Controls & Compact Editing Toolbar
     class ToolbarTooltipOverlay;

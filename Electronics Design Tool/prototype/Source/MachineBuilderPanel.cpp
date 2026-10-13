@@ -1581,6 +1581,9 @@ MachineBuilderPanel::MachineBuilderPanel(std::shared_ptr<sim_panel::SystemSimula
             syncPlotPanelBindings();
             updateDiagnosticsDisplay();
         };
+        controlPanel_->onEnsureCompiled = [this]() {
+            return sessionCompiled_ ? true : compileAndRun();
+        };
         controlPanel_->setLayout(machine_.controlPanel);
     }
 
@@ -1605,13 +1608,17 @@ MachineBuilderPanel::~MachineBuilderPanel()
     overflowBtn.setLookAndFeel(nullptr);
 
     if (controlPanel_ != nullptr)
+    {
         controlPanel_->onLayoutChanged = nullptr;
+        controlPanel_->onEnsureCompiled = nullptr;
+    }
     stopTimer();
 }
 
 void MachineBuilderPanel::setMachine(const MachineDesign& machine)
 {
     machine_ = machine;
+    sessionCompiled_ = false;
     selectedInstanceId_.clear();
     selectedConnectionId_.clear();
     syncPlotPanelBindings();
@@ -1633,6 +1640,7 @@ void MachineBuilderPanel::loadTemplate(const std::string& templateName)
 
 bool MachineBuilderPanel::compileAndRun()
 {
+    syncPlotPanelBindings();
     std::string err;
     const auto baseFolder = referenceBaseFolder();
     if (!machine_.isValid(baseFolder))
@@ -1642,6 +1650,11 @@ bool MachineBuilderPanel::compileAndRun()
         updateDiagnosticsDisplay();
         return false;
     }
+
+    if (mechanicalView_ != nullptr)
+        mechanicalView_->setScene(machine_.scene);
+    if (controlPanel_ != nullptr)
+        controlPanel_->setLayout(machine_.controlPanel);
 
     if (session_ != nullptr)
     {
@@ -1653,11 +1666,7 @@ bool MachineBuilderPanel::compileAndRun()
         }
     }
 
-    if (mechanicalView_ != nullptr)
-        mechanicalView_->setScene(machine_.scene);
-    if (controlPanel_ != nullptr)
-        controlPanel_->setLayout(machine_.controlPanel);
-
+    sessionCompiled_ = true;
     statusLabel.setText("Compiled. Use Start to run.", juce::dontSendNotification);
     statusLabel.setColour(juce::Label::textColourId, juce::Colour(0xff80ed99));
     return true;
@@ -1666,6 +1675,8 @@ bool MachineBuilderPanel::compileAndRun()
 bool MachineBuilderPanel::startSimulation()
 {
     if (session_ == nullptr)
+        return false;
+    if (!sessionCompiled_ && !compileAndRun())
         return false;
     const bool ok = session_->start();
     statusLabel.setText(ok ? "Simulation running" : "Simulation did not start", juce::dontSendNotification);
@@ -1698,6 +1709,7 @@ void MachineBuilderPanel::resetToBlankMachine()
         session_->reset();
     }
 
+    sessionCompiled_ = false;
     currentMachineFile_ = {};
     machine_ = MachineDesign::createBlankMachine("Custom Machine");
     selectedInstanceId_.clear();
@@ -1935,7 +1947,7 @@ bool MachineBuilderPanel::addPlotPanel(int channelCount, std::string* error)
     widget.type = sim_panel::WidgetType::PlotPanel;
     widget.column = 1;
     widget.order = nextWidgetOrder(machine_.controlPanel, 1);
-    widget.height = 260;
+    widget.height = 560;
     widget.panelId = machine_.controlPanel.activePanelId.empty() ? "main" : machine_.controlPanel.activePanelId;
     widget.plotMode = "Strip Chart";
     widget.visibleHistorySeconds = 10.0;
@@ -1944,7 +1956,7 @@ bool MachineBuilderPanel::addPlotPanel(int channelCount, std::string* error)
     for (int i = 0; i < channelCount; ++i)
     {
         const auto n = juce::String(i + 1).toStdString();
-        widget.plotChannels.push_back({ "ch" + n, "Channel " + n, "", "", defaultPlotColour(i), 1.0, 0.0, 0.0, 1.0, true });
+        widget.plotChannels.push_back({ "ch" + n, "Channel " + n, "", "", defaultPlotColour(i), 1.0, 0.0, 0.0, 0.0, true, 165, false });
     }
     machine_.controlPanel.ensureDefaultPanel();
     machine_.controlPanel.widgets.push_back(widget);
@@ -2039,6 +2051,7 @@ bool MachineBuilderPanel::loadMachineFromFile(const juce::File& file, juce::Stri
 
 void MachineBuilderPanel::syncAfterModelEdit()
 {
+    sessionCompiled_ = false;
     syncPlotPanelBindings();
     updateDiagnosticsDisplay();
     refreshUi();

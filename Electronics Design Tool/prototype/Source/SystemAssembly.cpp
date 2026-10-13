@@ -1764,6 +1764,17 @@ CompiledAssemblyCircuit AssemblyCompiler::compile(const SystemAssembly& assembly
                                nodeStartA, nodeStartB, nodeStopAll, nodeEstopAll, nodeReady, nodeFault },
                              seqDev);
 
+            res.signalNodes[inst.instanceId + ".master_power"] = pwrNode;
+            res.signalNodes[inst.instanceId + ".master_start"] = startNode;
+            res.signalNodes[inst.instanceId + ".master_stop"] = stopNode;
+            res.signalNodes[inst.instanceId + ".master_estop"] = estopNode;
+            res.signalNodes[inst.instanceId + ".master_reset"] = resetNode;
+            res.signalNodes[inst.instanceId + ".start_a_out"] = nodeStartA;
+            res.signalNodes[inst.instanceId + ".start_b_out"] = nodeStartB;
+            res.signalNodes[inst.instanceId + ".stop_all_out"] = nodeStopAll;
+            res.signalNodes[inst.instanceId + ".estop_all_out"] = nodeEstopAll;
+            res.signalNodes[inst.instanceId + ".system_ready"] = nodeReady;
+            res.signalNodes[inst.instanceId + ".system_fault"] = nodeFault;
             res.signalNodes[inst.instanceId + ".start_a"] = nodeStartA;
             res.signalNodes[inst.instanceId + ".start_b"] = nodeStartB;
             res.signalNodes[inst.instanceId + ".ready"] = nodeReady;
@@ -1818,6 +1829,16 @@ CompiledAssemblyCircuit AssemblyCompiler::compile(const SystemAssembly& assembly
             c.addResistor("R_RUN_" + inst.instanceId, nRunLamp, 0, 1000.0);
             c.addResistor("R_FLT_" + inst.instanceId, nFaultLamp, 0, 1000.0);
 
+            res.signalNodes[inst.instanceId + ".pwr_in"] = pwrNode;
+            res.signalNodes[inst.instanceId + ".start_in"] = nStart;
+            res.signalNodes[inst.instanceId + ".stop_in"] = nStop;
+            res.signalNodes[inst.instanceId + ".estop_in"] = nEstop;
+            res.signalNodes[inst.instanceId + ".reset_in"] = nReset;
+            res.signalNodes[inst.instanceId + ".setpoint_in"] = nSetpoint;
+            res.signalNodes[inst.instanceId + ".feedback_in"] = nFeedback;
+            res.signalNodes[inst.instanceId + ".drive_out"] = nDrive;
+            res.signalNodes[inst.instanceId + ".run_lamp"] = nRunLamp;
+            res.signalNodes[inst.instanceId + ".fault_lamp"] = nFaultLamp;
             res.signalNodes[inst.instanceId + ".setpoint"] = nSetpoint;
             res.signalNodes[inst.instanceId + ".drive"] = nDrive;
             res.signalNodes[inst.instanceId + ".running"] = nRunLamp;
@@ -1827,6 +1848,7 @@ CompiledAssemblyCircuit AssemblyCompiler::compile(const SystemAssembly& assembly
         {
             const auto nVin = getNodeForPort(inst.instanceId, "v_in");
             const auto nTach = getNodeForPort(inst.instanceId, "tach");
+            const auto nSpeed = getNodeForPort(inst.instanceId, "speed");
             const auto nAngle = getNodeForPort(inst.instanceId, "angle");
 
             mech::DcMotorModel m;
@@ -1843,6 +1865,14 @@ CompiledAssemblyCircuit AssemblyCompiler::compile(const SystemAssembly& assembly
             const auto motor = mech::addDcMotor(c, inst.instanceId, nVin, 0, m, load, shaft);
             mech::addTachometer(c, "TG_" + inst.instanceId, motor.shaft, nTach, 0, 0.01, 100.0);
 
+            if (nSpeed != motor.shaft)
+                c.addResistor("R_CPL_SPD_" + inst.instanceId, motor.shaft, nSpeed, 1e-4);
+            if (nAngle != motor.angle)
+            {
+                c.addResistor("R_CPL_ANG_" + inst.instanceId, motor.angle, nAngle, 1e-4);
+                c.addResistor("R_GND_ANG_" + inst.instanceId, nAngle, 0, 1e6);
+            }
+
             // Add mechanical load current source
             circuit_sim::Waveform dcLoad; dcLoad.offset = 0.0;
             const int loadElem = c.addCurrentSource("TL_" + inst.instanceId, motor.shaft, 0, dcLoad);
@@ -1851,9 +1881,13 @@ CompiledAssemblyCircuit AssemblyCompiler::compile(const SystemAssembly& assembly
             if (inst.instanceId == "motorA")
                 res.inputElements["load_torque"] = loadElem;
 
+            res.signalNodes[inst.instanceId + ".v_in"] = nVin;
+            res.signalNodes[inst.instanceId + ".voltage"] = nVin;
+            res.signalNodes[inst.instanceId + ".gnd"] = 0;
+            res.signalNodes[inst.instanceId + ".load_torque"] = motor.shaft;
             res.signalNodes[inst.instanceId + ".speed"] = motor.shaft;
             res.signalNodes[inst.instanceId + ".angle"] = motor.angle;
-            res.signalNodes[inst.instanceId + ".voltage"] = nVin;
+            res.signalNodes[inst.instanceId + ".tach"] = nTach;
             res.signalBranches[inst.instanceId + ".current"] = motor.armature;
         }
         else if (def->kind == SubsystemKind::SchematicReference)
@@ -1994,6 +2028,7 @@ CompiledAssemblyCircuit AssemblyCompiler::compile(const SystemAssembly& assembly
                     res.signalNodes[inst.instanceId + "." + refdes + ".speed"] = motor.shaft;
                     res.signalNodes[inst.instanceId + ".angle"] = motor.angle;
                     res.signalNodes[inst.instanceId + ".voltage"] = nPos;
+                    res.signalNodes[inst.instanceId + ".v_in"] = nPos;
                     res.signalBranches[inst.instanceId + ".current"] = motor.armature;
                     res.signalBranches[inst.instanceId + "." + refdes + ".current"] = motor.armature;
 
@@ -2052,7 +2087,12 @@ CompiledAssemblyCircuit AssemblyCompiler::compile(const SystemAssembly& assembly
 
             for (const auto& p : def->ports)
             {
-                res.signalNodes[inst.instanceId + "." + p.name] = getNodeForPort(inst.instanceId, p.name);
+                const auto key = inst.instanceId + "." + p.name;
+                if (res.signalNodes.find(key) == res.signalNodes.end()
+                    && res.signalBranches.find(key) == res.signalBranches.end())
+                {
+                    res.signalNodes[key] = getNodeForPort(inst.instanceId, p.name);
+                }
             }
         }
         else if (def->kind == SubsystemKind::ProgrammableComponent)
@@ -2104,6 +2144,27 @@ CompiledAssemblyCircuit AssemblyCompiler::compile(const SystemAssembly& assembly
             }
 
             c.addProgrammable("U_" + inst.instanceId, pins, std::move(device));
+        }
+
+        for (const auto& p : def->ports)
+        {
+            const auto key = inst.instanceId + "." + p.name;
+            if (res.signalNodes.find(key) == res.signalNodes.end()
+                && res.signalBranches.find(key) == res.signalBranches.end())
+            {
+                res.signalNodes[key] = getNodeForPort(inst.instanceId, p.name);
+            }
+        }
+    }
+
+    for (const auto& port : assembly.systemPorts)
+    {
+        const auto path = port.name.find('.') == std::string::npos ? ("system." + port.name) : port.name;
+        if (res.signalNodes.find(path) == res.signalNodes.end()
+            && res.signalBranches.find(path) == res.signalBranches.end())
+        {
+            const auto [instance, portName] = splitSignalPath(path);
+            res.signalNodes[path] = getNodeForPort(instance, portName);
         }
     }
 
