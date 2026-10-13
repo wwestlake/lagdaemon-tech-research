@@ -3078,7 +3078,7 @@ public:
     {
         if (e.mods.isPopupMenu())
         {
-            owner_.showAddWidgetMenu(e.getPosition());
+            owner_.showAddWidgetMenu(e.getPosition(), nullptr);
             return;
         }
 
@@ -3406,7 +3406,7 @@ ControlPanelComponent::ControlPanelComponent(std::shared_ptr<SystemSimulationSes
     modeButton.onClick = [this] { setDesignMode(!designMode_); };
 
     setupPanelBtn(addWidgetButton);
-    addWidgetButton.onClick = [this] { showAddWidgetMenu(juce::Point<int>(60, 60)); };
+    addWidgetButton.onClick = [this] { showAddWidgetMenu(juce::Point<int>(-1, -1), &addWidgetButton); };
     addWidgetButton.setVisible(false);
 
     setupPanelBtn(alignButton);
@@ -3471,6 +3471,24 @@ bool ControlPanelComponent::addWidget(const WidgetConfig& config)
     layout_.ensureWidgetBounds();
     buildWidgets();
     resized();
+
+    // Select the newly added widget so selection handles immediately appear
+    selectWidget(copy.id, false);
+
+    // Scroll viewport to keep the new widget visible if needed
+    const int viewX = canvasViewport.getViewPositionX();
+    const int viewY = canvasViewport.getViewPositionY();
+    const int viewW = canvasViewport.getViewWidth();
+    const int viewH = canvasViewport.getViewHeight();
+    if (viewW > 0 && viewH > 0)
+    {
+        if (copy.x < viewX || copy.x + copy.width > viewX + viewW ||
+            copy.y < viewY || copy.y + copy.height > viewY + viewH)
+        {
+            canvasViewport.setViewPosition(juce::jmax(0, copy.x - 24), juce::jmax(0, copy.y - 24));
+        }
+    }
+
     notifyLayoutChanged();
     return true;
 }
@@ -3827,146 +3845,222 @@ juce::Component* ControlPanelComponent::getWidgetComponent(const std::string& wi
     return nullptr;
 }
 
-void ControlPanelComponent::showAddWidgetMenu(juce::Point<int> canvasPos)
+juce::Point<int> ControlPanelComponent::getNewWidgetSpawnPosition(int widgetW, int widgetH) const
 {
+    const int viewX = canvasViewport.getViewPositionX();
+    const int viewY = canvasViewport.getViewPositionY();
+    const int viewW = std::max(200, canvasViewport.getViewWidth());
+    const int viewH = std::max(200, canvasViewport.getViewHeight());
+
+    int candX = viewX + 24;
+    int candY = viewY + 24;
+
+    const auto& currentWidgets = layout_.widgets;
+    const auto panelId = layout_.activePanelId.empty() ? std::string("main") : layout_.activePanelId;
+
+    bool collision = true;
+    int attempts = 0;
+    while (collision && attempts < 35)
+    {
+        collision = false;
+        juce::Rectangle<int> candRect(candX, candY, widgetW, widgetH);
+        for (const auto& w : currentWidgets)
+        {
+            if (!w.panelId.empty() && w.panelId != panelId)
+                continue;
+            juce::Rectangle<int> wRect(w.x, w.y, w.width, w.height);
+            if (candRect.intersects(wRect.reduced(4)))
+            {
+                collision = true;
+                break;
+            }
+        }
+        if (collision)
+        {
+            candY += 36;
+            if (candY + widgetH > viewY + viewH - 20)
+            {
+                candY = viewY + 24;
+                candX += 48;
+            }
+        }
+        attempts++;
+    }
+
+    return { std::max(10, candX), std::max(10, candY) };
+}
+
+void ControlPanelComponent::showAddWidgetMenu(juce::Point<int> canvasPos, juce::Component* targetComponent)
+{
+    auto resolvePos = [this, canvasPos](int defW, int defH) -> juce::Point<int> {
+        if (canvasPos.x >= 0 && canvasPos.y >= 0)
+            return canvasPos;
+        return getNewWidgetSpawnPosition(defW, defH);
+    };
+
     juce::PopupMenu menu;
     juce::PopupMenu instrMenu;
-    instrMenu.addItem("Analog Needle Gauge", [this, canvasPos] {
+    instrMenu.addItem("Analog Needle Gauge", [this, resolvePos] {
         WidgetConfig w;
         w.id = "gauge_" + juce::String(juce::Random::getSystemRandom().nextInt(9999)).toStdString();
         w.type = WidgetType::AnalogGauge;
         w.title = "Analog Gauge";
         w.width = 180; w.height = 180;
-        w.x = canvasPos.x; w.y = canvasPos.y;
+        auto p = resolvePos(w.width, w.height);
+        w.x = p.x; w.y = p.y;
         w.column = 1;
         addWidget(w);
     });
-    instrMenu.addItem("Digital Readout", [this, canvasPos] {
+    instrMenu.addItem("Digital Readout", [this, resolvePos] {
         WidgetConfig w;
         w.id = "num_" + juce::String(juce::Random::getSystemRandom().nextInt(9999)).toStdString();
         w.type = WidgetType::DigitalReadout;
         w.title = "Digital Readout";
         w.width = 180; w.height = 48;
-        w.x = canvasPos.x; w.y = canvasPos.y;
+        auto p = resolvePos(w.width, w.height);
+        w.x = p.x; w.y = p.y;
         w.column = 1;
         addWidget(w);
     });
-    instrMenu.addItem("Bar Gauge (Horizontal)", [this, canvasPos] {
+    instrMenu.addItem("Bar Gauge (Horizontal)", [this, resolvePos] {
         WidgetConfig w;
         w.id = "bar_" + juce::String(juce::Random::getSystemRandom().nextInt(9999)).toStdString();
         w.type = WidgetType::BarGauge;
         w.title = "Bar Gauge";
         w.vertical = false;
         w.width = 200; w.height = 42;
-        w.x = canvasPos.x; w.y = canvasPos.y;
+        auto p = resolvePos(w.width, w.height);
+        w.x = p.x; w.y = p.y;
         w.column = 1;
         addWidget(w);
     });
-    instrMenu.addItem("Bar Gauge (Vertical)", [this, canvasPos] {
+    instrMenu.addItem("Bar Gauge (Vertical)", [this, resolvePos] {
         WidgetConfig w;
         w.id = "bar_" + juce::String(juce::Random::getSystemRandom().nextInt(9999)).toStdString();
         w.type = WidgetType::BarGauge;
         w.title = "Bar Gauge";
         w.vertical = true;
         w.width = 80; w.height = 180;
-        w.x = canvasPos.x; w.y = canvasPos.y;
+        auto p = resolvePos(w.width, w.height);
+        w.x = p.x; w.y = p.y;
         w.column = 1;
         addWidget(w);
     });
-    instrMenu.addItem("Indicator Lamp", [this, canvasPos] {
+    instrMenu.addItem("Indicator Lamp", [this, resolvePos] {
         WidgetConfig w;
         w.id = "lamp_" + juce::String(juce::Random::getSystemRandom().nextInt(9999)).toStdString();
         w.type = WidgetType::IndicatorLamp;
         w.title = "Indicator Lamp";
         w.width = 180; w.height = 36;
-        w.x = canvasPos.x; w.y = canvasPos.y;
+        auto p = resolvePos(w.width, w.height);
+        w.x = p.x; w.y = p.y;
         w.column = 1;
         addWidget(w);
     });
     menu.addSubMenu("Add Instrument", instrMenu);
 
     juce::PopupMenu ctrlMenu;
-    ctrlMenu.addItem("Momentary Pushbutton", [this, canvasPos] {
+    ctrlMenu.addItem("Push Button", [this, resolvePos] {
         WidgetConfig w;
         w.id = "btn_" + juce::String(juce::Random::getSystemRandom().nextInt(9999)).toStdString();
         w.type = WidgetType::PushButton;
         w.title = "Push Button";
         w.momentary = true;
         w.width = 160; w.height = 32;
-        w.x = canvasPos.x; w.y = canvasPos.y;
+        auto p = resolvePos(w.width, w.height);
+        w.x = p.x; w.y = p.y;
         w.column = 0;
         addWidget(w);
     });
-    ctrlMenu.addItem("Latching Switch", [this, canvasPos] {
+    ctrlMenu.addItem("Momentary Pushbutton", [this, resolvePos] {
+        WidgetConfig w;
+        w.id = "btn_" + juce::String(juce::Random::getSystemRandom().nextInt(9999)).toStdString();
+        w.type = WidgetType::PushButton;
+        w.title = "Push Button";
+        w.momentary = true;
+        w.width = 160; w.height = 32;
+        auto p = resolvePos(w.width, w.height);
+        w.x = p.x; w.y = p.y;
+        w.column = 0;
+        addWidget(w);
+    });
+    ctrlMenu.addItem("Latching Switch", [this, resolvePos] {
         WidgetConfig w;
         w.id = "latch_" + juce::String(juce::Random::getSystemRandom().nextInt(9999)).toStdString();
         w.type = WidgetType::LatchingButton;
         w.title = "Latching Switch";
         w.momentary = false;
         w.width = 160; w.height = 32;
-        w.x = canvasPos.x; w.y = canvasPos.y;
+        auto p = resolvePos(w.width, w.height);
+        w.x = p.x; w.y = p.y;
         w.column = 0;
         addWidget(w);
     });
-    ctrlMenu.addItem("Toggle Switch", [this, canvasPos] {
+    ctrlMenu.addItem("Toggle Switch", [this, resolvePos] {
         WidgetConfig w;
         w.id = "sw_" + juce::String(juce::Random::getSystemRandom().nextInt(9999)).toStdString();
         w.type = WidgetType::ToggleSwitch;
         w.title = "Toggle Switch";
         w.width = 160; w.height = 32;
-        w.x = canvasPos.x; w.y = canvasPos.y;
+        auto p = resolvePos(w.width, w.height);
+        w.x = p.x; w.y = p.y;
         w.column = 0;
         addWidget(w);
     });
-    ctrlMenu.addItem("Rotary Knob", [this, canvasPos] {
+    ctrlMenu.addItem("Rotary Knob", [this, resolvePos] {
         WidgetConfig w;
         w.id = "knob_" + juce::String(juce::Random::getSystemRandom().nextInt(9999)).toStdString();
         w.type = WidgetType::Knob;
         w.title = "Control Knob";
         w.width = 140; w.height = 64;
-        w.x = canvasPos.x; w.y = canvasPos.y;
+        auto p = resolvePos(w.width, w.height);
+        w.x = p.x; w.y = p.y;
         w.column = 0;
         addWidget(w);
     });
-    ctrlMenu.addItem("Slider (Horizontal)", [this, canvasPos] {
+    ctrlMenu.addItem("Slider (Horizontal)", [this, resolvePos] {
         WidgetConfig w;
         w.id = "slider_" + juce::String(juce::Random::getSystemRandom().nextInt(9999)).toStdString();
         w.type = WidgetType::Slider;
         w.title = "Control Slider";
         w.vertical = false;
         w.width = 220; w.height = 42;
-        w.x = canvasPos.x; w.y = canvasPos.y;
+        auto p = resolvePos(w.width, w.height);
+        w.x = p.x; w.y = p.y;
         w.column = 0;
         addWidget(w);
     });
-    ctrlMenu.addItem("Selector Switch", [this, canvasPos] {
+    ctrlMenu.addItem("Selector Switch", [this, resolvePos] {
         WidgetConfig w;
         w.id = "sel_" + juce::String(juce::Random::getSystemRandom().nextInt(9999)).toStdString();
         w.type = WidgetType::ModeSelector;
         w.title = "Mode Selector";
         w.options = { "OFF", "MANUAL", "AUTO" };
         w.width = 180; w.height = 42;
-        w.x = canvasPos.x; w.y = canvasPos.y;
+        auto p = resolvePos(w.width, w.height);
+        w.x = p.x; w.y = p.y;
         w.column = 0;
         addWidget(w);
     });
-    ctrlMenu.addItem("Indicator Button", [this, canvasPos] {
+    ctrlMenu.addItem("Indicator Button", [this, resolvePos] {
         WidgetConfig w;
         w.id = "indbtn_" + juce::String(juce::Random::getSystemRandom().nextInt(9999)).toStdString();
         w.type = WidgetType::IndicatorButton;
         w.title = "Status Button";
         w.width = 180; w.height = 36;
-        w.x = canvasPos.x; w.y = canvasPos.y;
+        auto p = resolvePos(w.width, w.height);
+        w.x = p.x; w.y = p.y;
         w.column = 0;
         addWidget(w);
     });
-    ctrlMenu.addItem("Emergency Stop", [this, canvasPos] {
+    ctrlMenu.addItem("Emergency Stop", [this, resolvePos] {
         WidgetConfig w;
         w.id = "estop_" + juce::String(juce::Random::getSystemRandom().nextInt(9999)).toStdString();
         w.type = WidgetType::EmergencyStop;
         w.title = "EMERGENCY STOP";
         w.width = 220; w.height = 54;
-        w.x = canvasPos.x; w.y = canvasPos.y;
+        auto p = resolvePos(w.width, w.height);
+        w.x = p.x; w.y = p.y;
         w.column = 0;
         addWidget(w);
     });
@@ -3975,18 +4069,33 @@ void ControlPanelComponent::showAddWidgetMenu(juce::Point<int> canvasPos)
     if (!clipboard_.empty())
     {
         menu.addSeparator();
-        menu.addItem("Paste", [this, canvasPos] {
+        menu.addItem("Paste", [this, resolvePos] {
             for (auto item : clipboard_)
             {
                 item.id = item.id + "_copy";
-                item.x = canvasPos.x;
-                item.y = canvasPos.y;
+                auto p = resolvePos(item.width, item.height);
+                item.x = p.x;
+                item.y = p.y;
                 addWidget(item);
             }
         });
     }
 
-    menu.showMenuAsync(juce::PopupMenu::Options().withTargetComponent(this));
+    juce::PopupMenu::Options opts;
+    if (targetComponent != nullptr)
+    {
+        opts = opts.withTargetComponent(targetComponent);
+    }
+    else
+    {
+        const auto screenPos = canvasComponent ? canvasComponent->localPointToGlobal(canvasPos) : localPointToGlobal(canvasPos);
+        opts = opts.withTargetScreenArea(juce::Rectangle<int>(screenPos.x, screenPos.y, 1, 1));
+    }
+
+    opts = opts.withMinimumWidth(200)
+               .withStandardItemHeight(28);
+
+    menu.showMenuAsync(opts);
 }
 
 void ControlPanelComponent::showAlignMenu()

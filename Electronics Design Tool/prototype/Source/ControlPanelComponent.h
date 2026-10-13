@@ -141,7 +141,8 @@ public:
     // Dialog and Menu creation
     void showWidgetPropertiesDialog(const std::string& widgetId);
     std::unique_ptr<juce::Component> createWidgetPropertiesDialog(const std::string& widgetId);
-    void showAddWidgetMenu(juce::Point<int> canvasPos);
+    void showAddWidgetMenu(juce::Point<int> canvasPos, juce::Component* targetComponent = nullptr);
+    juce::Point<int> getNewWidgetSpawnPosition(int widgetW = 160, int widgetH = 40) const;
     void showAlignMenu();
     juce::Component* getWidgetComponent(const std::string& widgetId) const;
 

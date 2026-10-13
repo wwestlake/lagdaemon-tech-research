@@ -1008,6 +1008,119 @@ int main()
     cpComp.setDesignMode(true);
     r.check(cpComp.isDesignMode(), "Design Mode is active: layout is unlocked for authoring");
 
+    // 9. Control Panel Design Mode Repairs verification (Defects 1, 2, 3)
+    // Verify getNewWidgetSpawnPosition finds visible, non-colliding coordinates
+    const auto spawnP1 = cpComp.getNewWidgetSpawnPosition(160, 32);
+    r.check(spawnP1.getX() >= 10 && spawnP1.getY() >= 10,
+            "spawn position returns valid positive canvas coordinates");
+
+    // Add Push Button dynamically (Defect 3 repair verification)
+    sim_panel::WidgetConfig dynamicBtn;
+    dynamicBtn.id = "dyn_push_button";
+    dynamicBtn.type = sim_panel::WidgetType::PushButton;
+    dynamicBtn.title = "Push Button";
+    dynamicBtn.momentary = true;
+    dynamicBtn.width = 160;
+    dynamicBtn.height = 32;
+    dynamicBtn.x = spawnP1.getX();
+    dynamicBtn.y = spawnP1.getY();
+    dynamicBtn.panelId = demoPanelId;
+    r.check(cpComp.addWidget(dynamicBtn), "dynamic Push Button added to canvas");
+    auto* dynBtnComp = cpComp.getWidgetComponent("dyn_push_button");
+    r.check(dynBtnComp != nullptr && dynBtnComp->isVisible(),
+            "newly added Push Button appears immediately as a visible control on the canvas");
+    r.check(std::find(cpComp.getSelectedWidgetIds().begin(), cpComp.getSelectedWidgetIds().end(), "dyn_push_button") != cpComp.getSelectedWidgetIds().end(),
+            "newly added element is immediately selected with handles");
+
+    // Add a second element (Gauge) and verify collision avoidance / cascading
+    const auto spawnP2 = cpComp.getNewWidgetSpawnPosition(180, 180);
+    r.check(spawnP2 != spawnP1, "consecutive element additions cascade to avoid overlapping previous widgets");
+    sim_panel::WidgetConfig dynamicGauge;
+    dynamicGauge.id = "dyn_gauge";
+    dynamicGauge.type = sim_panel::WidgetType::AnalogGauge;
+    dynamicGauge.title = "Pressure Dial";
+    dynamicGauge.width = 180;
+    dynamicGauge.height = 180;
+    dynamicGauge.x = spawnP2.getX();
+    dynamicGauge.y = spawnP2.getY();
+    dynamicGauge.panelId = demoPanelId;
+    r.check(cpComp.addWidget(dynamicGauge), "dynamic Analog Needle Gauge added to canvas");
+    auto* dynGaugeComp = cpComp.getWidgetComponent("dyn_gauge");
+    r.check(dynGaugeComp != nullptr && dynGaugeComp->isVisible(),
+            "newly added Analog Gauge appears immediately within visible canvas");
+
+    // Add all remaining supported element types and verify immediate visibility
+    struct TypeTest {
+        sim_panel::WidgetType type;
+        std::string id;
+        std::string title;
+        int w; int h;
+    };
+    std::vector<TypeTest> remainingTypes = {
+        { sim_panel::WidgetType::DigitalReadout, "dyn_readout", "Digital Readout", 180, 48 },
+        { sim_panel::WidgetType::ToggleSwitch, "dyn_switch", "Toggle Switch", 160, 32 },
+        { sim_panel::WidgetType::Slider, "dyn_slider", "Control Slider", 220, 42 },
+        { sim_panel::WidgetType::Knob, "dyn_knob", "Control Knob", 140, 64 },
+        { sim_panel::WidgetType::BarGauge, "dyn_bar_h", "Bar Gauge", 200, 42 },
+        { sim_panel::WidgetType::IndicatorLamp, "dyn_lamp", "Indicator Lamp", 180, 36 },
+        { sim_panel::WidgetType::LatchingButton, "dyn_latch", "Latching Switch", 160, 32 },
+        { sim_panel::WidgetType::ModeSelector, "dyn_modesel", "Mode Selector", 180, 42 },
+        { sim_panel::WidgetType::IndicatorButton, "dyn_indbtn", "Status Button", 180, 36 },
+        { sim_panel::WidgetType::EmergencyStop, "dyn_estop", "EMERGENCY STOP", 220, 54 }
+    };
+    bool allTypesCreated = true;
+    for (const auto& tt : remainingTypes)
+    {
+        const auto sp = cpComp.getNewWidgetSpawnPosition(tt.w, tt.h);
+        sim_panel::WidgetConfig wc;
+        wc.id = tt.id;
+        wc.type = tt.type;
+        wc.title = tt.title;
+        wc.width = tt.w;
+        wc.height = tt.h;
+        wc.x = sp.getX();
+        wc.y = sp.getY();
+        wc.panelId = demoPanelId;
+        if (!cpComp.addWidget(wc)) { allTypesCreated = false; break; }
+        auto* c = cpComp.getWidgetComponent(tt.id);
+        if (c == nullptr || !c->isVisible()) { allTypesCreated = false; break; }
+    }
+    r.check(allTypesCreated, "all supported element types (gauges, readouts, switches, sliders, knobs, lamps, buttons, estop) create immediate visible controls");
+
+    // Move, resize, and configure dynamically added element
+    r.check(cpComp.setWidgetBounds("dyn_push_button", 120, 140, 190, 40),
+            "dynamically added Push Button can be moved and resized");
+    const auto movedBounds = cpComp.getWidgetBounds("dyn_push_button");
+    r.check(movedBounds.getX() == 120 && movedBounds.getY() == 140 && movedBounds.getWidth() == 190 && movedBounds.getHeight() == 40,
+            "moved and resized element bounds update accurately");
+
+    auto dynBtnCfg = *cpComp.getWidgetConfig("dyn_push_button");
+    dynBtnCfg.title = "Emergency Flush (Momentary)";
+    r.check(cpComp.configureWidget("dyn_push_button", dynBtnCfg), "dynamically added Push Button can be configured");
+    r.check(cpComp.getWidgetConfig("dyn_push_button")->title == "Emergency Flush (Momentary)",
+            "configured widget title updates immediately in model");
+
+    // Verify persistence: save to machine and reload
+    const auto dynSavedFile = outDir.getChildFile("dyn_elements_saved.machine.json");
+    dynSavedFile.deleteFile();
+    auto dynMachineToSave = cpBuilder.getMachine();
+    dynMachineToSave.controlPanel = cpComp.getLayout();
+    r.check(dynMachineToSave.saveToFile(dynSavedFile, ioError),
+            "machine with dynamically added elements saves cleanly to .machine.json");
+
+    machine_builder::MachineDesign reloadedDynMachine;
+    r.check(machine_builder::MachineDesign::loadFromFile(dynSavedFile, reloadedDynMachine, ioError),
+            "saved machine with dynamically added elements reloads successfully");
+    const auto* reloadedDynBtn = reloadedDynMachine.controlPanel.findWidget("dyn_push_button");
+    const auto* reloadedDynGauge = reloadedDynMachine.controlPanel.findWidget("dyn_gauge");
+    const auto* reloadedDynEstop = reloadedDynMachine.controlPanel.findWidget("dyn_estop");
+    r.check(reloadedDynBtn != nullptr && reloadedDynBtn->x == 120 && reloadedDynBtn->y == 140
+            && reloadedDynBtn->width == 190 && reloadedDynBtn->height == 40
+            && reloadedDynBtn->title == "Emergency Flush (Momentary)",
+            "dynamically added elements survive save and reload with exact bounds, titles, and IDs");
+    r.check(reloadedDynGauge != nullptr && reloadedDynEstop != nullptr,
+            "all dynamic instruments and controls survive persistence cycle");
+
     std::cout << r.checks << " checks, " << r.failures << " failures\n";
     return r.failures == 0 ? 0 : 1;
 }
