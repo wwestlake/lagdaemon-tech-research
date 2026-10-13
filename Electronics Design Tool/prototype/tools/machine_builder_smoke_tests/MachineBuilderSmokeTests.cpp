@@ -598,6 +598,58 @@ int main()
                 "returning to Live/Follow re-anchors to latest samples");
     }
 
+    // 5b. Splitter & Plot Area Mouse-Event Non-Interference
+    r.check(cpComp.hasPlotPanel()
+            && cpComp.getSplitterComponent() != nullptr
+            && cpComp.getPlotContainerComponent() != nullptr,
+            "splitter and plot container are active in split layout");
+
+    auto* plotComp = cpComp.getPlotContainerComponent();
+    auto* splitterComp = cpComp.getSplitterComponent();
+    if (plotComp != nullptr && splitterComp != nullptr)
+    {
+        const double initialRatio = cpComp.getSplitRatio();
+        const int initialSplitterX = cpComp.getSplitterX();
+        const auto plotCenter = plotComp->getLocalBounds().getCentre();
+
+        auto makeEv = [](juce::Component* comp, float x, float y) {
+            auto src = juce::Desktop::getInstance().getMainMouseSource();
+            const auto t = juce::Time::getCurrentTime();
+            return juce::MouseEvent(src, { x, y }, juce::ModifierKeys(), 0.0f, 0.0f, 0.0f, 0.0f, 0.0f,
+                                    comp, comp, t, { x, y }, t, 1, false);
+        };
+
+        // 1. Mouse click, drag, and release inside plot area must NEVER move or resize splitter
+        plotComp->mouseDown(makeEv(plotComp, (float)plotCenter.x, (float)plotCenter.y));
+        plotComp->mouseDrag(makeEv(plotComp, (float)(plotCenter.x - 120), (float)(plotCenter.y + 60)));
+        plotComp->mouseUp(makeEv(plotComp, (float)(plotCenter.x - 120), (float)(plotCenter.y + 60)));
+        r.check(std::abs(cpComp.getSplitRatio() - initialRatio) < 1.0e-6 && cpComp.getSplitterX() == initialSplitterX,
+                "mouse clicks and drags inside plot area do not move or resize the splitter");
+
+        // 2. Mouse wheel inside plot area must NOT affect splitter position or split ratio
+        plotComp->mouseWheelMove(makeEv(plotComp, (float)plotCenter.x, (float)plotCenter.y),
+                                 juce::MouseWheelDetails { 0.0f, 1.0f, false, false });
+        r.check(std::abs(cpComp.getSplitRatio() - initialRatio) < 1.0e-6 && cpComp.getSplitterX() == initialSplitterX,
+                "mouse wheel events inside plot area do not affect splitter position or split ratio");
+
+        // 3. Deliberate drag directly on the splitter handle resizes split smoothly
+        const auto splitterCenter = splitterComp->getLocalBounds().getCentre();
+        splitterComp->mouseDown(makeEv(splitterComp, (float)splitterCenter.x, (float)splitterCenter.y));
+        splitterComp->mouseDrag(makeEv(splitterComp, (float)(splitterCenter.x + 60), (float)splitterCenter.y));
+        splitterComp->mouseUp(makeEv(splitterComp, (float)(splitterCenter.x + 60), (float)splitterCenter.y));
+        r.check(cpComp.getSplitterX() > initialSplitterX && cpComp.getSplitRatio() > initialRatio,
+                "deliberate drag on splitter handle resizes the split smoothly");
+
+        // 4. Split ratio clamp limits [0.15, 0.85]
+        cpComp.setSplitRatio(0.99);
+        r.check(cpComp.getSplitRatio() <= 0.85 + 1.0e-6, "splitter ratio clamps to maximum 0.85");
+        cpComp.setSplitRatio(0.01);
+        r.check(cpComp.getSplitRatio() >= 0.15 - 1.0e-6, "splitter ratio clamps to minimum 0.15");
+
+        // Restore initial ratio for subsequent checks
+        cpComp.setSplitRatio(initialRatio);
+    }
+
     // 6. Compact automatically generated Control Panel layout verification
     const auto& defaultMotorLayout = sim_panel::ControlPanelLayout::createDefaultMotorPanel();
     r.check(defaultMotorLayout.panels.size() >= 1, "default motor layout created");

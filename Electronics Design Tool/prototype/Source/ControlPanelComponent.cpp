@@ -1253,6 +1253,7 @@ public:
         xySurface.setMessage("No recorded samples yet.");
 
         rebuildLaneControls();
+        layoutLanes();
         updateSurface();
     }
 
@@ -1508,6 +1509,19 @@ public:
         g.drawRoundedRectangle(getLocalBounds().toFloat().reduced(1.0f), 4.0f, 1.0f);
     }
 
+    void mouseDown(const juce::MouseEvent&) override {}
+    void mouseDrag(const juce::MouseEvent&) override {}
+    void mouseUp(const juce::MouseEvent&) override {}
+
+    void mouseWheelMove(const juce::MouseEvent& e, const juce::MouseWheelDetails& wheel) override
+    {
+        if (lanesViewport.isVisible() && lanesViewport.getBounds().contains(e.getPosition()))
+        {
+            lanesContainer.mouseWheelMove(e.getEventRelativeTo(&lanesContainer), wheel);
+            return;
+        }
+    }
+
     void resized() override
     {
         auto b = getLocalBounds().reduced(8);
@@ -1655,6 +1669,8 @@ private:
             if (scrubberBounds.getWidth() > 10)
                 scrubToX(e.position.x);
         }
+
+        void mouseWheelMove(const juce::MouseEvent&, const juce::MouseWheelDetails&) override {}
 
     private:
         void scrubToX(float x)
@@ -2376,6 +2392,12 @@ private:
         {
             const double factor = wheel.deltaY > 0.0f ? 0.8 : 1.25;
             zoomAtScreenX(e.x, factor, wfLeft, wfWidth);
+        }
+        else
+        {
+            const int curY = lanesViewport.getViewPositionY();
+            const int delta = (int)std::round(wheel.deltaY * -40.0f);
+            lanesViewport.setViewPosition(lanesViewport.getViewPositionX(), std::max(0, curY + delta));
         }
     }
 
@@ -3113,6 +3135,147 @@ private:
 };
 
 // -----------------------------------------------------------------------------
+// ControlPanelSplitter & PlotContainerComponent
+// -----------------------------------------------------------------------------
+
+class ControlPanelComponent::ControlPanelSplitter final : public juce::Component
+{
+public:
+    ControlPanelSplitter(std::function<void(int deltaX)> onDragDelta,
+                         std::function<void()> onDragStart,
+                         std::function<void()> onDragEnd)
+        : onDragDelta_(std::move(onDragDelta)),
+          onDragStart_(std::move(onDragStart)),
+          onDragEnd_(std::move(onDragEnd))
+    {
+        setMouseCursor(juce::MouseCursor::LeftRightResizeCursor);
+        setRepaintsOnMouseActivity(true);
+    }
+
+    void paint(juce::Graphics& g) override
+    {
+        auto b = getLocalBounds();
+        const bool active = isMouseOverOrDragging();
+
+        // Background track
+        g.setColour(juce::Colour(0xff141923));
+        g.fillRect(b);
+
+        // Divider line
+        g.setColour(active ? juce::Colour(0xff00d2ff) : juce::Colour(0xff2b3848));
+        const int midX = b.getCentreX();
+        g.fillRect(midX - 1, 0, 2, b.getHeight());
+
+        // Vertical pill grip handle
+        const int gripH = 36;
+        const int gripY = (b.getHeight() - gripH) / 2;
+        g.setColour(active ? juce::Colour(0xff00d2ff) : juce::Colour(0xff4a5d73));
+        g.fillRoundedRectangle((float)(midX - 2), (float)gripY, 4.0f, (float)gripH, 2.0f);
+    }
+
+    void mouseDown(const juce::MouseEvent& e) override
+    {
+        isDragging_ = true;
+        dragStartScreenX_ = e.getScreenX();
+        if (onDragStart_)
+            onDragStart_();
+        repaint();
+    }
+
+    void mouseDrag(const juce::MouseEvent& e) override
+    {
+        if (!isDragging_)
+            return;
+        const int delta = e.getScreenX() - dragStartScreenX_;
+        if (onDragDelta_)
+            onDragDelta_(delta);
+    }
+
+    void mouseUp(const juce::MouseEvent&) override
+    {
+        if (isDragging_)
+        {
+            isDragging_ = false;
+            if (onDragEnd_)
+                onDragEnd_();
+            repaint();
+        }
+    }
+
+    void mouseWheelMove(const juce::MouseEvent&, const juce::MouseWheelDetails&) override {}
+
+    bool isDragging() const { return isDragging_; }
+
+private:
+    std::function<void(int)> onDragDelta_;
+    std::function<void()> onDragStart_;
+    std::function<void()> onDragEnd_;
+    bool isDragging_ = false;
+    int dragStartScreenX_ = 0;
+};
+
+class ControlPanelComponent::PlotContainerComponent final : public juce::Component
+{
+public:
+    void layoutChildren()
+    {
+        auto b = getLocalBounds();
+        for (int i = 0; i < getNumChildComponents(); ++i)
+        {
+            if (auto* child = getChildComponent(i))
+                child->setBounds(b);
+        }
+    }
+
+    void resized() override
+    {
+        layoutChildren();
+    }
+
+    void childrenChanged() override
+    {
+        layoutChildren();
+    }
+
+    void childBoundsChanged(juce::Component* child) override
+    {
+        if (child != nullptr && child->getBounds() != getLocalBounds())
+            child->setBounds(getLocalBounds());
+    }
+
+    void paint(juce::Graphics& g) override
+    {
+        g.fillAll(juce::Colour(0xff10161d));
+    }
+
+    void mouseDown(const juce::MouseEvent&) override {}
+    void mouseDrag(const juce::MouseEvent&) override {}
+    void mouseUp(const juce::MouseEvent&) override {}
+    void mouseWheelMove(const juce::MouseEvent&, const juce::MouseWheelDetails&) override {}
+};
+
+namespace
+{
+PlotPanelWidget* getPlotWidgetFromComp(juce::Component* comp)
+{
+    if (auto* plot = dynamic_cast<PlotPanelWidget*>(comp))
+        return plot;
+    if (auto* wrapper = dynamic_cast<DesignItemWrapper*>(comp))
+        return dynamic_cast<PlotPanelWidget*>(wrapper->getWidget());
+    return nullptr;
+}
+
+const PlotPanelWidget* getPlotWidgetFromComp(const juce::Component* comp)
+{
+    if (const auto* plot = dynamic_cast<const PlotPanelWidget*>(comp))
+        return plot;
+    if (const auto* wrapper = dynamic_cast<const DesignItemWrapper*>(comp))
+        return dynamic_cast<const PlotPanelWidget*>(wrapper->getWidget());
+    return nullptr;
+}
+} // namespace
+
+// -----------------------------------------------------------------------------
 // ControlPanelComponent Methods
 // -----------------------------------------------------------------------------
 
@@ -3236,6 +3399,15 @@ ControlPanelComponent::ControlPanelComponent(std::shared_ptr<SystemSimulationSes
     addAndMakeVisible(canvasViewport);
     canvasViewport.setViewedComponent(canvasComponent.get(), false);
     canvasViewport.setScrollBarsShown(true, true);
+
+    splitter_ = std::make_unique<ControlPanelSplitter>(
+        [this](int deltaX) { handleSplitterDrag(deltaX); },
+        [this]() { handleSplitterDragStart(); },
+        [this]() { handleSplitterDragEnd(); });
+    addChildComponent(*splitter_);
+
+    plotContainer_ = std::make_unique<PlotContainerComponent>();
+    addChildComponent(*plotContainer_);
 
     ControlPanelLayout blank;
     blank.title = "No Active Machine";
@@ -3623,6 +3795,11 @@ juce::Component* ControlPanelComponent::getWidgetComponent(const std::string& wi
             if (wrapper->config.id == widgetId)
                 return wrapper->widget.get();
         }
+        else if (auto* plot = dynamic_cast<PlotPanelWidget*>(ov.component.get()))
+        {
+            if (plot->widgetId() == widgetId)
+                return plot;
+        }
     }
     return nullptr;
 }
@@ -3958,6 +4135,14 @@ void ControlPanelComponent::updateWidgetConfig(const WidgetConfig& config)
                         break;
                     }
                 }
+                else if (auto* plot = dynamic_cast<PlotPanelWidget*>(ov.component.get()))
+                {
+                    if (plot->widgetId() == config.id)
+                    {
+                        ov.config = config;
+                        break;
+                    }
+                }
             }
             notifyLayoutChanged();
             return;
@@ -3986,6 +4171,8 @@ void ControlPanelComponent::buildWidgets()
         return;
 
     canvasComponent->removeAllChildren();
+    if (plotContainer_)
+        plotContainer_->removeAllChildren();
     outputViews_.clear();
 
     const auto panelId = layout_.activePanelId.empty() ? std::string("main") : layout_.activePanelId;
@@ -4165,9 +4352,16 @@ void ControlPanelComponent::buildWidgets()
         }
         else if (w.type == WidgetType::PlotPanel)
         {
-            comp = std::make_unique<PlotPanelWidget>(
+            auto plotWidget = std::make_unique<PlotPanelWidget>(
                 w, recordingFor(w.id), recordingEnabledFor(w.id),
                 [this](const WidgetConfig& config) { updateWidgetConfig(config); });
+            if (plotContainer_)
+            {
+                plotContainer_->addAndMakeVisible(plotWidget.get());
+                plotWidget->setBounds(plotContainer_->getLocalBounds());
+            }
+            outputViews_.push_back({ w, std::move(plotWidget) });
+            continue;
         }
 
         if (comp != nullptr)
@@ -4271,13 +4465,47 @@ void ControlPanelComponent::resized()
 
     b.removeFromTop(6);
 
-    // Freeform scrollable viewport & canvas
-    canvasViewport.setBounds(b);
+    const bool showPlot = hasPlotPanel();
+    if (splitter_)
+        splitter_->setVisible(showPlot);
+    if (plotContainer_)
+        plotContainer_->setVisible(showPlot);
+
+    if (showPlot && splitter_ && plotContainer_)
+    {
+        const auto& panel = activePanel();
+        const double ratio = std::clamp(panel.splitRatio > 0.0 ? panel.splitRatio : 0.22, 0.15, 0.85);
+        const int splitterW = 6;
+        const int availW = b.getWidth() - splitterW;
+        const int minControlW = 180;
+        const int minPlotW = 320;
+
+        int controlW = std::clamp((int)std::round((double)availW * ratio), minControlW, std::max(minControlW, availW - minPlotW));
+
+        auto leftArea = b.removeFromLeft(controlW);
+        auto splitArea = b.removeFromLeft(splitterW);
+        auto rightArea = b;
+
+        canvasViewport.setBounds(leftArea);
+        splitter_->setBounds(splitArea);
+        plotContainer_->setBounds(rightArea);
+        for (int i = 0; i < plotContainer_->getNumChildComponents(); ++i)
+        {
+            if (auto* child = plotContainer_->getChildComponent(i))
+                child->setBounds(plotContainer_->getLocalBounds());
+        }
+    }
+    else
+    {
+        canvasViewport.setBounds(b);
+    }
 
     int canvasW = std::max(1600, activePanel().canvasWidth);
     int canvasH = std::max(1000, activePanel().canvasHeight);
     for (const auto& w : layout_.widgets)
     {
+        if (w.type == WidgetType::PlotPanel)
+            continue;
         canvasW = std::max(canvasW, w.x + w.width + 100);
         canvasH = std::max(canvasH, w.y + w.height + 100);
     }
@@ -4296,6 +4524,80 @@ void ControlPanelComponent::paint(juce::Graphics& g)
 void ControlPanelComponent::mouseDown(const juce::MouseEvent&) {}
 void ControlPanelComponent::mouseDrag(const juce::MouseEvent&) {}
 void ControlPanelComponent::mouseUp(const juce::MouseEvent&) {}
+void ControlPanelComponent::mouseWheelMove(const juce::MouseEvent&, const juce::MouseWheelDetails&) {}
+
+void ControlPanelComponent::handleSplitterDragStart()
+{
+    dragStartControlW_ = canvasViewport.getWidth();
+    dragStartAvailableW_ = canvasViewport.getWidth() + (plotContainer_ ? plotContainer_->getWidth() : 0);
+}
+
+void ControlPanelComponent::handleSplitterDrag(int deltaX)
+{
+    if (!hasPlotPanel() || dragStartAvailableW_ <= 100)
+        return;
+
+    const int minControlW = 180;
+    const int minPlotW = 320;
+    int newControlW = std::clamp(dragStartControlW_ + deltaX, minControlW, std::max(minControlW, dragStartAvailableW_ - minPlotW));
+    double newRatio = (double)newControlW / (double)dragStartAvailableW_;
+    newRatio = std::clamp(newRatio, 0.15, 0.85);
+
+    if (auto* panel = layout_.findPanel(layout_.activePanelId))
+        panel->splitRatio = newRatio;
+
+    resized();
+}
+
+void ControlPanelComponent::handleSplitterDragEnd()
+{
+    notifyLayoutChanged();
+}
+
+double ControlPanelComponent::getSplitRatio() const
+{
+    const double r = activePanel().splitRatio;
+    return r > 0.0 ? r : 0.22;
+}
+
+bool ControlPanelComponent::setSplitRatio(double ratio)
+{
+    ratio = std::clamp(ratio, 0.15, 0.85);
+    if (auto* panel = layout_.findPanel(layout_.activePanelId))
+    {
+        panel->splitRatio = ratio;
+        resized();
+        notifyLayoutChanged();
+        return true;
+    }
+    return false;
+}
+
+int ControlPanelComponent::getSplitterX() const
+{
+    return splitter_ ? splitter_->getX() : 0;
+}
+
+juce::Component* ControlPanelComponent::getSplitterComponent() const
+{
+    return splitter_.get();
+}
+
+juce::Component* ControlPanelComponent::getPlotContainerComponent() const
+{
+    return plotContainer_.get();
+}
+
+bool ControlPanelComponent::hasPlotPanel() const
+{
+    const auto panelId = layout_.activePanelId.empty() ? std::string("main") : layout_.activePanelId;
+    for (const auto& w : layout_.widgets)
+    {
+        if ((w.panelId.empty() || w.panelId == panelId) && w.type == WidgetType::PlotPanel)
+            return true;
+    }
+    return false;
+}
 
 void ControlPanelComponent::sampleLatestNow()
 {
@@ -4307,11 +4609,8 @@ std::vector<ControlPanelComponent::StripChartRecorderSnapshot> ControlPanelCompo
     std::vector<StripChartRecorderSnapshot> out;
     for (const auto& ov : outputViews_)
     {
-        if (const auto* wrapper = dynamic_cast<const DesignItemWrapper*>(ov.component.get()))
-        {
-            if (const auto* plot = dynamic_cast<const PlotPanelWidget*>(wrapper->getWidget()))
-                out.push_back(plot->getSnapshot());
-        }
+        if (const auto* plot = getPlotWidgetFromComp(ov.component.get()))
+            out.push_back(plot->getSnapshot());
     }
     return out;
 }
@@ -4320,15 +4619,12 @@ bool ControlPanelComponent::setRecorderTimebaseSecondsPerDiv(const std::string& 
 {
     for (auto& ov : outputViews_)
     {
-        if (auto* wrapper = dynamic_cast<DesignItemWrapper*>(ov.component.get()))
+        if (auto* plot = getPlotWidgetFromComp(ov.component.get()))
         {
-            if (auto* plot = dynamic_cast<PlotPanelWidget*>(wrapper->getWidget()))
+            if (widgetId.empty() || plot->widgetId() == widgetId)
             {
-                if (widgetId.empty() || plot->widgetId() == widgetId)
-                {
-                    plot->setTimebaseSecondsPerDiv(secondsPerDiv);
-                    return true;
-                }
+                plot->setTimebaseSecondsPerDiv(secondsPerDiv);
+                return true;
             }
         }
     }
@@ -4339,15 +4635,12 @@ bool ControlPanelComponent::scrollRecorderHistory(const std::string& widgetId, d
 {
     for (auto& ov : outputViews_)
     {
-        if (auto* wrapper = dynamic_cast<DesignItemWrapper*>(ov.component.get()))
+        if (auto* plot = getPlotWidgetFromComp(ov.component.get()))
         {
-            if (auto* plot = dynamic_cast<PlotPanelWidget*>(wrapper->getWidget()))
+            if (widgetId.empty() || plot->widgetId() == widgetId)
             {
-                if (widgetId.empty() || plot->widgetId() == widgetId)
-                {
-                    plot->scrollHistoryToCenter(centerTimeSeconds);
-                    return true;
-                }
+                plot->scrollHistoryToCenter(centerTimeSeconds);
+                return true;
             }
         }
     }
@@ -4358,15 +4651,12 @@ bool ControlPanelComponent::setRecorderLiveFollow(const std::string& widgetId, b
 {
     for (auto& ov : outputViews_)
     {
-        if (auto* wrapper = dynamic_cast<DesignItemWrapper*>(ov.component.get()))
+        if (auto* plot = getPlotWidgetFromComp(ov.component.get()))
         {
-            if (auto* plot = dynamic_cast<PlotPanelWidget*>(wrapper->getWidget()))
+            if (widgetId.empty() || plot->widgetId() == widgetId)
             {
-                if (widgetId.empty() || plot->widgetId() == widgetId)
-                {
-                    plot->setLiveFollow(liveFollow);
-                    return true;
-                }
+                plot->setLiveFollow(liveFollow);
+                return true;
             }
         }
     }
@@ -4377,15 +4667,12 @@ bool ControlPanelComponent::setRecorderViewPaused(const std::string& widgetId, b
 {
     for (auto& ov : outputViews_)
     {
-        if (auto* wrapper = dynamic_cast<DesignItemWrapper*>(ov.component.get()))
+        if (auto* plot = getPlotWidgetFromComp(ov.component.get()))
         {
-            if (auto* plot = dynamic_cast<PlotPanelWidget*>(wrapper->getWidget()))
+            if (widgetId.empty() || plot->widgetId() == widgetId)
             {
-                if (widgetId.empty() || plot->widgetId() == widgetId)
-                {
-                    plot->setViewPaused(paused);
-                    return true;
-                }
+                plot->setViewPaused(paused);
+                return true;
             }
         }
     }
@@ -4396,15 +4683,12 @@ bool ControlPanelComponent::setRecorderRecordingEnabled(const std::string& widge
 {
     for (auto& ov : outputViews_)
     {
-        if (auto* wrapper = dynamic_cast<DesignItemWrapper*>(ov.component.get()))
+        if (auto* plot = getPlotWidgetFromComp(ov.component.get()))
         {
-            if (auto* plot = dynamic_cast<PlotPanelWidget*>(wrapper->getWidget()))
+            if (widgetId.empty() || plot->widgetId() == widgetId)
             {
-                if (widgetId.empty() || plot->widgetId() == widgetId)
-                {
-                    plot->setRecordingEnabled(enabled);
-                    return true;
-                }
+                plot->setRecordingEnabled(enabled);
+                return true;
             }
         }
     }
@@ -4415,13 +4699,10 @@ bool ControlPanelComponent::setRecorderLaneCollapsed(const std::string& widgetId
 {
     for (auto& ov : outputViews_)
     {
-        if (auto* wrapper = dynamic_cast<DesignItemWrapper*>(ov.component.get()))
+        if (auto* plot = getPlotWidgetFromComp(ov.component.get()))
         {
-            if (auto* plot = dynamic_cast<PlotPanelWidget*>(wrapper->getWidget()))
-            {
-                if (widgetId.empty() || plot->widgetId() == widgetId)
-                    return plot->setLaneCollapsed(laneIndex, collapsed);
-            }
+            if (widgetId.empty() || plot->widgetId() == widgetId)
+                return plot->setLaneCollapsed(laneIndex, collapsed);
         }
     }
     return false;
@@ -4431,13 +4712,10 @@ bool ControlPanelComponent::setRecorderLaneHeight(const std::string& widgetId, i
 {
     for (auto& ov : outputViews_)
     {
-        if (auto* wrapper = dynamic_cast<DesignItemWrapper*>(ov.component.get()))
+        if (auto* plot = getPlotWidgetFromComp(ov.component.get()))
         {
-            if (auto* plot = dynamic_cast<PlotPanelWidget*>(wrapper->getWidget()))
-            {
-                if (widgetId.empty() || plot->widgetId() == widgetId)
-                    return plot->setLaneHeight(laneIndex, heightPx);
-            }
+            if (widgetId.empty() || plot->widgetId() == widgetId)
+                return plot->setLaneHeight(laneIndex, heightPx);
         }
     }
     return false;
@@ -4447,15 +4725,12 @@ bool ControlPanelComponent::zoomRecorderAtScreenX(const std::string& widgetId, i
 {
     for (auto& ov : outputViews_)
     {
-        if (auto* wrapper = dynamic_cast<DesignItemWrapper*>(ov.component.get()))
+        if (auto* plot = getPlotWidgetFromComp(ov.component.get()))
         {
-            if (auto* plot = dynamic_cast<PlotPanelWidget*>(wrapper->getWidget()))
+            if (widgetId.empty() || plot->widgetId() == widgetId)
             {
-                if (widgetId.empty() || plot->widgetId() == widgetId)
-                {
-                    plot->zoomAtScreenX(screenX, factor);
-                    return true;
-                }
+                plot->zoomAtScreenX(screenX, factor);
+                return true;
             }
         }
     }
@@ -4466,15 +4741,12 @@ bool ControlPanelComponent::fitRecorderRecording(const std::string& widgetId)
 {
     for (auto& ov : outputViews_)
     {
-        if (auto* wrapper = dynamic_cast<DesignItemWrapper*>(ov.component.get()))
+        if (auto* plot = getPlotWidgetFromComp(ov.component.get()))
         {
-            if (auto* plot = dynamic_cast<PlotPanelWidget*>(wrapper->getWidget()))
+            if (widgetId.empty() || plot->widgetId() == widgetId)
             {
-                if (widgetId.empty() || plot->widgetId() == widgetId)
-                {
-                    plot->fitRecording();
-                    return true;
-                }
+                plot->fitRecording();
+                return true;
             }
         }
     }
@@ -4485,13 +4757,10 @@ bool ControlPanelComponent::exportRecorderCsv(const std::string& widgetId, const
 {
     for (const auto& ov : outputViews_)
     {
-        if (const auto* wrapper = dynamic_cast<const DesignItemWrapper*>(ov.component.get()))
+        if (const auto* plot = getPlotWidgetFromComp(ov.component.get()))
         {
-            if (const auto* plot = dynamic_cast<const PlotPanelWidget*>(wrapper->getWidget()))
-            {
-                if (widgetId.empty() || plot->widgetId() == widgetId)
-                    return plot->exportCsvToFile(file, error);
-            }
+            if (widgetId.empty() || plot->widgetId() == widgetId)
+                return plot->exportCsvToFile(file, error);
         }
     }
     error = "Plot recorder widget not found.";
@@ -4554,6 +4823,12 @@ void ControlPanelComponent::timerCallback()
     // Update Output Views & Instruments
     for (auto& ov : outputViews_)
     {
+        if (auto* plot = getPlotWidgetFromComp(ov.component.get()))
+        {
+            plot->updateDisplay();
+            continue;
+        }
+
         auto* wrapper = dynamic_cast<DesignItemWrapper*>(ov.component.get());
         if (!wrapper) continue;
         auto* comp = wrapper->getWidget();

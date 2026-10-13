@@ -128,6 +128,14 @@ public:
     bool fitRecorderRecording(const std::string& widgetId);
     bool exportRecorderCsv(const std::string& widgetId, const juce::File& file, juce::String& error) const;
 
+    // Splitter & Split Ratio
+    double getSplitRatio() const;
+    bool setSplitRatio(double ratio);
+    int getSplitterX() const;
+    juce::Component* getSplitterComponent() const;
+    juce::Component* getPlotContainerComponent() const;
+    bool hasPlotPanel() const;
+
     // Dialog and Menu creation
     void showWidgetPropertiesDialog(const std::string& widgetId);
     std::unique_ptr<juce::Component> createWidgetPropertiesDialog(const std::string& widgetId);
@@ -140,9 +148,14 @@ public:
     void mouseDown(const juce::MouseEvent& e) override;
     void mouseDrag(const juce::MouseEvent& e) override;
     void mouseUp(const juce::MouseEvent& e) override;
+    void mouseWheelMove(const juce::MouseEvent& e, const juce::MouseWheelDetails& wheel) override;
 
 private:
     void timerCallback() override;
+
+    void handleSplitterDragStart();
+    void handleSplitterDrag(int deltaX);
+    void handleSplitterDragEnd();
 
     // Subcomponents
     void buildWidgets();
@@ -173,6 +186,14 @@ private:
     class ControlPanelCanvas;
     juce::Viewport canvasViewport;
     std::unique_ptr<ControlPanelCanvas> canvasComponent;
+
+    // Dedicated splitter and right-hand plot container
+    class ControlPanelSplitter;
+    class PlotContainerComponent;
+    std::unique_ptr<ControlPanelSplitter> splitter_;
+    std::unique_ptr<PlotContainerComponent> plotContainer_;
+    int dragStartControlW_ = 0;
+    int dragStartAvailableW_ = 0;
 
     // Interactive Widget references
     struct WidgetView
