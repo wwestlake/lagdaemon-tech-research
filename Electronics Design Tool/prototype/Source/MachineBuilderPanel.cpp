@@ -207,6 +207,296 @@ std::string widgetTitleForSystemPort(const std::string& name)
     return juce::String(name).replaceCharacter('_', ' ').toStdString();
 }
 
+class ToolbarIconLookAndFeel final : public juce::LookAndFeel_V4
+{
+public:
+    void drawButtonBackground(juce::Graphics& g,
+                              juce::Button& button,
+                              const juce::Colour&,
+                              bool shouldDrawButtonAsHighlighted,
+                              bool shouldDrawButtonAsDown) override
+    {
+        const auto bounds = button.getLocalBounds().toFloat().reduced(1.0f);
+        auto bg = juce::Colour(0xff1e2c38);
+        auto border = juce::Colour(0xff314556);
+
+        if (!button.isEnabled())
+        {
+            bg = bg.withAlpha(0.45f);
+            border = border.withAlpha(0.45f);
+        }
+        else if (shouldDrawButtonAsDown)
+        {
+            bg = juce::Colour(0xff15202a);
+            border = juce::Colour(0xff78dcca);
+        }
+        else if (shouldDrawButtonAsHighlighted)
+        {
+            bg = juce::Colour(0xff293d4e);
+            border = juce::Colour(0xff5bc0be);
+        }
+
+        g.setColour(bg);
+        g.fillRoundedRectangle(bounds, 4.0f);
+        g.setColour(border);
+        g.drawRoundedRectangle(bounds, 4.0f, 1.0f);
+    }
+
+    void drawButtonText(juce::Graphics& g,
+                        juce::TextButton& button,
+                        bool,
+                        bool) override
+    {
+        const auto iconId = button.getProperties()["toolbarIcon"].toString();
+        const auto box = button.getLocalBounds().toFloat().reduced(5.5f, 4.5f);
+        const float cx = box.getCentreX();
+        const float cy = box.getCentreY();
+        const float r = std::min(box.getWidth(), box.getHeight()) * 0.5f;
+
+        auto fg = juce::Colour(0xffdce9ee);
+        if (iconId == "start")
+            fg = juce::Colour(0xff80ed99);
+        else if (iconId == "stop" || iconId == "remove")
+            fg = juce::Colour(0xffff6b6b);
+        else if (iconId == "compile" || iconId == "apply")
+            fg = juce::Colour(0xff7bdff2);
+        else if (iconId == "validate" || iconId == "add_plot")
+            fg = juce::Colour(0xffffd166);
+        else if (iconId == "add_motor")
+            fg = juce::Colour(0xfff4a261);
+
+        if (!button.isEnabled())
+            fg = fg.withAlpha(0.4f);
+
+        g.setColour(fg);
+        const juce::PathStrokeType stroke(1.5f, juce::PathStrokeType::curved, juce::PathStrokeType::rounded);
+
+        if (iconId == "new_blank")
+        {
+            juce::Path doc;
+            doc.startNewSubPath(box.getX() + 2.0f, box.getY());
+            doc.lineTo(box.getRight() - 4.5f, box.getY());
+            doc.lineTo(box.getRight() - 1.0f, box.getY() + 3.5f);
+            doc.lineTo(box.getRight() - 1.0f, box.getBottom());
+            doc.lineTo(box.getX() + 2.0f, box.getBottom());
+            doc.closeSubPath();
+            g.strokePath(doc, stroke);
+            g.drawHorizontalLine((int)std::round(cy + 1.0f), box.getX() + 4.5f, box.getRight() - 3.5f);
+            g.drawVerticalLine((int)std::round(cx + 0.5f), cy - 2.0f, cy + 4.0f);
+        }
+        else if (iconId == "load")
+        {
+            juce::Path folder;
+            folder.startNewSubPath(box.getX() + 1.0f, box.getY() + 2.5f);
+            folder.lineTo(cx - 1.0f, box.getY() + 2.5f);
+            folder.lineTo(cx + 1.0f, box.getY() + 4.5f);
+            folder.lineTo(box.getRight() - 1.0f, box.getY() + 4.5f);
+            folder.lineTo(box.getRight() - 1.0f, box.getBottom() - 1.0f);
+            folder.lineTo(box.getX() + 1.0f, box.getBottom() - 1.0f);
+            folder.closeSubPath();
+            g.strokePath(folder, stroke);
+        }
+        else if (iconId == "save")
+        {
+            juce::Path disk;
+            disk.startNewSubPath(box.getX() + 1.5f, box.getY() + 1.0f);
+            disk.lineTo(box.getRight() - 3.5f, box.getY() + 1.0f);
+            disk.lineTo(box.getRight() - 1.5f, box.getY() + 3.0f);
+            disk.lineTo(box.getRight() - 1.5f, box.getBottom() - 1.0f);
+            disk.lineTo(box.getX() + 1.5f, box.getBottom() - 1.0f);
+            disk.closeSubPath();
+            g.strokePath(disk, stroke);
+            g.drawRect(juce::Rectangle<float>(box.getX() + 4.0f, box.getY() + 1.5f, box.getWidth() - 8.0f, 4.0f), 1.2f);
+        }
+        else if (iconId == "add_schematic")
+        {
+            juce::Path zig;
+            const float y = cy;
+            zig.startNewSubPath(box.getX(), y);
+            zig.lineTo(box.getX() + 3.0f, y);
+            zig.lineTo(box.getX() + 5.0f, y - 3.5f);
+            zig.lineTo(cx, y + 3.5f);
+            zig.lineTo(box.getRight() - 5.0f, y - 3.5f);
+            zig.lineTo(box.getRight() - 3.0f, y);
+            zig.lineTo(box.getRight(), y);
+            g.strokePath(zig, stroke);
+        }
+        else if (iconId == "add_frust")
+        {
+            const auto chip = box.reduced(3.0f, 2.0f);
+            g.drawRoundedRectangle(chip, 1.5f, 1.4f);
+            for (int i = 0; i < 3; ++i)
+            {
+                const float py = chip.getY() + 2.2f + (float)i * 3.2f;
+                g.drawLine(box.getX(), py, chip.getX(), py, 1.3f);
+                g.drawLine(chip.getRight(), py, box.getRight(), py, 1.3f);
+            }
+        }
+        else if (iconId == "add_motor")
+        {
+            g.drawEllipse(cx - r, cy - r, r * 2.0f, r * 2.0f, 1.5f);
+            g.setFont(juce::Font(9.5f, juce::Font::bold));
+            g.drawText("M", box.toNearestInt(), juce::Justification::centred, false);
+        }
+        else if (iconId == "add_plot")
+        {
+            g.drawRoundedRectangle(box.reduced(0.5f), 2.0f, 1.2f);
+            juce::Path wave;
+            wave.startNewSubPath(box.getX() + 2.0f, cy + 2.0f);
+            wave.lineTo(cx - 2.0f, cy - 3.0f);
+            wave.lineTo(cx + 1.5f, cy + 2.5f);
+            wave.lineTo(box.getRight() - 2.0f, cy - 2.5f);
+            g.strokePath(wave, stroke);
+        }
+        else if (iconId == "add_input")
+        {
+            juce::Path p;
+            p.startNewSubPath(box.getX() + 1.0f, cy);
+            p.lineTo(cx + 2.0f, cy);
+            p.startNewSubPath(cx - 1.0f, cy - 3.0f);
+            p.lineTo(cx + 2.5f, cy);
+            p.lineTo(cx - 1.0f, cy + 3.0f);
+            g.strokePath(p, stroke);
+            g.fillEllipse(box.getRight() - 4.5f, cy - 2.0f, 4.0f, 4.0f);
+        }
+        else if (iconId == "add_output")
+        {
+            g.fillEllipse(box.getX() + 0.5f, cy - 2.0f, 4.0f, 4.0f);
+            juce::Path p;
+            p.startNewSubPath(cx - 2.0f, cy);
+            p.lineTo(box.getRight() - 1.0f, cy);
+            p.startNewSubPath(box.getRight() - 4.5f, cy - 3.0f);
+            p.lineTo(box.getRight() - 1.0f, cy);
+            p.lineTo(box.getRight() - 4.5f, cy + 3.0f);
+            g.strokePath(p, stroke);
+        }
+        else if (iconId == "remove")
+        {
+            juce::Path xPath;
+            xPath.startNewSubPath(box.getX() + 2.5f, box.getY() + 2.5f);
+            xPath.lineTo(box.getRight() - 2.5f, box.getBottom() - 2.5f);
+            xPath.startNewSubPath(box.getRight() - 2.5f, box.getY() + 2.5f);
+            xPath.lineTo(box.getX() + 2.5f, box.getBottom() - 2.5f);
+            g.strokePath(xPath, juce::PathStrokeType(1.8f, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
+        }
+        else if (iconId == "fit_all")
+        {
+            juce::Path corners;
+            const float c = 3.5f;
+            corners.startNewSubPath(box.getX(), box.getY() + c);
+            corners.lineTo(box.getX(), box.getY());
+            corners.lineTo(box.getX() + c, box.getY());
+            corners.startNewSubPath(box.getRight() - c, box.getY());
+            corners.lineTo(box.getRight(), box.getY());
+            corners.lineTo(box.getRight(), box.getY() + c);
+            corners.startNewSubPath(box.getX(), box.getBottom() - c);
+            corners.lineTo(box.getX(), box.getBottom());
+            corners.lineTo(box.getX() + c, box.getBottom());
+            corners.startNewSubPath(box.getRight() - c, box.getBottom());
+            corners.lineTo(box.getRight(), box.getBottom());
+            corners.lineTo(box.getRight(), box.getBottom() - c);
+            g.strokePath(corners, stroke);
+        }
+        else if (iconId == "zoom_in" || iconId == "zoom_out")
+        {
+            const float gr = r * 0.72f;
+            const float gx = cx - 1.2f;
+            const float gy = cy - 1.2f;
+            g.drawEllipse(gx - gr, gy - gr, gr * 2.0f, gr * 2.0f, 1.4f);
+            g.drawLine(gx + gr * 0.7f, gy + gr * 0.7f, box.getRight() - 1.0f, box.getBottom() - 1.0f, 1.6f);
+            g.drawLine(gx - 2.5f, gy, gx + 2.5f, gy, 1.3f);
+            if (iconId == "zoom_in")
+                g.drawLine(gx, gy - 2.5f, gx, gy + 2.5f, 1.3f);
+        }
+        else if (iconId == "reset_view")
+        {
+            g.setFont(juce::Font(9.5f, juce::Font::bold));
+            g.drawText("1:1", button.getLocalBounds().reduced(2), juce::Justification::centred, false);
+        }
+        else if (iconId == "compile")
+        {
+            g.drawEllipse(cx - r * 0.65f, cy - r * 0.65f, r * 1.3f, r * 1.3f, 1.6f);
+            for (int i = 0; i < 6; ++i)
+            {
+                const float a = (float)i * juce::MathConstants<float>::pi / 3.0f;
+                g.drawLine(cx + std::cos(a) * (r * 0.65f), cy + std::sin(a) * (r * 0.65f),
+                           cx + std::cos(a) * r, cy + std::sin(a) * r, 1.6f);
+            }
+        }
+        else if (iconId == "start")
+        {
+            juce::Path play;
+            play.addTriangle(box.getX() + 3.0f, box.getY() + 1.5f,
+                             box.getX() + 3.0f, box.getBottom() - 1.5f,
+                             box.getRight() - 2.0f, cy);
+            g.fillPath(play);
+        }
+        else if (iconId == "stop")
+        {
+            g.fillRoundedRectangle(box.reduced(2.5f), 1.5f);
+        }
+        else if (iconId == "reset")
+        {
+            juce::Path arc;
+            arc.addCentredArc(cx, cy, r * 0.78f, r * 0.78f, 0.0f, 0.6f, 5.4f, true);
+            g.strokePath(arc, stroke);
+            juce::Path head;
+            head.addTriangle(cx + 1.5f, box.getY() + 0.5f,
+                             cx + 5.5f, box.getY() + 2.5f,
+                             cx + 1.5f, box.getY() + 4.8f);
+            g.fillPath(head);
+        }
+        else if (iconId == "validate")
+        {
+            juce::Path check;
+            check.startNewSubPath(box.getX() + 2.0f, cy + 0.5f);
+            check.lineTo(cx - 1.0f, box.getBottom() - 2.0f);
+            check.lineTo(box.getRight() - 1.5f, box.getY() + 2.0f);
+            g.strokePath(check, juce::PathStrokeType(1.8f, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
+        }
+        else if (iconId == "open_model")
+        {
+            juce::Path ext;
+            ext.startNewSubPath(cx, box.getY() + 2.0f);
+            ext.lineTo(box.getX() + 1.5f, box.getY() + 2.0f);
+            ext.lineTo(box.getX() + 1.5f, box.getBottom() - 1.5f);
+            ext.lineTo(box.getRight() - 2.0f, box.getBottom() - 1.5f);
+            ext.lineTo(box.getRight() - 2.0f, cy);
+            ext.startNewSubPath(cx + 0.5f, cy - 0.5f);
+            ext.lineTo(box.getRight() - 1.0f, box.getY() + 1.0f);
+            ext.startNewSubPath(box.getRight() - 4.5f, box.getY() + 1.0f);
+            ext.lineTo(box.getRight() - 1.0f, box.getY() + 1.0f);
+            ext.lineTo(box.getRight() - 1.0f, box.getY() + 4.5f);
+            g.strokePath(ext, stroke);
+        }
+        else if (iconId == "apply")
+        {
+            juce::Path check;
+            check.startNewSubPath(box.getX() + 1.5f, cy);
+            check.lineTo(cx - 1.0f, cy + 3.0f);
+            check.lineTo(box.getRight() - 1.5f, box.getY() + 2.0f);
+            g.strokePath(check, stroke);
+            g.drawLine(box.getX() + 2.0f, box.getBottom() - 1.0f, box.getRight() - 2.0f, box.getBottom() - 1.0f, 1.4f);
+        }
+        else if (iconId == "overflow")
+        {
+            juce::Path chev;
+            chev.startNewSubPath(cx - 3.5f, cy - 3.5f);
+            chev.lineTo(cx - 0.5f, cy);
+            chev.lineTo(cx - 3.5f, cy + 3.5f);
+            chev.startNewSubPath(cx + 0.5f, cy - 3.5f);
+            chev.lineTo(cx + 3.5f, cy);
+            chev.lineTo(cx + 0.5f, cy + 3.5f);
+            g.strokePath(chev, stroke);
+        }
+        else
+        {
+            g.setFont(juce::Font(10.0f, juce::Font::bold));
+            g.drawText(button.getButtonText().substring(0, 2), button.getLocalBounds(), juce::Justification::centred, false);
+        }
+    }
+};
+
 } // namespace
 
 class MachineBuilderPanel::AssemblyCanvas final : public juce::Component
@@ -224,6 +514,18 @@ public:
         selectedWaypointIndex = -1;
         repaint();
     }
+
+    void zoomBy(float factor)
+    {
+        const juce::Point<float> centre { std::max(1.0f, (float)getWidth() * 0.5f),
+                                          std::max(1.0f, (float)getHeight() * 0.5f) };
+        const auto before = screenToWorld(centre);
+        zoom = std::clamp(zoom * factor, minZoom, maxZoom);
+        viewOffset += centre - worldToScreen(before);
+        repaint();
+    }
+
+    float getZoom() const { return zoom; }
 
     void fitMachine()
     {
@@ -421,17 +723,79 @@ public:
             return true;
         }
 
-        if (key != juce::KeyPress::deleteKey && key != juce::KeyPress::backspaceKey)
-            return false;
-
-        if (removeSelectedWaypoint())
-            return true;
-
-        if (!owner.selectedConnectionId_.empty() || !owner.selectedInstanceId_.empty())
+        if (key == juce::KeyPress::deleteKey || key == juce::KeyPress::backspaceKey)
         {
-            owner.removeSelected();
+            if (removeSelectedWaypoint())
+                return true;
+
+            if (!owner.selectedConnectionId_.empty() || !owner.selectedInstanceId_.empty())
+            {
+                owner.removeSelected();
+                return true;
+            }
+            return false;
+        }
+
+        if (key.getModifiers().isCommandDown())
+        {
+            const auto ch = juce::CharacterFunctions::toLowerCase(key.getTextCharacter());
+            if (ch == 'n')
+            {
+                owner.resetToBlankMachine();
+                return true;
+            }
+            if (ch == 'o')
+            {
+                owner.chooseMachineLoadFile();
+                return true;
+            }
+            if (ch == 's')
+            {
+                owner.chooseMachineSaveFile();
+                return true;
+            }
+        }
+
+        if (!key.getModifiers().isAnyModifierKeyDown())
+        {
+            const auto ch = juce::CharacterFunctions::toLowerCase(key.getTextCharacter());
+            if (ch == 'f')
+            {
+                owner.fitMachineView();
+                return true;
+            }
+            if (ch == '=' || ch == '+')
+            {
+                owner.zoomInView();
+                return true;
+            }
+            if (ch == '-')
+            {
+                owner.zoomOutView();
+                return true;
+            }
+            if (ch == '0')
+            {
+                owner.resetMachineView();
+                return true;
+            }
+            if (key.getKeyCode() == juce::KeyPress::F7Key)
+            {
+                owner.compileAndRun();
+                return true;
+            }
+            if (key.getKeyCode() == juce::KeyPress::F5Key)
+            {
+                owner.startSimulation();
+                return true;
+            }
+        }
+        else if (key.getModifiers().isShiftDown() && key.getKeyCode() == juce::KeyPress::F5Key)
+        {
+            owner.stopSimulation();
             return true;
         }
+
         return false;
     }
 
@@ -906,28 +1270,68 @@ MachineBuilderPanel::MachineBuilderPanel()
 MachineBuilderPanel::MachineBuilderPanel(std::shared_ptr<sim_panel::SystemSimulationSession> session,
                                            mechanical_scene::MechanicalViewComponent* mechView,
                                            sim_panel::ControlPanelComponent* ctrlPanel)
-    : session_(session), mechanicalView_(mechView), controlPanel_(ctrlPanel)
+    : session_(session), mechanicalView_(mechView), controlPanel_(ctrlPanel),
+      toolbarLookAndFeel_(std::make_unique<ToolbarIconLookAndFeel>())
 {
     machine_ = MachineDesign::createBlankMachine("Custom Machine");
 
     canvas = std::make_unique<AssemblyCanvas>(*this);
     addAndMakeVisible(*canvas);
 
-    titleLabel.setText("Virtual Machine Builder", juce::dontSendNotification);
-    titleLabel.setFont(juce::Font(18.0f, juce::Font::bold));
+    titleLabel.setText("Machine Builder", juce::dontSendNotification);
+    titleLabel.setFont(juce::Font(13.5f, juce::Font::bold));
     titleLabel.setColour(juce::Label::textColourId, juce::Colour(0xff78dcca));
     addAndMakeVisible(titleLabel);
 
-    auto addButton = [this](juce::TextButton& b) {
-        b.setColour(juce::TextButton::buttonColourId, juce::Colour(0xff22313d));
-        b.setColour(juce::TextButton::textColourOffId, juce::Colour(0xffdce9ee));
+    auto registerToolbarButton = [this](const std::string& id,
+                                        const std::string& group,
+                                        juce::TextButton& b,
+                                        const juce::String& tooltip) {
+        b.getProperties().set("toolbarIcon", juce::String(id));
+        b.getProperties().set("toolbarGroup", juce::String(group));
+        b.setLookAndFeel(toolbarLookAndFeel_.get());
+        b.setTooltip(tooltip);
+        b.setMouseCursor(juce::MouseCursor::PointingHandCursor);
         addAndMakeVisible(b);
+        toolbarItems_.push_back({ id, group, &b, 26 });
     };
 
-    for (auto* b : { &newBlankBtn, &addSchematicBtn, &addFrustBtn, &addMotorBtn, &addPlotBtn, &addInputBtn, &addOutputBtn,
-                    &removeBtn, &saveBtn, &loadBtn, &fitAllBtn, &validateBtn, &compileRunBtn, &startBtn, &stopBtn,
-                    &resetBtn, &applyInspectorBtn, &openReferenceBtn })
-        addButton(*b);
+    // File group
+    registerToolbarButton("new_blank", "File", newBlankBtn, "New Blank Machine (Ctrl+N) - Clear diagram and reset simulation session");
+    registerToolbarButton("load", "File", loadBtn, "Load Machine (Ctrl+O) - Open a saved .machine.json file");
+    registerToolbarButton("save", "File", saveBtn, "Save Machine (Ctrl+S) - Save current machine assembly to .machine.json");
+
+    // Diagram group
+    registerToolbarButton("add_schematic", "Diagram", addSchematicBtn, "Add Schematic Subsystem - Import an electrical .diagram.json subsystem");
+    registerToolbarButton("add_frust", "Diagram", addFrustBtn, "Add FRust Controller - Import a programmable .frcomp.json controller");
+    registerToolbarButton("add_motor", "Diagram", addMotorBtn, "Add DC Motor - Place a built-in electro-mechanical DC motor subsystem");
+    registerToolbarButton("add_plot", "Diagram", addPlotBtn, "Add Plot Panel - Create a passive multi-channel oscilloscope/strip-chart instrument");
+    registerToolbarButton("add_input", "Diagram", addInputBtn, "Add System Input - Create an external machine input port and console control");
+    registerToolbarButton("add_output", "Diagram", addOutputBtn, "Add System Output - Create an external machine output port and console readout");
+    registerToolbarButton("remove", "Diagram", removeBtn, "Remove Selected (Del / Backspace) - Delete selected subsystem, port, or wire");
+
+    // View group
+    registerToolbarButton("fit_all", "View", fitAllBtn, "Fit All in View (F) - Frame the entire machine assembly in the diagram canvas");
+    registerToolbarButton("zoom_in", "View", zoomInBtn, "Zoom In (+ / =) - Increase diagram canvas magnification");
+    registerToolbarButton("zoom_out", "View", zoomOutBtn, "Zoom Out (-) - Decrease diagram canvas magnification");
+    registerToolbarButton("reset_view", "View", resetViewBtn, "Reset View (0) - Reset diagram canvas zoom to 100% and origin");
+
+    // Simulation group
+    registerToolbarButton("compile", "Simulation", compileRunBtn, "Compile Machine (F7) - Validate and compile machine assembly into simulation session");
+    registerToolbarButton("start", "Simulation", startBtn, "Start Simulation (F5) - Run compiled machine simulation");
+    registerToolbarButton("stop", "Simulation", stopBtn, "Stop Simulation (Shift+F5) - Pause running machine simulation");
+    registerToolbarButton("reset", "Simulation", resetBtn, "Reset Simulation - Reset simulation time and states to initial values");
+
+    // Tools group
+    registerToolbarButton("validate", "Tools", validateBtn, "Validate Machine - Run assembly topology and port compatibility checks");
+    registerToolbarButton("open_model", "Tools", openReferenceBtn, "Open Referenced Model - Open selected schematic or FRust component in its editor");
+    registerToolbarButton("apply", "Tools", applyInspectorBtn, "Apply Selection Edits - Commit inspector ID, title, reference, and parameter changes");
+
+    overflowBtn.getProperties().set("toolbarIcon", "overflow");
+    overflowBtn.setLookAndFeel(toolbarLookAndFeel_.get());
+    overflowBtn.setTooltip("More Toolbar Commands - Show commands hidden by narrow window width");
+    overflowBtn.setMouseCursor(juce::MouseCursor::PointingHandCursor);
+    addChildComponent(overflowBtn);
 
     newBlankBtn.onClick = [this] { resetToBlankMachine(); };
     addSchematicBtn.onClick = [this] { chooseSchematicFile(); };
@@ -944,6 +1348,9 @@ MachineBuilderPanel::MachineBuilderPanel(std::shared_ptr<sim_panel::SystemSimula
     saveBtn.onClick = [this] { chooseMachineSaveFile(); };
     loadBtn.onClick = [this] { chooseMachineLoadFile(); };
     fitAllBtn.onClick = [this] { fitMachineView(); };
+    zoomInBtn.onClick = [this] { zoomInView(); };
+    zoomOutBtn.onClick = [this] { zoomOutView(); };
+    resetViewBtn.onClick = [this] { resetMachineView(); };
     validateBtn.onClick = [this] { updateDiagnosticsDisplay(); };
     compileRunBtn.onClick = [this] { compileAndRun(); };
     startBtn.onClick = [this] { startSimulation(); };
@@ -951,14 +1358,17 @@ MachineBuilderPanel::MachineBuilderPanel(std::shared_ptr<sim_panel::SystemSimula
     resetBtn.onClick = [this] { resetSimulation(); };
     applyInspectorBtn.onClick = [this] { applyInspectorEdits(); };
     openReferenceBtn.onClick = [this] { openSelectedReference(); };
+    overflowBtn.onClick = [this] { showOverflowMenu(); };
 
     statusLabel.setText("Ready", juce::dontSendNotification);
+    statusLabel.setJustificationType(juce::Justification::centredRight);
+    statusLabel.setFont(juce::Font(11.5f, juce::Font::bold));
     statusLabel.setColour(juce::Label::textColourId, juce::Colours::lightgrey);
     addAndMakeVisible(statusLabel);
 
     inspectorLabel.setText("Selection", juce::dontSendNotification);
     inspectorLabel.setColour(juce::Label::textColourId, juce::Colour(0xff9eb3c4));
-    inspectorLabel.setFont(juce::Font(13.0f, juce::Font::bold));
+    inspectorLabel.setFont(juce::Font(12.0f, juce::Font::bold));
     addAndMakeVisible(inspectorLabel);
 
     for (auto* editor : { &instanceIdEditor, &titleEditor, &referenceEditor, &paramsEditor, &liveSignalsEditor, &diagnosticsEditor })
@@ -1009,6 +1419,11 @@ MachineBuilderPanel::MachineBuilderPanel(std::shared_ptr<sim_panel::SystemSimula
 
 MachineBuilderPanel::~MachineBuilderPanel()
 {
+    for (auto& item : toolbarItems_)
+        if (item.button != nullptr)
+            item.button->setLookAndFeel(nullptr);
+    overflowBtn.setLookAndFeel(nullptr);
+
     if (controlPanel_ != nullptr)
         controlPanel_->onLayoutChanged = nullptr;
     stopTimer();
@@ -1060,8 +1475,8 @@ bool MachineBuilderPanel::compileAndRun()
 
     if (mechanicalView_ != nullptr)
         mechanicalView_->setScene(machine_.scene);
-        if (controlPanel_ != nullptr)
-            controlPanel_->setLayout(machine_.controlPanel);
+    if (controlPanel_ != nullptr)
+        controlPanel_->setLayout(machine_.controlPanel);
 
     statusLabel.setText("Compiled. Use Start to run.", juce::dontSendNotification);
     statusLabel.setColour(juce::Label::textColourId, juce::Colour(0xff80ed99));
@@ -1125,6 +1540,103 @@ void MachineBuilderPanel::fitMachineView()
 {
     if (canvas != nullptr)
         canvas->fitMachine();
+}
+
+void MachineBuilderPanel::zoomInView()
+{
+    if (canvas != nullptr)
+        canvas->zoomBy(1.2f);
+}
+
+void MachineBuilderPanel::zoomOutView()
+{
+    if (canvas != nullptr)
+        canvas->zoomBy(1.0f / 1.2f);
+}
+
+void MachineBuilderPanel::resetMachineView()
+{
+    if (canvas != nullptr)
+        canvas->resetView();
+}
+
+std::vector<MachineBuilderPanel::ToolbarGroupSummary> MachineBuilderPanel::getToolbarGroupSummaries() const
+{
+    std::vector<ToolbarGroupSummary> groups;
+    for (const auto& item : toolbarItems_)
+    {
+        auto it = std::find_if(groups.begin(), groups.end(),
+                               [&](const auto& g) { return g.name == item.groupName; });
+        if (it == groups.end())
+        {
+            ToolbarGroupSummary g;
+            g.name = item.groupName;
+            for (const auto& vis : visibleGroupSummaries_)
+                if (vis.name == item.groupName)
+                    g.headerBounds = vis.headerBounds;
+            g.commandIds.push_back(item.id);
+            groups.push_back(std::move(g));
+        }
+        else
+        {
+            it->commandIds.push_back(item.id);
+        }
+    }
+    return groups;
+}
+
+int MachineBuilderPanel::getVisibleToolbarButtonCount() const
+{
+    int count = 0;
+    for (const auto& item : toolbarItems_)
+        if (item.button != nullptr && item.button->isVisible())
+            ++count;
+    return count;
+}
+
+int MachineBuilderPanel::getOverflowToolbarButtonCount() const
+{
+    int count = 0;
+    for (const auto& item : toolbarItems_)
+        if (item.button != nullptr && !item.button->isVisible())
+            ++count;
+    return count;
+}
+
+bool MachineBuilderPanel::isOverflowButtonVisible() const
+{
+    return overflowBtn.isVisible();
+}
+
+juce::Rectangle<int> MachineBuilderPanel::getCanvasBounds() const
+{
+    return canvas != nullptr ? canvas->getBounds() : juce::Rectangle<int>();
+}
+
+bool MachineBuilderPanel::triggerToolbarCommand(const std::string& commandId)
+{
+    for (const auto& item : toolbarItems_)
+    {
+        if (item.id == commandId && item.button != nullptr)
+        {
+            if (item.button->onClick != nullptr)
+            {
+                item.button->onClick();
+                return true;
+            }
+            item.button->triggerClick();
+            return true;
+        }
+    }
+    return false;
+}
+
+juce::String MachineBuilderPanel::getToolbarCommandTooltip(const std::string& commandId) const
+{
+    for (const auto& item : toolbarItems_)
+        if (item.id == commandId && item.button != nullptr)
+            return item.button->getTooltip();
+    return {};
 }
 
 bool MachineBuilderPanel::addSchematicSubsystemFromFile(const juce::File& file, std::string* error)
@@ -1859,81 +2371,200 @@ void MachineBuilderPanel::timerCallback()
     liveSignalsEditor.setText(text, juce::dontSendNotification);
 }
 
+void MachineBuilderPanel::showOverflowMenu()
+{
+    juce::PopupMenu menu;
+    std::string currentGroup;
+    for (size_t i = 0; i < toolbarItems_.size(); ++i)
+    {
+        const auto& item = toolbarItems_[i];
+        if (item.button == nullptr || item.button->isVisible())
+            continue;
+        if (item.groupName != currentGroup)
+        {
+            currentGroup = item.groupName;
+            menu.addSectionHeader(currentGroup);
+        }
+        menu.addItem((int)i + 1, item.button->getButtonText(), item.button->isEnabled());
+    }
+
+    if (menu.getNumItems() == 0)
+        return;
+
+    menu.showMenuAsync(juce::PopupMenu::Options().withTargetComponent(&overflowBtn),
+                       [safe = juce::Component::SafePointer<MachineBuilderPanel>(this)](int result) {
+                           if (safe == nullptr || result <= 0)
+                               return;
+                           const size_t idx = (size_t)(result - 1);
+                           if (idx < safe->toolbarItems_.size() && safe->toolbarItems_[idx].button != nullptr)
+                           {
+                               auto* btn = safe->toolbarItems_[idx].button;
+                               if (btn->onClick != nullptr)
+                                   btn->onClick();
+                               else
+                                   btn->triggerClick();
+                           }
+                       });
+}
+
 void MachineBuilderPanel::paint(juce::Graphics& g)
 {
     g.fillAll(juce::Colour(0xff18222b));
+
+    if (!toolbarBounds_.isEmpty())
+    {
+        const auto tb = toolbarBounds_.toFloat();
+        g.setColour(juce::Colour(0xff121a22));
+        g.fillRoundedRectangle(tb, 4.0f);
+        g.setColour(juce::Colour(0xff293846));
+        g.drawRoundedRectangle(tb, 4.0f, 1.0f);
+
+        g.setFont(juce::Font(9.5f, juce::Font::bold));
+        g.setColour(juce::Colour(0xff7fa1b8));
+        for (const auto& grp : visibleGroupSummaries_)
+        {
+            if (!grp.headerBounds.isEmpty())
+                g.drawFittedText(grp.name, grp.headerBounds, juce::Justification::centredLeft, 1);
+        }
+
+        g.setColour(juce::Colour(0xff2c3d4d));
+        for (const int sepX : toolbarSeparators_)
+            g.drawVerticalLine(sepX, tb.getY() + 4.0f, tb.getBottom() - 4.0f);
+    }
+
     g.setColour(juce::Colour(0xff2d3b48));
     g.drawRect(getLocalBounds(), 1);
 }
 
 void MachineBuilderPanel::resized()
 {
-    auto area = getLocalBounds().reduced(8);
-    auto topBar = area.removeFromTop(32);
-    titleLabel.setBounds(topBar.removeFromLeft(250));
-    statusLabel.setBounds(topBar.removeFromLeft(220));
-    resetBtn.setBounds(topBar.removeFromRight(70));
-    topBar.removeFromRight(6);
-    stopBtn.setBounds(topBar.removeFromRight(70));
-    topBar.removeFromRight(6);
-    startBtn.setBounds(topBar.removeFromRight(70));
-    topBar.removeFromRight(6);
-    compileRunBtn.setBounds(topBar.removeFromRight(90));
-    topBar.removeFromRight(6);
-    fitAllBtn.setBounds(topBar.removeFromRight(80));
-    topBar.removeFromRight(6);
-    validateBtn.setBounds(topBar.removeFromRight(80));
+    auto area = getLocalBounds().reduced(6);
+    toolbarBounds_ = area.removeFromTop(38);
+    visibleGroupSummaries_.clear();
+    toolbarSeparators_.clear();
+
+    constexpr int buttonHeight = 22;
+    constexpr int intraGap = 3;
+    constexpr int groupGap = 11;
+    const int headerY = toolbarBounds_.getY() + 2;
+    const int headerH = 11;
+    const int buttonY = toolbarBounds_.getY() + 13;
+
+    const int statusWidth = toolbarBounds_.getWidth() >= 540
+                          ? std::clamp(toolbarBounds_.getWidth() / 6, 96, 170)
+                          : 0;
+    if (statusWidth > 0)
+    {
+        statusLabel.setVisible(true);
+        statusLabel.setBounds(toolbarBounds_.getRight() - statusWidth - 8,
+                              toolbarBounds_.getY() + 4,
+                              statusWidth,
+                              toolbarBounds_.getHeight() - 8);
+    }
+    else
+    {
+        statusLabel.setVisible(false);
+        statusLabel.setBounds(0, 0, 0, 0);
+    }
+
+    const int startX = toolbarBounds_.getX() + 6;
+    const int availRight = (statusWidth > 0 ? statusLabel.getX() - 6 : toolbarBounds_.getRight() - 6);
+
+    auto measureTotalRight = [&](size_t count) {
+        int x = startX;
+        std::string prevGroup;
+        for (size_t i = 0; i < count; ++i)
+        {
+            const auto& item = toolbarItems_[i];
+            if (!prevGroup.empty())
+                x += (item.groupName == prevGroup ? intraGap : groupGap);
+            x += item.width;
+            prevGroup = item.groupName;
+        }
+        return x;
+    };
+
+    const bool allFit = measureTotalRight(toolbarItems_.size()) <= availRight;
+    const int maxButtonRight = allFit ? availRight : std::max(startX + 26, availRight - 30);
+
+    int x = startX;
+    int lastVisibleRight = startX;
+    std::string prevVisibleGroup;
+    bool overflowing = false;
+
+    for (size_t i = 0; i < toolbarItems_.size(); ++i)
+    {
+        auto& item = toolbarItems_[i];
+        if (item.button == nullptr)
+            continue;
+
+        const bool newGroup = !prevVisibleGroup.empty() && item.groupName != prevVisibleGroup;
+        const int nextX = prevVisibleGroup.empty() ? x : x + (newGroup ? groupGap : intraGap);
+
+        if (!overflowing && (nextX + item.width <= maxButtonRight || i == 0))
+        {
+            if (newGroup)
+                toolbarSeparators_.push_back(x + groupGap / 2);
+
+            item.button->setVisible(true);
+            item.button->setBounds(nextX, buttonY, item.width, buttonHeight);
+            x = nextX + item.width;
+            lastVisibleRight = x;
+            prevVisibleGroup = item.groupName;
+
+            if (visibleGroupSummaries_.empty() || visibleGroupSummaries_.back().name != item.groupName)
+            {
+                ToolbarGroupSummary grp;
+                grp.name = item.groupName;
+                grp.commandIds.push_back(item.id);
+                grp.headerBounds = { nextX, headerY, item.width, headerH };
+                visibleGroupSummaries_.push_back(std::move(grp));
+            }
+            else
+            {
+                auto& grp = visibleGroupSummaries_.back();
+                grp.commandIds.push_back(item.id);
+                grp.headerBounds.setWidth(x - grp.headerBounds.getX());
+            }
+        }
+        else
+        {
+            overflowing = true;
+            item.button->setVisible(false);
+            item.button->setBounds(0, 0, 0, 0);
+        }
+    }
+
+    if (overflowing)
+    {
+        overflowBtn.setVisible(true);
+        overflowBtn.setBounds(lastVisibleRight + 4, buttonY, 26, buttonHeight);
+    }
+    else
+    {
+        overflowBtn.setVisible(false);
+        overflowBtn.setBounds(0, 0, 0, 0);
+    }
 
     area.removeFromTop(6);
-    auto side = area.removeFromLeft(286);
-    area.removeFromLeft(8);
+    const int sideWidth = std::clamp(area.getWidth() / 5, 192, 224);
+    auto side = area.removeFromLeft(sideWidth);
+    area.removeFromLeft(6);
 
-    auto row = side.removeFromTop(28);
-    newBlankBtn.setBounds(row.removeFromLeft(90));
-    row.removeFromLeft(6);
-    loadBtn.setBounds(row.removeFromLeft(70));
-    row.removeFromLeft(6);
-    saveBtn.setBounds(row.removeFromLeft(70));
-
-    side.removeFromTop(8);
-    row = side.removeFromTop(28);
-    addSchematicBtn.setBounds(row.removeFromLeft(132));
-    row.removeFromLeft(6);
-    addFrustBtn.setBounds(row.removeFromLeft(104));
-
+    titleLabel.setBounds(side.removeFromTop(18));
+    side.removeFromTop(4);
+    inspectorLabel.setBounds(side.removeFromTop(18));
+    side.removeFromTop(3);
+    instanceIdEditor.setBounds(side.removeFromTop(22));
+    side.removeFromTop(3);
+    titleEditor.setBounds(side.removeFromTop(22));
+    side.removeFromTop(3);
+    referenceEditor.setBounds(side.removeFromTop(22));
+    side.removeFromTop(4);
+    paramsEditor.setBounds(side.removeFromTop(108));
     side.removeFromTop(6);
-    row = side.removeFromTop(28);
-    addMotorBtn.setBounds(row.removeFromLeft(78));
-    row.removeFromLeft(6);
-    addPlotBtn.setBounds(row.removeFromLeft(76));
-    row.removeFromLeft(6);
-    addInputBtn.setBounds(row.removeFromLeft(76));
-
+    liveSignalsEditor.setBounds(side.removeFromTop(120));
     side.removeFromTop(6);
-    row = side.removeFromTop(28);
-    addOutputBtn.setBounds(row.removeFromLeft(90));
-
-    side.removeFromTop(6);
-    row = side.removeFromTop(28);
-    removeBtn.setBounds(row.removeFromLeft(90));
-    row.removeFromLeft(6);
-    openReferenceBtn.setBounds(row.removeFromLeft(112));
-    row.removeFromLeft(6);
-    applyInspectorBtn.setBounds(row.removeFromLeft(70));
-
-    side.removeFromTop(10);
-    inspectorLabel.setBounds(side.removeFromTop(20));
-    side.removeFromTop(4);
-    instanceIdEditor.setBounds(side.removeFromTop(24));
-    side.removeFromTop(4);
-    titleEditor.setBounds(side.removeFromTop(24));
-    side.removeFromTop(4);
-    referenceEditor.setBounds(side.removeFromTop(24));
-    side.removeFromTop(4);
-    paramsEditor.setBounds(side.removeFromTop(112));
-    side.removeFromTop(8);
-    liveSignalsEditor.setBounds(side.removeFromTop(130));
-    side.removeFromTop(8);
     diagnosticsEditor.setBounds(side);
 
     if (canvas != nullptr)

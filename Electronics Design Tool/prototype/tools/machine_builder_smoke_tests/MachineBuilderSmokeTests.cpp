@@ -263,6 +263,58 @@ int main()
             "New Blank clears machine graph and control layout immediately");
     r.check(!resetSession->getSnapshot().running, "New Blank stops the active simulation session");
 
+    // Compact editing toolbar organization, tooltips, canvas workspace, and overflow handling
+    builder.setBounds(0, 0, 1200, 760);
+    const auto groups = builder.getToolbarGroupSummaries();
+    r.check(groups.size() == 5
+            && groups[0].name == "File"
+            && groups[1].name == "Diagram"
+            && groups[2].name == "View"
+            && groups[3].name == "Simulation"
+            && groups[4].name == "Tools",
+            "toolbar organizes commands into File, Diagram, View, Simulation, and Tools groups");
+
+    bool allTooltipsPresent = true;
+    size_t totalCommands = 0;
+    for (const auto& grp : groups)
+    {
+        totalCommands += grp.commandIds.size();
+        for (const auto& cmd : grp.commandIds)
+            if (builder.getToolbarCommandTooltip(cmd).isEmpty())
+                allTooltipsPresent = false;
+    }
+    r.check(totalCommands == 21 && allTooltipsPresent,
+            "all 21 toolbar commands have informative tooltips");
+
+    r.check(builder.getVisibleToolbarButtonCount() == 21
+            && builder.getOverflowToolbarButtonCount() == 0
+            && !builder.isOverflowButtonVisible(),
+            "all toolbar commands are visible without overflow at standard 1200x760 window size");
+
+    const auto tbBounds = builder.getToolbarBounds();
+    const auto canvasBounds = builder.getCanvasBounds();
+    r.check(tbBounds.getHeight() <= 40 && canvasBounds.getWidth() >= 940 && canvasBounds.getHeight() >= 700,
+            "compact top toolbar maximizes usable diagram canvas workspace");
+
+    builder.setBounds(0, 0, 460, 600);
+    r.check(builder.getVisibleToolbarButtonCount() > 0
+            && builder.getOverflowToolbarButtonCount() > 0
+            && builder.isOverflowButtonVisible(),
+            "narrow window activates toolbar overflow button while keeping primary commands accessible");
+
+    builder.setBounds(0, 0, 1200, 760);
+    r.check(builder.getVisibleToolbarButtonCount() == 21
+            && builder.getOverflowToolbarButtonCount() == 0
+            && !builder.isOverflowButtonVisible(),
+            "restoring wide window restores full toolbar visibility and hides overflow button");
+
+    r.check(builder.triggerToolbarCommand("zoom_in")
+            && builder.triggerToolbarCommand("zoom_out")
+            && builder.triggerToolbarCommand("reset_view")
+            && builder.triggerToolbarCommand("fit_all")
+            && builder.triggerToolbarCommand("validate"),
+            "toolbar view and validation commands execute cleanly");
+
     std::cout << r.checks << " checks, " << r.failures << " failures\n";
     return r.failures == 0 ? 0 : 1;
 }

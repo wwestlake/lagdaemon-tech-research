@@ -32,6 +32,27 @@ public:
     bool startSimulation();
     void stopSimulation();
     void resetSimulation();
+    void resetToBlankMachine();
+    void fitMachineView();
+    void zoomInView();
+    void zoomOutView();
+    void resetMachineView();
+
+    struct ToolbarGroupSummary
+    {
+        std::string name;
+        std::vector<std::string> commandIds;
+        juce::Rectangle<int> headerBounds;
+    };
+
+    std::vector<ToolbarGroupSummary> getToolbarGroupSummaries() const;
+    int getVisibleToolbarButtonCount() const;
+    int getOverflowToolbarButtonCount() const;
+    bool isOverflowButtonVisible() const;
+    juce::Rectangle<int> getToolbarBounds() const { return toolbarBounds_; }
+    juce::Rectangle<int> getCanvasBounds() const;
+    bool triggerToolbarCommand(const std::string& commandId);
+    juce::String getToolbarCommandTooltip(const std::string& commandId) const;
 
     bool addSchematicSubsystemFromFile(const juce::File& file, std::string* error = nullptr);
     bool addFrustSubsystemFromFile(const juce::File& file, std::string* error = nullptr);
@@ -54,6 +75,14 @@ public:
 private:
     class AssemblyCanvas;
 
+    struct ToolbarItem
+    {
+        std::string id;
+        std::string groupName;
+        juce::TextButton* button = nullptr;
+        int width = 26;
+    };
+
     void timerCallback() override;
     void refreshUi();
     void updateDiagnosticsDisplay();
@@ -69,8 +98,7 @@ private:
     void chooseMachineSaveFile();
     void chooseMachineLoadFile();
     void showSystemPortDialog(bool input);
-    void resetToBlankMachine();
-    void fitMachineView();
+    void showOverflowMenu();
     void syncPlotPanelBindings();
     void normalizePlotPanelInstance(const std::string& instanceId);
     juce::File resolveReference(const std::string& referenceFile) const;
@@ -86,7 +114,9 @@ private:
     std::string selectedInstanceId_;
     std::string selectedConnectionId_;
 
-    // UI Controls
+    // UI Controls & Compact Editing Toolbar
+    juce::SharedResourcePointer<juce::TooltipWindow> tooltipWindow_;
+    std::unique_ptr<juce::LookAndFeel> toolbarLookAndFeel_;
     juce::Label titleLabel;
     juce::TextButton newBlankBtn { "New Blank" };
     juce::TextButton addSchematicBtn { "Add Schematic" };
@@ -99,6 +129,9 @@ private:
     juce::TextButton saveBtn { "Save" };
     juce::TextButton loadBtn { "Load" };
     juce::TextButton fitAllBtn { "Fit All" };
+    juce::TextButton zoomInBtn { "Zoom In" };
+    juce::TextButton zoomOutBtn { "Zoom Out" };
+    juce::TextButton resetViewBtn { "Reset View" };
     juce::TextButton validateBtn { "Validate" };
     juce::TextButton compileRunBtn { "Compile" };
     juce::TextButton startBtn { "Start" };
@@ -106,6 +139,12 @@ private:
     juce::TextButton resetBtn { "Reset" };
     juce::TextButton applyInspectorBtn { "Apply" };
     juce::TextButton openReferenceBtn { "Open Model" };
+    juce::TextButton overflowBtn { "More" };
+
+    std::vector<ToolbarItem> toolbarItems_;
+    std::vector<ToolbarGroupSummary> visibleGroupSummaries_;
+    std::vector<int> toolbarSeparators_;
+    juce::Rectangle<int> toolbarBounds_;
 
     std::unique_ptr<AssemblyCanvas> canvas;
     juce::TextEditor instanceIdEditor;
