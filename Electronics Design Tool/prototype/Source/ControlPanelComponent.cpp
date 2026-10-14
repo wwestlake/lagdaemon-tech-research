@@ -28,9 +28,15 @@ public:
 
     void setValue(double val)
     {
+        actualVal_ = val;
         val_ = std::clamp(val, minVal_, maxVal_);
         repaint();
     }
+
+    double getValue() const { return actualVal_; }
+    void setUnit(const std::string& unit) { unit_ = unit; repaint(); }
+    void setTitle(const std::string& title) { title_ = title; repaint(); }
+    void setRange(double minVal, double maxVal) { minVal_ = minVal; maxVal_ = maxVal; repaint(); }
 
     void paint(juce::Graphics& g) override
     {
@@ -114,7 +120,7 @@ public:
 
         // Digital Readout at bottom of dial
         std::ostringstream ss;
-        ss << std::fixed << std::setprecision(precision_) << val_;
+        ss << std::fixed << std::setprecision(precision_) << actualVal_;
         g.setFont(juce::Font(juce::Font::getDefaultMonospacedFontName(), 11.0f, juce::Font::bold));
         g.setColour(juce::Colour(0xff00ffcc));
         g.drawText(ss.str(), center.x - 40.0f, center.y + radius * 0.45f, 80.0f, 16.0f, juce::Justification::centred);
@@ -142,7 +148,7 @@ public:
 
 private:
     std::string title_, unit_;
-    double minVal_ = 0.0, maxVal_ = 100.0, val_ = 0.0;
+    double minVal_ = 0.0, maxVal_ = 100.0, val_ = 0.0, actualVal_ = 0.0;
     int precision_ = 1;
     bool hasWarn_ = false;
     double warnMin_ = 0.0, warnMax_ = 0.0;
@@ -495,9 +501,12 @@ public:
 
     void setValue(double val)
     {
+        actualVal_ = val;
         val_ = std::clamp(val, minVal_, maxVal_);
         repaint();
     }
+
+    double getValue() const { return actualVal_; }
 
     void paint(juce::Graphics& g) override
     {
@@ -511,7 +520,7 @@ public:
         const float norm = (float)std::clamp((val_ - minVal_) / span, 0.0, 1.0);
 
         std::ostringstream ss;
-        ss << std::fixed << std::setprecision(precision_) << val_;
+        ss << std::fixed << std::setprecision(precision_) << actualVal_;
         if (!unit_.empty()) ss << " " << unit_;
 
         if (vertical_)
@@ -607,7 +616,7 @@ public:
 
 private:
     std::string title_, unit_;
-    double minVal_ = 0.0, maxVal_ = 100.0, val_ = 0.0;
+    double minVal_ = 0.0, maxVal_ = 100.0, val_ = 0.0, actualVal_ = 0.0;
     bool vertical_ = false;
     int precision_ = 1;
     bool hasWarn_ = false;
@@ -629,6 +638,7 @@ public:
     }
 
     bool isLatched() const { return latched_; }
+    bool isButtonActive() const { return latching_ ? latched_ : isDown_; }
     void setLatched(bool l) { latched_ = l; repaint(); }
     void setIndicatorActive(bool a) { indicatorActive_ = a; repaint(); }
 
@@ -843,17 +853,215 @@ private:
     bool isVertical_ = false;
 };
 
+std::string cleanSignalName(std::string name)
+{
+    while (!name.empty() && (name.front() == ' ' || name.front() == '\t' || name.front() == '\r' || name.front() == '\n'))
+        name.erase(name.begin());
+    while (!name.empty() && (name.back() == ' ' || name.back() == '\t' || name.back() == '\r' || name.back() == '\n'))
+        name.pop_back();
+
+    auto stripPrefix = [&](const std::string& pfx) {
+        if (name.size() >= pfx.size())
+        {
+            bool match = true;
+            for (size_t i = 0; i < pfx.size(); ++i)
+            {
+                if (std::tolower((unsigned char)name[i]) != std::tolower((unsigned char)pfx[i]))
+                {
+                    match = false;
+                    break;
+                }
+            }
+            if (match)
+            {
+                name = name.substr(pfx.size());
+                while (!name.empty() && (name.front() == ' ' || name.front() == '\t'))
+                    name.erase(name.begin());
+                return true;
+            }
+        }
+        return false;
+    };
+
+    stripPrefix("[out]");
+    stripPrefix("[in]");
+    stripPrefix("out:");
+    stripPrefix("in:");
+    stripPrefix("out ");
+    stripPrefix("in ");
+    return name;
+}
+
+bool resolveNumericSignal(const StateSnapshot& snap, const std::string& rawSignal, double& outVal)
+{
+    const std::string clean = cleanSignalName(rawSignal);
+    if (clean.empty())
+        return false;
+
+    // 1. Direct exact match in numericSignals
+    if (auto it = snap.numericSignals.find(clean); it != snap.numericSignals.end())
+    {
+        outVal = it->second;
+        return true;
+    }
+    if (clean != rawSignal)
+    {
+        if (auto it = snap.numericSignals.find(rawSignal); it != snap.numericSignals.end())
+        {
+            outVal = it->second;
+            return true;
+        }
+    }
+
+    // 2. Case-insensitive match in numericSignals
+    std::string cleanLower = clean;
+    for (char& c : cleanLower) c = (char)std::tolower((unsigned char)c);
+
+    for (const auto& [k, v] : snap.numericSignals)
+    {
+        std::string kLower = k;
+        for (char& c : kLower) c = (char)std::tolower((unsigned char)c);
+        if (kLower == cleanLower)
+        {
+            outVal = v;
+            return true;
+        }
+    }
+
+    // 3. Subsystem and suffix match
+    const auto dotPos = cleanLower.rfind('.');
+    const std::string prefix = (dotPos != std::string::npos) ? cleanLower.substr(0, dotPos) : std::string();
+    const std::string suffix = (dotPos != std::string::npos) ? cleanLower.substr(dotPos + 1) : cleanLower;
+
+    for (const auto& [k, v] : snap.numericSignals)
+    {
+        std::string kLower = k;
+        for (char& c : kLower) c = (char)std::tolower((unsigned char)c);
+
+        const auto kDot = kLower.rfind('.');
+        if (kDot != std::string::npos)
+        {
+            const std::string kSuff = kLower.substr(kDot + 1);
+            const std::string kPre = kLower.substr(0, kDot);
+            if (kSuff == suffix)
+            {
+                if (prefix.empty() || kPre.find(prefix) != std::string::npos || prefix.find(kPre) != std::string::npos)
+                {
+                    outVal = v;
+                    return true;
+                }
+            }
+        }
+        else if (kLower == suffix)
+        {
+            outVal = v;
+            return true;
+        }
+    }
+
+    // Second pass: general suffix matching for common signals (e.g. speed, angle, current, voltage, tach)
+    if (suffix == "speed" || suffix == "angle" || suffix == "current" || suffix == "voltage" || suffix == "tach")
+    {
+        for (const auto& [k, v] : snap.numericSignals)
+        {
+            std::string kLower = k;
+            for (char& c : kLower) c = (char)std::tolower((unsigned char)c);
+            if (kLower.size() > suffix.size() + 1 && kLower.rfind("." + suffix) == kLower.size() - suffix.size() - 1)
+            {
+                outVal = v;
+                return true;
+            }
+        }
+    }
+
+    // 4. Boolean signals fallback
+    if (auto it = snap.booleanSignals.find(clean); it != snap.booleanSignals.end())
+    {
+        outVal = it->second ? 1.0 : 0.0;
+        return true;
+    }
+    for (const auto& [k, v] : snap.booleanSignals)
+    {
+        std::string kLower = k;
+        for (char& c : kLower) c = (char)std::tolower((unsigned char)c);
+        if (kLower == cleanLower)
+        {
+            outVal = v ? 1.0 : 0.0;
+            return true;
+        }
+    }
+
+    return false;
+}
+
+bool resolveBooleanSignal(const StateSnapshot& snap, const std::string& rawSignal, bool& outVal)
+{
+    const std::string clean = cleanSignalName(rawSignal);
+    if (clean.empty())
+        return false;
+
+    // 1. Exact match in booleanSignals
+    if (auto it = snap.booleanSignals.find(clean); it != snap.booleanSignals.end())
+    {
+        outVal = it->second;
+        return true;
+    }
+    if (clean != rawSignal)
+    {
+        if (auto it = snap.booleanSignals.find(rawSignal); it != snap.booleanSignals.end())
+        {
+            outVal = it->second;
+            return true;
+        }
+    }
+
+    // 2. Case-insensitive match in booleanSignals
+    std::string cleanLower = clean;
+    for (char& c : cleanLower) c = (char)std::tolower((unsigned char)c);
+
+    for (const auto& [k, v] : snap.booleanSignals)
+    {
+        std::string kLower = k;
+        for (char& c : kLower) c = (char)std::tolower((unsigned char)c);
+        if (kLower == cleanLower)
+        {
+            outVal = v;
+            return true;
+        }
+    }
+
+    // 3. Suffix match in booleanSignals
+    const auto dotPos = cleanLower.rfind('.');
+    const std::string suffix = (dotPos != std::string::npos) ? cleanLower.substr(dotPos + 1) : cleanLower;
+    for (const auto& [k, v] : snap.booleanSignals)
+    {
+        std::string kLower = k;
+        for (char& c : kLower) c = (char)std::tolower((unsigned char)c);
+        if (kLower == suffix || (kLower.size() > suffix.size() + 1 && kLower.rfind("." + suffix) == kLower.size() - suffix.size() - 1))
+        {
+            outVal = v;
+            return true;
+        }
+    }
+
+    // 4. Numeric signals fallback (> 0.5)
+    double numVal = 0.0;
+    if (resolveNumericSignal(snap, rawSignal, numVal))
+    {
+        outVal = (numVal > 0.5);
+        return true;
+    }
+
+    return false;
+}
+
 double signalValue(const StateSnapshot& snap, const std::string& signal, bool* found = nullptr)
 {
-    if (const auto it = snap.numericSignals.find(signal); it != snap.numericSignals.end())
+    double val = 0.0;
+    if (resolveNumericSignal(snap, signal, val))
     {
         if (found != nullptr) *found = true;
-        return it->second;
-    }
-    if (const auto it = snap.booleanSignals.find(signal); it != snap.booleanSignals.end())
-    {
-        if (found != nullptr) *found = true;
-        return it->second ? 1.0 : 0.0;
+        return val;
     }
     if (found != nullptr) *found = false;
     return std::numeric_limits<double>::quiet_NaN();
@@ -2817,8 +3025,18 @@ public:
             {
                 const auto& s = signals_[(size_t)(id - 2)];
                 sigEd_.setText(juce::String(s.name));
-                if (unitEd_.getText().isEmpty() && !s.unit.empty())
+                if (!s.unit.empty())
                     unitEd_.setText(juce::String(s.unit));
+                if (s.maxValue > s.minValue)
+                {
+                    const double curMin = minEd_.getText().getDoubleValue();
+                    const double curMax = maxEd_.getText().getDoubleValue();
+                    if ((curMin == 0.0 && curMax == 100.0) || curMin >= curMax)
+                    {
+                        minEd_.setText(juce::String(s.minValue, 1));
+                        maxEd_.setText(juce::String(s.maxValue, 1));
+                    }
+                }
                 updateCompatibilityLabel(s);
             }
         };
@@ -2872,8 +3090,15 @@ public:
             cfg_.defaultValue = defEd_.getText().getDoubleValue();
             cfg_.stepSize = std::max(1e-6, stepEd_.getText().getDoubleValue());
             cfg_.precision = precBox_.getSelectedId() - 1;
-            cfg_.signalName = sigEd_.getText().toStdString();
-            cfg_.secondarySignal = secSigEd_.getText().toStdString();
+            cfg_.signalName = cleanSignalName(sigEd_.getText().toStdString());
+            if (cfg_.unit.empty())
+            {
+                if (cfg_.signalName.find("speed") != std::string::npos) cfg_.unit = "rad/s";
+                else if (cfg_.signalName.find("torque") != std::string::npos || cfg_.signalName.find("load") != std::string::npos) cfg_.unit = "N*m";
+                else if (cfg_.signalName.find("voltage") != std::string::npos || cfg_.signalName.find("drive") != std::string::npos || cfg_.signalName.find("tach") != std::string::npos) cfg_.unit = "V";
+                else if (cfg_.signalName.find("current") != std::string::npos) cfg_.unit = "A";
+            }
+            cfg_.secondarySignal = cleanSignalName(secSigEd_.getText().toStdString());
             cfg_.momentary = momentaryBtn_.getToggleState();
             cfg_.vertical = verticalBtn_.getToggleState();
             cfg_.hasWarnRange = hasWarnBtn_.getToggleState();
@@ -3344,16 +3569,22 @@ ControlPanelComponent::ControlPanelComponent(std::shared_ptr<SystemSimulationSes
     runButton.onClick = [this] {
         if (!session_) return;
         if (onEnsureCompiled) onEnsureCompiled();
+        publishAllControlInputs();
         session_->start();
     };
     pauseButton.onClick = [this] { if (session_) session_->pause(); };
     stepButton.onClick = [this] {
         if (!session_) return;
         if (onEnsureCompiled) onEnsureCompiled();
+        publishAllControlInputs();
         session_->stepSingle(0.005);
     };
     stopButton.onClick = [this] { if (session_) session_->stop(); };
-    resetButton.onClick = [this] { if (session_) session_->reset(); };
+    resetButton.onClick = [this] {
+        if (!session_) return;
+        session_->reset();
+        publishAllControlInputs();
+    };
 
     addAndMakeVisible(rateBox);
     rateBox.addItem("0.1x (Slow-mo)", 1);
@@ -3736,7 +3967,8 @@ std::vector<SignalDef> ControlPanelComponent::getAvailableSignals() const
     std::vector<SignalDef> sigs;
     std::map<std::string, bool> seen;
 
-    auto addSig = [&](const std::string& name, DataType dt, bool isOutput, const std::string& unit, const std::string& desc) {
+    auto addSig = [&](const std::string& name, DataType dt, bool isOutput, const std::string& unit,
+                      const std::string& desc, double minVal = 0.0, double maxVal = 100.0) {
         if (name.empty() || seen.count(name) != 0) return;
         seen[name] = true;
         SignalDef def;
@@ -3744,52 +3976,83 @@ std::vector<SignalDef> ControlPanelComponent::getAvailableSignals() const
         def.type = dt;
         def.isOutput = isOutput;
         def.unit = unit;
+        def.minValue = minVal;
+        def.maxValue = maxVal;
         def.description = desc;
         sigs.push_back(def);
     };
 
     if (session_)
     {
+        for (const auto& [name, node] : session_->outputNodeBindings())
+        {
+            std::string unit;
+            double minV = 0.0, maxV = 100.0;
+            if (name.find("speed") != std::string::npos) { unit = "rad/s"; minV = 0.0; maxV = 600.0; }
+            else if (name.find("torque") != std::string::npos || name.find("load") != std::string::npos) { unit = "N*m"; minV = 0.0; maxV = 0.05; }
+            else if (name.find("voltage") != std::string::npos || name.find("drive") != std::string::npos || name.find("tach") != std::string::npos || name.find("v_in") != std::string::npos) { unit = "V"; minV = 0.0; maxV = 24.0; }
+            else if (name.find("current") != std::string::npos) { unit = "A"; minV = -20.0; maxV = 20.0; }
+            else if (name.find("angle") != std::string::npos) { unit = "rad"; minV = -1000.0; maxV = 1000.0; }
+            addSig(name, DataType::Numeric, true, unit, "Simulation Node Output", minV, maxV);
+        }
+
+        for (const auto& [name, elem] : session_->outputBranchBindings())
+        {
+            addSig(name, DataType::Numeric, true, "A", "Simulation Branch Current", -20.0, 20.0);
+        }
+
+        for (const auto& [name, elem] : session_->inputElementBindings())
+        {
+            const bool isBool = name.find("power") != std::string::npos
+                             || name.find("start") != std::string::npos
+                             || name.find("stop") != std::string::npos
+                             || name.find("estop") != std::string::npos
+                             || name.find("reset") != std::string::npos;
+            if (isBool)
+            {
+                addSig(name, DataType::Boolean, false, "", "Operator Boolean Control", 0.0, 1.0);
+            }
+            else
+            {
+                std::string unit;
+                double minV = 0.0, maxV = 100.0;
+                if (name.find("speed") != std::string::npos) { unit = "rad/s"; minV = 0.0; maxV = 600.0; }
+                else if (name.find("torque") != std::string::npos || name.find("load") != std::string::npos) { unit = "N*m"; minV = 0.0; maxV = 0.05; }
+                else if (name.find("voltage") != std::string::npos || name.find("drive") != std::string::npos) { unit = "V"; minV = 0.0; maxV = 24.0; }
+                addSig(name, DataType::Numeric, false, unit, "Operator Numeric Input", minV, maxV);
+            }
+        }
+
         const auto snap = session_->getSnapshot();
         for (const auto& [name, val] : snap.numericSignals)
         {
-            const bool isInput = session_->inputElementBindings().count(name) != 0
-                                 || name.rfind("system.", 0) == 0
-                                 || name.find(".setpoint") != std::string::npos
-                                 || name.find(".load") != std::string::npos;
             std::string unit;
-            if (name.find("speed") != std::string::npos) unit = "rad/s";
-            else if (name.find("torque") != std::string::npos || name.find("load") != std::string::npos) unit = "N*m";
-            else if (name.find("voltage") != std::string::npos || name.find("drive") != std::string::npos) unit = "V";
-            else if (name.find("current") != std::string::npos) unit = "A";
-            else if (name.find("angle") != std::string::npos) unit = "rad";
-
-            addSig(name, DataType::Numeric, !isInput, unit, isInput ? "Operator Numeric Input" : "Simulation Numeric Output");
+            double minV = 0.0, maxV = 100.0;
+            if (name.find("speed") != std::string::npos) { unit = "rad/s"; minV = 0.0; maxV = 600.0; }
+            else if (name.find("torque") != std::string::npos || name.find("load") != std::string::npos) { unit = "N*m"; minV = 0.0; maxV = 0.05; }
+            else if (name.find("voltage") != std::string::npos || name.find("drive") != std::string::npos || name.find("tach") != std::string::npos) { unit = "V"; minV = 0.0; maxV = 24.0; }
+            else if (name.find("current") != std::string::npos) { unit = "A"; minV = -20.0; maxV = 20.0; }
+            else if (name.find("angle") != std::string::npos) { unit = "rad"; minV = -1000.0; maxV = 1000.0; }
+            addSig(name, DataType::Numeric, true, unit, "Simulation Numeric Output", minV, maxV);
         }
         for (const auto& [name, val] : snap.booleanSignals)
         {
-            const bool isInput = name.rfind("system.", 0) == 0
-                                 || name.find("power") != std::string::npos
-                                 || name.find("start") != std::string::npos
-                                 || name.find("stop") != std::string::npos
-                                 || name.find("estop") != std::string::npos
-                                 || name.find("reset") != std::string::npos;
-            addSig(name, DataType::Boolean, !isInput, "", isInput ? "Operator Boolean Control" : "Simulation Status Output");
+            addSig(name, DataType::Boolean, true, "", "Simulation Status Output", 0.0, 1.0);
         }
     }
 
-    addSig("system.power", DataType::Boolean, false, "", "Master Power Switch");
-    addSig("system.start", DataType::Boolean, false, "", "Start Cycle Command");
-    addSig("system.stop", DataType::Boolean, false, "", "Stop Cycle Command");
-    addSig("system.estop", DataType::Boolean, false, "", "Emergency Stop");
-    addSig("system.reset", DataType::Boolean, false, "", "Fault Reset");
-    addSig("system.speed_setpoint", DataType::Numeric, false, "rad/s", "Speed Setpoint");
-    addSig("motor.load_torque", DataType::Numeric, false, "N*m", "Mechanical Load");
-    addSig("motor.speed", DataType::Numeric, true, "rad/s", "Motor Speed");
-    addSig("motor.angle", DataType::Numeric, true, "rad", "Rotor Angle");
-    addSig("motor.current", DataType::Numeric, true, "A", "Armature Current");
-    addSig("running", DataType::Boolean, true, "", "Running Status Indicator");
-    addSig("fault", DataType::Boolean, true, "", "Fault Alarm Indicator");
+    addSig("system.power", DataType::Boolean, false, "", "Master Power Switch", 0.0, 1.0);
+    addSig("system.start", DataType::Boolean, false, "", "Start Cycle Command", 0.0, 1.0);
+    addSig("system.stop", DataType::Boolean, false, "", "Stop Cycle Command", 0.0, 1.0);
+    addSig("system.estop", DataType::Boolean, false, "", "Emergency Stop", 0.0, 1.0);
+    addSig("system.reset", DataType::Boolean, false, "", "Fault Reset", 0.0, 1.0);
+    addSig("system.speed_setpoint", DataType::Numeric, false, "rad/s", "Speed Setpoint", 0.0, 600.0);
+    addSig("motor.load_torque", DataType::Numeric, false, "N*m", "Mechanical Load", 0.0, 0.05);
+    addSig("motor.speed", DataType::Numeric, true, "rad/s", "Motor Speed", 0.0, 600.0);
+    addSig("motor.angle", DataType::Numeric, true, "rad", "Rotor Angle", -1000.0, 1000.0);
+    addSig("motor.current", DataType::Numeric, true, "A", "Armature Current", -20.0, 20.0);
+    addSig("running", DataType::Boolean, true, "", "Running Status Indicator", 0.0, 1.0);
+    addSig("fault", DataType::Boolean, true, "", "Fault Alarm Indicator", 0.0, 1.0);
 
     for (const auto& w : layout_.widgets)
     {
@@ -4220,6 +4483,95 @@ std::string ControlPanelComponent::getActivePanelId() const
     return layout_.activePanelId;
 }
 
+void ControlPanelComponent::publishAllControlInputs()
+{
+    if (!session_)
+        return;
+
+    // Harvest values from instantiated components on the active canvas
+    for (const auto& ov : outputViews_)
+    {
+        auto* wrapper = dynamic_cast<DesignItemWrapper*>(ov.component.get());
+        if (!wrapper) continue;
+        auto* comp = wrapper->getWidget();
+        if (!comp) continue;
+        const auto& w = wrapper->config;
+        if (w.signalName.empty()) continue;
+
+        if (w.type == WidgetType::Knob || w.type == WidgetType::Slider)
+        {
+            if (auto* ctrl = dynamic_cast<LabeledSliderComponent*>(comp))
+            {
+                const double val = ctrl->slider.getValue();
+                activeNumericControlValues_[w.signalName] = val;
+                session_->setNumericInput(w.signalName, val);
+            }
+        }
+        else if (w.type == WidgetType::ToggleSwitch)
+        {
+            if (auto* tog = dynamic_cast<ToggleSwitchComponent*>(comp))
+            {
+                const bool st = tog->getToggleState();
+                activeBooleanControlValues_[w.signalName] = st;
+                session_->setBooleanInput(w.signalName, st);
+            }
+        }
+        else if (w.type == WidgetType::ModeSelector)
+        {
+            if (auto* sel = dynamic_cast<SelectorSwitchComponent*>(comp))
+            {
+                const double idx = (double)sel->getSelectedIndex();
+                activeNumericControlValues_[w.signalName] = idx;
+                session_->setNumericInput(w.signalName, idx);
+            }
+        }
+        else if (w.type == WidgetType::EmergencyStop)
+        {
+            if (auto* estop = dynamic_cast<EmergencyStopComponent*>(comp))
+            {
+                const bool latched = estop->isLatched();
+                activeBooleanControlValues_[w.signalName] = latched;
+                session_->setBooleanInput(w.signalName, latched);
+            }
+        }
+        else if (w.type == WidgetType::IndicatorButton)
+        {
+            if (auto* ib = dynamic_cast<IndicatorButtonComponent*>(comp))
+            {
+                const bool active = ib->isButtonActive();
+                activeBooleanControlValues_[w.signalName] = active;
+                session_->setBooleanInput(w.signalName, active);
+            }
+        }
+    }
+
+    // Now publish configured values for all widgets in the layout (including uninstantiated ones)
+    for (const auto& w : layout_.widgets)
+    {
+        if (w.signalName.empty()) continue;
+
+        if (w.type == WidgetType::Knob || w.type == WidgetType::Slider || w.type == WidgetType::ModeSelector)
+        {
+            double val = w.defaultValue;
+            if (activeNumericControlValues_.count(w.signalName))
+                val = activeNumericControlValues_[w.signalName];
+            else
+                activeNumericControlValues_[w.signalName] = val;
+            session_->setNumericInput(w.signalName, val);
+        }
+        else if (w.type == WidgetType::ToggleSwitch || w.type == WidgetType::EmergencyStop
+                 || w.type == WidgetType::IndicatorButton)
+        {
+            bool val = (w.defaultValue > 0.5);
+            if (activeBooleanControlValues_.count(w.signalName))
+                val = activeBooleanControlValues_[w.signalName];
+            else
+                activeBooleanControlValues_[w.signalName] = val;
+            session_->setBooleanInput(w.signalName, val);
+        }
+    }
+}
+
 bool ControlPanelComponent::loadMachine(const machine_builder::MachineDesign& machine, std::string* error)
 {
     activeNumericControlValues_ = machine.simConfig.initialNumericInputs;
@@ -4238,6 +4590,7 @@ bool ControlPanelComponent::loadMachine(const machine_builder::MachineDesign& ma
                      : 5;
     rateBox.setSelectedId(rateId, juce::dontSendNotification);
     setLayout(machine.controlPanel);
+    publishAllControlInputs();
     statusLabel.setText("STOPPED", juce::dontSendNotification);
     return true;
 }
@@ -4621,6 +4974,7 @@ void ControlPanelComponent::buildWidgets()
             outputViews_.push_back({ w, std::unique_ptr<juce::Component>(wrapper.release()) });
         }
     }
+    publishAllControlInputs();
 }
 
 void ControlPanelComponent::resized()
@@ -5027,19 +5381,21 @@ void ControlPanelComponent::timerCallback()
     }
 
     // Append to trend history
-    double targetSpeed = 0.0;
-    if (snap.numericSignals.count("motorA.speed"))
-        targetSpeed = snap.numericSignals.at("motorA.speed");
-    else if (snap.numericSignals.count("controller.setpoint"))
-        targetSpeed = snap.numericSignals.at("controller.setpoint");
-    else
-        targetSpeed = 300.0;
+    double targetSpeed = 300.0;
+    if (resolveNumericSignal(snap, "system.speed_setpoint", targetSpeed)
+        || resolveNumericSignal(snap, "controller.setpoint", targetSpeed)
+        || resolveNumericSignal(snap, "speed_setpoint", targetSpeed)
+        || resolveNumericSignal(snap, "motorA.speed", targetSpeed))
+    {
+    }
 
     double actualSpeed = 0.0;
-    if (snap.numericSignals.count("motorB.speed"))
-        actualSpeed = snap.numericSignals.at("motorB.speed");
-    else if (snap.numericSignals.count("motor.speed"))
-        actualSpeed = snap.numericSignals.at("motor.speed");
+    if (resolveNumericSignal(snap, "motor.speed", actualSpeed)
+        || resolveNumericSignal(snap, "motorB.speed", actualSpeed)
+        || resolveNumericSignal(snap, "motorA.speed", actualSpeed)
+        || resolveNumericSignal(snap, "speed", actualSpeed))
+    {
+    }
 
     trendHistory_.push_back({ snap.simTime, targetSpeed, actualSpeed });
     while (trendHistory_.size() > 400 || (trendHistory_.size() > 50 && (trendHistory_.back().time - trendHistory_.front().time) > 10.0))
@@ -5070,18 +5426,21 @@ void ControlPanelComponent::timerCallback()
         {
             if (auto* g = dynamic_cast<AnalogGaugeComponent*>(comp))
             {
-                if (snap.numericSignals.count(w.signalName))
-                    g->setValue(snap.numericSignals.at(w.signalName));
+                double v = 0.0;
+                if (resolveNumericSignal(snap, w.signalName, v))
+                    g->setValue(v);
             }
         }
         else if (w.type == WidgetType::DigitalReadout)
         {
             if (auto* dr = dynamic_cast<DigitalReadoutComponent*>(comp))
             {
-                if (snap.numericSignals.count(w.signalName))
-                    dr->setValue(snap.numericSignals.at(w.signalName));
-                else if (snap.booleanSignals.count(w.signalName))
-                    dr->setBooleanValue(snap.booleanSignals.at(w.signalName));
+                double v = 0.0;
+                bool b = false;
+                if (resolveNumericSignal(snap, w.signalName, v))
+                    dr->setValue(v);
+                else if (resolveBooleanSignal(snap, w.signalName, b))
+                    dr->setBooleanValue(b);
             }
         }
         else if (w.type == WidgetType::ClockDisplay)
@@ -5097,18 +5456,21 @@ void ControlPanelComponent::timerCallback()
         {
             if (auto* bg = dynamic_cast<BarGaugeComponent*>(comp))
             {
-                if (snap.numericSignals.count(w.signalName))
-                    bg->setValue(snap.numericSignals.at(w.signalName));
+                double v = 0.0;
+                if (resolveNumericSignal(snap, w.signalName, v))
+                    bg->setValue(v);
             }
         }
         else if (w.type == WidgetType::IndicatorLamp)
         {
             if (auto* lamp = dynamic_cast<IndicatorLampComponent*>(comp))
             {
-                if (snap.booleanSignals.count(w.signalName))
-                    lamp->setActive(snap.booleanSignals.at(w.signalName));
-                else if (snap.numericSignals.count(w.signalName))
-                    lamp->setActive(snap.numericSignals.at(w.signalName) > 0.5);
+                bool b = false;
+                double v = 0.0;
+                if (resolveBooleanSignal(snap, w.signalName, b))
+                    lamp->setActive(b);
+                else if (resolveNumericSignal(snap, w.signalName, v))
+                    lamp->setActive(v > 0.5);
             }
         }
         else if (w.type == WidgetType::IndicatorButton)
@@ -5116,10 +5478,12 @@ void ControlPanelComponent::timerCallback()
             if (auto* ib = dynamic_cast<IndicatorButtonComponent*>(comp))
             {
                 const auto& indSig = w.secondarySignal.empty() ? w.signalName : w.secondarySignal;
-                if (snap.booleanSignals.count(indSig))
-                    ib->setIndicatorActive(snap.booleanSignals.at(indSig));
-                else if (snap.numericSignals.count(indSig))
-                    ib->setIndicatorActive(snap.numericSignals.at(indSig) > 0.5);
+                bool b = false;
+                double v = 0.0;
+                if (resolveBooleanSignal(snap, indSig, b))
+                    ib->setIndicatorActive(b);
+                else if (resolveNumericSignal(snap, indSig, v))
+                    ib->setIndicatorActive(v > 0.5);
             }
         }
         else if (w.type == WidgetType::TrendChart)

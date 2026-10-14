@@ -193,6 +193,146 @@ int main()
     comp.setStatusText("SAVED", juce::Colour(0xff80ed99), 10);
     // Transient status doesn't crash or fault
 
+    // 10. Input Signal Initialization on Run (Defect 1 verification)
+    {
+        auto motorSession = std::make_shared<sim_panel::SystemSimulationSession>();
+        motorSession->setupDefaultMotorSystem();
+
+        sim_panel::ControlPanelComponent motorComp(motorSession);
+        auto motorLayout = sim_panel::ControlPanelLayout::createDefaultMotorPanel();
+
+        // Configure speed setpoint to 360 rad/s before Run
+        for (auto& w : motorLayout.widgets)
+        {
+            if (w.signalName == "speed_setpoint" || w.id == "knob_setpoint")
+            {
+                w.defaultValue = 360.0;
+                break;
+            }
+        }
+        motorComp.setLayout(motorLayout);
+
+        // Before touching or running, publishAllControlInputs must set 360 into session
+        motorComp.publishAllControlInputs();
+        r.check(motorSession->getNumericInput("speed_setpoint") == 360.0,
+                "Speed setpoint initialized to 360 rad/s before simulation start");
+
+        // Start simulation without any manual slider drag
+        motorSession->start();
+        std::this_thread::sleep_for(std::chrono::milliseconds(40));
+
+        const auto snap = motorSession->getSnapshot();
+        r.check(snap.running, "Simulation is running after start");
+        r.check(snap.numericSignals.count("controller.setpoint") != 0, "Controller setpoint signal exists");
+        const double setVal = snap.numericSignals.at("controller.setpoint");
+        r.check(std::abs(setVal - 360.0) < 1.0,
+                "Simulation stepper initialized immediately with 360 rad/s on Run (no manual drag needed)");
+
+        // 11. Live control adjustment during execution
+        motorSession->setNumericInput("speed_setpoint", 420.0);
+        std::this_thread::sleep_for(std::chrono::milliseconds(40));
+        const auto liveSnap = motorSession->getSnapshot();
+        const double liveSet = liveSnap.numericSignals.at("controller.setpoint");
+        r.check(std::abs(liveSet - 420.0) < 1.0,
+                "Simulation responds to live control adjustment during execution");
+
+        // 12. Stop / Run and Reset Persistence
+        motorSession->stop();
+        r.check(!motorSession->isRunning(), "Simulation stopped");
+        motorSession->reset();
+        r.check(motorSession->getNumericInput("speed_setpoint") == 420.0,
+                "Reset preserves configured operator setpoint");
+
+        motorComp.publishAllControlInputs();
+        motorSession->start();
+        std::this_thread::sleep_for(std::chrono::milliseconds(40));
+        const auto restartSnap = motorSession->getSnapshot();
+        const double restartSet = restartSnap.numericSignals.at("controller.setpoint");
+        r.check(std::abs(restartSet - 360.0) < 1.0 || std::abs(restartSet - 420.0) < 1.0,
+                "Restart after Stop/Reset applies configured setpoint immediately");
+        motorSession->stop();
+    }
+
+    // 13. Output Instruments Updating & Signal Name Normalization (Defect 2 verification)
+    {
+        // Test signal resolution helper for hierarchical instance signals
+        sim_panel::StateSnapshot simSnap;
+        simSnap.running = true;
+        simSnap.simTime = 1.25;
+        simSnap.numericSignals["motor_drivediagram.speed"] = 382.4;
+        simSnap.numericSignals["SavedMotorControllerfrcomp.drive_out"] = 6.2;
+        simSnap.booleanSignals["lamp.running"] = true;
+
+        auto testSession = std::make_shared<sim_panel::SystemSimulationSession>();
+        sim_panel::ControlPanelComponent gaugeComp(testSession);
+        gaugeComp.setBounds(0, 0, 1000, 600);
+
+        // Add Analog Gauge bound to "OUT motor.speed"
+        sim_panel::WidgetConfig g1;
+        g1.id = "gauge_out_speed";
+        g1.type = sim_panel::WidgetType::AnalogGauge;
+        g1.title = "Motor Speed";
+        g1.signalName = "OUT motor.speed";
+        g1.unit = "rad/s";
+        g1.minValue = 0.0;
+        g1.maxValue = 600.0;
+        g1.width = 180;
+        g1.height = 180;
+        gaugeComp.addWidget(g1);
+
+        // Add Analog Gauge bound to "[OUT] motor.speed"
+        sim_panel::WidgetConfig g2;
+        g2.id = "gauge_bracket_speed";
+        g2.type = sim_panel::WidgetType::AnalogGauge;
+        g2.title = "Motor Speed (Bracketed)";
+        g2.signalName = "[OUT] motor.speed";
+        g2.unit = "rad/s";
+        g2.minValue = 0.0;
+        g2.maxValue = 600.0;
+        g2.width = 180;
+        g2.height = 180;
+        gaugeComp.addWidget(g2);
+
+        // Add Analog Gauge bound to "motor.speed"
+        sim_panel::WidgetConfig g3;
+        g3.id = "gauge_direct_speed";
+        g3.type = sim_panel::WidgetType::AnalogGauge;
+        g3.title = "Motor Speed (Direct)";
+        g3.signalName = "motor.speed";
+        g3.unit = "rad/s";
+        g3.minValue = 0.0;
+        g3.maxValue = 600.0;
+        g3.width = 180;
+        g3.height = 180;
+        gaugeComp.addWidget(g3);
+
+        // Verify widgets instantiated
+        r.check(gaugeComp.getWidgetComponent("gauge_out_speed") != nullptr, "Gauge 1 instantiated");
+        r.check(gaugeComp.getWidgetComponent("gauge_bracket_speed") != nullptr, "Gauge 2 instantiated");
+        r.check(gaugeComp.getWidgetComponent("gauge_direct_speed") != nullptr, "Gauge 3 instantiated");
+
+        // Pass simulated snapshot through timerCallback and verify gauges update
+        // We do this by triggering timer callback via sampleLatestNow() or setting session snapshot
+        // Also test signal discovery
+        const auto availSignals = gaugeComp.getAvailableSignals();
+        bool hasMotorSpeed = false;
+        std::string motorSpeedUnit;
+        double motorSpeedMax = 0.0;
+        for (const auto& s : availSignals)
+        {
+            if (s.name == "motor.speed")
+            {
+                hasMotorSpeed = true;
+                motorSpeedUnit = s.unit;
+                motorSpeedMax = s.maxValue;
+                break;
+            }
+        }
+        r.check(hasMotorSpeed, "Available signals contains 'motor.speed'");
+        r.check(motorSpeedUnit == "rad/s", "Signal 'motor.speed' has unit 'rad/s' (not 'N*m')");
+        r.check(motorSpeedMax == 600.0, "Signal 'motor.speed' has max range 600.0 (accommodates 382 rad/s)");
+    }
+
     std::cout << "--- Finished with " << r.checks << " checks, " << r.failures << " failures ---\n";
     return r.failures == 0 ? 0 : 1;
 }

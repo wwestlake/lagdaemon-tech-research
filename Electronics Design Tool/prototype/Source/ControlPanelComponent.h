@@ -79,6 +79,9 @@ public:
     std::function<void()> onSaveRequested;
     void setStatusText(const juce::String& text, juce::Colour colour = juce::Colour(0xff66ff99), int durationTicks = 60);
 
+    // Operator control synchronization
+    void publishAllControlInputs();
+
     // Mode Control
     void setDesignMode(bool isDesign);
     bool isDesignMode() const { return designMode_; }

@@ -101,6 +101,8 @@ public:
     // Operator control inputs
     void setNumericInput(const std::string& signalName, double value);
     void setBooleanInput(const std::string& signalName, bool value);
+    double getNumericInput(const std::string& signalName) const;
+    bool getBooleanInput(const std::string& signalName) const;
 
     // Observable output query
     StateSnapshot getSnapshot() const;
@@ -118,6 +120,8 @@ public:
 
 private:
     void workerThreadLoop();
+    int findInputElement(const std::string& signalName) const;
+    void applyAllCurrentInputs(circuit_sim::TransientStepper& stepper);
     void applyPendingInputs(circuit_sim::TransientStepper& stepper);
     void publishSnapshot(const circuit_sim::TransientStepper& stepper);
 
@@ -148,6 +152,8 @@ private:
     bool singleStepRequested_ = false;
     double singleStepDt_ = 0.001;
 
+    std::map<std::string, double> currentNumericInputs_;
+    std::map<std::string, bool> currentBooleanInputs_;
     std::deque<InputCommand> pendingInputs_;
     std::vector<EventItem> eventLog_;
 

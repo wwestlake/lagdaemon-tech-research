@@ -1889,6 +1889,14 @@ CompiledAssemblyCircuit AssemblyCompiler::compile(const SystemAssembly& assembly
             res.signalNodes[inst.instanceId + ".angle"] = motor.angle;
             res.signalNodes[inst.instanceId + ".tach"] = nTach;
             res.signalBranches[inst.instanceId + ".current"] = motor.armature;
+
+            if (res.signalNodes.find("motor.speed") == res.signalNodes.end())
+            {
+                res.signalNodes["motor.speed"] = motor.shaft;
+                res.signalNodes["motor.angle"] = motor.angle;
+                res.signalNodes["motor.tach"] = nTach;
+                res.signalBranches["motor.current"] = motor.armature;
+            }
         }
         else if (def->kind == SubsystemKind::SchematicReference)
         {
@@ -2032,6 +2040,13 @@ CompiledAssemblyCircuit AssemblyCompiler::compile(const SystemAssembly& assembly
                     res.signalBranches[inst.instanceId + ".current"] = motor.armature;
                     res.signalBranches[inst.instanceId + "." + refdes + ".current"] = motor.armature;
 
+                    if (res.signalNodes.find("motor.speed") == res.signalNodes.end())
+                    {
+                        res.signalNodes["motor.speed"] = motor.shaft;
+                        res.signalNodes["motor.angle"] = motor.angle;
+                        res.signalBranches["motor.current"] = motor.armature;
+                    }
+
                     // Aliases for compatibility with dual motor panel
                     if (inst.instanceId == "motorDriveA")
                     {
@@ -2051,6 +2066,8 @@ CompiledAssemblyCircuit AssemblyCompiler::compile(const SystemAssembly& assembly
                     const auto nOut = getPinNode("out", "1");
                     mech::addTachometer(c, "TG_" + inst.instanceId + "_" + refdes, shaftNode, nOut, 0, 0.01, 100.0);
                     res.signalNodes[inst.instanceId + ".tach"] = nOut;
+                    if (res.signalNodes.find("motor.tach") == res.signalNodes.end())
+                        res.signalNodes["motor.tach"] = nOut;
                 }
                 else if (sym == "current_source")
                 {

@@ -226,6 +226,9 @@ void SystemSimulationSession::setupCircuit(circuit_sim::Circuit circuit,
     outputNodeBindings_ = outputNodeBindings;
     outputBranchBindings_ = outputBranchBindings;
     currentSimTime_ = 0.0;
+    currentNumericInputs_.clear();
+    currentBooleanInputs_.clear();
+    pendingInputs_.clear();
     {
         std::lock_guard<std::mutex> snapshotLock(snapshotMutex_);
         latestSnapshot_.simTime = 0.0;
@@ -235,6 +238,10 @@ void SystemSimulationSession::setupCircuit(circuit_sim::Circuit circuit,
         latestSnapshot_.numericSignals.clear();
         latestSnapshot_.booleanSignals.clear();
         latestSnapshot_.textSignals.clear();
+        for (const auto& [name, node] : outputNodeBindings_)
+            latestSnapshot_.numericSignals[name] = 0.0;
+        for (const auto& [name, elem] : outputBranchBindings_)
+            latestSnapshot_.numericSignals[name] = 0.0;
     }
 }
 
@@ -254,6 +261,10 @@ bool SystemSimulationSession::setupAssembly(const SystemAssembly& assembly, cons
     outputNodeBindings_ = std::move(compiled.signalNodes);
     outputBranchBindings_ = std::move(compiled.signalBranches);
     currentSimTime_ = 0.0;
+    currentNumericInputs_.clear();
+    currentBooleanInputs_.clear();
+    pendingInputs_.clear();
+
     {
         std::lock_guard<std::mutex> snapshotLock(snapshotMutex_);
         latestSnapshot_.simTime = 0.0;
@@ -263,6 +274,14 @@ bool SystemSimulationSession::setupAssembly(const SystemAssembly& assembly, cons
         latestSnapshot_.numericSignals.clear();
         latestSnapshot_.booleanSignals.clear();
         latestSnapshot_.textSignals.clear();
+        for (const auto& [name, node] : outputNodeBindings_)
+            latestSnapshot_.numericSignals[name] = 0.0;
+        for (const auto& [name, elem] : outputBranchBindings_)
+            latestSnapshot_.numericSignals[name] = 0.0;
+        for (const auto& [name, val] : currentNumericInputs_)
+            latestSnapshot_.numericSignals[name] = val;
+        for (const auto& [name, val] : currentBooleanInputs_)
+            latestSnapshot_.booleanSignals[name] = val;
     }
 
     addEventLog("System Assembly Loaded: " + assembly.name, "INFO");
@@ -347,6 +366,35 @@ void SystemSimulationSession::setupDefaultMotorSystem()
     outputNodeBindings_["controller.setpoint"] = setpointNode;
 
     outputBranchBindings_["motor.current"] = armatureElem_;
+
+    currentNumericInputs_["speed_setpoint"] = 300.0;
+    currentNumericInputs_["load_torque"] = 0.0;
+    currentBooleanInputs_["power_switch"] = true;
+    currentBooleanInputs_["start_button"] = false;
+    currentBooleanInputs_["stop_button"] = false;
+    currentBooleanInputs_["estop_button"] = false;
+    currentBooleanInputs_["reset_button"] = false;
+    pendingInputs_.clear();
+
+    {
+        std::lock_guard<std::mutex> snapshotLock(snapshotMutex_);
+        latestSnapshot_.simTime = 0.0;
+        latestSnapshot_.running = false;
+        latestSnapshot_.paused = false;
+        latestSnapshot_.faulted = false;
+        latestSnapshot_.numericSignals.clear();
+        latestSnapshot_.booleanSignals.clear();
+        latestSnapshot_.textSignals.clear();
+        for (const auto& [name, node] : outputNodeBindings_)
+            latestSnapshot_.numericSignals[name] = 0.0;
+        for (const auto& [name, elem] : outputBranchBindings_)
+            latestSnapshot_.numericSignals[name] = 0.0;
+        latestSnapshot_.numericSignals["speed_setpoint"] = 300.0;
+        latestSnapshot_.numericSignals["controller.setpoint"] = 300.0;
+        latestSnapshot_.numericSignals["motor.speed"] = 0.0;
+        latestSnapshot_.numericSignals["speed"] = 0.0;
+        latestSnapshot_.booleanSignals["power_switch"] = true;
+    }
 
     addEventLog("System Initialized: Ready", "INFO");
 }
@@ -464,13 +512,119 @@ void SystemSimulationSession::setExecutionRate(double rateFactor)
 void SystemSimulationSession::setNumericInput(const std::string& signalName, double value)
 {
     std::lock_guard<std::mutex> lock(mutex_);
+    currentNumericInputs_[signalName] = value;
     pendingInputs_.push_back({ signalName, DataType::Numeric, value, false });
 }
 
 void SystemSimulationSession::setBooleanInput(const std::string& signalName, bool value)
 {
     std::lock_guard<std::mutex> lock(mutex_);
+    currentBooleanInputs_[signalName] = value;
     pendingInputs_.push_back({ signalName, DataType::Boolean, 0.0, value });
+}
+
+double SystemSimulationSession::getNumericInput(const std::string& signalName) const
+{
+    std::lock_guard<std::mutex> lock(mutex_);
+    auto it = currentNumericInputs_.find(signalName);
+    if (it != currentNumericInputs_.end())
+        return it->second;
+
+    for (const auto& [k, v] : currentNumericInputs_)
+    {
+        if (k.find(signalName) != std::string::npos || signalName.find(k) != std::string::npos)
+            return v;
+    }
+    return 0.0;
+}
+
+bool SystemSimulationSession::getBooleanInput(const std::string& signalName) const
+{
+    std::lock_guard<std::mutex> lock(mutex_);
+    auto it = currentBooleanInputs_.find(signalName);
+    if (it != currentBooleanInputs_.end())
+        return it->second;
+
+    for (const auto& [k, v] : currentBooleanInputs_)
+    {
+        if (k.find(signalName) != std::string::npos || signalName.find(k) != std::string::npos)
+            return v;
+    }
+    return false;
+}
+
+int SystemSimulationSession::findInputElement(const std::string& signalName) const
+{
+    if (signalName.empty()) return -1;
+
+    // 1. Direct exact match
+    auto it = inputElementBindings_.find(signalName);
+    if (it != inputElementBindings_.end())
+        return it->second;
+
+    // Helper to sanitize
+    std::string clean = signalName;
+    while (!clean.empty() && (clean.front() == ' ' || clean.front() == '\t')) clean.erase(clean.begin());
+    while (!clean.empty() && (clean.back() == ' ' || clean.back() == '\t')) clean.pop_back();
+
+    auto stripPfx = [&](const std::string& pfx) {
+        if (clean.size() >= pfx.size())
+        {
+            bool m = true;
+            for (size_t i = 0; i < pfx.size(); ++i)
+            {
+                if (std::tolower((unsigned char)clean[i]) != std::tolower((unsigned char)pfx[i]))
+                {
+                    m = false; break;
+                }
+            }
+            if (m) {
+                clean = clean.substr(pfx.size());
+                while (!clean.empty() && (clean.front() == ' ' || clean.front() == '\t')) clean.erase(clean.begin());
+                return true;
+            }
+        }
+        return false;
+    };
+    stripPfx("[in]"); stripPfx("in:"); stripPfx("in ");
+
+    it = inputElementBindings_.find(clean);
+    if (it != inputElementBindings_.end())
+        return it->second;
+
+    // 2. Case-insensitive match
+    std::string cleanLower = clean;
+    for (char& c : cleanLower) c = (char)std::tolower((unsigned char)c);
+
+    for (const auto& [k, elem] : inputElementBindings_)
+    {
+        std::string kLower = k;
+        for (char& c : kLower) c = (char)std::tolower((unsigned char)c);
+        if (kLower == cleanLower)
+            return elem;
+    }
+
+    // 3. Suffix match (e.g. "speed_setpoint" matching "system.speed_setpoint" or vice versa)
+    const auto dotPos = cleanLower.rfind('.');
+    const std::string suffix = (dotPos != std::string::npos) ? cleanLower.substr(dotPos + 1) : cleanLower;
+
+    for (const auto& [k, elem] : inputElementBindings_)
+    {
+        std::string kLower = k;
+        for (char& c : kLower) c = (char)std::tolower((unsigned char)c);
+        const auto kDot = kLower.rfind('.');
+        const std::string kSuff = (kDot != std::string::npos) ? kLower.substr(kDot + 1) : kLower;
+        if (kSuff == suffix || (kLower.rfind("." + suffix) != std::string::npos))
+            return elem;
+    }
+
+    // 4. Try prefixing "system."
+    std::string sysClean = "system." + clean;
+    it = inputElementBindings_.find(sysClean);
+    if (it != inputElementBindings_.end())
+        return it->second;
+
+    return -1;
 }
 
 StateSnapshot SystemSimulationSession::getSnapshot() const
@@ -504,10 +658,9 @@ void SystemSimulationSession::applyPendingInputs(circuit_sim::TransientStepper& 
 
     for (const auto& cmd : inputs)
     {
-        const auto it = inputElementBindings_.find(cmd.signalName);
-        if (it != inputElementBindings_.end())
+        const int elem = findInputElement(cmd.signalName);
+        if (elem >= 0)
         {
-            const int elem = it->second;
             if (cmd.type == DataType::Numeric)
             {
                 if (cmd.signalName == "speed_setpoint" || cmd.signalName.find("speed_setpoint") != std::string::npos || cmd.signalName.find("setpoint") != std::string::npos)
@@ -528,6 +681,44 @@ void SystemSimulationSession::applyPendingInputs(circuit_sim::TransientStepper& 
     }
 }
 
+void SystemSimulationSession::applyAllCurrentInputs(circuit_sim::TransientStepper& stepper)
+{
+    std::map<std::string, double> numInputs;
+    std::map<std::string, bool> boolInputs;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        numInputs = currentNumericInputs_;
+        boolInputs = currentBooleanInputs_;
+    }
+
+    for (const auto& [sig, val] : numInputs)
+    {
+        const int elem = findInputElement(sig);
+        if (elem >= 0)
+        {
+            if (sig == "speed_setpoint" || sig.find("speed_setpoint") != std::string::npos || sig.find("setpoint") != std::string::npos)
+            {
+                stepper.setSourceValue(elem, val * 0.01);
+            }
+            else
+            {
+                stepper.setSourceValue(elem, val);
+            }
+        }
+    }
+
+    for (const auto& [sig, val] : boolInputs)
+    {
+        const int elem = findInputElement(sig);
+        if (elem >= 0)
+        {
+            stepper.setSourceValue(elem, val ? 5.0 : 0.0);
+        }
+    }
+
+    applyPendingInputs(stepper);
+}
+
 void SystemSimulationSession::publishSnapshot(const circuit_sim::TransientStepper& stepper)
 {
     std::lock_guard<std::mutex> lock(snapshotMutex_);
@@ -544,16 +735,26 @@ void SystemSimulationSession::publishSnapshot(const circuit_sim::TransientSteppe
             || name.find("speed_setpoint") != std::string::npos)
         {
             latestSnapshot_.numericSignals[name] = val / 0.01; // rad/s
+            if (!latestSnapshot_.numericSignals.count("speed_setpoint"))
+                latestSnapshot_.numericSignals["speed_setpoint"] = val / 0.01;
+            if (!latestSnapshot_.numericSignals.count("controller.setpoint"))
+                latestSnapshot_.numericSignals["controller.setpoint"] = val / 0.01;
         }
         else if (name == "motor.speed" || name.find(".speed") != std::string::npos)
         {
             latestSnapshot_.numericSignals[name] = val; // rad/s
-            if (name == "motor.speed")
+            if (!latestSnapshot_.numericSignals.count("motor.speed"))
+                latestSnapshot_.numericSignals["motor.speed"] = val;
+            if (!latestSnapshot_.numericSignals.count("speed"))
                 latestSnapshot_.numericSignals["speed"] = val;
         }
         else if (name == "motor.angle" || name.find(".angle") != std::string::npos)
         {
             latestSnapshot_.numericSignals[name] = val; // rad
+            if (!latestSnapshot_.numericSignals.count("motor.angle"))
+                latestSnapshot_.numericSignals["motor.angle"] = val;
+            if (!latestSnapshot_.numericSignals.count("angle"))
+                latestSnapshot_.numericSignals["angle"] = val;
         }
         else if (name == "lamp.running" || name.find(".running") != std::string::npos)
         {
@@ -594,7 +795,13 @@ void SystemSimulationSession::publishSnapshot(const circuit_sim::TransientSteppe
 
     for (const auto& [name, elem] : outputBranchBindings_)
     {
-        latestSnapshot_.numericSignals[name] = stepper.branchCurrent(elem);
+        double val = stepper.branchCurrent(elem);
+        latestSnapshot_.numericSignals[name] = val;
+        if (name.find(".current") != std::string::npos)
+        {
+            if (!latestSnapshot_.numericSignals.count("motor.current"))
+                latestSnapshot_.numericSignals["motor.current"] = val;
+        }
     }
 }
 
@@ -608,6 +815,9 @@ void SystemSimulationSession::workerThreadLoop()
         isRunning_ = false;
         return;
     }
+
+    // Apply all currently configured operator controls immediately to new stepper
+    applyAllCurrentInputs(stepper);
 
     publishSnapshot(stepper);
 
