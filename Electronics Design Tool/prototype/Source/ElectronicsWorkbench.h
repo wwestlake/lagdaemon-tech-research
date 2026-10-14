@@ -68,6 +68,10 @@ private:
     static constexpr int recentProjectBase = 1000;
     static constexpr int diagramMenuBase = 2000;
     static constexpr int analyticsMenuBase = 3000;
+    static constexpr int viewMenuBase = 4000;
+
+    std::vector<juce::String> viewMenuIds;
+    juce::String viewTool(const juce::String& name, const juce::var& args);
 
     juce::File layoutFile() const;
     juce::File generatedRunDirectory() const;

@@ -616,6 +616,29 @@ target_link_libraries(FastSmokeTests PRIVATE
 juce_generate_juce_header(FastSmokeTests)
 add_test(NAME FastSmokeTests COMMAND FastSmokeTests)
 
+# 4. Workspace UI Tests: DockManager panel registration, view visibility (hide/show/toggle),
+#    dock zone layout collapse and expansion, tab selection preservation, and state persistence.
+juce_add_console_app(WorkspaceUiTests PRODUCT_NAME "Workspace UI Tests")
+set_target_properties(WorkspaceUiTests PROPERTIES
+    OUTPUT_NAME "workspace_ui_tests"
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/bin")
+target_sources(WorkspaceUiTests PRIVATE
+    tools/workspace_ui_tests/WorkspaceUiTests.cpp
+)
+target_include_directories(WorkspaceUiTests PRIVATE Source)
+target_compile_definitions(WorkspaceUiTests PRIVATE JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0)
+target_link_libraries(WorkspaceUiTests PRIVATE
+    CreationDock
+    juce::juce_core
+    juce::juce_events
+    juce::juce_graphics
+    juce::juce_data_structures
+    juce::juce_gui_basics
+    juce::juce_gui_extra
+)
+juce_generate_juce_header(WorkspaceUiTests)
+add_test(NAME WorkspaceUiTests COMMAND WorkspaceUiTests)
+
 # ==============================================================================
 # EXTENDED SIMULATION SUITE (OPT-IN ONLY - NEVER run for routine UI/logic fixes)
 # ==============================================================================

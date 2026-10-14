@@ -1188,6 +1188,33 @@ const std::vector<ToolSpecText>& demoToolSpecs()
     return specs;
 }
 
+const std::vector<ToolSpecText>& viewToolSpecs()
+{
+    static const std::vector<ToolSpecText> specs = {
+        {
+            "view_list",
+            "List all registered workspace views, tabs, and dockable panels with their open, active, and zone status.",
+            R"({"type":"object","properties":{},"additionalProperties":false})"
+        },
+        {
+            "view_show",
+            "Show and activate a workspace view, editor, or dockable panel by ID without losing its state.",
+            R"({"type":"object","properties":{"viewId":{"type":"string","description":"Unique identifier of the view (e.g. schematic, control_panel, machine_builder, mechanical_view, analytics, nodes, properties, library, hierarchy, frust, debugger, console, log, agent, ingestion, sourcing, pcb)."}},"required":["viewId"],"additionalProperties":false})"
+        },
+        {
+            "view_hide",
+            "Hide a workspace view, editor, or dockable panel by ID without destroying its state or documents.",
+            R"({"type":"object","properties":{"viewId":{"type":"string","description":"Unique identifier of the view to hide."}},"required":["viewId"],"additionalProperties":false})"
+        },
+        {
+            "view_toggle",
+            "Toggle visibility of a workspace view, editor, or dockable panel by ID (or bring it forward if open but inactive).",
+            R"({"type":"object","properties":{"viewId":{"type":"string","description":"Unique identifier of the view to toggle."}},"required":["viewId"],"additionalProperties":false})"
+        }
+    };
+    return specs;
+}
+
 // Tool text with live registry values filled in, so lists such as the
 // placeable component ids never drift from what the application supports.
 std::string liveToolText(const char* text)
@@ -1213,6 +1240,9 @@ bool isSchematicTool(const juce::String& name)
         if (name == spec.name)
             return true;
     for (const auto& spec : demoToolSpecs())
+        if (name == spec.name)
+            return true;
+    for (const auto& spec : viewToolSpecs())
         if (name == spec.name)
             return true;
     return false;
@@ -15069,6 +15099,8 @@ private:
             definitions.push_back({ spec.name.toStdString(), spec.description.toStdString(), spec.schema.toStdString() });
         for (const auto& spec : demoToolSpecs())
             definitions.push_back({ spec.name.toStdString(), spec.description.toStdString(), spec.schema.toStdString() });
+        for (const auto& spec : viewToolSpecs())
+            definitions.push_back({ spec.name.toStdString(), spec.description.toStdString(), spec.schema.toStdString() });
         return definitions;
     }
 
@@ -16003,6 +16035,8 @@ ElectronicsWorkbench::ElectronicsWorkbench()
             return machineTool(name, args);
         if (name.startsWith("demo_"))
             return demoTool(name, args);
+        if (name.startsWith("view_"))
+            return viewTool(name, args);
         return schematicPanel->runSchematicTool(name, args);
     };
     schematicPanel->outputDirectory = [this] { return generatedRunDirectory(); };
@@ -16046,15 +16080,8 @@ ElectronicsWorkbench::ElectronicsWorkbench()
             appendLog("Open machine schematic: " + error);
             return;
         }
-        auto* panel = schematicView.getComponent();
-        if (panel != nullptr)
-        {
-            if (auto* dockPanel = panel->findParentComponentOfClass<CreationDock::DockPanel>())
-                if (auto* zone = dockPanel->findParentComponentOfClass<CreationDock::DockZone>())
-                    zone->setActivePanel(dockPanel);
-            if (auto* window = dynamic_cast<CreationDock::FloatingDockWindow*>(panel->getTopLevelComponent()))
-                window->toFront(true);
-        }
+        if (dockManager != nullptr)
+            dockManager->activatePanel("schematic");
     };
     machineBuilder->openComponentReference = [this](const juce::File& file) {
         juce::String error;
@@ -16375,6 +16402,68 @@ juce::PopupMenu ElectronicsWorkbench::getMenuForIndex(int, const juce::String& m
     }
     else if (menuName == "View")
     {
+        if (dockManager != nullptr)
+        {
+            viewMenuIds.clear();
+
+            auto addGroup = [&](const juce::String& groupHeader, const std::vector<std::pair<juce::String, juce::String>>& views) {
+                menu.addSectionHeader(groupHeader);
+                for (const auto& v : views)
+                {
+                    if (dockManager->findPanelById(v.first) != nullptr)
+                    {
+                        const int itemId = viewMenuBase + (int)viewMenuIds.size();
+                        viewMenuIds.push_back(v.first);
+                        const auto title = dockManager->getPanelTitle(v.first);
+                        const juce::String displayTitle = title.isNotEmpty() ? title : v.second;
+                        const bool isOpen = dockManager->isPanelOpen(v.first);
+                        menu.addItem(itemId, displayTitle, true, isOpen);
+                    }
+                }
+            };
+
+            addGroup("Schematic & Editors", {
+                { "schematic", "Schematic" },
+                { "library", "Component Library" },
+                { "hierarchy", "Circuit Hierarchy" },
+                { "properties", "Properties" },
+                { "pcb", "PCB" }
+            });
+
+            addGroup("Simulation & Machines", {
+                { "control_panel", "Control Panel" },
+                { "machine_builder", "Machine Builder" },
+                { "mechanical_view", "Mechanical View" },
+                { "demo_runner", "Demonstration Runner" },
+                { "analytics", "Analytics" }
+            });
+
+            addGroup("Programming & Debug", {
+                { "nodes", "Node Designer" },
+                { "frust", "Frust" },
+                { "debugger", "Debugger" }
+            });
+
+            addGroup("Tools & Logs", {
+                { "agent", "BYOK Agent" },
+                { "ingestion", "Spec Ingestion" },
+                { "sourcing", "Parts Sourcing" },
+                { "console", "Console" },
+                { "log", "Log" }
+            });
+
+            std::vector<std::pair<juce::String, juce::String>> remainingViews;
+            for (const auto& regId : dockManager->getRegisteredPanelIds())
+            {
+                if (std::find(viewMenuIds.begin(), viewMenuIds.end(), regId) == viewMenuIds.end())
+                    remainingViews.push_back({ regId, dockManager->getPanelTitle(regId) });
+            }
+            if (!remainingViews.empty())
+                addGroup("Other Views", remainingViews);
+
+            menu.addSeparator();
+        }
+
         menu.addItem(toggleStampModeItem, "Stamp Mode", true, stampModeButton.getToggleState());
         menu.addSeparator();
         menu.addItem(resetLayout, "Reset Dock Layout");
@@ -16388,6 +16477,17 @@ juce::PopupMenu ElectronicsWorkbench::getMenuForIndex(int, const juce::String& m
 
 void ElectronicsWorkbench::menuItemSelected(int menuItemID, int)
 {
+    if (menuItemID >= viewMenuBase && menuItemID < viewMenuBase + (int)viewMenuIds.size())
+    {
+        const size_t index = (size_t)(menuItemID - viewMenuBase);
+        if (index < viewMenuIds.size() && dockManager != nullptr)
+        {
+            const auto panelId = viewMenuIds[index];
+            dockManager->togglePanel(panelId);
+            appendLog("View toggled: " + dockManager->getPanelTitle(panelId));
+        }
+        return;
+    }
     if (menuItemID >= analyticsMenuBase && menuItemID < analyticsMenuBase + (int)analytics::analyses().size())
     {
         if (analyticsPanel != nullptr)
@@ -16825,6 +16925,8 @@ juce::String ElectronicsWorkbench::buildAssistantToolManifestJson() const
     for (const auto& spec : machineToolSpecs())
         manifestSpecs.push_back(spec);
     for (const auto& spec : demoToolSpecs())
+        manifestSpecs.push_back(spec);
+    for (const auto& spec : viewToolSpecs())
         manifestSpecs.push_back(spec);
     for (const auto& spec : manifestSpecs)
     {
@@ -18453,6 +18555,8 @@ void ElectronicsWorkbench::showAnalytics()
     auto* panel = analyticsDockPanel.getComponent();
     if (dockManager == nullptr || panel == nullptr)
         return;
+    if (!dockManager->isPanelOpen("analytics"))
+        dockManager->showPanel("analytics");
     auto* window = dynamic_cast<CreationDock::FloatingDockWindow*>(panel->getTopLevelComponent());
     if (window == nullptr)
     {
@@ -18476,13 +18580,8 @@ void ElectronicsWorkbench::showAnalytics()
 
 void ElectronicsWorkbench::showControlPanel()
 {
-    auto* panel = controlPanelDockPanel.getComponent();
-    if (dockManager == nullptr || panel == nullptr)
-        return;
-    if (auto* zone = panel->findParentComponentOfClass<CreationDock::DockZone>())
-        zone->setActivePanel(panel);
-    if (auto* window = dynamic_cast<CreationDock::FloatingDockWindow*>(panel->getTopLevelComponent()))
-        window->toFront(true);
+    if (dockManager != nullptr)
+        dockManager->activatePanel("control_panel");
 }
 
 juce::String ElectronicsWorkbench::controlPanelTool(const juce::String& name, const juce::var& args)
@@ -18822,13 +18921,8 @@ juce::String ElectronicsWorkbench::assemblyTool(const juce::String& name, const 
 
 void ElectronicsWorkbench::showMechanicalView()
 {
-    auto* panel = mechanicalViewDockPanel.getComponent();
-    if (dockManager == nullptr || panel == nullptr)
-        return;
-    if (auto* zone = panel->findParentComponentOfClass<CreationDock::DockZone>())
-        zone->setActivePanel(panel);
-    if (auto* window = dynamic_cast<CreationDock::FloatingDockWindow*>(panel->getTopLevelComponent()))
-        window->toFront(true);
+    if (dockManager != nullptr)
+        dockManager->activatePanel("mechanical_view");
 }
 
 juce::String ElectronicsWorkbench::mechanicalTool(const juce::String& name, const juce::var& args)
@@ -18925,13 +19019,8 @@ juce::String ElectronicsWorkbench::mechanicalTool(const juce::String& name, cons
 
 void ElectronicsWorkbench::showMachineBuilder()
 {
-    auto* panel = machineBuilderDockPanel.getComponent();
-    if (dockManager == nullptr || panel == nullptr)
-        return;
-    if (auto* zone = panel->findParentComponentOfClass<CreationDock::DockZone>())
-        zone->setActivePanel(panel);
-    if (auto* window = dynamic_cast<CreationDock::FloatingDockWindow*>(panel->getTopLevelComponent()))
-        window->toFront(true);
+    if (dockManager != nullptr)
+        dockManager->activatePanel("machine_builder");
 }
 
 juce::String ElectronicsWorkbench::machineTool(const juce::String& name, const juce::var& args)
@@ -19262,13 +19351,8 @@ juce::String ElectronicsWorkbench::machineTool(const juce::String& name, const j
 
 void ElectronicsWorkbench::showDemonstrationRunner()
 {
-    auto* panel = demoRunnerDockPanel.getComponent();
-    if (dockManager == nullptr || panel == nullptr)
-        return;
-    if (auto* zone = panel->findParentComponentOfClass<CreationDock::DockZone>())
-        zone->setActivePanel(panel);
-    if (auto* window = dynamic_cast<CreationDock::FloatingDockWindow*>(panel->getTopLevelComponent()))
-        window->toFront(true);
+    if (dockManager != nullptr)
+        dockManager->activatePanel("demo_runner");
 }
 
 juce::String ElectronicsWorkbench::demoTool(const juce::String& name, const juce::var& args)
@@ -19571,6 +19655,56 @@ juce::String ElectronicsWorkbench::demoTool(const juce::String& name, const juce
     }
 
     return "{ \"ok\": false, \"error\": \"Unknown demonstration tool: " + name + "\" }";
+}
+
+juce::String ElectronicsWorkbench::viewTool(const juce::String& name, const juce::var& args)
+{
+    if (dockManager == nullptr)
+        return R"({"ok": false, "error": "Dock manager is unavailable."})";
+
+    if (name == "view_list")
+    {
+        juce::Array<juce::var> list;
+        for (const auto& id : dockManager->getRegisteredPanelIds())
+        {
+            auto* obj = new juce::DynamicObject();
+            obj->setProperty("id", id);
+            obj->setProperty("title", dockManager->getPanelTitle(id));
+            obj->setProperty("isOpen", dockManager->isPanelOpen(id));
+            obj->setProperty("isActive", dockManager->isPanelActive(id));
+            list.add(juce::var(obj));
+        }
+        auto* root = new juce::DynamicObject();
+        root->setProperty("ok", true);
+        root->setProperty("tool", "view_list");
+        root->setProperty("views", list);
+        return juce::JSON::toString(juce::var(root));
+    }
+
+    const auto viewId = args.getProperty("viewId", args.getProperty("id", {})).toString().trim();
+    if (viewId.isEmpty())
+        return R"({"ok": false, "error": "'viewId' is required."})";
+
+    if (dockManager->findPanelById(viewId) == nullptr)
+        return "{ \"ok\": false, \"error\": \"View not found: " + viewId + "\" }";
+
+    if (name == "view_show")
+    {
+        dockManager->showPanel(viewId);
+        return "{ \"ok\": true, \"tool\": \"view_show\", \"viewId\": \"" + viewId + "\", \"isOpen\": true }";
+    }
+    if (name == "view_hide")
+    {
+        dockManager->hidePanel(viewId);
+        return "{ \"ok\": true, \"tool\": \"view_hide\", \"viewId\": \"" + viewId + "\", \"isOpen\": false }";
+    }
+    if (name == "view_toggle")
+    {
+        dockManager->togglePanel(viewId);
+        return "{ \"ok\": true, \"tool\": \"view_toggle\", \"viewId\": \"" + viewId + "\", \"isOpen\": " + (dockManager->isPanelOpen(viewId) ? "true" : "false") + " }";
+    }
+
+    return "{ \"ok\": false, \"error\": \"Unknown view tool: " + name + "\" }";
 }
 
 analytics::Settings ElectronicsWorkbench::analyticsToolSettings(const juce::var& args) const
@@ -20942,17 +21076,10 @@ bool ElectronicsWorkbench::openComponentProgram(const juce::String& componentNam
     return true;
 }
 
-// Brings the Node Designer forward: its tab becomes the visible one in its
-// dock zone, or its floating window comes to the front.
 void ElectronicsWorkbench::showNodeDesigner()
 {
-    auto* panel = nodeDesignerDockPanel.getComponent();
-    if (panel == nullptr)
-        return;
-    if (auto* zone = panel->findParentComponentOfClass<CreationDock::DockZone>())
-        zone->setActivePanel(panel);
-    if (auto* window = dynamic_cast<CreationDock::FloatingDockWindow*>(panel->getTopLevelComponent()))
-        window->toFront(true);
+    if (dockManager != nullptr)
+        dockManager->activatePanel("nodes");
 }
 
 bool ElectronicsWorkbench::applyComponentLayout(const juce::String& componentName, const std::vector<ComponentPinPlacement>& layout,
