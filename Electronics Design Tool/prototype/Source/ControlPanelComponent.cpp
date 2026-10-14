@@ -11,150 +11,217 @@
 namespace sim_panel
 {
 
+// Custom Analog Gauge Component Implementation
+AnalogGaugeComponent::AnalogGaugeComponent(const std::string& title, const std::string& unit, double minVal, double maxVal,
+                                           int precision,
+                                           bool hasWarn, double warnMin, double warnMax,
+                                           bool hasCrit, double critMin, double critMax)
+    : title_(title), unit_(unit), minVal_(minVal),
+      maxVal_(maxVal > minVal ? maxVal : minVal + 1.0),
+      precision_(std::clamp(precision, 0, 4)),
+      hasWarn_(hasWarn), warnMin_(warnMin), warnMax_(warnMax),
+      hasCrit_(hasCrit), critMin_(critMin), critMax_(critMax)
+{
+    val_ = std::clamp(0.0, minVal_, maxVal_);
+}
+
+void AnalogGaugeComponent::setValue(double val)
+{
+    actualVal_ = val;
+    val_ = std::clamp(val, minVal_, maxVal_);
+    repaint();
+}
+
+void AnalogGaugeComponent::resetValue()
+{
+    actualVal_ = 0.0;
+    val_ = std::clamp(0.0, minVal_, maxVal_);
+    repaint();
+}
+
+void AnalogGaugeComponent::updateConfig(const WidgetConfig& cfg, bool resetVal)
+{
+    title_ = cfg.title;
+    unit_ = cfg.unit;
+    minVal_ = cfg.minValue;
+    maxVal_ = (cfg.maxValue > cfg.minValue) ? cfg.maxValue : (cfg.minValue + 1.0);
+    precision_ = std::clamp(cfg.precision, 0, 4);
+    hasWarn_ = cfg.hasWarnRange;
+    warnMin_ = cfg.warnMin;
+    warnMax_ = cfg.warnMax;
+    hasCrit_ = cfg.hasCritRange;
+    critMin_ = cfg.critMin;
+    critMax_ = cfg.critMax;
+
+    if (resetVal)
+    {
+        actualVal_ = 0.0;
+        val_ = std::clamp(0.0, minVal_, maxVal_);
+    }
+    else
+    {
+        val_ = std::clamp(actualVal_, minVal_, maxVal_);
+    }
+    repaint();
+}
+
+void AnalogGaugeComponent::setUnit(const std::string& unit)
+{
+    unit_ = unit;
+    repaint();
+}
+
+void AnalogGaugeComponent::setTitle(const std::string& title)
+{
+    title_ = title;
+    repaint();
+}
+
+void AnalogGaugeComponent::setRange(double minVal, double maxVal)
+{
+    minVal_ = minVal;
+    maxVal_ = (maxVal > minVal) ? maxVal : (minVal + 1.0);
+    val_ = std::clamp(actualVal_, minVal_, maxVal_);
+    repaint();
+}
+
+void AnalogGaugeComponent::paint(juce::Graphics& g)
+{
+    auto bounds = getLocalBounds().toFloat().reduced(4.0f);
+    const float size = std::min(bounds.getWidth(), bounds.getHeight());
+    const auto center = bounds.getCentre();
+    const float radius = size * 0.45f;
+
+    // Dial face background
+    g.setColour(juce::Colour(0xff181d24));
+    g.fillEllipse(center.x - radius, center.y - radius, radius * 2.0f, radius * 2.0f);
+    g.setColour(juce::Colour(0xff3a4454));
+    g.drawEllipse(center.x - radius, center.y - radius, radius * 2.0f, radius * 2.0f, 2.0f);
+
+    // Dial Arc (-135 deg to +135 deg)
+    const float startAngle = -2.35619f; // -135 deg
+    const float endAngle = 2.35619f;    // +135 deg
+    const float totalAngle = endAngle - startAngle;
+
+    juce::Path arc;
+    arc.addCentredArc(center.x, center.y, radius * 0.85f, radius * 0.85f, 0.0f, startAngle, endAngle, true);
+    g.setColour(juce::Colour(0xff2a3442));
+    g.strokePath(arc, juce::PathStrokeType(4.0f));
+
+    auto toAngle = [&](double v) -> float {
+        const double span = std::max(1e-9, maxVal_ - minVal_);
+        const float norm = (float)std::clamp((v - minVal_) / span, 0.0, 1.0);
+        return startAngle + norm * totalAngle;
+    };
+
+    // Warning band
+    if (hasWarn_ && warnMax_ > warnMin_)
+    {
+        const float a0 = toAngle(warnMin_);
+        const float a1 = toAngle(warnMax_);
+        if (a1 > a0)
+        {
+            juce::Path warnArc;
+            warnArc.addCentredArc(center.x, center.y, radius * 0.85f, radius * 0.85f, 0.0f, a0, a1, true);
+            g.setColour(juce::Colour(0xfff39c12)); // amber
+            g.strokePath(warnArc, juce::PathStrokeType(4.5f));
+        }
+    }
+
+    // Critical band
+    if (hasCrit_ && critMax_ > critMin_)
+    {
+        const float a0 = toAngle(critMin_);
+        const float a1 = toAngle(critMax_);
+        if (a1 > a0)
+        {
+            juce::Path critArc;
+            critArc.addCentredArc(center.x, center.y, radius * 0.85f, radius * 0.85f, 0.0f, a0, a1, true);
+            g.setColour(juce::Colour(0xffe74c3c)); // red
+            g.strokePath(critArc, juce::PathStrokeType(4.5f));
+        }
+    }
+
+    // Graduation tick marks
+    const int numTicks = 10;
+    for (int i = 0; i <= numTicks; ++i)
+    {
+        const float frac = (float)i / (float)numTicks;
+        const float angle = startAngle + frac * totalAngle;
+        const float cosA = std::cos(angle - juce::MathConstants<float>::halfPi);
+        const float sinA = std::sin(angle - juce::MathConstants<float>::halfPi);
+
+        const float r1 = radius * 0.85f;
+        const float r2 = radius * (i % 2 == 0 ? 0.70f : 0.77f);
+        g.setColour(i % 2 == 0 ? juce::Colour(0xffc5d1de) : juce::Colour(0xff6c7d93));
+        g.drawLine(center.x + cosA * r1, center.y + sinA * r1,
+                   center.x + cosA * r2, center.y + sinA * r2, i % 2 == 0 ? 2.0f : 1.2f);
+    }
+
+    // Scale numbers at start and end of arc
+    g.setFont(juce::Font(juce::Font::getDefaultMonospacedFontName(), 9.0f, juce::Font::bold));
+    g.setColour(juce::Colour(0xff8a9ba8));
+    auto formatScaleNum = [](double v, int prec) -> juce::String {
+        if (std::abs(v - std::round(v)) < 1e-4)
+            return juce::String((int)std::round(v));
+        return juce::String(v, std::clamp(prec, 1, 2));
+    };
+    const float startCos = std::cos(startAngle - juce::MathConstants<float>::halfPi);
+    const float startSin = std::sin(startAngle - juce::MathConstants<float>::halfPi);
+    g.drawText(formatScaleNum(minVal_, precision_),
+               (int)(center.x + startCos * (radius * 0.58f) - 25.0f),
+               (int)(center.y + startSin * (radius * 0.58f) - 7.0f),
+               50, 14, juce::Justification::centred);
+
+    const float endCos = std::cos(endAngle - juce::MathConstants<float>::halfPi);
+    const float endSin = std::sin(endAngle - juce::MathConstants<float>::halfPi);
+    g.drawText(formatScaleNum(maxVal_, precision_),
+               (int)(center.x + endCos * (radius * 0.58f) - 25.0f),
+               (int)(center.y + endSin * (radius * 0.58f) - 7.0f),
+               50, 14, juce::Justification::centred);
+
+    // Title and Unit
+    g.setFont(juce::Font(11.0f, juce::Font::bold));
+    g.setColour(juce::Colour(0xff8b9bb0));
+    g.drawText(juce::String(title_), center.x - 50.0f, center.y - radius * 0.45f, 100.0f, 16.0f, juce::Justification::centred);
+    g.setFont(juce::Font(10.0f));
+    g.drawText(juce::String(unit_), center.x - 50.0f, center.y + radius * 0.25f, 100.0f, 16.0f, juce::Justification::centred);
+
+    // Digital Readout at bottom of dial
+    std::ostringstream ss;
+    ss << std::fixed << std::setprecision(precision_) << actualVal_;
+    g.setFont(juce::Font(juce::Font::getDefaultMonospacedFontName(), 11.0f, juce::Font::bold));
+    juce::Colour valCol(0xff00ffcc);
+    if (hasCrit_ && actualVal_ >= critMin_ && actualVal_ <= critMax_)
+        valCol = juce::Colour(0xffff4444);
+    else if (hasWarn_ && actualVal_ >= warnMin_ && actualVal_ <= warnMax_)
+        valCol = juce::Colour(0xffffbb00);
+    g.setColour(valCol);
+    g.drawText(ss.str(), center.x - 40.0f, center.y + radius * 0.45f, 80.0f, 16.0f, juce::Justification::centred);
+
+    // Needle
+    const double span = std::max(1e-9, maxVal_ - minVal_);
+    const float norm = (float)std::clamp((val_ - minVal_) / span, 0.0, 1.0);
+    const float needleAngle = startAngle + norm * totalAngle - juce::MathConstants<float>::halfPi;
+    const float nCos = std::cos(needleAngle);
+    const float nSin = std::sin(needleAngle);
+
+    juce::Path needle;
+    needle.startNewSubPath(center.x - nSin * 3.0f, center.y + nCos * 3.0f);
+    needle.lineTo(center.x + nCos * (radius * 0.82f), center.y + nSin * (radius * 0.82f));
+    needle.lineTo(center.x + nSin * 3.0f, center.y - nCos * 3.0f);
+    needle.closeSubPath();
+
+    g.setColour(juce::Colour(0xffff5555));
+    g.fillPath(needle);
+
+    // Center boss cap
+    g.setColour(juce::Colour(0xffe0e6ed));
+    g.fillEllipse(center.x - 5.0f, center.y - 5.0f, 10.0f, 10.0f);
+}
+
 namespace
 {
-
-// Custom Analog Gauge Component
-class AnalogGaugeComponent final : public juce::Component
-{
-public:
-    AnalogGaugeComponent(const std::string& title, const std::string& unit, double minVal, double maxVal,
-                         int precision = 1,
-                         bool hasWarn = false, double warnMin = 0.0, double warnMax = 0.0,
-                         bool hasCrit = false, double critMin = 0.0, double critMax = 0.0)
-        : title_(title), unit_(unit), minVal_(minVal), maxVal_(maxVal), precision_(precision),
-          hasWarn_(hasWarn), warnMin_(warnMin), warnMax_(warnMax),
-          hasCrit_(hasCrit), critMin_(critMin), critMax_(critMax) {}
-
-    void setValue(double val)
-    {
-        actualVal_ = val;
-        val_ = std::clamp(val, minVal_, maxVal_);
-        repaint();
-    }
-
-    double getValue() const { return actualVal_; }
-    void setUnit(const std::string& unit) { unit_ = unit; repaint(); }
-    void setTitle(const std::string& title) { title_ = title; repaint(); }
-    void setRange(double minVal, double maxVal) { minVal_ = minVal; maxVal_ = maxVal; repaint(); }
-
-    void paint(juce::Graphics& g) override
-    {
-        auto bounds = getLocalBounds().toFloat().reduced(4.0f);
-        const float size = std::min(bounds.getWidth(), bounds.getHeight());
-        const auto center = bounds.getCentre();
-        const float radius = size * 0.45f;
-
-        // Dial face background
-        g.setColour(juce::Colour(0xff181d24));
-        g.fillEllipse(center.x - radius, center.y - radius, radius * 2.0f, radius * 2.0f);
-        g.setColour(juce::Colour(0xff3a4454));
-        g.drawEllipse(center.x - radius, center.y - radius, radius * 2.0f, radius * 2.0f, 2.0f);
-
-        // Dial Arc (-135 deg to +135 deg)
-        const float startAngle = -2.35619f; // -135 deg
-        const float endAngle = 2.35619f;    // +135 deg
-        const float totalAngle = endAngle - startAngle;
-
-        juce::Path arc;
-        arc.addCentredArc(center.x, center.y, radius * 0.85f, radius * 0.85f, 0.0f, startAngle, endAngle, true);
-        g.setColour(juce::Colour(0xff2a3442));
-        g.strokePath(arc, juce::PathStrokeType(4.0f));
-
-        auto toAngle = [&](double v) -> float {
-            const double span = std::max(1e-9, maxVal_ - minVal_);
-            const float norm = (float)std::clamp((v - minVal_) / span, 0.0, 1.0);
-            return startAngle + norm * totalAngle;
-        };
-
-        // Warning band
-        if (hasWarn_ && warnMax_ > warnMin_)
-        {
-            const float a0 = toAngle(warnMin_);
-            const float a1 = toAngle(warnMax_);
-            if (a1 > a0)
-            {
-                juce::Path warnArc;
-                warnArc.addCentredArc(center.x, center.y, radius * 0.85f, radius * 0.85f, 0.0f, a0, a1, true);
-                g.setColour(juce::Colour(0xfff39c12)); // amber
-                g.strokePath(warnArc, juce::PathStrokeType(4.5f));
-            }
-        }
-
-        // Critical band
-        if (hasCrit_ && critMax_ > critMin_)
-        {
-            const float a0 = toAngle(critMin_);
-            const float a1 = toAngle(critMax_);
-            if (a1 > a0)
-            {
-                juce::Path critArc;
-                critArc.addCentredArc(center.x, center.y, radius * 0.85f, radius * 0.85f, 0.0f, a0, a1, true);
-                g.setColour(juce::Colour(0xffe74c3c)); // red
-                g.strokePath(critArc, juce::PathStrokeType(4.5f));
-            }
-        }
-
-        // Graduation tick marks
-        const int numTicks = 10;
-        for (int i = 0; i <= numTicks; ++i)
-        {
-            const float frac = (float)i / (float)numTicks;
-            const float angle = startAngle + frac * totalAngle;
-            const float cosA = std::cos(angle - juce::MathConstants<float>::halfPi);
-            const float sinA = std::sin(angle - juce::MathConstants<float>::halfPi);
-
-            const float r1 = radius * 0.85f;
-            const float r2 = radius * (i % 2 == 0 ? 0.70f : 0.77f);
-            g.setColour(i % 2 == 0 ? juce::Colour(0xffc5d1de) : juce::Colour(0xff6c7d93));
-            g.drawLine(center.x + cosA * r1, center.y + sinA * r1,
-                       center.x + cosA * r2, center.y + sinA * r2, i % 2 == 0 ? 2.0f : 1.2f);
-        }
-
-        // Title and Unit
-        g.setFont(juce::Font(11.0f, juce::Font::bold));
-        g.setColour(juce::Colour(0xff8b9bb0));
-        g.drawText(juce::String(title_), center.x - 50.0f, center.y - radius * 0.45f, 100.0f, 16.0f, juce::Justification::centred);
-        g.setFont(juce::Font(10.0f));
-        g.drawText(juce::String(unit_), center.x - 50.0f, center.y + radius * 0.25f, 100.0f, 16.0f, juce::Justification::centred);
-
-        // Digital Readout at bottom of dial
-        std::ostringstream ss;
-        ss << std::fixed << std::setprecision(precision_) << actualVal_;
-        g.setFont(juce::Font(juce::Font::getDefaultMonospacedFontName(), 11.0f, juce::Font::bold));
-        g.setColour(juce::Colour(0xff00ffcc));
-        g.drawText(ss.str(), center.x - 40.0f, center.y + radius * 0.45f, 80.0f, 16.0f, juce::Justification::centred);
-
-        // Needle
-        const double span = std::max(1e-9, maxVal_ - minVal_);
-        const float norm = (float)std::clamp((val_ - minVal_) / span, 0.0, 1.0);
-        const float needleAngle = startAngle + norm * totalAngle - juce::MathConstants<float>::halfPi;
-        const float nCos = std::cos(needleAngle);
-        const float nSin = std::sin(needleAngle);
-
-        juce::Path needle;
-        needle.startNewSubPath(center.x - nSin * 3.0f, center.y + nCos * 3.0f);
-        needle.lineTo(center.x + nCos * (radius * 0.82f), center.y + nSin * (radius * 0.82f));
-        needle.lineTo(center.x + nSin * 3.0f, center.y - nCos * 3.0f);
-        needle.closeSubPath();
-
-        g.setColour(juce::Colour(0xffff5555));
-        g.fillPath(needle);
-
-        // Center boss cap
-        g.setColour(juce::Colour(0xffe0e6ed));
-        g.fillEllipse(center.x - 5.0f, center.y - 5.0f, 10.0f, 10.0f);
-    }
-
-private:
-    std::string title_, unit_;
-    double minVal_ = 0.0, maxVal_ = 100.0, val_ = 0.0, actualVal_ = 0.0;
-    int precision_ = 1;
-    bool hasWarn_ = false;
-    double warnMin_ = 0.0, warnMax_ = 0.0;
-    bool hasCrit_ = false;
-    double critMin_ = 0.0, critMax_ = 0.0;
-};
 
 // Custom Indicator Lamp
 class IndicatorLampComponent final : public juce::Component
@@ -166,6 +233,15 @@ public:
     void setActive(bool active)
     {
         active_ = active;
+        repaint();
+    }
+
+    void setLabel(const std::string& label) { label_ = label; repaint(); }
+    void updateConfig(const WidgetConfig& cfg, bool resetVal = true)
+    {
+        label_ = cfg.title;
+        if (resetVal)
+            active_ = false;
         repaint();
     }
 
@@ -446,6 +522,34 @@ public:
         repaint();
     }
 
+    void updateConfig(const WidgetConfig& cfg, bool resetVal = true)
+    {
+        label_ = cfg.title;
+        unit_ = cfg.unit;
+        precision_ = std::clamp(cfg.precision, 0, 4);
+        hasWarn_ = cfg.hasWarnRange;
+        warnMin_ = cfg.warnMin;
+        warnMax_ = cfg.warnMax;
+        hasCrit_ = cfg.hasCritRange;
+        critMin_ = cfg.critMin;
+        critMax_ = cfg.critMax;
+        if (resetVal)
+        {
+            val_ = 0.0;
+            hasNumeric_ = true;
+            std::ostringstream ss;
+            ss << std::fixed << std::setprecision(precision_) << 0.0;
+            valText_ = ss.str();
+        }
+        else if (hasNumeric_)
+        {
+            std::ostringstream ss;
+            ss << std::fixed << std::setprecision(precision_) << val_;
+            valText_ = ss.str();
+        }
+        repaint();
+    }
+
     void paint(juce::Graphics& g) override
     {
         auto b = getLocalBounds().toFloat();
@@ -507,6 +611,32 @@ public:
     }
 
     double getValue() const { return actualVal_; }
+
+    void updateConfig(const WidgetConfig& cfg, bool resetVal = true)
+    {
+        title_ = cfg.title;
+        unit_ = cfg.unit;
+        minVal_ = cfg.minValue;
+        maxVal_ = (cfg.maxValue > cfg.minValue) ? cfg.maxValue : (cfg.minValue + 1.0);
+        vertical_ = cfg.vertical;
+        precision_ = std::clamp(cfg.precision, 0, 4);
+        hasWarn_ = cfg.hasWarnRange;
+        warnMin_ = cfg.warnMin;
+        warnMax_ = cfg.warnMax;
+        hasCrit_ = cfg.hasCritRange;
+        critMin_ = cfg.critMin;
+        critMax_ = cfg.critMax;
+        if (resetVal)
+        {
+            actualVal_ = 0.0;
+            val_ = std::clamp(0.0, minVal_, maxVal_);
+        }
+        else
+        {
+            val_ = std::clamp(actualVal_, minVal_, maxVal_);
+        }
+        repaint();
+    }
 
     void paint(juce::Graphics& g) override
     {
@@ -822,6 +952,19 @@ public:
             slider.setTextValueSuffix(" " + juce::String(unit));
     }
 
+    void updateConfig(const WidgetConfig& cfg)
+    {
+        juce::String labelText = juce::String(cfg.title);
+        if (!cfg.unit.empty())
+            labelText << " [" << juce::String(cfg.unit) << "]";
+        label.setText(labelText, juce::dontSendNotification);
+        slider.setRange(cfg.minValue, cfg.maxValue, cfg.stepSize);
+        if (!cfg.unit.empty())
+            slider.setTextValueSuffix(" " + juce::String(cfg.unit));
+        else
+            slider.setTextValueSuffix({});
+    }
+
     void resized() override
     {
         auto b = getLocalBounds();
@@ -852,6 +995,8 @@ private:
     bool isKnob_ = false;
     bool isVertical_ = false;
 };
+
+} // namespace
 
 std::string cleanSignalName(std::string name)
 {
@@ -1054,6 +1199,9 @@ bool resolveBooleanSignal(const StateSnapshot& snap, const std::string& rawSigna
 
     return false;
 }
+
+namespace
+{
 
 double signalValue(const StateSnapshot& snap, const std::string& signal, bool* found = nullptr)
 {
@@ -2952,296 +3100,355 @@ private:
     juce::Point<int> mouseDownPos_;
 };
 
-// Properties and Connection Picker Dialog
-class WidgetPropertiesDialog final : public juce::Component
+} // namespace
+
+// Properties and Connection Picker Dialog Implementation
+WidgetPropertiesDialog::WidgetPropertiesDialog(WidgetConfig config, std::vector<SignalDef> availableSignals,
+                                               std::vector<OperatorPanelConfig> panels,
+                                               std::function<void(const WidgetConfig&)> onApplyCallback)
+    : cfg_(std::move(config)), signals_(std::move(availableSignals)), panels_(std::move(panels)), onApply_(std::move(onApplyCallback))
 {
-public:
-    WidgetPropertiesDialog(WidgetConfig config, std::vector<SignalDef> availableSignals,
-                           std::vector<OperatorPanelConfig> panels,
-                           std::function<void(const WidgetConfig&)> onApplyCallback)
-        : cfg_(std::move(config)), signals_(std::move(availableSignals)), panels_(std::move(panels)), onApply_(std::move(onApplyCallback))
+    titleEd_.setText(juce::String(cfg_.title));
+    unitEd_.setText(juce::String(cfg_.unit));
+    minEd_.setText(juce::String(cfg_.minValue, 2));
+    maxEd_.setText(juce::String(cfg_.maxValue, 2));
+    defEd_.setText(juce::String(cfg_.defaultValue, 2));
+    stepEd_.setText(juce::String(cfg_.stepSize, 2));
+    precBox_.addItem("0 Decimals", 1);
+    precBox_.addItem("1 Decimal", 2);
+    precBox_.addItem("2 Decimals", 3);
+    precBox_.addItem("3 Decimals", 4);
+    precBox_.setSelectedId(std::clamp(cfg_.precision, 0, 3) + 1, juce::dontSendNotification);
+
+    int matchPanelId = 1;
+    const auto activePanel = cfg_.panelId.empty() ? std::string("main") : cfg_.panelId;
+    for (size_t i = 0; i < panels_.size(); ++i)
     {
-        titleEd_.setText(juce::String(cfg_.title));
-        unitEd_.setText(juce::String(cfg_.unit));
-        minEd_.setText(juce::String(cfg_.minValue, 2));
-        maxEd_.setText(juce::String(cfg_.maxValue, 2));
-        defEd_.setText(juce::String(cfg_.defaultValue, 2));
-        stepEd_.setText(juce::String(cfg_.stepSize, 2));
-        precBox_.addItem("0 Decimals", 1);
-        precBox_.addItem("1 Decimal", 2);
-        precBox_.addItem("2 Decimals", 3);
-        precBox_.addItem("3 Decimals", 4);
-        precBox_.setSelectedId(std::clamp(cfg_.precision, 0, 3) + 1, juce::dontSendNotification);
+        const auto& p = panels_[i];
+        panelPickerBox_.addItem(p.title.empty() ? juce::String(p.id) : juce::String(p.title), (int)i + 1);
+        if (p.id == activePanel)
+            matchPanelId = (int)i + 1;
+    }
+    panelPickerBox_.setSelectedId(matchPanelId, juce::dontSendNotification);
 
-        int matchPanelId = 1;
-        const auto activePanel = cfg_.panelId.empty() ? std::string("main") : cfg_.panelId;
-        for (size_t i = 0; i < panels_.size(); ++i)
+    sigEd_.setText(juce::String(cfg_.signalName));
+    secSigEd_.setText(juce::String(cfg_.secondarySignal));
+
+    momentaryBtn_.setButtonText("Momentary Action (Hold to activate)");
+    momentaryBtn_.setToggleState(cfg_.momentary, juce::dontSendNotification);
+
+    verticalBtn_.setButtonText("Vertical Orientation");
+    verticalBtn_.setToggleState(cfg_.vertical, juce::dontSendNotification);
+
+    hasWarnBtn_.setButtonText("Warning Range Zone");
+    hasWarnBtn_.setToggleState(cfg_.hasWarnRange, juce::dontSendNotification);
+    warnMinEd_.setText(juce::String(cfg_.warnMin, 2));
+    warnMaxEd_.setText(juce::String(cfg_.warnMax, 2));
+
+    hasCritBtn_.setButtonText("Critical Range Zone");
+    hasCritBtn_.setToggleState(cfg_.hasCritRange, juce::dontSendNotification);
+    critMinEd_.setText(juce::String(cfg_.critMin, 2));
+    critMaxEd_.setText(juce::String(cfg_.critMax, 2));
+
+    sigPickerBox_.addItem("-- Select from Available Simulation Connections --", 1);
+    int matchId = 1;
+    const auto cleanCfgSig = cleanSignalName(cfg_.signalName);
+    for (size_t i = 0; i < signals_.size(); ++i)
+    {
+        const auto& s = signals_[i];
+        juce::String itemText;
+        itemText << (s.isOutput ? "[OUT] " : "[IN] ") << juce::String(s.name);
+        if (!s.unit.empty())
+            itemText << " (" << juce::String(s.unit) << ")";
+        if (!s.description.empty())
+            itemText << " - " << juce::String(s.description);
+        sigPickerBox_.addItem(itemText, (int)i + 2);
+        if (s.name == cfg_.signalName || cleanSignalName(s.name) == cleanCfgSig)
+            matchId = (int)i + 2;
+    }
+    sigPickerBox_.setSelectedId(matchId, juce::dontSendNotification);
+    sigPickerBox_.onChange = [this] {
+        const int id = sigPickerBox_.getSelectedId();
+        if (id >= 2 && id - 2 < (int)signals_.size())
         {
-            const auto& p = panels_[i];
-            panelPickerBox_.addItem(p.title.empty() ? juce::String(p.id) : juce::String(p.title), (int)i + 1);
-            if (p.id == activePanel)
-                matchPanelId = (int)i + 1;
+            const auto& s = signals_[(size_t)(id - 2)];
+            sigEd_.setText(juce::String(s.name));
+            if (!s.unit.empty())
+                unitEd_.setText(juce::String(s.unit));
+            if (s.maxValue > s.minValue)
+            {
+                minEd_.setText(juce::String(s.minValue, 1));
+                maxEd_.setText(juce::String(s.maxValue, 1));
+            }
+            updateCompatibilityLabel(s);
         }
-        panelPickerBox_.setSelectedId(matchPanelId, juce::dontSendNotification);
+    };
 
-        sigEd_.setText(juce::String(cfg_.signalName));
-        secSigEd_.setText(juce::String(cfg_.secondarySignal));
-
-        momentaryBtn_.setButtonText("Momentary Action (Hold to activate)");
-        momentaryBtn_.setToggleState(cfg_.momentary, juce::dontSendNotification);
-
-        verticalBtn_.setButtonText("Vertical Orientation");
-        verticalBtn_.setToggleState(cfg_.vertical, juce::dontSendNotification);
-
-        hasWarnBtn_.setButtonText("Warning Range Zone");
-        hasWarnBtn_.setToggleState(cfg_.hasWarnRange, juce::dontSendNotification);
-        warnMinEd_.setText(juce::String(cfg_.warnMin, 2));
-        warnMaxEd_.setText(juce::String(cfg_.warnMax, 2));
-
-        hasCritBtn_.setButtonText("Critical Range Zone");
-        hasCritBtn_.setToggleState(cfg_.hasCritRange, juce::dontSendNotification);
-        critMinEd_.setText(juce::String(cfg_.critMin, 2));
-        critMaxEd_.setText(juce::String(cfg_.critMax, 2));
-
-        sigPickerBox_.addItem("-- Select from Available Simulation Connections --", 1);
-        int matchId = 1;
+    sigEd_.onTextChange = [this] {
+        const auto cleaned = cleanSignalName(sigEd_.getText().toStdString());
+        int match = 1;
         for (size_t i = 0; i < signals_.size(); ++i)
         {
-            const auto& s = signals_[i];
-            juce::String itemText;
-            itemText << (s.isOutput ? "[OUT] " : "[IN] ") << juce::String(s.name);
-            if (!s.unit.empty())
-                itemText << " (" << juce::String(s.unit) << ")";
-            if (!s.description.empty())
-                itemText << " - " << juce::String(s.description);
-            sigPickerBox_.addItem(itemText, (int)i + 2);
-            if (s.name == cfg_.signalName)
-                matchId = (int)i + 2;
-        }
-        sigPickerBox_.setSelectedId(matchId, juce::dontSendNotification);
-        sigPickerBox_.onChange = [this] {
-            const int id = sigPickerBox_.getSelectedId();
-            if (id >= 2 && id - 2 < (int)signals_.size())
+            if (signals_[i].name == cleaned || cleanSignalName(signals_[i].name) == cleaned)
             {
-                const auto& s = signals_[(size_t)(id - 2)];
-                sigEd_.setText(juce::String(s.name));
-                if (!s.unit.empty())
-                    unitEd_.setText(juce::String(s.unit));
-                if (s.maxValue > s.minValue)
-                {
-                    const double curMin = minEd_.getText().getDoubleValue();
-                    const double curMax = maxEd_.getText().getDoubleValue();
-                    if ((curMin == 0.0 && curMax == 100.0) || curMin >= curMax)
-                    {
-                        minEd_.setText(juce::String(s.minValue, 1));
-                        maxEd_.setText(juce::String(s.maxValue, 1));
-                    }
-                }
-                updateCompatibilityLabel(s);
+                match = (int)i + 2;
+                break;
             }
-        };
-
-        compatLabel_.setFont(juce::Font(11.0f, juce::Font::bold));
-        if (matchId >= 2 && matchId - 2 < (int)signals_.size())
-            updateCompatibilityLabel(signals_[(size_t)(matchId - 2)]);
+        }
+        sigPickerBox_.setSelectedId(match, juce::dontSendNotification);
+        if (match >= 2 && match - 2 < (int)signals_.size())
+            updateCompatibilityLabel(signals_[(size_t)(match - 2)]);
         else
             compatLabel_.setText("Custom / Unbound signal identifier.", juce::dontSendNotification);
+    };
 
-        auto addField = [this](juce::Label& lbl, const juce::String& text, juce::Component& comp) {
-            lbl.setText(text, juce::dontSendNotification);
-            lbl.setFont(juce::Font(11.5f, juce::Font::bold));
-            lbl.setColour(juce::Label::textColourId, juce::Colour(0xffc5d1de));
-            addAndMakeVisible(lbl);
-            addAndMakeVisible(comp);
-        };
+    compatLabel_.setFont(juce::Font(11.0f, juce::Font::bold));
+    if (matchId >= 2 && matchId - 2 < (int)signals_.size())
+        updateCompatibilityLabel(signals_[(size_t)(matchId - 2)]);
+    else
+        compatLabel_.setText("Custom / Unbound signal identifier.", juce::dontSendNotification);
 
-        addField(lblTitle_, "Title / Label:", titleEd_);
-        addField(lblPanelPicker_, "Target Panel:", panelPickerBox_);
-        addField(lblUnit_, "Unit:", unitEd_);
-        addField(lblMin_, "Min Value:", minEd_);
-        addField(lblMax_, "Max Value:", maxEd_);
-        addField(lblDef_, "Default:", defEd_);
-        addField(lblStep_, "Step Size:", stepEd_);
-        addField(lblPrec_, "Precision:", precBox_);
-        addField(lblSigPicker_, "Connection Picker:", sigPickerBox_);
-        addField(lblSig_, "Signal Name:", sigEd_);
-        addField(lblSecSig_, "Secondary Signal:", secSigEd_);
+    auto addField = [this](juce::Label& lbl, const juce::String& text, juce::Component& comp) {
+        lbl.setText(text, juce::dontSendNotification);
+        lbl.setFont(juce::Font(11.5f, juce::Font::bold));
+        lbl.setColour(juce::Label::textColourId, juce::Colour(0xffc5d1de));
+        addAndMakeVisible(lbl);
+        addAndMakeVisible(comp);
+    };
 
-        addAndMakeVisible(compatLabel_);
-        addAndMakeVisible(momentaryBtn_);
-        addAndMakeVisible(verticalBtn_);
-        addAndMakeVisible(hasWarnBtn_);
-        addAndMakeVisible(warnMinEd_);
-        addAndMakeVisible(warnMaxEd_);
-        addAndMakeVisible(hasCritBtn_);
-        addAndMakeVisible(critMinEd_);
-        addAndMakeVisible(critMaxEd_);
+    addField(lblTitle_, "Title / Label:", titleEd_);
+    addField(lblPanelPicker_, "Target Panel:", panelPickerBox_);
+    addField(lblUnit_, "Unit:", unitEd_);
+    addField(lblMin_, "Min Value:", minEd_);
+    addField(lblMax_, "Max Value:", maxEd_);
+    addField(lblDef_, "Default:", defEd_);
+    addField(lblStep_, "Step Size:", stepEd_);
+    addField(lblPrec_, "Precision:", precBox_);
+    addField(lblSigPicker_, "Connection Picker:", sigPickerBox_);
+    addField(lblSig_, "Signal Name:", sigEd_);
+    addField(lblSecSig_, "Secondary Signal:", secSigEd_);
 
-        applyBtn_.setColour(juce::TextButton::buttonColourId, juce::Colour(0xff1b5e20));
-        applyBtn_.setColour(juce::TextButton::textColourOffId, juce::Colours::white);
-        applyBtn_.onClick = [this] {
-            cfg_.title = titleEd_.getText().toStdString();
-            const int selPanel = panelPickerBox_.getSelectedId();
-            if (selPanel >= 1 && selPanel <= (int)panels_.size())
-                cfg_.panelId = panels_[(size_t)(selPanel - 1)].id;
-            cfg_.unit = unitEd_.getText().toStdString();
-            cfg_.minValue = minEd_.getText().getDoubleValue();
-            cfg_.maxValue = maxEd_.getText().getDoubleValue();
-            cfg_.defaultValue = defEd_.getText().getDoubleValue();
-            cfg_.stepSize = std::max(1e-6, stepEd_.getText().getDoubleValue());
-            cfg_.precision = precBox_.getSelectedId() - 1;
-            cfg_.signalName = cleanSignalName(sigEd_.getText().toStdString());
-            if (cfg_.unit.empty())
-            {
-                if (cfg_.signalName.find("speed") != std::string::npos) cfg_.unit = "rad/s";
-                else if (cfg_.signalName.find("torque") != std::string::npos || cfg_.signalName.find("load") != std::string::npos) cfg_.unit = "N*m";
-                else if (cfg_.signalName.find("voltage") != std::string::npos || cfg_.signalName.find("drive") != std::string::npos || cfg_.signalName.find("tach") != std::string::npos) cfg_.unit = "V";
-                else if (cfg_.signalName.find("current") != std::string::npos) cfg_.unit = "A";
-            }
-            cfg_.secondarySignal = cleanSignalName(secSigEd_.getText().toStdString());
-            cfg_.momentary = momentaryBtn_.getToggleState();
-            cfg_.vertical = verticalBtn_.getToggleState();
-            cfg_.hasWarnRange = hasWarnBtn_.getToggleState();
-            cfg_.warnMin = warnMinEd_.getText().getDoubleValue();
-            cfg_.warnMax = warnMaxEd_.getText().getDoubleValue();
-            cfg_.hasCritRange = hasCritBtn_.getToggleState();
-            cfg_.critMin = critMinEd_.getText().getDoubleValue();
-            cfg_.critMax = critMaxEd_.getText().getDoubleValue();
+    addAndMakeVisible(compatLabel_);
+    addAndMakeVisible(momentaryBtn_);
+    addAndMakeVisible(verticalBtn_);
+    addAndMakeVisible(hasWarnBtn_);
+    addAndMakeVisible(warnMinEd_);
+    addAndMakeVisible(warnMaxEd_);
+    addAndMakeVisible(hasCritBtn_);
+    addAndMakeVisible(critMinEd_);
+    addAndMakeVisible(critMaxEd_);
 
-            if (onApply_)
-                onApply_(cfg_);
-
-            if (auto* dw = findParentComponentOfClass<juce::DialogWindow>())
-                dw->exitModalState(1);
-        };
-        addAndMakeVisible(applyBtn_);
-
-        cancelBtn_.setColour(juce::TextButton::buttonColourId, juce::Colour(0xff445261));
-        cancelBtn_.setColour(juce::TextButton::textColourOffId, juce::Colours::white);
-        cancelBtn_.onClick = [this] {
-            if (auto* dw = findParentComponentOfClass<juce::DialogWindow>())
-                dw->exitModalState(0);
-        };
-        addAndMakeVisible(cancelBtn_);
-    }
-
-    void updateCompatibilityLabel(const SignalDef& s)
-    {
-        const bool isInstrument = (cfg_.type == WidgetType::AnalogGauge || cfg_.type == WidgetType::DigitalReadout
-                                   || cfg_.type == WidgetType::BarGauge || cfg_.type == WidgetType::IndicatorLamp
-                                   || cfg_.type == WidgetType::TrendChart || cfg_.type == WidgetType::ClockDisplay);
-        if (isInstrument)
+    applyBtn_.setColour(juce::TextButton::buttonColourId, juce::Colour(0xff1b5e20));
+    applyBtn_.setColour(juce::TextButton::textColourOffId, juce::Colours::white);
+    applyBtn_.onClick = [this] {
+        cfg_.title = titleEd_.getText().toStdString();
+        const int selPanel = panelPickerBox_.getSelectedId();
+        if (selPanel >= 1 && selPanel <= (int)panels_.size())
+            cfg_.panelId = panels_[(size_t)(selPanel - 1)].id;
+        cfg_.unit = unitEd_.getText().toStdString();
+        cfg_.minValue = minEd_.getText().getDoubleValue();
+        cfg_.maxValue = maxEd_.getText().getDoubleValue();
+        cfg_.defaultValue = defEd_.getText().getDoubleValue();
+        cfg_.stepSize = std::max(1e-6, stepEd_.getText().getDoubleValue());
+        cfg_.precision = precBox_.getSelectedId() - 1;
+        const auto oldSig = cfg_.signalName;
+        cfg_.signalName = cleanSignalName(sigEd_.getText().toStdString());
+        if (cfg_.unit.empty())
         {
-            if (!s.isOutput)
-            {
-                compatLabel_.setColour(juce::Label::textColourId, juce::Colour(0xffffbb00));
-                compatLabel_.setText("[Notice: Connection is an operator input, but gauge reads outputs]", juce::dontSendNotification);
-            }
-            else if (cfg_.type == WidgetType::AnalogGauge && s.type == DataType::Boolean)
-            {
-                compatLabel_.setColour(juce::Label::textColourId, juce::Colour(0xffff6666));
-                compatLabel_.setText("[Incompatible: Boolean signal cannot drive analog dial gauge]", juce::dontSendNotification);
-            }
-            else
-            {
-                compatLabel_.setColour(juce::Label::textColourId, juce::Colour(0xff44ff88));
-                compatLabel_.setText("[Compatible simulation output connection verified]", juce::dontSendNotification);
-            }
+            if (cfg_.signalName.find("speed") != std::string::npos) cfg_.unit = "rad/s";
+            else if (cfg_.signalName.find("torque") != std::string::npos || cfg_.signalName.find("load") != std::string::npos) cfg_.unit = "N*m";
+            else if (cfg_.signalName.find("voltage") != std::string::npos || cfg_.signalName.find("drive") != std::string::npos || cfg_.signalName.find("tach") != std::string::npos) cfg_.unit = "V";
+            else if (cfg_.signalName.find("current") != std::string::npos) cfg_.unit = "A";
+            else if (cfg_.signalName.find("angle") != std::string::npos) cfg_.unit = "rad";
+        }
+        else if (oldSig != cfg_.signalName)
+        {
+            // If the signal was rebound, prevent stale unit from old signal
+            if (cfg_.signalName.find("speed") != std::string::npos && (cfg_.unit == "A" || cfg_.unit == "V" || cfg_.unit == "N*m"))
+                cfg_.unit = "rad/s";
+            else if (cfg_.signalName.find("current") != std::string::npos && (cfg_.unit == "rad/s" || cfg_.unit == "V" || cfg_.unit == "N*m"))
+                cfg_.unit = "A";
+            else if (cfg_.signalName.find("torque") != std::string::npos && (cfg_.unit == "A" || cfg_.unit == "rad/s" || cfg_.unit == "V"))
+                cfg_.unit = "N*m";
+            else if ((cfg_.signalName.find("voltage") != std::string::npos || cfg_.signalName.find("tach") != std::string::npos) && (cfg_.unit == "A" || cfg_.unit == "rad/s" || cfg_.unit == "N*m"))
+                cfg_.unit = "V";
+        }
+        cfg_.secondarySignal = cleanSignalName(secSigEd_.getText().toStdString());
+        cfg_.momentary = momentaryBtn_.getToggleState();
+        cfg_.vertical = verticalBtn_.getToggleState();
+        cfg_.hasWarnRange = hasWarnBtn_.getToggleState();
+        cfg_.warnMin = warnMinEd_.getText().getDoubleValue();
+        cfg_.warnMax = warnMaxEd_.getText().getDoubleValue();
+        cfg_.hasCritRange = hasCritBtn_.getToggleState();
+        cfg_.critMin = critMinEd_.getText().getDoubleValue();
+        cfg_.critMax = critMaxEd_.getText().getDoubleValue();
+
+        if (onApply_)
+            onApply_(cfg_);
+
+        if (auto* dw = findParentComponentOfClass<juce::DialogWindow>())
+            dw->exitModalState(1);
+    };
+    addAndMakeVisible(applyBtn_);
+
+    cancelBtn_.setColour(juce::TextButton::buttonColourId, juce::Colour(0xff445261));
+    cancelBtn_.setColour(juce::TextButton::textColourOffId, juce::Colours::white);
+    cancelBtn_.onClick = [this] {
+        if (auto* dw = findParentComponentOfClass<juce::DialogWindow>())
+            dw->exitModalState(0);
+    };
+    addAndMakeVisible(cancelBtn_);
+}
+
+void WidgetPropertiesDialog::setTitleText(const juce::String& text) { titleEd_.setText(text); }
+void WidgetPropertiesDialog::setUnitText(const juce::String& text) { unitEd_.setText(text); }
+void WidgetPropertiesDialog::setMinText(const juce::String& text) { minEd_.setText(text); }
+void WidgetPropertiesDialog::setMaxText(const juce::String& text) { maxEd_.setText(text); }
+void WidgetPropertiesDialog::setSignalText(const juce::String& text)
+{
+    sigEd_.setText(text);
+    const auto s = text.toStdString();
+    if (s.find("speed") != std::string::npos) unitEd_.setText("rad/s");
+    else if (s.find("current") != std::string::npos) unitEd_.setText("A");
+    else if (s.find("voltage") != std::string::npos) unitEd_.setText("V");
+    else if (s.find("torque") != std::string::npos) unitEd_.setText("N*m");
+}
+void WidgetPropertiesDialog::setPrecisionIndex(int index) { precBox_.setSelectedId(index, juce::sendNotificationSync); }
+void WidgetPropertiesDialog::setWarningZone(bool enabled, double minVal, double maxVal)
+{
+    hasWarnBtn_.setToggleState(enabled, juce::dontSendNotification);
+    warnMinEd_.setText(juce::String(minVal, 2));
+    warnMaxEd_.setText(juce::String(maxVal, 2));
+}
+void WidgetPropertiesDialog::setCriticalZone(bool enabled, double minVal, double maxVal)
+{
+    hasCritBtn_.setToggleState(enabled, juce::dontSendNotification);
+    critMinEd_.setText(juce::String(minVal, 2));
+    critMaxEd_.setText(juce::String(maxVal, 2));
+}
+void WidgetPropertiesDialog::selectSignalByName(const std::string& sigName)
+{
+    const auto cleaned = cleanSignalName(sigName);
+    bool found = false;
+    for (size_t i = 0; i < signals_.size(); ++i)
+    {
+        if (signals_[i].name == cleaned || cleanSignalName(signals_[i].name) == cleaned)
+        {
+            sigPickerBox_.setSelectedId((int)i + 2, juce::sendNotificationSync);
+            found = true;
+            break;
+        }
+    }
+    if (!found)
+    {
+        sigEd_.setText(sigName);
+        if (sigName.find("speed") != std::string::npos) { unitEd_.setText("rad/s"); maxEd_.setText("600.0"); }
+        else if (sigName.find("current") != std::string::npos) { unitEd_.setText("A"); minEd_.setText("-20.0"); maxEd_.setText("20.0"); }
+        else if (sigName.find("voltage") != std::string::npos) { unitEd_.setText("V"); minEd_.setText("0.0"); maxEd_.setText("24.0"); }
+        else if (sigName.find("torque") != std::string::npos) { unitEd_.setText("N*m"); minEd_.setText("0.0"); maxEd_.setText("0.05"); }
+    }
+}
+void WidgetPropertiesDialog::clickApply()
+{
+    if (applyBtn_.onClick)
+        applyBtn_.onClick();
+    else
+        applyBtn_.triggerClick();
+}
+
+void WidgetPropertiesDialog::updateCompatibilityLabel(const SignalDef& s)
+{
+    const bool isInstrument = (cfg_.type == WidgetType::AnalogGauge || cfg_.type == WidgetType::DigitalReadout
+                               || cfg_.type == WidgetType::BarGauge || cfg_.type == WidgetType::IndicatorLamp
+                               || cfg_.type == WidgetType::TrendChart || cfg_.type == WidgetType::ClockDisplay);
+    if (isInstrument)
+    {
+        if (!s.isOutput)
+        {
+            compatLabel_.setColour(juce::Label::textColourId, juce::Colour(0xffffbb00));
+            compatLabel_.setText("[Notice: Connection is an operator input, but gauge reads outputs]", juce::dontSendNotification);
+        }
+        else if (cfg_.type == WidgetType::AnalogGauge && s.type == DataType::Boolean)
+        {
+            compatLabel_.setColour(juce::Label::textColourId, juce::Colour(0xffff6666));
+            compatLabel_.setText("[Incompatible: Boolean signal cannot drive analog dial gauge]", juce::dontSendNotification);
         }
         else
         {
-            if (s.isOutput)
-            {
-                compatLabel_.setColour(juce::Label::textColourId, juce::Colour(0xffffbb00));
-                compatLabel_.setText("[Notice: Connection is a simulation output, but control drives inputs]", juce::dontSendNotification);
-            }
-            else
-            {
-                compatLabel_.setColour(juce::Label::textColourId, juce::Colour(0xff44ff88));
-                compatLabel_.setText("[Compatible operator control connection verified]", juce::dontSendNotification);
-            }
+            compatLabel_.setColour(juce::Label::textColourId, juce::Colour(0xff44ff88));
+            compatLabel_.setText("[Compatible simulation output connection verified]", juce::dontSendNotification);
         }
     }
-
-    void resized() override
+    else
     {
-        auto b = getLocalBounds().reduced(16);
-        const int rowH = 24;
-        const int gap = 8;
-        const int lblW = 120;
-
-        auto addRow = [&](juce::Label& lbl, juce::Component& comp) {
-            auto r = b.removeFromTop(rowH);
-            lbl.setBounds(r.removeFromLeft(lblW));
-            comp.setBounds(r);
-            b.removeFromTop(gap);
-        };
-
-        addRow(lblTitle_, titleEd_);
-        addRow(lblPanelPicker_, panelPickerBox_);
-        addRow(lblUnit_, unitEd_);
-        addRow(lblMin_, minEd_);
-        addRow(lblMax_, maxEd_);
-        addRow(lblDef_, defEd_);
-        addRow(lblStep_, stepEd_);
-        addRow(lblPrec_, precBox_);
-        addRow(lblSigPicker_, sigPickerBox_);
-        addRow(lblSig_, sigEd_);
-
-        compatLabel_.setBounds(b.removeFromTop(20).withTrimmedLeft(lblW));
-        b.removeFromTop(gap);
-
-        addRow(lblSecSig_, secSigEd_);
-
-        auto rMode = b.removeFromTop(rowH);
-        momentaryBtn_.setBounds(rMode.removeFromLeft(rMode.getWidth() / 2));
-        verticalBtn_.setBounds(rMode);
-        b.removeFromTop(gap);
-
-        auto rWarn = b.removeFromTop(rowH);
-        hasWarnBtn_.setBounds(rWarn.removeFromLeft(lblW + 40));
-        warnMinEd_.setBounds(rWarn.removeFromLeft(70).reduced(2));
-        warnMaxEd_.setBounds(rWarn.removeFromLeft(70).reduced(2));
-        b.removeFromTop(gap);
-
-        auto rCrit = b.removeFromTop(rowH);
-        hasCritBtn_.setBounds(rCrit.removeFromLeft(lblW + 40));
-        critMinEd_.setBounds(rCrit.removeFromLeft(70).reduced(2));
-        critMaxEd_.setBounds(rCrit.removeFromLeft(70).reduced(2));
-        b.removeFromTop(gap * 2);
-
-        auto btnRow = b.removeFromTop(32);
-        applyBtn_.setBounds(btnRow.removeFromRight(100).reduced(2));
-        btnRow.removeFromRight(8);
-        cancelBtn_.setBounds(btnRow.removeFromRight(90).reduced(2));
+        if (s.isOutput)
+        {
+            compatLabel_.setColour(juce::Label::textColourId, juce::Colour(0xffffbb00));
+            compatLabel_.setText("[Notice: Connection is a simulation output, but control drives inputs]", juce::dontSendNotification);
+        }
+        else
+        {
+            compatLabel_.setColour(juce::Label::textColourId, juce::Colour(0xff44ff88));
+            compatLabel_.setText("[Compatible operator control connection verified]", juce::dontSendNotification);
+        }
     }
+}
 
-private:
-    WidgetConfig cfg_;
-    std::vector<SignalDef> signals_;
-    std::vector<OperatorPanelConfig> panels_;
-    std::function<void(const WidgetConfig&)> onApply_;
+void WidgetPropertiesDialog::resized()
+{
+    auto b = getLocalBounds().reduced(16);
+    const int rowH = 24;
+    const int gap = 8;
+    const int lblW = 120;
 
-    juce::Label lblTitle_, lblPanelPicker_, lblUnit_, lblMin_, lblMax_, lblDef_, lblStep_, lblPrec_;
-    juce::Label lblSigPicker_, lblSig_, lblSecSig_;
-    juce::Label compatLabel_;
+    auto addRow = [&](juce::Label& lbl, juce::Component& comp) {
+        auto r = b.removeFromTop(rowH);
+        lbl.setBounds(r.removeFromLeft(lblW));
+        comp.setBounds(r);
+        b.removeFromTop(gap);
+    };
 
-    juce::TextEditor titleEd_, unitEd_, minEd_, maxEd_, defEd_, stepEd_;
-    juce::ComboBox panelPickerBox_;
-    juce::ComboBox precBox_;
-    juce::ComboBox sigPickerBox_;
-    juce::TextEditor sigEd_, secSigEd_;
+    addRow(lblTitle_, titleEd_);
+    addRow(lblPanelPicker_, panelPickerBox_);
+    addRow(lblUnit_, unitEd_);
+    addRow(lblMin_, minEd_);
+    addRow(lblMax_, maxEd_);
+    addRow(lblDef_, defEd_);
+    addRow(lblStep_, stepEd_);
+    addRow(lblPrec_, precBox_);
+    addRow(lblSigPicker_, sigPickerBox_);
+    addRow(lblSig_, sigEd_);
 
-    juce::ToggleButton momentaryBtn_;
-    juce::ToggleButton verticalBtn_;
-    juce::ToggleButton hasWarnBtn_;
-    juce::TextEditor warnMinEd_, warnMaxEd_;
-    juce::ToggleButton hasCritBtn_;
-    juce::TextEditor critMinEd_, critMaxEd_;
+    compatLabel_.setBounds(b.removeFromTop(20).withTrimmedLeft(lblW));
+    b.removeFromTop(gap);
 
-    juce::TextButton applyBtn_ { "Apply" };
-    juce::TextButton cancelBtn_ { "Cancel" };
-};
+    addRow(lblSecSig_, secSigEd_);
+
+    auto rMode = b.removeFromTop(rowH);
+    momentaryBtn_.setBounds(rMode.removeFromLeft(rMode.getWidth() / 2));
+    verticalBtn_.setBounds(rMode);
+    b.removeFromTop(gap);
+
+    auto rWarn = b.removeFromTop(rowH);
+    hasWarnBtn_.setBounds(rWarn.removeFromLeft(lblW + 40));
+    warnMinEd_.setBounds(rWarn.removeFromLeft(70).reduced(2));
+    warnMaxEd_.setBounds(rWarn.removeFromLeft(70).reduced(2));
+    b.removeFromTop(gap);
+
+    auto rCrit = b.removeFromTop(rowH);
+    hasCritBtn_.setBounds(rCrit.removeFromLeft(lblW + 40));
+    critMinEd_.setBounds(rCrit.removeFromLeft(70).reduced(2));
+    critMaxEd_.setBounds(rCrit.removeFromLeft(70).reduced(2));
+    b.removeFromTop(gap * 2);
+
+    auto btnRow = b.removeFromTop(32);
+    applyBtn_.setBounds(btnRow.removeFromRight(100).reduced(2));
+    btnRow.removeFromRight(8);
+    cancelBtn_.setBounds(btnRow.removeFromRight(90).reduced(2));
+}
+
+namespace
+{
 
 } // namespace
 
@@ -3807,6 +4014,7 @@ bool ControlPanelComponent::setWidgetBounds(const std::string& widgetId, int x, 
                     {
                         wrapper->setBounds(x, y, width, height);
                         wrapper->config = w;
+                        ov.config = w;
                         break;
                     }
                 }
@@ -4089,7 +4297,7 @@ juce::Rectangle<int> ControlPanelComponent::getCanvasTotalArea() const
     return canvasComponent ? canvasComponent->getBounds() : juce::Rectangle<int>();
 }
 
-std::unique_ptr<juce::Component> ControlPanelComponent::createWidgetPropertiesDialog(const std::string& widgetId)
+std::unique_ptr<WidgetPropertiesDialog> ControlPanelComponent::createWidgetPropertiesDialog(const std::string& widgetId)
 {
     const auto* cfg = getWidgetConfig(widgetId);
     if (cfg == nullptr) return nullptr;
@@ -4658,35 +4866,136 @@ void ControlPanelComponent::notifyLayoutChanged()
 
 void ControlPanelComponent::updateWidgetConfig(const WidgetConfig& config)
 {
+    bool foundInLayout = false;
     for (auto& widget : layout_.widgets)
     {
         if (widget.id == config.id)
         {
             widget = config;
-            for (auto& ov : outputViews_)
-            {
-                if (auto* wrapper = dynamic_cast<DesignItemWrapper*>(ov.component.get()))
-                {
-                    if (wrapper->config.id == config.id)
-                    {
-                        wrapper->config = config;
-                        wrapper->setBounds(config.x, config.y, config.width, config.height);
-                        break;
-                    }
-                }
-                else if (auto* plot = dynamic_cast<PlotPanelWidget*>(ov.component.get()))
-                {
-                    if (plot->widgetId() == config.id)
-                    {
-                        ov.config = config;
-                        break;
-                    }
-                }
-            }
-            notifyLayoutChanged();
-            return;
+            foundInLayout = true;
+            break;
         }
     }
+    if (!foundInLayout)
+        return;
+
+    const auto currentPanelId = layout_.activePanelId.empty() ? std::string("main") : layout_.activePanelId;
+    const auto widgetPanelId = config.panelId.empty() ? std::string("main") : config.panelId;
+
+    if (widgetPanelId != currentPanelId)
+    {
+        buildWidgets();
+        resized();
+        notifyLayoutChanged();
+        return;
+    }
+
+    bool foundView = false;
+    for (auto& ov : outputViews_)
+    {
+        if (auto* wrapper = dynamic_cast<DesignItemWrapper*>(ov.component.get()))
+        {
+            if (wrapper->config.id == config.id)
+            {
+                foundView = true;
+                if (wrapper->config.type != config.type)
+                {
+                    buildWidgets();
+                    resized();
+                    notifyLayoutChanged();
+                    return;
+                }
+
+                const bool signalChanged = (cleanSignalName(wrapper->config.signalName) != cleanSignalName(config.signalName));
+                wrapper->config = config;
+                ov.config = config;
+                wrapper->setBounds(config.x, config.y, config.width, config.height);
+
+                if (auto* inner = wrapper->getWidget())
+                {
+                    if (auto* g = dynamic_cast<AnalogGaugeComponent*>(inner))
+                    {
+                        g->updateConfig(config, signalChanged);
+                        if (session_)
+                        {
+                            const auto snap = session_->getSnapshot();
+                            double val = 0.0;
+                            if (resolveNumericSignal(snap, config.signalName, val))
+                                g->setValue(val);
+                        }
+                    }
+                    else if (auto* dr = dynamic_cast<DigitalReadoutComponent*>(inner))
+                    {
+                        dr->updateConfig(config, signalChanged);
+                        if (session_)
+                        {
+                            const auto snap = session_->getSnapshot();
+                            double val = 0.0;
+                            bool bVal = false;
+                            if (resolveNumericSignal(snap, config.signalName, val))
+                                dr->setValue(val);
+                            else if (resolveBooleanSignal(snap, config.signalName, bVal))
+                                dr->setBooleanValue(bVal);
+                        }
+                    }
+                    else if (auto* bg = dynamic_cast<BarGaugeComponent*>(inner))
+                    {
+                        bg->updateConfig(config, signalChanged);
+                        if (session_)
+                        {
+                            const auto snap = session_->getSnapshot();
+                            double val = 0.0;
+                            if (resolveNumericSignal(snap, config.signalName, val))
+                                bg->setValue(val);
+                        }
+                    }
+                    else if (auto* lamp = dynamic_cast<IndicatorLampComponent*>(inner))
+                    {
+                        lamp->updateConfig(config, signalChanged);
+                        if (session_)
+                        {
+                            const auto snap = session_->getSnapshot();
+                            bool bVal = false;
+                            double val = 0.0;
+                            if (resolveBooleanSignal(snap, config.signalName, bVal))
+                                lamp->setActive(bVal);
+                            else if (resolveNumericSignal(snap, config.signalName, val))
+                                lamp->setActive(val > 0.5);
+                        }
+                    }
+                    else if (auto* sld = dynamic_cast<LabeledSliderComponent*>(inner))
+                    {
+                        sld->updateConfig(config);
+                    }
+                    else if (auto* btn = dynamic_cast<juce::Button*>(inner))
+                    {
+                        btn->setButtonText(juce::String(config.title));
+                    }
+                    inner->repaint();
+                }
+                wrapper->repaint();
+                break;
+            }
+        }
+        else if (auto* plot = dynamic_cast<PlotPanelWidget*>(ov.component.get()))
+        {
+            if (plot->widgetId() == config.id)
+            {
+                foundView = true;
+                ov.config = config;
+                plot->updateDisplay();
+                break;
+            }
+        }
+    }
+
+    if (!foundView)
+    {
+        buildWidgets();
+        resized();
+    }
+
+    notifyLayoutChanged();
 }
 
 MachineRecording& ControlPanelComponent::recordingFor(const std::string& widgetId)

@@ -20,6 +20,106 @@ namespace sim_panel
 {
 
 struct MachineRecording;
+class WidgetPropertiesDialog;
+
+// Custom Analog Gauge Component with runtime configuration and needle scaling
+class AnalogGaugeComponent final : public juce::Component
+{
+public:
+    AnalogGaugeComponent(const std::string& title, const std::string& unit, double minVal, double maxVal,
+                         int precision = 1,
+                         bool hasWarn = false, double warnMin = 0.0, double warnMax = 0.0,
+                         bool hasCrit = false, double critMin = 0.0, double critMax = 0.0);
+    ~AnalogGaugeComponent() override = default;
+
+    void setValue(double val);
+    void resetValue();
+    void updateConfig(const WidgetConfig& cfg, bool resetVal = true);
+
+    double getValue() const { return actualVal_; }
+    double getClampedValue() const { return val_; }
+    double getMinVal() const { return minVal_; }
+    double getMaxVal() const { return maxVal_; }
+    const std::string& getUnit() const { return unit_; }
+    const std::string& getTitle() const { return title_; }
+    int getPrecision() const { return precision_; }
+    bool hasWarnRange() const { return hasWarn_; }
+    double getWarnMin() const { return warnMin_; }
+    double getWarnMax() const { return warnMax_; }
+    bool hasCritRange() const { return hasCrit_; }
+    double getCritMin() const { return critMin_; }
+    double getCritMax() const { return critMax_; }
+
+    void setUnit(const std::string& unit);
+    void setTitle(const std::string& title);
+    void setRange(double minVal, double maxVal);
+
+    void paint(juce::Graphics& g) override;
+
+private:
+    std::string title_, unit_;
+    double minVal_ = 0.0, maxVal_ = 100.0, val_ = 0.0, actualVal_ = 0.0;
+    int precision_ = 1;
+    bool hasWarn_ = false;
+    double warnMin_ = 0.0, warnMax_ = 0.0;
+    bool hasCrit_ = false;
+    double critMin_ = 0.0, critMax_ = 0.0;
+};
+
+class WidgetPropertiesDialog final : public juce::Component
+{
+public:
+    WidgetPropertiesDialog(WidgetConfig config, std::vector<SignalDef> availableSignals,
+                           std::vector<OperatorPanelConfig> panels,
+                           std::function<void(const WidgetConfig&)> onApplyCallback);
+    ~WidgetPropertiesDialog() override = default;
+
+    void setTitleText(const juce::String& text);
+    void setUnitText(const juce::String& text);
+    void setMinText(const juce::String& text);
+    void setMaxText(const juce::String& text);
+    void setSignalText(const juce::String& text);
+    void selectSignalByName(const std::string& sigName);
+    void setPrecisionIndex(int index);
+    void setWarningZone(bool enabled, double minVal, double maxVal);
+    void setCriticalZone(bool enabled, double minVal, double maxVal);
+    void clickApply();
+    const WidgetConfig& getWorkingConfig() const { return cfg_; }
+
+    void resized() override;
+
+private:
+    void updateCompatibilityLabel(const SignalDef& s);
+
+    WidgetConfig cfg_;
+    std::vector<SignalDef> signals_;
+    std::vector<OperatorPanelConfig> panels_;
+    std::function<void(const WidgetConfig&)> onApply_;
+
+    juce::Label lblTitle_, lblPanelPicker_, lblUnit_, lblMin_, lblMax_, lblDef_, lblStep_, lblPrec_;
+    juce::Label lblSigPicker_, lblSig_, lblSecSig_;
+    juce::Label compatLabel_;
+
+    juce::TextEditor titleEd_, unitEd_, minEd_, maxEd_, defEd_, stepEd_;
+    juce::ComboBox panelPickerBox_;
+    juce::ComboBox precBox_;
+    juce::ComboBox sigPickerBox_;
+    juce::TextEditor sigEd_, secSigEd_;
+
+    juce::ToggleButton momentaryBtn_;
+    juce::ToggleButton verticalBtn_;
+    juce::ToggleButton hasWarnBtn_;
+    juce::TextEditor warnMinEd_, warnMaxEd_;
+    juce::ToggleButton hasCritBtn_;
+    juce::TextEditor critMinEd_, critMaxEd_;
+
+    juce::TextButton applyBtn_ { "Apply" };
+    juce::TextButton cancelBtn_ { "Cancel" };
+};
+
+std::string cleanSignalName(std::string name);
+bool resolveNumericSignal(const StateSnapshot& snap, const std::string& rawSignal, double& outVal);
+bool resolveBooleanSignal(const StateSnapshot& snap, const std::string& rawSignal, bool& outVal);
 
 class ControlPanelComponent final : public juce::Component, private juce::Timer
 {
@@ -145,7 +245,7 @@ public:
 
     // Dialog and Menu creation
     void showWidgetPropertiesDialog(const std::string& widgetId);
-    std::unique_ptr<juce::Component> createWidgetPropertiesDialog(const std::string& widgetId);
+    std::unique_ptr<WidgetPropertiesDialog> createWidgetPropertiesDialog(const std::string& widgetId);
     void showAddWidgetMenu(juce::Point<int> canvasPos, juce::Component* targetComponent = nullptr);
     juce::Point<int> getNewWidgetSpawnPosition(int widgetW = 160, int widgetH = 40) const;
     void showAlignMenu();
