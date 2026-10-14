@@ -897,7 +897,7 @@ public:
 
     bool pageAboutToLoad(const juce::String& newURL) override
     {
-        if (newURL.startsWith("about:") || newURL.startsWith("data:") || newURL.isEmpty())
+        if (newURL.startsWith("about:") || newURL.startsWith("data:") || newURL.startsWith("blob:") || newURL.isEmpty())
             return true;
 
         if (TopicRegistry::instance().isApprovedDocumentationUrl(newURL))
@@ -1003,8 +1003,26 @@ HelpPanel::HelpPanel()
 
     // Embedded Browser
     juce::WebBrowserComponent::Options options;
+#if JUCE_USE_WIN_WEBVIEW2
+    auto userDataDir = juce::File::getSpecialLocation(juce::File::userApplicationDataDirectory)
+                           .getChildFile("DjehutiElectronicsLab")
+                           .getChildFile("webview2_data");
+    userDataDir.createDirectory();
+
+    auto winOptions = juce::WebBrowserComponent::Options::WinWebView2()
+                          .withUserDataFolder(userDataDir);
+
+    auto exeDir = juce::File::getSpecialLocation(juce::File::currentExecutableFile).getParentDirectory();
+    auto loaderDll = exeDir.getChildFile("WebView2Loader.dll");
+    if (loaderDll.existsAsFile())
+        winOptions = winOptions.withDLLLocation(loaderDll);
+
+    options = options.withBackend(juce::WebBrowserComponent::Options::Backend::webview2)
+                     .withWinWebView2Options(winOptions);
+#else
     if (juce::WebBrowserComponent::areOptionsSupported(options.withBackend(juce::WebBrowserComponent::Options::Backend::webview2)))
         options = options.withBackend(juce::WebBrowserComponent::Options::Backend::webview2);
+#endif
     options = options.withKeepPageLoadedWhenBrowserIsHidden();
 
     browser_ = std::make_unique<BrowserWrapper>(*this, options);

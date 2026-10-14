@@ -219,11 +219,21 @@ target_sources(DjehutiElectronicsLab PRIVATE
 
 target_compile_definitions(DjehutiElectronicsLab PRIVATE
     JUCE_WEB_BROWSER=1
-    JUCE_USE_WIN_WEBVIEW2=0
+    JUCE_USE_WIN_WEBVIEW2=1
     JUCE_USE_CURL=0
     JUCE_VST3_CAN_REPLACE_VST2=0
     ELECTRONICS_RESEARCH_ROOT="${CMAKE_CURRENT_SOURCE_DIR}/.."
     FRUSTLANG_ROOT="${FRUSTLANG_ROOT}"
+)
+
+target_include_directories(DjehutiElectronicsLab PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/third_party/webview2/include"
+)
+
+add_custom_command(TARGET DjehutiElectronicsLab POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        "${CMAKE_CURRENT_SOURCE_DIR}/third_party/webview2/x64/WebView2Loader.dll"
+        "$<TARGET_FILE_DIR:DjehutiElectronicsLab>/WebView2Loader.dll"
 )
 
 target_link_libraries(DjehutiElectronicsLab PRIVATE
@@ -650,8 +660,13 @@ target_sources(HelpSystemTests PRIVATE
     tools/help_system_tests/HelpSystemTests.cpp
     Source/HelpSystem.cpp
 )
-target_include_directories(HelpSystemTests PRIVATE Source)
-target_compile_definitions(HelpSystemTests PRIVATE JUCE_WEB_BROWSER=1 JUCE_USE_WIN_WEBVIEW2=0 JUCE_USE_CURL=0)
+target_include_directories(HelpSystemTests PRIVATE Source "${CMAKE_CURRENT_SOURCE_DIR}/third_party/webview2/include")
+target_compile_definitions(HelpSystemTests PRIVATE JUCE_WEB_BROWSER=1 JUCE_USE_WIN_WEBVIEW2=1 JUCE_USE_CURL=0)
+add_custom_command(TARGET HelpSystemTests POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        "${CMAKE_CURRENT_SOURCE_DIR}/third_party/webview2/x64/WebView2Loader.dll"
+        "$<TARGET_FILE_DIR:HelpSystemTests>/WebView2Loader.dll"
+)
 target_link_libraries(HelpSystemTests PRIVATE
     juce::juce_core
     juce::juce_events

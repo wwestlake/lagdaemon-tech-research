@@ -1246,6 +1246,9 @@ bool isSchematicTool(const juce::String& name)
     for (const auto& spec : viewToolSpecs())
         if (name == spec.name)
             return true;
+    for (const auto& spec : djehuti_help::helpToolSpecs())
+        if (name == spec.name)
+            return true;
     return false;
 }
 
