@@ -1,6 +1,7 @@
 #include "ControlPanelComponent.h"
 #include "MachineModel.h"
 #include "PlotInstrumentView.h"
+#include "HelpSystem.h"
 
 #include <cmath>
 #include <iomanip>
@@ -3291,6 +3292,17 @@ WidgetPropertiesDialog::WidgetPropertiesDialog(WidgetConfig config, std::vector<
     };
     addAndMakeVisible(applyBtn_);
 
+    helpBtn_.setTooltip("Help & Documentation for this instrument");
+    helpBtn_.setColour(juce::TextButton::buttonColourId, juce::Colour(0xff2d4253));
+    helpBtn_.setColour(juce::TextButton::textColourOffId, juce::Colours::white);
+    helpBtn_.onClick = [this] {
+        if (cfg_.type == WidgetType::AnalogGauge)
+            djehuti_help::openContextHelp("control-panel.analog-gauge");
+        else
+            djehuti_help::openContextHelp("control-panel.properties");
+    };
+    addAndMakeVisible(helpBtn_);
+
     cancelBtn_.setColour(juce::TextButton::buttonColourId, juce::Colour(0xff445261));
     cancelBtn_.setColour(juce::TextButton::textColourOffId, juce::Colours::white);
     cancelBtn_.onClick = [this] {
@@ -3442,6 +3454,7 @@ void WidgetPropertiesDialog::resized()
     b.removeFromTop(gap * 2);
 
     auto btnRow = b.removeFromTop(32);
+    helpBtn_.setBounds(btnRow.removeFromLeft(32).reduced(2));
     applyBtn_.setBounds(btnRow.removeFromRight(100).reduced(2));
     btnRow.removeFromRight(8);
     cancelBtn_.setBounds(btnRow.removeFromRight(90).reduced(2));
@@ -3880,6 +3893,10 @@ ControlPanelComponent::ControlPanelComponent(std::shared_ptr<SystemSimulationSes
     setupPanelBtn(alignButton);
     alignButton.onClick = [this] { showAlignMenu(); };
     alignButton.setVisible(false);
+
+    setupPanelBtn(helpButton);
+    helpButton.setTooltip("Open Control Panel Documentation");
+    helpButton.onClick = [this] { djehuti_help::openContextHelp("control-panel"); };
 
     addAndMakeVisible(statusLabel);
     statusLabel.setFont(juce::Font(13.0f, juce::Font::bold));
@@ -5312,6 +5329,8 @@ void ControlPanelComponent::resized()
         addWidgetButton.setBounds(topBar.removeFromLeft(95).reduced(2));
         alignButton.setBounds(topBar.removeFromLeft(58).reduced(2));
     }
+    helpButton.setBounds(topBar.removeFromRight(28).reduced(2));
+    topBar.removeFromRight(6);
     topBar.removeFromLeft(8);
     statusLabel.setBounds(topBar);
 

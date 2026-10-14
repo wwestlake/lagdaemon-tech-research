@@ -38,6 +38,7 @@
 #include "CapabilityCatalog.h"
 #include "ErcAdvice.h"
 #include "AgentProgress.h"
+#include "HelpSystem.h"
 #include "XyceBackend.h"
 #include <thread>
 
@@ -15718,8 +15719,10 @@ ElectronicsWorkbench::ElectronicsWorkbench()
     
     
 
+    addKeyListener(this);
+
     for (auto* b : { &newButton, &openDiagramButton, &ercButton, &transientButton, &compileButton,
-                     &zoomOutButton, &zoomResetButton, &zoomInButton })
+                     &zoomOutButton, &zoomResetButton, &zoomInButton, &helpButton })
     {
         b->setColour(juce::TextButton::buttonColourId, juce::Colour(0xff253341));
         b->setColour(juce::TextButton::textColourOffId, juce::Colour(0xffdce9ee));
@@ -15752,6 +15755,8 @@ ElectronicsWorkbench::ElectronicsWorkbench()
     zoomOutButton.onClick = [this] { adjustSchematicZoom(1.0f / 1.2f); };
     zoomResetButton.onClick = [this] { applySchematicZoom(1.0f); };
     zoomInButton.onClick = [this] { adjustSchematicZoom(1.2f); };
+    helpButton.setTooltip("Documentation & Help (F1)");
+    helpButton.onClick = [this] { openHelp("overview"); };
 
     dockManager = std::make_unique<CreationDock::DockManager>(*this);
     addAndMakeVisible(*dockManager);
@@ -16037,6 +16042,8 @@ ElectronicsWorkbench::ElectronicsWorkbench()
             return demoTool(name, args);
         if (name.startsWith("view_"))
             return viewTool(name, args);
+        if (name.startsWith("help_") || name.startsWith("help."))
+            return helpTool(name, args);
         return schematicPanel->runSchematicTool(name, args);
     };
     schematicPanel->outputDirectory = [this] { return generatedRunDirectory(); };
@@ -16258,6 +16265,13 @@ ElectronicsWorkbench::ElectronicsWorkbench()
     dockManager->registerPanel("ingestion", "Spec Ingestion", std::make_unique<SpecIngestionPanel>(), CreationDock::DockTargetZone::Right);
     dockManager->registerPanel("sourcing", "Parts Sourcing", std::make_unique<PartsSourcingPanel>(), CreationDock::DockTargetZone::Right);
 
+    auto helpOwner = std::make_unique<djehuti_help::HelpPanel>();
+    helpPanel = helpOwner.get();
+    helpDockPanel = dockManager->registerPanel("help", "Help & Documentation", std::move(helpOwner), CreationDock::DockTargetZone::CenterTab);
+
+    djehuti_help::setGlobalHelpOpener([this](const juce::String& topicId) { openHelp(topicId); });
+    djehuti_help::setGlobalUrlOpener([this](const juce::String& url) { openHelpUrl(url); });
+
     dockManager->loadLayoutFromFile(layoutFile());
     appendLog("Electronics research shell initialized.");
 
@@ -16295,6 +16309,7 @@ void ElectronicsWorkbench::showPreferences()
 
 ElectronicsWorkbench::~ElectronicsWorkbench()
 {
+    removeKeyListener(this);
     saveOpenComponentProgram();
     frust_exec::Executor::instance().removeListener(executionListener);
     prefs::removeListener(preferenceListener);
@@ -16336,6 +16351,8 @@ void ElectronicsWorkbench::resized()
     zoomResetButton.setBounds(toolbar.removeFromLeft(58));
     toolbar.removeFromLeft(4);
     zoomInButton.setBounds(toolbar.removeFromLeft(34));
+    toolbar.removeFromLeft(8);
+    helpButton.setBounds(toolbar.removeFromLeft(54));
     
 
     if (dockManager != nullptr)
@@ -16470,6 +16487,13 @@ juce::PopupMenu ElectronicsWorkbench::getMenuForIndex(int, const juce::String& m
     }
     else if (menuName == "Help")
     {
+        menu.addItem(openDocumentationItem, "Documentation (F1)");
+        menu.addSeparator();
+        menu.addItem(openHelpSchematicItem, "Schematic & Circuit Construction Guide");
+        menu.addItem(openHelpControlPanelItem, "Control Panel & Instruments Guide");
+        menu.addItem(openHelpMachineBuilderItem, "Machine Builder & Systems Guide");
+        menu.addItem(openHelpFrustItem, "FRust Programming Guide");
+        menu.addSeparator();
         menu.addItem(openResearchSpec, "Open Research Spec");
     }
     return menu;
@@ -16624,6 +16648,11 @@ void ElectronicsWorkbench::menuItemSelected(int menuItemID, int)
             break;
         case exportAgentTools: exportAssistantToolManifest(); break;
         case openResearchSpec: showSpecDocument(); break;
+        case openDocumentationItem: openHelp("overview"); break;
+        case openHelpSchematicItem: openHelp("schematic"); break;
+        case openHelpControlPanelItem: openHelp("control-panel"); break;
+        case openHelpMachineBuilderItem: openHelp("machine-builder"); break;
+        case openHelpFrustItem: openHelp("frust"); break;
         default: break;
     }
 }
@@ -16928,6 +16957,8 @@ juce::String ElectronicsWorkbench::buildAssistantToolManifestJson() const
         manifestSpecs.push_back(spec);
     for (const auto& spec : viewToolSpecs())
         manifestSpecs.push_back(spec);
+    for (const auto& spec : djehuti_help::helpToolSpecs())
+        manifestSpecs.push_back({ spec.name, spec.description, spec.schema });
     for (const auto& spec : manifestSpecs)
     {
         text << ",\n    {\n";
@@ -19705,6 +19736,89 @@ juce::String ElectronicsWorkbench::viewTool(const juce::String& name, const juce
     }
 
     return "{ \"ok\": false, \"error\": \"Unknown view tool: " + name + "\" }";
+}
+
+bool ElectronicsWorkbench::keyPressed(const juce::KeyPress& key, juce::Component* originatingComponent)
+{
+    if (key == juce::KeyPress::F1Key)
+    {
+        juce::String topic = "overview";
+        for (auto* c = originatingComponent; c != nullptr; c = c->getParentComponent())
+        {
+            if (c == controlPanel || dynamic_cast<sim_panel::ControlPanelComponent*>(c) != nullptr)
+            { topic = "control-panel"; break; }
+            if (c == machineBuilder || dynamic_cast<machine_builder::MachineBuilderPanel*>(c) != nullptr)
+            { topic = "machine-builder"; break; }
+            if (c == mechanicalView || dynamic_cast<mechanical_scene::MechanicalViewComponent*>(c) != nullptr)
+            { topic = "mechanical-view"; break; }
+            if (c == demoRunnerPanel || dynamic_cast<demo_system::DemonstrationRunnerPanel*>(c) != nullptr)
+            { topic = "demo-runner"; break; }
+            if (c == nodeDesignerPanel || dynamic_cast<NodeDesignerPanel*>(c) != nullptr)
+            { topic = "nodes"; break; }
+            if (c == frustPanel || dynamic_cast<FrustPanel*>(c) != nullptr)
+            { topic = "frust"; break; }
+            if (c == analyticsPanel || dynamic_cast<AnalyticsPanel*>(c) != nullptr)
+            { topic = "analytics"; break; }
+            if (c == pcbPanel || dynamic_cast<PcbPanel*>(c) != nullptr)
+            { topic = "pcb"; break; }
+            if (c == schematicView.getComponent())
+            { topic = "schematic"; break; }
+        }
+        if (topic == "overview" && dockManager != nullptr)
+        {
+            if (controlPanelDockPanel != nullptr && dockManager->isPanelActive("control_panel"))
+                topic = "control-panel";
+            else if (machineBuilderDockPanel != nullptr && dockManager->isPanelActive("machine_builder"))
+                topic = "machine-builder";
+            else if (mechanicalViewDockPanel != nullptr && dockManager->isPanelActive("mechanical_view"))
+                topic = "mechanical-view";
+            else if (demoRunnerDockPanel != nullptr && dockManager->isPanelActive("demo_runner"))
+                topic = "demo-runner";
+            else if (nodeDesignerDockPanel != nullptr && dockManager->isPanelActive("nodes"))
+                topic = "nodes";
+            else if (analyticsDockPanel != nullptr && dockManager->isPanelActive("analytics"))
+                topic = "analytics";
+            else if (dockManager->isPanelActive("pcb"))
+                topic = "pcb";
+            else if (dockManager->isPanelActive("schematic"))
+                topic = "schematic";
+            else if (dockManager->isPanelActive("frust"))
+                topic = "frust";
+        }
+        openHelp(topic);
+        return true;
+    }
+    return false;
+}
+
+void ElectronicsWorkbench::openHelp(const juce::String& topicId)
+{
+    if (dockManager != nullptr)
+        dockManager->activatePanel("help");
+
+    if (helpPanel != nullptr)
+    {
+        if (topicId.isNotEmpty())
+            helpPanel->openTopic(topicId);
+        else
+            helpPanel->goHome();
+    }
+}
+
+void ElectronicsWorkbench::openHelpUrl(const juce::String& url)
+{
+    if (dockManager != nullptr)
+        dockManager->activatePanel("help");
+
+    if (helpPanel != nullptr)
+        helpPanel->navigateTo(url);
+}
+
+juce::String ElectronicsWorkbench::helpTool(const juce::String& name, const juce::var& args)
+{
+    return djehuti_help::executeHelpTool(name, args,
+        [this](const juce::String& topicId) { openHelp(topicId); },
+        [this](const juce::String& url) { openHelpUrl(url); });
 }
 
 analytics::Settings ElectronicsWorkbench::analyticsToolSettings(const juce::var& args) const

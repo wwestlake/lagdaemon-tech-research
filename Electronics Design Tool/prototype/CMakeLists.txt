@@ -213,6 +213,8 @@ target_sources(DjehutiElectronicsLab PRIVATE
     Source/DemonstrationModel.cpp
     Source/DemonstrationRunnerPanel.h
     Source/DemonstrationRunnerPanel.cpp
+    Source/HelpSystem.h
+    Source/HelpSystem.cpp
 )
 
 target_compile_definitions(DjehutiElectronicsLab PRIVATE
@@ -638,6 +640,28 @@ target_link_libraries(WorkspaceUiTests PRIVATE
 )
 juce_generate_juce_header(WorkspaceUiTests)
 add_test(NAME WorkspaceUiTests COMMAND WorkspaceUiTests)
+
+# 5. Help System Tests: Dynamic Route Discovery, Cache, Recovery, and Context-Sensitive Help
+juce_add_console_app(HelpSystemTests PRODUCT_NAME "Help System Tests")
+set_target_properties(HelpSystemTests PROPERTIES
+    OUTPUT_NAME "help_system_tests"
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/bin")
+target_sources(HelpSystemTests PRIVATE
+    tools/help_system_tests/HelpSystemTests.cpp
+    Source/HelpSystem.cpp
+)
+target_include_directories(HelpSystemTests PRIVATE Source)
+target_compile_definitions(HelpSystemTests PRIVATE JUCE_WEB_BROWSER=1 JUCE_USE_WIN_WEBVIEW2=0 JUCE_USE_CURL=0)
+target_link_libraries(HelpSystemTests PRIVATE
+    juce::juce_core
+    juce::juce_events
+    juce::juce_graphics
+    juce::juce_data_structures
+    juce::juce_gui_basics
+    juce::juce_gui_extra
+)
+juce_generate_juce_header(HelpSystemTests)
+add_test(NAME HelpSystemTests COMMAND HelpSystemTests)
 
 # ==============================================================================
 # EXTENDED SIMULATION SUITE (OPT-IN ONLY - NEVER run for routine UI/logic fixes)

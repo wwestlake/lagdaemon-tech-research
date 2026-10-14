@@ -142,6 +142,7 @@ private:
     juce::TextButton applyInspectorBtn { "Apply" };
     juce::TextButton openReferenceBtn { "Open Model" };
     juce::TextButton overflowBtn { "More" };
+    juce::TextButton helpBtn { "?" };
 
     std::vector<ToolbarItem> toolbarItems_;
     std::vector<ToolbarGroupSummary> visibleGroupSummaries_;

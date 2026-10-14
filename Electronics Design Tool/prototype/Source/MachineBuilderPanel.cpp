@@ -1,4 +1,5 @@
 #include "MachineBuilderPanel.h"
+#include "HelpSystem.h"
 
 #include <algorithm>
 #include <cmath>
@@ -1494,6 +1495,7 @@ MachineBuilderPanel::MachineBuilderPanel(std::shared_ptr<sim_panel::SystemSimula
     registerToolbarButton("validate", "Tools", validateBtn, "Validate Machine - Run assembly topology and port compatibility checks");
     registerToolbarButton("open_model", "Tools", openReferenceBtn, "Open Referenced Model - Open selected schematic or FRust component in its editor");
     registerToolbarButton("apply", "Tools", applyInspectorBtn, "Apply Selection Edits - Commit inspector ID, title, reference, and parameter changes");
+    registerToolbarButton("help", "Tools", helpBtn, "Open Machine Builder Documentation (F1)");
 
     overflowBtn.getProperties().set("toolbarIcon", "overflow");
     overflowBtn.getProperties().set("toolbarGroup", "More");
@@ -1529,6 +1531,7 @@ MachineBuilderPanel::MachineBuilderPanel(std::shared_ptr<sim_panel::SystemSimula
     resetBtn.onClick = [this] { resetSimulation(); };
     applyInspectorBtn.onClick = [this] { applyInspectorEdits(); };
     openReferenceBtn.onClick = [this] { openSelectedReference(); };
+    helpBtn.onClick = [this] { djehuti_help::openContextHelp("machine-builder"); };
     overflowBtn.onClick = [this] { showOverflowMenu(); };
 
     statusLabel.setText("Ready", juce::dontSendNotification);

@@ -15,10 +15,12 @@ namespace sim_panel { class ControlPanelComponent; }
 namespace mechanical_scene { class MechanicalViewComponent; }
 namespace machine_builder { class MachineBuilderPanel; struct MachineDesign; }
 namespace demo_system { class DemonstrationRunnerPanel; struct DemonstrationDefinition; struct DemonstrationRun; }
+namespace djehuti_help { class HelpPanel; }
 
 class ElectronicsWorkbench final : public juce::Component,
                                    public juce::DragAndDropContainer,
-                                   public juce::MenuBarModel
+                                   public juce::MenuBarModel,
+                                   public juce::KeyListener
 {
 public:
     ElectronicsWorkbench();
@@ -30,6 +32,12 @@ public:
     juce::StringArray getMenuBarNames() override;
     juce::PopupMenu getMenuForIndex(int menuIndex, const juce::String& menuName) override;
     void menuItemSelected(int menuItemID, int topLevelMenuIndex) override;
+
+    bool keyPressed(const juce::KeyPress& key, juce::Component* originatingComponent) override;
+
+    void openHelp(const juce::String& topicId = {});
+    void openHelpUrl(const juce::String& url);
+    juce::String helpTool(const juce::String& name, const juce::var& args);
 
     // Asks to save an edited diagram, then runs `proceed` unless cancelled.
     void confirmCloseThen(std::function<void()> proceed);
@@ -61,6 +69,11 @@ private:
         openAgentSettings,
         exportAgentTools,
         openResearchSpec,
+        openDocumentationItem,
+        openHelpSchematicItem,
+        openHelpControlPanelItem,
+        openHelpMachineBuilderItem,
+        openHelpFrustItem,
         startAudioSimItem,
         loadAudioSourceItem
     };
@@ -220,6 +233,8 @@ private:
     juce::Component::SafePointer<CreationDock::DockPanel> machineBuilderDockPanel;
     juce::Component::SafePointer<CreationDock::DockPanel> demoRunnerDockPanel;
     juce::Component::SafePointer<CreationDock::DockPanel> nodeDesignerDockPanel;
+    juce::Component::SafePointer<CreationDock::DockPanel> helpDockPanel;
+    djehuti_help::HelpPanel* helpPanel = nullptr;
     void autoLayoutDiagram();
     void applySchematicZoom(float zoom);
     void adjustSchematicZoom(float factor);
@@ -242,6 +257,7 @@ private:
     juce::TextButton zoomOutButton { "-" };
     juce::TextButton zoomResetButton { "100%" };
     juce::TextButton zoomInButton { "+" };
+    juce::TextButton helpButton { "Help" };
 
     juce::TextEditor* logConsole = nullptr;
 juce::Component* logPanel = nullptr;

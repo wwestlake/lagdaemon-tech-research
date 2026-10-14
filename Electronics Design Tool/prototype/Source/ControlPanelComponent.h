@@ -113,6 +113,7 @@ private:
     juce::ToggleButton hasCritBtn_;
     juce::TextEditor critMinEd_, critMaxEd_;
 
+    juce::TextButton helpBtn_ { "?" };
     juce::TextButton applyBtn_ { "Apply" };
     juce::TextButton cancelBtn_ { "Cancel" };
 };
@@ -290,6 +291,7 @@ private:
     juce::TextButton modeButton { "Design Mode" };
     juce::TextButton addWidgetButton { "+ Add Element" };
     juce::TextButton alignButton { "Align" };
+    juce::TextButton helpButton { "?" };
     juce::Label statusLabel;
 
     // Freeform scrollable canvas viewport
