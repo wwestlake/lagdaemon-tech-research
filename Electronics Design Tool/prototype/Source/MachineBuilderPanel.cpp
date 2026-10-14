@@ -1580,6 +1580,30 @@ MachineBuilderPanel::MachineBuilderPanel(std::shared_ptr<sim_panel::SystemSimula
             syncPlotPanelBindings();
             updateDiagnosticsDisplay();
         };
+        controlPanel_->onSaveRequested = [this] {
+            if (currentMachineFile_ != juce::File())
+            {
+                juce::String error;
+                if (!saveMachineToFile(currentMachineFile_, error))
+                {
+                    statusLabel.setText("Save failed: " + error, juce::dontSendNotification);
+                    statusLabel.setColour(juce::Label::textColourId, juce::Colour(0xffff6b6b));
+                    if (controlPanel_ != nullptr)
+                        controlPanel_->setStatusText("SAVE FAILED", juce::Colour(0xffff6b6b));
+                }
+                else
+                {
+                    statusLabel.setText("Saved " + currentMachineFile_.getFileName(), juce::dontSendNotification);
+                    statusLabel.setColour(juce::Label::textColourId, juce::Colour(0xff80ed99));
+                    if (controlPanel_ != nullptr)
+                        controlPanel_->setStatusText("SAVED", juce::Colour(0xff80ed99));
+                }
+            }
+            else
+            {
+                chooseMachineSaveFile();
+            }
+        };
         controlPanel_->onEnsureCompiled = [this]() {
             return sessionCompiled_ ? true : compileAndRun();
         };
@@ -1609,6 +1633,7 @@ MachineBuilderPanel::~MachineBuilderPanel()
     if (controlPanel_ != nullptr)
     {
         controlPanel_->onLayoutChanged = nullptr;
+        controlPanel_->onSaveRequested = nullptr;
         controlPanel_->onEnsureCompiled = nullptr;
     }
     stopTimer();
@@ -1996,6 +2021,7 @@ bool MachineBuilderPanel::addSystemPort(const std::string& name, bool input, sim
     widget.maxValue = unit == "rad/s" ? 600.0 : 1.0;
     widget.defaultValue = 0.0;
     widget.stepSize = unit == "rad/s" ? 5.0 : 1.0;
+    widget.panelId = machine_.controlPanel.activePanelId.empty() ? "main" : machine_.controlPanel.activePanelId;
     machine_.controlPanel.widgets.push_back(widget);
 
     if (input)
@@ -2031,6 +2057,8 @@ bool MachineBuilderPanel::connectPorts(const std::string& fromInstance, const st
 
 bool MachineBuilderPanel::saveMachineToFile(const juce::File& file, juce::String& error)
 {
+    if (controlPanel_ != nullptr)
+        machine_.controlPanel = controlPanel_->getLayout();
     syncPlotPanelBindings();
     if (!machine_.saveToFile(file, error))
         return false;
@@ -2413,9 +2441,19 @@ void MachineBuilderPanel::chooseMachineSaveFile()
             return;
         juce::String error;
         if (!safe->saveMachineToFile(file, error))
+        {
             safe->statusLabel.setText("Save failed: " + error, juce::dontSendNotification);
+            safe->statusLabel.setColour(juce::Label::textColourId, juce::Colour(0xffff6b6b));
+            if (safe->controlPanel_ != nullptr)
+                safe->controlPanel_->setStatusText("SAVE FAILED", juce::Colour(0xffff6b6b));
+        }
         else
+        {
             safe->statusLabel.setText("Saved " + file.getFileName(), juce::dontSendNotification);
+            safe->statusLabel.setColour(juce::Label::textColourId, juce::Colour(0xff80ed99));
+            if (safe->controlPanel_ != nullptr)
+                safe->controlPanel_->setStatusText("SAVED", juce::Colour(0xff80ed99));
+        }
     });
 }
 

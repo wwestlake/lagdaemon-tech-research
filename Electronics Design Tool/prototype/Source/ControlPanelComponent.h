@@ -76,6 +76,8 @@ public:
     const ControlPanelLayout& getLayout() const { return layout_; }
     std::function<void(const ControlPanelLayout&)> onLayoutChanged;
     std::function<bool()> onEnsureCompiled;
+    std::function<void()> onSaveRequested;
+    void setStatusText(const juce::String& text, juce::Colour colour = juce::Colour(0xff66ff99), int durationTicks = 60);
 
     // Mode Control
     void setDesignMode(bool isDesign);
@@ -152,6 +154,7 @@ public:
     void mouseDrag(const juce::MouseEvent& e) override;
     void mouseUp(const juce::MouseEvent& e) override;
     void mouseWheelMove(const juce::MouseEvent& e, const juce::MouseWheelDetails& wheel) override;
+    bool keyPressed(const juce::KeyPress& key) override;
 
 private:
     void timerCallback() override;
@@ -180,6 +183,7 @@ private:
     juce::TextButton newPanelButton { "New Panel" };
     juce::TextButton renamePanelButton { "Rename" };
     juce::TextButton removePanelButton { "Remove" };
+    juce::TextButton saveButton { "Save" };
     juce::TextButton modeButton { "Design Mode" };
     juce::TextButton addWidgetButton { "+ Add Element" };
     juce::TextButton alignButton { "Align" };
@@ -218,6 +222,11 @@ private:
 
     // Historical data for trend chart
     std::deque<TrendPoint> trendHistory_;
+
+    // Transient status display
+    int transientStatusTicks_ = 0;
+    juce::String transientStatusText_;
+    juce::Colour transientStatusColour_ { 0xff66ff99 };
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(ControlPanelComponent)
 };

@@ -82,6 +82,22 @@ signal to stop and just build the Windows version.
   the analytic formula first, and the whole suite passes before the app build.
 - Current state and plan: `prototype/docs/HANDOFF_SCHEMATIC_HIERARCHY.md`.
 
+## Permanent Validation Policy (Every Session, Every Change)
+
+**A successful targeted test is sufficient for an ordinary localized change.**
+
+1. **Determine test impact from actual changed files and dependencies.**
+2. **Build only the affected targets.**
+3. **Run only tests relevant to the changes.**
+4. **Never automatically build or execute monolithic test suites (e.g. `machine_builder_smoke_tests`).**
+   Monolithic suites run heavy ODE solvers, numerical motor optimization loops, and multi-second physical stepping that tie up the user's machine for hours. They are strictly opt-in and must NEVER be run unless explicitly ordered by the user.
+5. **Never run exhaustive solver testing unless explicitly authorized.**
+6. **Never rebuild an unchanged target merely to repeat validation.**
+7. **Never run Debug and Release test matrices without a specific justification.**
+8. **Do not repeatedly poll build logs or narrate routine build progress.**
+9. **For UI changes, prioritize focused UI behavior checks over unrelated numerical tests.** UI tests must live in their own separate, fast, lightweight test suite that completes in seconds without executing physics simulations.
+10. **If broader testing appears necessary, explain why and request authorization before proceeding.**
+
 ## Credentials
 
 - Any new credential established in a session (SSH key, API key, host access) goes into `CREDENTIALS-MASTER.txt` (gitignored, repo root) immediately — not just used in-session and forgotten.

@@ -497,7 +497,129 @@ target_link_libraries(ModelDrivenSimulationTests PRIVATE
 juce_generate_juce_header(ModelDrivenSimulationTests)
 add_test(NAME ModelDrivenSimulationTests COMMAND ModelDrivenSimulationTests)
 
-juce_add_console_app(MachineBuilderSmokeTests PRODUCT_NAME "Machine Builder Smoke Tests")
+# ==============================================================================
+# FAST SUBSYSTEM TEST SUITES (< 1 second runtime, zero heavy ODE simulation)
+# ==============================================================================
+
+# 1. Control Panel UI Tests: Multi-panel management, widget authoring, layout persistence,
+#    drag/drop positioning, properties dialog, splitter & plot mouse isolation.
+juce_add_console_app(ControlPanelUiTests PRODUCT_NAME "Control Panel UI Tests")
+set_target_properties(ControlPanelUiTests PROPERTIES
+    OUTPUT_NAME "control_panel_ui_tests"
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/bin")
+target_sources(ControlPanelUiTests PRIVATE
+    tools/control_panel_ui_tests/ControlPanelUiTests.cpp
+    Source/ControlPanelComponent.cpp
+    Source/ControlPanelModel.cpp
+    Source/PlotInstrument.cpp
+    Source/PlotInstrumentView.cpp
+    Source/Analytics.cpp
+    Source/SignalMeasure.cpp
+    Source/SystemSimulationSession.cpp
+    Source/SystemAssembly.cpp
+    Source/FrustComponent.cpp
+    Source/FrustComponentCompiler.cpp
+    Source/NodeDesignerPanel.cpp
+    Source/NodeCompiler.cpp
+    Source/FrustEngine.cpp
+    Source/SchematicSymbols.cpp
+    Source/MachineModel.cpp
+    Source/MechanicalSceneModel.cpp
+    Source/DemonstrationModel.cpp
+)
+target_include_directories(ControlPanelUiTests PRIVATE Source)
+target_compile_definitions(ControlPanelUiTests PRIVATE JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0)
+target_link_libraries(ControlPanelUiTests PRIVATE
+    circuit_sim
+    frust_plugin_host
+    juce::juce_core
+    juce::juce_events
+    juce::juce_graphics
+    juce::juce_data_structures
+    juce::juce_gui_basics
+)
+juce_generate_juce_header(ControlPanelUiTests)
+add_test(NAME ControlPanelUiTests COMMAND ControlPanelUiTests)
+
+# 2. Machine Builder UI Tests: Graphical assembly toolbar, view zoom/fit, overflow handling,
+#    system ports, connection wiring, and .machine.json persistence.
+juce_add_console_app(MachineBuilderUiTests PRODUCT_NAME "Machine Builder UI Tests")
+set_target_properties(MachineBuilderUiTests PROPERTIES
+    OUTPUT_NAME "machine_builder_ui_tests"
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/bin")
+target_sources(MachineBuilderUiTests PRIVATE
+    tools/machine_builder_ui_tests/MachineBuilderUiTests.cpp
+    Source/MachineBuilderPanel.cpp
+    Source/MachineModel.cpp
+    Source/SystemSimulationSession.cpp
+    Source/ControlPanelComponent.cpp
+    Source/ControlPanelModel.cpp
+    Source/MechanicalViewComponent.cpp
+    Source/MechanicalSceneModel.cpp
+    Source/PlotInstrument.cpp
+    Source/PlotInstrumentView.cpp
+    Source/Analytics.cpp
+    Source/SignalMeasure.cpp
+    Source/SystemAssembly.cpp
+    Source/FrustComponent.cpp
+    Source/FrustComponentCompiler.cpp
+    Source/NodeDesignerPanel.cpp
+    Source/NodeCompiler.cpp
+    Source/FrustEngine.cpp
+    Source/SchematicSymbols.cpp
+    Source/DemonstrationModel.cpp
+)
+target_include_directories(MachineBuilderUiTests PRIVATE Source)
+target_compile_definitions(MachineBuilderUiTests PRIVATE JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0)
+target_link_libraries(MachineBuilderUiTests PRIVATE
+    circuit_sim
+    frust_plugin_host
+    juce::juce_core
+    juce::juce_events
+    juce::juce_graphics
+    juce::juce_data_structures
+    juce::juce_gui_basics
+)
+juce_generate_juce_header(MachineBuilderUiTests)
+add_test(NAME MachineBuilderUiTests COMMAND MachineBuilderUiTests)
+
+# 3. Fast Integration Smoke Tests: Multi-subsystem sanity check (< 100 ms)
+juce_add_console_app(FastSmokeTests PRODUCT_NAME "Fast Smoke Tests")
+set_target_properties(FastSmokeTests PROPERTIES
+    OUTPUT_NAME "fast_smoke_tests"
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/bin")
+target_sources(FastSmokeTests PRIVATE
+    tools/fast_smoke_tests/FastSmokeTests.cpp
+    Source/ControlPanelModel.cpp
+    Source/MachineModel.cpp
+    Source/MechanicalSceneModel.cpp
+    Source/CircuitSolver.cpp
+    Source/SchematicSymbols.cpp
+    Source/SystemAssembly.cpp
+    Source/FrustComponent.cpp
+    Source/FrustComponentCompiler.cpp
+    Source/NodeDesignerPanel.cpp
+    Source/NodeCompiler.cpp
+    Source/FrustEngine.cpp
+)
+target_include_directories(FastSmokeTests PRIVATE Source)
+target_compile_definitions(FastSmokeTests PRIVATE JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0)
+target_link_libraries(FastSmokeTests PRIVATE
+    circuit_sim
+    frust_plugin_host
+    juce::juce_core
+    juce::juce_events
+    juce::juce_graphics
+    juce::juce_data_structures
+    juce::juce_gui_basics
+)
+juce_generate_juce_header(FastSmokeTests)
+add_test(NAME FastSmokeTests COMMAND FastSmokeTests)
+
+# ==============================================================================
+# EXTENDED SIMULATION SUITE (OPT-IN ONLY - NEVER run for routine UI/logic fixes)
+# ==============================================================================
+juce_add_console_app(MachineBuilderSmokeTests PRODUCT_NAME "Machine Builder Extended Simulation Tests")
 set_target_properties(MachineBuilderSmokeTests PROPERTIES
     OUTPUT_NAME "machine_builder_smoke_tests"
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/bin")
@@ -521,6 +643,7 @@ target_sources(MachineBuilderSmokeTests PRIVATE
     Source/NodeCompiler.cpp
     Source/FrustEngine.cpp
     Source/SchematicSymbols.cpp
+    Source/DemonstrationModel.cpp
 )
 target_include_directories(MachineBuilderSmokeTests PRIVATE Source)
 target_compile_definitions(MachineBuilderSmokeTests PRIVATE JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0)
@@ -534,7 +657,6 @@ target_link_libraries(MachineBuilderSmokeTests PRIVATE
     juce::juce_gui_basics
 )
 juce_generate_juce_header(MachineBuilderSmokeTests)
-add_test(NAME MachineBuilderSmokeTests COMMAND MachineBuilderSmokeTests)
 
 # Headless layout/routing preview: renders reference circuits to PNG and
 # prints readability metrics, without opening the app.

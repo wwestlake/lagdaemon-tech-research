@@ -2749,8 +2749,9 @@ class WidgetPropertiesDialog final : public juce::Component
 {
 public:
     WidgetPropertiesDialog(WidgetConfig config, std::vector<SignalDef> availableSignals,
+                           std::vector<OperatorPanelConfig> panels,
                            std::function<void(const WidgetConfig&)> onApplyCallback)
-        : cfg_(std::move(config)), signals_(std::move(availableSignals)), onApply_(std::move(onApplyCallback))
+        : cfg_(std::move(config)), signals_(std::move(availableSignals)), panels_(std::move(panels)), onApply_(std::move(onApplyCallback))
     {
         titleEd_.setText(juce::String(cfg_.title));
         unitEd_.setText(juce::String(cfg_.unit));
@@ -2763,6 +2764,17 @@ public:
         precBox_.addItem("2 Decimals", 3);
         precBox_.addItem("3 Decimals", 4);
         precBox_.setSelectedId(std::clamp(cfg_.precision, 0, 3) + 1, juce::dontSendNotification);
+
+        int matchPanelId = 1;
+        const auto activePanel = cfg_.panelId.empty() ? std::string("main") : cfg_.panelId;
+        for (size_t i = 0; i < panels_.size(); ++i)
+        {
+            const auto& p = panels_[i];
+            panelPickerBox_.addItem(p.title.empty() ? juce::String(p.id) : juce::String(p.title), (int)i + 1);
+            if (p.id == activePanel)
+                matchPanelId = (int)i + 1;
+        }
+        panelPickerBox_.setSelectedId(matchPanelId, juce::dontSendNotification);
 
         sigEd_.setText(juce::String(cfg_.signalName));
         secSigEd_.setText(juce::String(cfg_.secondarySignal));
@@ -2826,6 +2838,7 @@ public:
         };
 
         addField(lblTitle_, "Title / Label:", titleEd_);
+        addField(lblPanelPicker_, "Target Panel:", panelPickerBox_);
         addField(lblUnit_, "Unit:", unitEd_);
         addField(lblMin_, "Min Value:", minEd_);
         addField(lblMax_, "Max Value:", maxEd_);
@@ -2850,6 +2863,9 @@ public:
         applyBtn_.setColour(juce::TextButton::textColourOffId, juce::Colours::white);
         applyBtn_.onClick = [this] {
             cfg_.title = titleEd_.getText().toStdString();
+            const int selPanel = panelPickerBox_.getSelectedId();
+            if (selPanel >= 1 && selPanel <= (int)panels_.size())
+                cfg_.panelId = panels_[(size_t)(selPanel - 1)].id;
             cfg_.unit = unitEd_.getText().toStdString();
             cfg_.minValue = minEd_.getText().getDoubleValue();
             cfg_.maxValue = maxEd_.getText().getDoubleValue();
@@ -2937,6 +2953,7 @@ public:
         };
 
         addRow(lblTitle_, titleEd_);
+        addRow(lblPanelPicker_, panelPickerBox_);
         addRow(lblUnit_, unitEd_);
         addRow(lblMin_, minEd_);
         addRow(lblMax_, maxEd_);
@@ -2977,13 +2994,15 @@ public:
 private:
     WidgetConfig cfg_;
     std::vector<SignalDef> signals_;
+    std::vector<OperatorPanelConfig> panels_;
     std::function<void(const WidgetConfig&)> onApply_;
 
-    juce::Label lblTitle_, lblUnit_, lblMin_, lblMax_, lblDef_, lblStep_, lblPrec_;
+    juce::Label lblTitle_, lblPanelPicker_, lblUnit_, lblMin_, lblMax_, lblDef_, lblStep_, lblPrec_;
     juce::Label lblSigPicker_, lblSig_, lblSecSig_;
     juce::Label compatLabel_;
 
     juce::TextEditor titleEd_, unitEd_, minEd_, maxEd_, defEd_, stepEd_;
+    juce::ComboBox panelPickerBox_;
     juce::ComboBox precBox_;
     juce::ComboBox sigPickerBox_;
     juce::TextEditor sigEd_, secSigEd_;
@@ -3357,9 +3376,9 @@ ControlPanelComponent::ControlPanelComponent(std::shared_ptr<SystemSimulationSes
 
     addAndMakeVisible(panelBox);
     panelBox.onChange = [this] {
-        const int index = panelBox.getSelectedItemIndex();
-        if (index >= 0 && index < (int)layout_.panels.size())
-            setActivePanel(layout_.panels[(size_t)index].id);
+        const int id = panelBox.getSelectedId();
+        if (id >= 1 && id <= (int)layout_.panels.size())
+            setActivePanel(layout_.panels[(size_t)(id - 1)].id);
     };
 
     auto setupPanelBtn = [this](juce::TextButton& btn) {
@@ -3370,6 +3389,17 @@ ControlPanelComponent::ControlPanelComponent(std::shared_ptr<SystemSimulationSes
     setupPanelBtn(newPanelButton);
     setupPanelBtn(renamePanelButton);
     setupPanelBtn(removePanelButton);
+
+    setupPanelBtn(saveButton);
+    saveButton.setColour(juce::TextButton::buttonColourId, juce::Colour(0xff1b5e20));
+    saveButton.setColour(juce::TextButton::textColourOffId, juce::Colour(0xffe8f5e9));
+    saveButton.setTooltip("Save Control Panels and Machine Project (Ctrl+S)");
+    saveButton.onClick = [this] {
+        if (onSaveRequested)
+            onSaveRequested();
+        else
+            setStatusText("SAVED", juce::Colour(0xff80ed99));
+    };
 
     newPanelButton.onClick = [this] { createNewPanel(); };
     renamePanelButton.onClick = [this] {
@@ -3802,7 +3832,7 @@ std::unique_ptr<juce::Component> ControlPanelComponent::createWidgetPropertiesDi
     if (cfg == nullptr) return nullptr;
 
     return std::make_unique<WidgetPropertiesDialog>(
-        *cfg, getAvailableSignals(),
+        *cfg, getAvailableSignals(), layout_.panels,
         [this](const WidgetConfig& updated) {
             configureWidget(updated.id, updated);
         });
@@ -3819,7 +3849,7 @@ void ControlPanelComponent::showWidgetPropertiesDialog(const std::string& widget
     juce::DialogWindow::LaunchOptions opt;
     opt.dialogTitle = "Widget Properties & Signal Connection - " + juce::String(cfg->id);
     opt.content.setOwned(dialog.release());
-    opt.content->setSize(520, 560);
+    opt.content->setSize(520, 590);
     opt.dialogBackgroundColour = juce::Colour(0xff1b222c);
     opt.escapeKeyTriggersCloseButton = true;
     opt.useNativeTitleBar = true;
@@ -3866,7 +3896,8 @@ juce::Point<int> ControlPanelComponent::getNewWidgetSpawnPosition(int widgetW, i
         juce::Rectangle<int> candRect(candX, candY, widgetW, widgetH);
         for (const auto& w : currentWidgets)
         {
-            if (!w.panelId.empty() && w.panelId != panelId)
+            const auto widgetPanelId = w.panelId.empty() ? std::string("main") : w.panelId;
+            if (widgetPanelId != panelId)
                 continue;
             juce::Rectangle<int> wRect(w.x, w.y, w.width, w.height);
             if (candRect.intersects(wRect.reduced(4)))
@@ -3892,6 +3923,7 @@ juce::Point<int> ControlPanelComponent::getNewWidgetSpawnPosition(int widgetW, i
 
 void ControlPanelComponent::showAddWidgetMenu(juce::Point<int> canvasPos, juce::Component* targetComponent)
 {
+    const auto targetPanelId = layout_.activePanelId.empty() ? std::string("main") : layout_.activePanelId;
     auto resolvePos = [this, canvasPos](int defW, int defH) -> juce::Point<int> {
         if (canvasPos.x >= 0 && canvasPos.y >= 0)
             return canvasPos;
@@ -3900,57 +3932,62 @@ void ControlPanelComponent::showAddWidgetMenu(juce::Point<int> canvasPos, juce::
 
     juce::PopupMenu menu;
     juce::PopupMenu instrMenu;
-    instrMenu.addItem("Analog Needle Gauge", [this, resolvePos] {
+    instrMenu.addItem("Analog Needle Gauge", [this, resolvePos, targetPanelId] {
         WidgetConfig w;
         w.id = "gauge_" + juce::String(juce::Random::getSystemRandom().nextInt(9999)).toStdString();
         w.type = WidgetType::AnalogGauge;
         w.title = "Analog Gauge";
+        w.panelId = targetPanelId;
         w.width = 180; w.height = 180;
         auto p = resolvePos(w.width, w.height);
         w.x = p.x; w.y = p.y;
         w.column = 1;
         addWidget(w);
     });
-    instrMenu.addItem("Digital Readout", [this, resolvePos] {
+    instrMenu.addItem("Digital Readout", [this, resolvePos, targetPanelId] {
         WidgetConfig w;
         w.id = "num_" + juce::String(juce::Random::getSystemRandom().nextInt(9999)).toStdString();
         w.type = WidgetType::DigitalReadout;
         w.title = "Digital Readout";
+        w.panelId = targetPanelId;
         w.width = 180; w.height = 48;
         auto p = resolvePos(w.width, w.height);
         w.x = p.x; w.y = p.y;
         w.column = 1;
         addWidget(w);
     });
-    instrMenu.addItem("Bar Gauge (Horizontal)", [this, resolvePos] {
+    instrMenu.addItem("Bar Gauge (Horizontal)", [this, resolvePos, targetPanelId] {
         WidgetConfig w;
         w.id = "bar_" + juce::String(juce::Random::getSystemRandom().nextInt(9999)).toStdString();
         w.type = WidgetType::BarGauge;
         w.title = "Bar Gauge";
         w.vertical = false;
+        w.panelId = targetPanelId;
         w.width = 200; w.height = 42;
         auto p = resolvePos(w.width, w.height);
         w.x = p.x; w.y = p.y;
         w.column = 1;
         addWidget(w);
     });
-    instrMenu.addItem("Bar Gauge (Vertical)", [this, resolvePos] {
+    instrMenu.addItem("Bar Gauge (Vertical)", [this, resolvePos, targetPanelId] {
         WidgetConfig w;
         w.id = "bar_" + juce::String(juce::Random::getSystemRandom().nextInt(9999)).toStdString();
         w.type = WidgetType::BarGauge;
         w.title = "Bar Gauge";
         w.vertical = true;
+        w.panelId = targetPanelId;
         w.width = 80; w.height = 180;
         auto p = resolvePos(w.width, w.height);
         w.x = p.x; w.y = p.y;
         w.column = 1;
         addWidget(w);
     });
-    instrMenu.addItem("Indicator Lamp", [this, resolvePos] {
+    instrMenu.addItem("Indicator Lamp", [this, resolvePos, targetPanelId] {
         WidgetConfig w;
         w.id = "lamp_" + juce::String(juce::Random::getSystemRandom().nextInt(9999)).toStdString();
         w.type = WidgetType::IndicatorLamp;
         w.title = "Indicator Lamp";
+        w.panelId = targetPanelId;
         w.width = 180; w.height = 36;
         auto p = resolvePos(w.width, w.height);
         w.x = p.x; w.y = p.y;
@@ -3960,104 +3997,113 @@ void ControlPanelComponent::showAddWidgetMenu(juce::Point<int> canvasPos, juce::
     menu.addSubMenu("Add Instrument", instrMenu);
 
     juce::PopupMenu ctrlMenu;
-    ctrlMenu.addItem("Push Button", [this, resolvePos] {
+    ctrlMenu.addItem("Push Button", [this, resolvePos, targetPanelId] {
         WidgetConfig w;
         w.id = "btn_" + juce::String(juce::Random::getSystemRandom().nextInt(9999)).toStdString();
         w.type = WidgetType::PushButton;
         w.title = "Push Button";
         w.momentary = true;
+        w.panelId = targetPanelId;
         w.width = 160; w.height = 32;
         auto p = resolvePos(w.width, w.height);
         w.x = p.x; w.y = p.y;
         w.column = 0;
         addWidget(w);
     });
-    ctrlMenu.addItem("Momentary Pushbutton", [this, resolvePos] {
+    ctrlMenu.addItem("Momentary Pushbutton", [this, resolvePos, targetPanelId] {
         WidgetConfig w;
         w.id = "btn_" + juce::String(juce::Random::getSystemRandom().nextInt(9999)).toStdString();
         w.type = WidgetType::PushButton;
         w.title = "Push Button";
         w.momentary = true;
+        w.panelId = targetPanelId;
         w.width = 160; w.height = 32;
         auto p = resolvePos(w.width, w.height);
         w.x = p.x; w.y = p.y;
         w.column = 0;
         addWidget(w);
     });
-    ctrlMenu.addItem("Latching Switch", [this, resolvePos] {
+    ctrlMenu.addItem("Latching Switch", [this, resolvePos, targetPanelId] {
         WidgetConfig w;
         w.id = "latch_" + juce::String(juce::Random::getSystemRandom().nextInt(9999)).toStdString();
         w.type = WidgetType::LatchingButton;
         w.title = "Latching Switch";
         w.momentary = false;
+        w.panelId = targetPanelId;
         w.width = 160; w.height = 32;
         auto p = resolvePos(w.width, w.height);
         w.x = p.x; w.y = p.y;
         w.column = 0;
         addWidget(w);
     });
-    ctrlMenu.addItem("Toggle Switch", [this, resolvePos] {
+    ctrlMenu.addItem("Toggle Switch", [this, resolvePos, targetPanelId] {
         WidgetConfig w;
         w.id = "sw_" + juce::String(juce::Random::getSystemRandom().nextInt(9999)).toStdString();
         w.type = WidgetType::ToggleSwitch;
         w.title = "Toggle Switch";
+        w.panelId = targetPanelId;
         w.width = 160; w.height = 32;
         auto p = resolvePos(w.width, w.height);
         w.x = p.x; w.y = p.y;
         w.column = 0;
         addWidget(w);
     });
-    ctrlMenu.addItem("Rotary Knob", [this, resolvePos] {
+    ctrlMenu.addItem("Rotary Knob", [this, resolvePos, targetPanelId] {
         WidgetConfig w;
         w.id = "knob_" + juce::String(juce::Random::getSystemRandom().nextInt(9999)).toStdString();
         w.type = WidgetType::Knob;
         w.title = "Control Knob";
+        w.panelId = targetPanelId;
         w.width = 140; w.height = 64;
         auto p = resolvePos(w.width, w.height);
         w.x = p.x; w.y = p.y;
         w.column = 0;
         addWidget(w);
     });
-    ctrlMenu.addItem("Slider (Horizontal)", [this, resolvePos] {
+    ctrlMenu.addItem("Slider (Horizontal)", [this, resolvePos, targetPanelId] {
         WidgetConfig w;
         w.id = "slider_" + juce::String(juce::Random::getSystemRandom().nextInt(9999)).toStdString();
         w.type = WidgetType::Slider;
         w.title = "Control Slider";
         w.vertical = false;
+        w.panelId = targetPanelId;
         w.width = 220; w.height = 42;
         auto p = resolvePos(w.width, w.height);
         w.x = p.x; w.y = p.y;
         w.column = 0;
         addWidget(w);
     });
-    ctrlMenu.addItem("Selector Switch", [this, resolvePos] {
+    ctrlMenu.addItem("Selector Switch", [this, resolvePos, targetPanelId] {
         WidgetConfig w;
         w.id = "sel_" + juce::String(juce::Random::getSystemRandom().nextInt(9999)).toStdString();
         w.type = WidgetType::ModeSelector;
         w.title = "Mode Selector";
         w.options = { "OFF", "MANUAL", "AUTO" };
+        w.panelId = targetPanelId;
         w.width = 180; w.height = 42;
         auto p = resolvePos(w.width, w.height);
         w.x = p.x; w.y = p.y;
         w.column = 0;
         addWidget(w);
     });
-    ctrlMenu.addItem("Indicator Button", [this, resolvePos] {
+    ctrlMenu.addItem("Indicator Button", [this, resolvePos, targetPanelId] {
         WidgetConfig w;
         w.id = "indbtn_" + juce::String(juce::Random::getSystemRandom().nextInt(9999)).toStdString();
         w.type = WidgetType::IndicatorButton;
         w.title = "Status Button";
+        w.panelId = targetPanelId;
         w.width = 180; w.height = 36;
         auto p = resolvePos(w.width, w.height);
         w.x = p.x; w.y = p.y;
         w.column = 0;
         addWidget(w);
     });
-    ctrlMenu.addItem("Emergency Stop", [this, resolvePos] {
+    ctrlMenu.addItem("Emergency Stop", [this, resolvePos, targetPanelId] {
         WidgetConfig w;
         w.id = "estop_" + juce::String(juce::Random::getSystemRandom().nextInt(9999)).toStdString();
         w.type = WidgetType::EmergencyStop;
         w.title = "EMERGENCY STOP";
+        w.panelId = targetPanelId;
         w.width = 220; w.height = 54;
         auto p = resolvePos(w.width, w.height);
         w.x = p.x; w.y = p.y;
@@ -4069,10 +4115,11 @@ void ControlPanelComponent::showAddWidgetMenu(juce::Point<int> canvasPos, juce::
     if (!clipboard_.empty())
     {
         menu.addSeparator();
-        menu.addItem("Paste", [this, resolvePos] {
+        menu.addItem("Paste", [this, resolvePos, targetPanelId] {
             for (auto item : clipboard_)
             {
                 item.id = item.id + "_copy";
+                item.panelId = targetPanelId;
                 auto p = resolvePos(item.width, item.height);
                 item.x = p.x;
                 item.y = p.y;
@@ -4122,6 +4169,7 @@ std::string ControlPanelComponent::createNewPanel(const std::string& title)
         panel.title = title.empty() ? ("Panel " + juce::String(n).toStdString()) : title;
         ++n;
     } while (layout_.hasPanel(panel.id));
+    panel.designMode = designMode_;
     layout_.panels.push_back(panel);
     setActivePanel(panel.id);
     return panel.id;
@@ -4153,8 +4201,11 @@ bool ControlPanelComponent::removeActivePanel()
                          layout_.panels.end());
     const auto fallback = layout_.panels.front().id;
     for (auto& widget : layout_.widgets)
-        if (widget.panelId == removed)
+    {
+        const auto widgetPanelId = widget.panelId.empty() ? std::string("main") : widget.panelId;
+        if (widgetPanelId == removed)
             widget.panelId = fallback;
+    }
     setActivePanel(fallback);
     return true;
 }
@@ -4224,6 +4275,9 @@ void ControlPanelComponent::setActivePanel(const std::string& panelId)
         return;
     const bool changed = (layout_.activePanelId != panelId);
     layout_.activePanelId = panelId;
+    if (auto* panel = layout_.findPanel(panelId))
+        panel->designMode = designMode_;
+    deselectAll();
     rebuildPanelSelector();
     buildWidgets();
     resized();
@@ -4302,6 +4356,7 @@ void ControlPanelComponent::buildWidgets()
     if (!canvasComponent)
         return;
 
+    deselectAll();
     canvasComponent->removeAllChildren();
     if (plotContainer_)
         plotContainer_->removeAllChildren();
@@ -4313,7 +4368,8 @@ void ControlPanelComponent::buildWidgets()
 
     for (const auto& w : layout_.widgets)
     {
-        if (!w.panelId.empty() && w.panelId != panelId)
+        const auto widgetPanelId = w.panelId.empty() ? std::string("main") : w.panelId;
+        if (widgetPanelId != panelId)
             continue;
 
         std::unique_ptr<juce::Component> comp;
@@ -4585,6 +4641,7 @@ void ControlPanelComponent::resized()
     newPanelButton.setBounds(topBar.removeFromLeft(74).reduced(2));
     renamePanelButton.setBounds(topBar.removeFromLeft(64).reduced(2));
     removePanelButton.setBounds(topBar.removeFromLeft(64).reduced(2));
+    saveButton.setBounds(topBar.removeFromLeft(54).reduced(2));
     topBar.removeFromLeft(8);
     modeButton.setBounds(topBar.removeFromLeft(95).reduced(2));
     if (designMode_)
@@ -4657,6 +4714,25 @@ void ControlPanelComponent::mouseDown(const juce::MouseEvent&) {}
 void ControlPanelComponent::mouseDrag(const juce::MouseEvent&) {}
 void ControlPanelComponent::mouseUp(const juce::MouseEvent&) {}
 void ControlPanelComponent::mouseWheelMove(const juce::MouseEvent&, const juce::MouseWheelDetails&) {}
+
+void ControlPanelComponent::setStatusText(const juce::String& text, juce::Colour colour, int durationTicks)
+{
+    transientStatusText_ = text;
+    transientStatusColour_ = colour;
+    transientStatusTicks_ = std::max(1, durationTicks);
+    statusLabel.setColour(juce::Label::textColourId, transientStatusColour_);
+    statusLabel.setText(transientStatusText_, juce::dontSendNotification);
+}
+
+bool ControlPanelComponent::keyPressed(const juce::KeyPress& key)
+{
+    if (key.getKeyCode() == 'S' && key.getModifiers().isCommandDown())
+    {
+        saveButton.triggerClick();
+        return true;
+    }
+    return false;
+}
 
 void ControlPanelComponent::handleSplitterDragStart()
 {
@@ -4741,7 +4817,8 @@ bool ControlPanelComponent::hasPlotPanel() const
     const auto panelId = layout_.activePanelId.empty() ? std::string("main") : layout_.activePanelId;
     for (const auto& w : layout_.widgets)
     {
-        if ((w.panelId.empty() || w.panelId == panelId) && w.type == WidgetType::PlotPanel)
+        const auto widgetPanelId = w.panelId.empty() ? std::string("main") : w.panelId;
+        if (widgetPanelId == panelId && w.type == WidgetType::PlotPanel)
             return true;
     }
     return false;
@@ -4922,7 +4999,13 @@ void ControlPanelComponent::timerCallback()
     const auto snap = session_->getSnapshot();
 
     // Update status label
-    if (snap.faulted)
+    if (transientStatusTicks_ > 0)
+    {
+        --transientStatusTicks_;
+        statusLabel.setColour(juce::Label::textColourId, transientStatusColour_);
+        statusLabel.setText(transientStatusText_, juce::dontSendNotification);
+    }
+    else if (snap.faulted)
     {
         statusLabel.setColour(juce::Label::textColourId, juce::Colour(0xffff4444));
         statusLabel.setText("FAULT / E-STOP TRIPPED", juce::dontSendNotification);

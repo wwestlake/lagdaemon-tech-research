@@ -74,7 +74,7 @@ struct WidgetConfig
 
     // Extended operator-console metadata. Old machine files omit these and
     // therefore continue to load into the default "main" panel.
-    std::string panelId = "main";
+    std::string panelId;
     std::vector<PlotChannelConfig> plotChannels;
     std::string plotMode = "Strip Chart";
     int xChannel = 0;

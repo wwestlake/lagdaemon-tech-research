@@ -85,7 +85,7 @@ void ControlPanelLayout::ensureDefaultPanel()
 {
     if (panels.empty())
         panels.push_back({ "main", title.empty() ? std::string("Main") : title, 1, 1, 0.22, 6, 1600, 1000, false });
-    if (activePanelId.empty())
+    if (activePanelId.empty() || !hasPanel(activePanelId))
         activePanelId = panels.front().id;
     for (auto& w : widgets)
         if (w.panelId.empty())
@@ -101,7 +101,8 @@ void ControlPanelLayout::ensureWidgetBounds()
         int rightY = 24;
         for (auto& w : widgets)
         {
-            if (w.panelId != panel.id && !(w.panelId.empty() && panel.id == "main"))
+            const auto widgetPanelId = w.panelId.empty() ? std::string("main") : w.panelId;
+            if (widgetPanelId != panel.id)
                 continue;
 
             if (w.width <= 0 || w.height <= 0)
