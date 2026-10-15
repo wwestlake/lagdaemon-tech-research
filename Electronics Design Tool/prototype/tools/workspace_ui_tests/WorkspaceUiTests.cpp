@@ -306,23 +306,26 @@ int main()
         profile.setBounds(700, 5, profile.getPreferredWidth(), 32);
         topLevelWindow.addAndMakeVisible(profile);
 
-        // Click item 0 (File): opens dropdown immediately
-        const juce::MouseEvent clickItem0(juce::Desktop::getInstance().getMainMouseSource(),
-                                          juce::Point<float>(15.0f, 20.0f),
-                                          juce::ModifierKeys::leftButtonModifier,
-                                          juce::MouseInputSource::defaultPressure,
-                                          juce::MouseInputSource::defaultOrientation,
-                                          juce::MouseInputSource::defaultRotation,
-                                          0.0f, 0.0f,
-                                          &menuBar,
-                                          &menuBar,
-                                          juce::Time::getCurrentTime(),
-                                          juce::Point<float>(15.0f, 20.0f),
-                                          juce::Time::getCurrentTime(),
-                                          1, false);
+        // Click item 0 (File) via peer event dispatch: opens dropdown immediately
+        topLevelWindow.addToDesktop(0);
+        topLevelWindow.setVisible(true);
+        auto* peer = topLevelWindow.getPeer();
+        CHECK(peer != nullptr, "Top level window has valid ComponentPeer");
 
-        menuBar.mouseDown(clickItem0);
-        juce::MessageManager::getInstance()->runDispatchLoopUntil(20);
+        auto clickAt = [&topLevelWindow](juce::Point<float> pt)
+        {
+            auto* p = topLevelWindow.getPeer();
+            if (p == nullptr) return;
+            auto now = juce::Time::currentTimeMillis();
+            p->handleMouseEvent(juce::MouseInputSource::InputSourceType::mouse, pt, juce::ModifierKeys(), 0.0f, 0.0f, now, {}, 0);
+            juce::MessageManager::getInstance()->runDispatchLoopUntil(20);
+            p->handleMouseEvent(juce::MouseInputSource::InputSourceType::mouse, pt, juce::ModifierKeys::leftButtonModifier, 1.0f, 0.0f, now + 10, {}, 0);
+            juce::MessageManager::getInstance()->runDispatchLoopUntil(30);
+            p->handleMouseEvent(juce::MouseInputSource::InputSourceType::mouse, pt, juce::ModifierKeys(), 0.0f, 0.0f, now + 20, {}, 0);
+            juce::MessageManager::getInstance()->runDispatchLoopUntil(30);
+        };
+
+        clickAt(juce::Point<float>(15.0f, 20.0f));
 
         CHECK(menuBar.getActiveMenuIndex() == 0, "Click on File immediately opens File menu");
         auto* modalMenu0 = juce::Component::getCurrentlyModalComponent();
@@ -333,22 +336,7 @@ int main()
         juce::Thread::sleep(120);
 
         // Click item 1 (Circuit): switches directly to Circuit dropdown
-        const juce::MouseEvent clickItem1(juce::Desktop::getInstance().getMainMouseSource(),
-                                          juce::Point<float>(95.0f, 20.0f),
-                                          juce::ModifierKeys::leftButtonModifier,
-                                          juce::MouseInputSource::defaultPressure,
-                                          juce::MouseInputSource::defaultOrientation,
-                                          juce::MouseInputSource::defaultRotation,
-                                          0.0f, 0.0f,
-                                          &menuBar,
-                                          &menuBar,
-                                          juce::Time::getCurrentTime(),
-                                          juce::Point<float>(95.0f, 20.0f),
-                                          juce::Time::getCurrentTime(),
-                                          1, false);
-
-        menuBar.mouseDown(clickItem1);
-        juce::MessageManager::getInstance()->runDispatchLoopUntil(20);
+        clickAt(juce::Point<float>(95.0f, 20.0f));
 
         CHECK(menuBar.getActiveMenuIndex() == 1, "Clicking Circuit switches directly to Circuit menu");
         auto* modalMenu1 = juce::Component::getCurrentlyModalComponent();
@@ -357,8 +345,7 @@ int main()
         juce::Thread::sleep(120);
 
         // Click item 1 again: toggles it closed
-        menuBar.mouseDown(clickItem1);
-        juce::MessageManager::getInstance()->runDispatchLoopUntil(20);
+        clickAt(juce::Point<float>(95.0f, 20.0f));
 
         CHECK(menuBar.getActiveMenuIndex() == -1, "Clicking active Circuit menu again toggles it closed");
         CHECK(juce::Component::getCurrentlyModalComponent() == nullptr, "Popup window dismissed on toggle close");

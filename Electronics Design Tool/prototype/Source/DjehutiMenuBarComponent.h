@@ -28,6 +28,7 @@ public:
     void setActiveMenuIndex(int idx);
 
     int getItemIndexAt(juce::Point<int> p) const;
+    juce::Rectangle<int> getItemBounds(int itemIndex) const;
 
     void openMenu(int itemIndex);
     void closeActiveMenu();
@@ -43,10 +44,14 @@ public:
     bool keyPressed(const juce::KeyPress& key) override;
 
 private:
+    void menuDismissed(int itemIndex, int result);
+
     std::unique_ptr<DjehutiHeaderLookAndFeel> headerLookAndFeel;
     int activeMenuIndex = -1;
     int hoveredItemIndex = -1;
-    juce::uint32 lastMenuOpenTime = 0;
+    int justDismissedMenuIndex = -1;
+    juce::uint32 justDismissedTime = 0;
+    int currentMenuSequence = 0;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(DjehutiMenuBarComponent)
 };

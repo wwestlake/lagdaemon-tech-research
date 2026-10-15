@@ -101,6 +101,26 @@ int DjehutiMenuBarComponent::getItemIndexAt(juce::Point<int> p) const
     return -1;
 }
 
+juce::Rectangle<int> DjehutiMenuBarComponent::getItemBounds(int itemIndex) const
+{
+    auto* m = getModel();
+    if (m == nullptr || itemIndex < 0)
+        return {};
+
+    const auto names = m->getMenuBarNames();
+    if (itemIndex >= names.size())
+        return {};
+
+    int x = 0;
+    auto& lf = const_cast<DjehutiMenuBarComponent*>(this)->getLookAndFeel();
+
+    for (int i = 0; i < itemIndex; ++i)
+        x += lf.getMenuBarItemWidth(*const_cast<DjehutiMenuBarComponent*>(this), i, names[i]);
+
+    const int w = lf.getMenuBarItemWidth(*const_cast<DjehutiMenuBarComponent*>(this), itemIndex, names[itemIndex]);
+    return { x, 0, w, getHeight() };
+}
+
 void DjehutiMenuBarComponent::openMenu(int itemIndex)
 {
     if (itemIndex < 0)
@@ -109,26 +129,84 @@ void DjehutiMenuBarComponent::openMenu(int itemIndex)
         return;
     }
 
-    if (activeMenuIndex >= 0 && activeMenuIndex != itemIndex)
+    auto* m = getModel();
+    if (m == nullptr)
+        return;
+
+    const auto names = m->getMenuBarNames();
+    if (!juce::isPositiveAndBelow(itemIndex, names.size()))
     {
-        juce::PopupMenu::dismissAllActiveMenus();
+        closeActiveMenu();
+        return;
     }
+
+    if (activeMenuIndex < 0)
+        m->handleMenuBarActivate(true);
+
+    // Dismiss any currently open popup menu
+    juce::PopupMenu::dismissAllActiveMenus();
 
     activeMenuIndex = itemIndex;
     hoveredItemIndex = itemIndex;
-    lastMenuOpenTime = juce::Time::getMillisecondCounter();
     repaint();
 
-    juce::MenuBarComponent::showMenu(itemIndex);
+    const int seq = ++currentMenuSequence;
+
+    auto menu = m->getMenuForIndex(itemIndex, names[itemIndex]);
+    menu.setLookAndFeel(&getLookAndFeel());
+    const auto itemBounds = getItemBounds(itemIndex);
+    const auto screenBounds = localAreaToGlobal(itemBounds);
+
+    menu.showMenuAsync(
+        juce::PopupMenu::Options()
+            .withTargetScreenArea(screenBounds)
+            .withTargetComponent(nullptr)
+            .withMinimumWidth(itemBounds.getWidth()),
+        [safeThis = juce::Component::SafePointer<DjehutiMenuBarComponent>(this), itemIndex, seq](int result)
+        {
+            if (safeThis == nullptr || seq != safeThis->currentMenuSequence)
+                return;
+
+            safeThis->menuDismissed(itemIndex, result);
+        });
 }
 
 void DjehutiMenuBarComponent::closeActiveMenu()
 {
+    ++currentMenuSequence;
+    const bool wasActive = (activeMenuIndex >= 0);
     activeMenuIndex = -1;
     hoveredItemIndex = -1;
     juce::PopupMenu::dismissAllActiveMenus();
-    juce::MenuBarComponent::showMenu(-1);
     repaint();
+
+    if (wasActive)
+    {
+        if (auto* m = getModel())
+            m->handleMenuBarActivate(false);
+    }
+}
+
+void DjehutiMenuBarComponent::menuDismissed(int itemIndex, int result)
+{
+    justDismissedMenuIndex = itemIndex;
+    justDismissedTime = juce::Time::getMillisecondCounter();
+
+    if (activeMenuIndex == itemIndex)
+    {
+        activeMenuIndex = -1;
+        hoveredItemIndex = -1;
+        repaint();
+
+        if (auto* m = getModel())
+            m->handleMenuBarActivate(false);
+    }
+
+    if (result != 0)
+    {
+        if (auto* m = getModel())
+            m->menuItemSelected(result, itemIndex);
+    }
 }
 
 void DjehutiMenuBarComponent::paint(juce::Graphics& g)
@@ -161,47 +239,35 @@ void DjehutiMenuBarComponent::paint(juce::Graphics& g)
 
 void DjehutiMenuBarComponent::mouseDown(const juce::MouseEvent& e)
 {
-    // Ignore duplicate or reentrant notification if the menu was opened just now
-    // during this exact mouse click sequence (< 100ms ago).
-    const auto now = juce::Time::getMillisecondCounter();
-    if (now - lastMenuOpenTime < 100)
-        return;
-
     const auto localPos = e.getEventRelativeTo(this).getPosition();
     const bool isInsideBar = (localPos.x >= 0 && localPos.y >= 0 && localPos.x < getWidth() && localPos.y < getHeight());
 
-    if (isInsideBar)
+    if (!isInsideBar)
     {
-        const int clickedItem = getItemIndexAt(localPos);
-        if (clickedItem >= 0)
-        {
-            if (clickedItem == activeMenuIndex)
-            {
-                // Clicking the active menu again toggles it closed
-                closeActiveMenu();
-            }
-            else
-            {
-                // Clicking another menu switches to that dropdown immediately
-                openMenu(clickedItem);
-            }
-        }
-        else
-        {
-            // Clicked empty space on menu bar
-            closeActiveMenu();
-        }
+        closeActiveMenu();
+        return;
     }
-    else if (activeMenuIndex >= 0)
+
+    const int clickedItem = getItemIndexAt(localPos);
+    if (clickedItem < 0)
     {
-        // Global mouse event delivered outside menu bar while a menu was active.
-        // If modal menu window has already been dismissed, clear our active index.
-        if (juce::Component::getCurrentlyModalComponent() == nullptr)
-        {
-            activeMenuIndex = -1;
-            repaint();
-        }
+        closeActiveMenu();
+        return;
     }
+
+    const auto now = juce::Time::getMillisecondCounter();
+    const bool wasJustDismissedByThisClick = (clickedItem == justDismissedMenuIndex && (now - justDismissedTime < 150));
+
+    if (wasJustDismissedByThisClick || clickedItem == activeMenuIndex)
+    {
+        // Toggle close: clicking the active menu title closes it cleanly
+        closeActiveMenu();
+        justDismissedMenuIndex = -1;
+        return;
+    }
+
+    // Direct single-click opening and switching between menus
+    openMenu(clickedItem);
 }
 
 void DjehutiMenuBarComponent::mouseUp(const juce::MouseEvent&)
@@ -210,7 +276,7 @@ void DjehutiMenuBarComponent::mouseUp(const juce::MouseEvent&)
 
 void DjehutiMenuBarComponent::mouseMove(const juce::MouseEvent& e)
 {
-    // Pointer movement alone must never open or close menus.
+    // Pointer movement alone must never open or switch menus.
     if (activeMenuIndex < 0)
     {
         const auto p = e.getEventRelativeTo(this).getPosition();
@@ -252,14 +318,13 @@ void DjehutiMenuBarComponent::mouseExit(const juce::MouseEvent&)
 
 void DjehutiMenuBarComponent::handleCommandMessage(int commandId)
 {
-    juce::MenuBarComponent::handleCommandMessage(commandId);
-
-    if (commandId != 0 || juce::Component::getCurrentlyModalComponent() == nullptr)
+    if (commandId != 0)
     {
-        activeMenuIndex = -1;
-        hoveredItemIndex = -1;
-        repaint();
+        if (auto* m = getModel())
+            m->menuItemSelected(commandId, activeMenuIndex >= 0 ? activeMenuIndex : 0);
     }
+
+    closeActiveMenu();
 }
 
 bool DjehutiMenuBarComponent::keyPressed(const juce::KeyPress& key)
@@ -294,5 +359,5 @@ bool DjehutiMenuBarComponent::keyPressed(const juce::KeyPress& key)
         }
     }
 
-    return juce::MenuBarComponent::keyPressed(key);
+    return false;
 }
