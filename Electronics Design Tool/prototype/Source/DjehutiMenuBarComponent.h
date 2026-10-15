@@ -2,8 +2,6 @@
 
 #include <JuceHeader.h>
 
-class ProfileAvatarComponent;
-
 class DjehutiHeaderLookAndFeel : public juce::LookAndFeel_V4
 {
 public:
@@ -34,6 +32,7 @@ public:
     void openMenu(int itemIndex);
     void closeActiveMenu();
 
+    void paint(juce::Graphics& g) override;
     void mouseDown(const juce::MouseEvent& e) override;
     void mouseUp(const juce::MouseEvent& e) override;
     void mouseMove(const juce::MouseEvent& e) override;
@@ -41,26 +40,13 @@ public:
     void mouseEnter(const juce::MouseEvent& e) override;
     void mouseExit(const juce::MouseEvent& e) override;
     void handleCommandMessage(int commandId) override;
+    bool keyPressed(const juce::KeyPress& key) override;
 
 private:
     std::unique_ptr<DjehutiHeaderLookAndFeel> headerLookAndFeel;
     int activeMenuIndex = -1;
     int hoveredItemIndex = -1;
+    juce::uint32 lastMenuOpenTime = 0;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(DjehutiMenuBarComponent)
-};
-
-class MenuActivationWatcher final : public juce::MouseListener
-{
-public:
-    MenuActivationWatcher(DjehutiMenuBarComponent& bar, ProfileAvatarComponent& profile);
-    ~MenuActivationWatcher() override;
-
-    void mouseDown(const juce::MouseEvent& e) override;
-
-private:
-    DjehutiMenuBarComponent& menuBar;
-    ProfileAvatarComponent& profileControl;
-
-    JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(MenuActivationWatcher)
 };

@@ -647,7 +647,7 @@ target_sources(WorkspaceUiTests PRIVATE
     Source/DjehutiMenuBarComponent.cpp
 )
 target_include_directories(WorkspaceUiTests PRIVATE Source)
-target_compile_definitions(WorkspaceUiTests PRIVATE JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0)
+target_compile_definitions(WorkspaceUiTests PRIVATE JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0 JUCE_MODAL_LOOPS_PERMITTED=1)
 target_link_libraries(WorkspaceUiTests PRIVATE
     CreationDock
     juce::juce_core

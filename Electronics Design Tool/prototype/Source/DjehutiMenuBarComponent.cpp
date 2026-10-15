@@ -1,5 +1,4 @@
 #include "DjehutiMenuBarComponent.h"
-#include "Auth/ProfileAvatarComponent.h"
 
 //==============================================================================
 DjehutiHeaderLookAndFeel::DjehutiHeaderLookAndFeel()
@@ -104,39 +103,104 @@ int DjehutiMenuBarComponent::getItemIndexAt(juce::Point<int> p) const
 
 void DjehutiMenuBarComponent::openMenu(int itemIndex)
 {
+    if (itemIndex < 0)
+    {
+        closeActiveMenu();
+        return;
+    }
+
     if (activeMenuIndex >= 0 && activeMenuIndex != itemIndex)
+    {
         juce::PopupMenu::dismissAllActiveMenus();
+    }
 
     activeMenuIndex = itemIndex;
+    hoveredItemIndex = itemIndex;
+    lastMenuOpenTime = juce::Time::getMillisecondCounter();
+    repaint();
+
     juce::MenuBarComponent::showMenu(itemIndex);
 }
 
 void DjehutiMenuBarComponent::closeActiveMenu()
 {
     activeMenuIndex = -1;
+    hoveredItemIndex = -1;
     juce::PopupMenu::dismissAllActiveMenus();
+    juce::MenuBarComponent::showMenu(-1);
     repaint();
+}
+
+void DjehutiMenuBarComponent::paint(juce::Graphics& g)
+{
+    auto& lf = getLookAndFeel();
+    lf.drawMenuBarBackground(g, getWidth(), getHeight(), isMouseOver(true), *this);
+
+    auto* m = getModel();
+    if (m == nullptr)
+        return;
+
+    const auto names = m->getMenuBarNames();
+    int x = 0;
+
+    for (int i = 0; i < names.size(); ++i)
+    {
+        const int w = lf.getMenuBarItemWidth(*this, i, names[i]);
+        const bool isOpen = (i == activeMenuIndex);
+        const bool isHovered = (i == hoveredItemIndex);
+
+        juce::Graphics::ScopedSaveState ss(g);
+        g.setOrigin(x, 0);
+        g.reduceClipRegion(0, 0, w, getHeight());
+
+        lf.drawMenuBarItem(g, w, getHeight(), i, names[i], isHovered, isOpen, isMouseOver(true), *this);
+
+        x += w;
+    }
 }
 
 void DjehutiMenuBarComponent::mouseDown(const juce::MouseEvent& e)
 {
-    const auto p = e.getEventRelativeTo(this).getPosition();
-    const int item = getItemIndexAt(p);
+    // Ignore duplicate or reentrant notification if the menu was opened just now
+    // during this exact mouse click sequence (< 100ms ago).
+    const auto now = juce::Time::getMillisecondCounter();
+    if (now - lastMenuOpenTime < 100)
+        return;
 
-    if (item >= 0)
+    const auto localPos = e.getEventRelativeTo(this).getPosition();
+    const bool isInsideBar = (localPos.x >= 0 && localPos.y >= 0 && localPos.x < getWidth() && localPos.y < getHeight());
+
+    if (isInsideBar)
     {
-        if (item == getActiveMenuIndex())
+        const int clickedItem = getItemIndexAt(localPos);
+        if (clickedItem >= 0)
         {
-            closeActiveMenu();
+            if (clickedItem == activeMenuIndex)
+            {
+                // Clicking the active menu again toggles it closed
+                closeActiveMenu();
+            }
+            else
+            {
+                // Clicking another menu switches to that dropdown immediately
+                openMenu(clickedItem);
+            }
         }
         else
         {
-            openMenu(item);
+            // Clicked empty space on menu bar
+            closeActiveMenu();
         }
     }
-    else
+    else if (activeMenuIndex >= 0)
     {
-        closeActiveMenu();
+        // Global mouse event delivered outside menu bar while a menu was active.
+        // If modal menu window has already been dismissed, clear our active index.
+        if (juce::Component::getCurrentlyModalComponent() == nullptr)
+        {
+            activeMenuIndex = -1;
+            repaint();
+        }
     }
 }
 
@@ -146,13 +210,16 @@ void DjehutiMenuBarComponent::mouseUp(const juce::MouseEvent&)
 
 void DjehutiMenuBarComponent::mouseMove(const juce::MouseEvent& e)
 {
-    const auto p = e.getEventRelativeTo(this).getPosition();
-    const int item = getItemIndexAt(p);
-
-    if (item != hoveredItemIndex)
+    // Pointer movement alone must never open or close menus.
+    if (activeMenuIndex < 0)
     {
-        hoveredItemIndex = item;
-        repaint();
+        const auto p = e.getEventRelativeTo(this).getPosition();
+        const int item = getItemIndexAt(p);
+        if (item != hoveredItemIndex)
+        {
+            hoveredItemIndex = item;
+            repaint();
+        }
     }
 }
 
@@ -160,13 +227,23 @@ void DjehutiMenuBarComponent::mouseDrag(const juce::MouseEvent&)
 {
 }
 
-void DjehutiMenuBarComponent::mouseEnter(const juce::MouseEvent&)
+void DjehutiMenuBarComponent::mouseEnter(const juce::MouseEvent& e)
 {
+    if (activeMenuIndex < 0)
+    {
+        const auto p = e.getEventRelativeTo(this).getPosition();
+        const int item = getItemIndexAt(p);
+        if (item != hoveredItemIndex)
+        {
+            hoveredItemIndex = item;
+            repaint();
+        }
+    }
 }
 
 void DjehutiMenuBarComponent::mouseExit(const juce::MouseEvent&)
 {
-    if (hoveredItemIndex != -1)
+    if (hoveredItemIndex != -1 && activeMenuIndex < 0)
     {
         hoveredItemIndex = -1;
         repaint();
@@ -176,81 +253,46 @@ void DjehutiMenuBarComponent::mouseExit(const juce::MouseEvent&)
 void DjehutiMenuBarComponent::handleCommandMessage(int commandId)
 {
     juce::MenuBarComponent::handleCommandMessage(commandId);
-    if (juce::Component::getCurrentlyModalComponent() == nullptr)
+
+    if (commandId != 0 || juce::Component::getCurrentlyModalComponent() == nullptr)
     {
         activeMenuIndex = -1;
+        hoveredItemIndex = -1;
         repaint();
     }
 }
 
-//==============================================================================
-MenuActivationWatcher::MenuActivationWatcher(DjehutiMenuBarComponent& bar, ProfileAvatarComponent& profile)
-    : menuBar(bar), profileControl(profile)
+bool DjehutiMenuBarComponent::keyPressed(const juce::KeyPress& key)
 {
-    juce::Desktop::getInstance().addGlobalMouseListener(this);
-}
+    auto* m = getModel();
+    if (m == nullptr)
+        return false;
 
-MenuActivationWatcher::~MenuActivationWatcher()
-{
-    juce::Desktop::getInstance().removeGlobalMouseListener(this);
-}
+    const auto names = m->getMenuBarNames();
+    const int numMenus = names.size();
+    if (numMenus <= 0)
+        return false;
 
-void MenuActivationWatcher::mouseDown(const juce::MouseEvent& e)
-{
-    if (juce::Component::getCurrentlyModalComponent() == nullptr
-        && menuBar.getActiveMenuIndex() < 0
-        && !profileControl.isMenuOpen())
+    if (activeMenuIndex >= 0)
     {
-        return;
-    }
-
-    const auto screenPos = e.getScreenPosition();
-
-    if (menuBar.isShowing())
-    {
-        const auto barLocal = menuBar.getLocalPoint(nullptr, screenPos);
-        if (menuBar.reallyContains(barLocal, true))
+        if (key.isKeyCode(juce::KeyPress::leftKey))
         {
-            const int clickedIdx = menuBar.getItemIndexAt(barLocal);
-            if (clickedIdx >= 0)
-            {
-                if (clickedIdx == menuBar.getActiveMenuIndex())
-                {
-                    juce::PopupMenu::dismissAllActiveMenus();
-                    menuBar.setActiveMenuIndex(-1);
-                }
-                else
-                {
-                    juce::PopupMenu::dismissAllActiveMenus();
-                    juce::MessageManager::callAsync([safe = juce::Component::SafePointer<DjehutiMenuBarComponent>(&menuBar), clickedIdx] {
-                        if (safe != nullptr)
-                            safe->openMenu(clickedIdx);
-                    });
-                }
-                return;
-            }
+            openMenu((activeMenuIndex + numMenus - 1) % numMenus);
+            return true;
+        }
+
+        if (key.isKeyCode(juce::KeyPress::rightKey))
+        {
+            openMenu((activeMenuIndex + 1) % numMenus);
+            return true;
+        }
+
+        if (key.isKeyCode(juce::KeyPress::escapeKey))
+        {
+            closeActiveMenu();
+            return true;
         }
     }
 
-    if (profileControl.isShowing())
-    {
-        const auto profLocal = profileControl.getLocalPoint(nullptr, screenPos);
-        if (profileControl.reallyContains(profLocal, true))
-        {
-            if (profileControl.isMenuOpen())
-            {
-                juce::PopupMenu::dismissAllActiveMenus();
-                profileControl.setMenuOpen(false);
-            }
-            else
-            {
-                juce::PopupMenu::dismissAllActiveMenus();
-                juce::MessageManager::callAsync([safe = juce::Component::SafePointer<ProfileAvatarComponent>(&profileControl)] {
-                    if (safe != nullptr)
-                        safe->showAccountMenu();
-                });
-            }
-            return;
-        }
-    }
+    return juce::MenuBarComponent::keyPressed(key);
 }

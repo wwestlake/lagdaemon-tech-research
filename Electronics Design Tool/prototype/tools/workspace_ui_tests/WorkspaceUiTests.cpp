@@ -217,7 +217,7 @@ int main()
         public:
             juce::StringArray getMenuBarNames() override
             {
-                return { "File", "Circuit", "Analytics", "View", "Help" };
+                return { "File", "Circuit", "Analytics", "Agent", "View", "Help" };
             }
 
             juce::PopupMenu getMenuForIndex(int, const juce::String& menuName) override
@@ -296,6 +296,142 @@ int main()
         const int profileControlHeight = 32;
         const int expectedY = (headerHeight - profileControlHeight) / 2;
         CHECK(expectedY == 5, "Profile control vertically centered in 42px header at y = 5");
+
+        // 13. Real popup window creation, visibility, switching, and toggle-closing
+        topLevelWindow.addAndMakeVisible(menuBar);
+        topLevelWindow.setVisible(true);
+
+        DesktopAuthSession auth("djehuti");
+        ProfileAvatarComponent profile(auth);
+        profile.setBounds(700, 5, profile.getPreferredWidth(), 32);
+        topLevelWindow.addAndMakeVisible(profile);
+
+        // Click item 0 (File): opens dropdown immediately
+        const juce::MouseEvent clickItem0(juce::Desktop::getInstance().getMainMouseSource(),
+                                          juce::Point<float>(15.0f, 20.0f),
+                                          juce::ModifierKeys::leftButtonModifier,
+                                          juce::MouseInputSource::defaultPressure,
+                                          juce::MouseInputSource::defaultOrientation,
+                                          juce::MouseInputSource::defaultRotation,
+                                          0.0f, 0.0f,
+                                          &menuBar,
+                                          &menuBar,
+                                          juce::Time::getCurrentTime(),
+                                          juce::Point<float>(15.0f, 20.0f),
+                                          juce::Time::getCurrentTime(),
+                                          1, false);
+
+        menuBar.mouseDown(clickItem0);
+        juce::MessageManager::getInstance()->runDispatchLoopUntil(20);
+
+        CHECK(menuBar.getActiveMenuIndex() == 0, "Click on File immediately opens File menu");
+        auto* modalMenu0 = juce::Component::getCurrentlyModalComponent();
+        CHECK(modalMenu0 != nullptr, "Modal popup window created and displayed for File menu");
+        if (modalMenu0 != nullptr)
+            CHECK(modalMenu0->isVisible(), "File menu popup window is visible");
+
+        juce::Thread::sleep(120);
+
+        // Click item 1 (Circuit): switches directly to Circuit dropdown
+        const juce::MouseEvent clickItem1(juce::Desktop::getInstance().getMainMouseSource(),
+                                          juce::Point<float>(95.0f, 20.0f),
+                                          juce::ModifierKeys::leftButtonModifier,
+                                          juce::MouseInputSource::defaultPressure,
+                                          juce::MouseInputSource::defaultOrientation,
+                                          juce::MouseInputSource::defaultRotation,
+                                          0.0f, 0.0f,
+                                          &menuBar,
+                                          &menuBar,
+                                          juce::Time::getCurrentTime(),
+                                          juce::Point<float>(95.0f, 20.0f),
+                                          juce::Time::getCurrentTime(),
+                                          1, false);
+
+        menuBar.mouseDown(clickItem1);
+        juce::MessageManager::getInstance()->runDispatchLoopUntil(20);
+
+        CHECK(menuBar.getActiveMenuIndex() == 1, "Clicking Circuit switches directly to Circuit menu");
+        auto* modalMenu1 = juce::Component::getCurrentlyModalComponent();
+        CHECK(modalMenu1 != nullptr, "Circuit menu popup window is active");
+
+        juce::Thread::sleep(120);
+
+        // Click item 1 again: toggles it closed
+        menuBar.mouseDown(clickItem1);
+        juce::MessageManager::getInstance()->runDispatchLoopUntil(20);
+
+        CHECK(menuBar.getActiveMenuIndex() == -1, "Clicking active Circuit menu again toggles it closed");
+        CHECK(juce::Component::getCurrentlyModalComponent() == nullptr, "Popup window dismissed on toggle close");
+
+        // Profile Avatar popup interaction
+        const juce::MouseEvent clickProfile(juce::Desktop::getInstance().getMainMouseSource(),
+                                            juce::Point<float>(10.0f, 16.0f),
+                                            juce::ModifierKeys::leftButtonModifier,
+                                            juce::MouseInputSource::defaultPressure,
+                                            juce::MouseInputSource::defaultOrientation,
+                                            juce::MouseInputSource::defaultRotation,
+                                            0.0f, 0.0f,
+                                            &profile,
+                                            &profile,
+                                            juce::Time::getCurrentTime(),
+                                            juce::Point<float>(10.0f, 16.0f),
+                                            juce::Time::getCurrentTime(),
+                                            1, false);
+
+        profile.mouseDown(clickProfile);
+        juce::MessageManager::getInstance()->runDispatchLoopUntil(20);
+
+        CHECK(profile.isMenuOpen(), "Clicking profile control opens profile menu");
+        auto* modalProfile = juce::Component::getCurrentlyModalComponent();
+        CHECK(modalProfile != nullptr, "Modal popup window created for profile menu");
+
+        profile.mouseDown(clickProfile);
+        juce::MessageManager::getInstance()->runDispatchLoopUntil(20);
+
+        CHECK(!profile.isMenuOpen(), "Clicking profile control again toggles it closed");
+        CHECK(juce::Component::getCurrentlyModalComponent() == nullptr, "Profile popup window dismissed");
+
+        // 14. Keyboard navigation: Left/Right arrow switching and Escape closing
+        menuBar.openMenu(0);
+        juce::MessageManager::getInstance()->runDispatchLoopUntil(20);
+        CHECK(menuBar.getActiveMenuIndex() == 0, "Menu 0 open before keyboard nav");
+
+        menuBar.keyPressed(juce::KeyPress(juce::KeyPress::rightKey));
+        juce::MessageManager::getInstance()->runDispatchLoopUntil(20);
+        CHECK(menuBar.getActiveMenuIndex() == 1, "Right arrow switched to Menu 1");
+
+        menuBar.keyPressed(juce::KeyPress(juce::KeyPress::leftKey));
+        juce::MessageManager::getInstance()->runDispatchLoopUntil(20);
+        CHECK(menuBar.getActiveMenuIndex() == 0, "Left arrow switched back to Menu 0");
+
+        menuBar.keyPressed(juce::KeyPress(juce::KeyPress::escapeKey));
+        juce::MessageManager::getInstance()->runDispatchLoopUntil(20);
+        CHECK(menuBar.getActiveMenuIndex() == -1, "Escape key closed the menu");
+        CHECK(juce::Component::getCurrentlyModalComponent() == nullptr, "Modal component null after Escape");
+
+        // 15. Menu Command Execution
+        menuBar.openMenu(0);
+        juce::MessageManager::getInstance()->runDispatchLoopUntil(20);
+        CHECK(menuBar.getActiveMenuIndex() == 0, "Menu 0 open for command invocation");
+
+        // Trigger command ID 1 via menuItemSelected dispatch
+        menuBar.handleCommandMessage(1);
+        juce::MessageManager::getInstance()->runDispatchLoopUntil(20);
+        CHECK(model.lastSelectedId == 1, "Menu command ID 1 dispatched and executed");
+        CHECK(menuBar.getActiveMenuIndex() == -1, "Menu closed after command execution");
+
+        // 16. Rapid repeated open/close cycles across all 6 top-level menus
+        for (int m = 0; m < 6; ++m)
+        {
+            menuBar.openMenu(m);
+            juce::MessageManager::getInstance()->runDispatchLoopUntil(20);
+            CHECK(menuBar.getActiveMenuIndex() == m, "Menu " + juce::String(m) + " opened in cycle");
+            CHECK(juce::Component::getCurrentlyModalComponent() != nullptr, "Modal popup exists for menu " + juce::String(m));
+
+            menuBar.closeActiveMenu();
+            juce::MessageManager::getInstance()->runDispatchLoopUntil(20);
+            CHECK(menuBar.getActiveMenuIndex() == -1, "Menu " + juce::String(m) + " closed in cycle");
+        }
     }
 
     std::cout << "Results: " << passedChecks << " / " << totalChecks << " checks passed." << std::endl;

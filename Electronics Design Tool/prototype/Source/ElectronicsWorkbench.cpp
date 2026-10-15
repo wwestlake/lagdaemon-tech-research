@@ -15724,8 +15724,6 @@ ElectronicsWorkbench::ElectronicsWorkbench()
     };
     addAndMakeVisible(*profileControl);
 
-    menuWatcher = std::make_unique<MenuActivationWatcher>(*menuBar, *profileControl);
-
     dockManager = std::make_unique<CreationDock::DockManager>(*this);
     addAndMakeVisible(*dockManager);
 
