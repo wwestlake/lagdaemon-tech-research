@@ -43,6 +43,7 @@
 #include "Auth/ProfileAvatarComponent.h"
 #include "XyceBackend.h"
 #include "DjehutiMenuBarComponent.h"
+#include "ManageLayoutsDialog.h"
 #include <thread>
 
 // Interaction profiler: set DJEHUTI_DRAG_PROFILE=1 and each mouse-up appends
@@ -1214,6 +1215,31 @@ const std::vector<ToolSpecText>& viewToolSpecs()
             "view_toggle",
             "Toggle visibility of a workspace view, editor, or dockable panel by ID (or bring it forward if open but inactive).",
             R"({"type":"object","properties":{"viewId":{"type":"string","description":"Unique identifier of the view to toggle."}},"required":["viewId"],"additionalProperties":false})"
+        },
+        {
+            "layout_list",
+            "List all predefined layout presets and saved user workspace layouts.",
+            R"({"type":"object","properties":{},"additionalProperties":false})"
+        },
+        {
+            "layout_apply",
+            "Apply a predefined workspace layout preset or saved user layout by name.",
+            R"({"type":"object","properties":{"name":{"type":"string","description":"Name of the preset or user layout to restore."}},"required":["name"],"additionalProperties":false})"
+        },
+        {
+            "layout_save",
+            "Save the current workspace layout under a specified user layout name.",
+            R"({"type":"object","properties":{"name":{"type":"string","description":"Name to save the current workspace layout as."}},"required":["name"],"additionalProperties":false})"
+        },
+        {
+            "layout_rename",
+            "Rename an existing saved user layout.",
+            R"({"type":"object","properties":{"oldName":{"type":"string","description":"Current name of the layout."},"newName":{"type":"string","description":"New name for the layout."}},"required":["oldName","newName"],"additionalProperties":false})"
+        },
+        {
+            "layout_delete",
+            "Delete an existing saved user layout by name.",
+            R"({"type":"object","properties":{"name":{"type":"string","description":"Name of the saved layout to delete."}},"required":["name"],"additionalProperties":false})"
         }
     };
     return specs;
@@ -16008,6 +16034,8 @@ ElectronicsWorkbench::ElectronicsWorkbench()
             return demoTool(name, args);
         if (name.startsWith("view_"))
             return viewTool(name, args);
+        if (name.startsWith("layout_") || name.startsWith("layout."))
+            return layoutTool(name, args);
         if (name.startsWith("help_") || name.startsWith("help."))
             return helpTool(name, args);
         return schematicPanel->runSchematicTool(name, args);
@@ -16332,7 +16360,7 @@ void ElectronicsWorkbench::adjustSchematicZoom(float factor)
 
 juce::StringArray ElectronicsWorkbench::getMenuBarNames()
 {
-    return { "File", "Circuit", "Analytics", "Agent", "View", "Help" };
+    return { "File", "Circuit", "Analytics", "Agent", "View", "Layout", "Help" };
 }
 
 juce::PopupMenu ElectronicsWorkbench::getMenuForIndex(int, const juce::String& menuName)
@@ -16382,18 +16410,6 @@ juce::PopupMenu ElectronicsWorkbench::getMenuForIndex(int, const juce::String& m
         menu.addItem(zoomInItem, "Zoom In");
         menu.addItem(zoomOutItem, "Zoom Out");
         menu.addItem(zoomResetItem, "Reset Zoom (" + juce::String(zoomPct) + "%)");
-        menu.addSeparator();
-
-        juce::PopupMenu layoutMenu;
-        layoutMenu.addItem(layoutPresetDefault, "Default Layout");
-        layoutMenu.addItem(layoutPresetSchematic, "Schematic & Circuit Construction");
-        layoutMenu.addItem(layoutPresetSimulation, "Simulation & Analytics");
-        layoutMenu.addItem(layoutPresetMachine, "Machine Builder & Systems");
-        layoutMenu.addItem(layoutPresetProgramming, "FRust & Node Programming");
-        layoutMenu.addSeparator();
-        layoutMenu.addItem(resetLayout, "Reset Dock Layout to Default");
-        menu.addSubMenu("Workspace Layouts", layoutMenu);
-
         menu.addSeparator();
 
         if (dockManager != nullptr)
@@ -16456,6 +16472,31 @@ juce::PopupMenu ElectronicsWorkbench::getMenuForIndex(int, const juce::String& m
                 addGroup("Other Views", remainingViews);
         }
     }
+    else if (menuName == "Layout")
+    {
+        menu.addItem(layoutPresetDefault, "Default Layout");
+        menu.addItem(layoutPresetSchematic, "Schematic & Circuit Construction");
+        menu.addItem(layoutPresetSimulation, "Simulation & Analytics");
+        menu.addItem(layoutPresetMachine, "Machine Builder & Systems");
+        menu.addItem(layoutPresetProgramming, "FRust & Node Programming");
+        menu.addSeparator();
+        menu.addItem(saveLayoutItem, "Save Layout...");
+
+        juce::PopupMenu userSubMenu;
+        const auto savedNames = userLayoutStore.getLayoutNames();
+        if (savedNames.isEmpty())
+        {
+            userSubMenu.addItem(-1, "No saved layouts", false, false);
+        }
+        else
+        {
+            for (int i = 0; i < savedNames.size(); ++i)
+                userSubMenu.addItem(userLayoutMenuBase + i, savedNames[i]);
+        }
+        menu.addSubMenu("User Layouts", userSubMenu);
+
+        menu.addItem(manageLayoutsItem, "Manage User Layouts...");
+    }
     else if (menuName == "Help")
     {
         menu.addItem(openDocumentationItem, "Documentation (F1)");
@@ -16472,6 +16513,14 @@ juce::PopupMenu ElectronicsWorkbench::getMenuForIndex(int, const juce::String& m
 
 void ElectronicsWorkbench::menuItemSelected(int menuItemID, int)
 {
+    if (menuItemID >= userLayoutMenuBase && menuItemID < userLayoutMenuBase + 1000)
+    {
+        const int index = menuItemID - userLayoutMenuBase;
+        const auto userLayoutNames = userLayoutStore.getLayoutNames();
+        if (juce::isPositiveAndBelow(index, userLayoutNames.size()))
+            restoreUserLayout(userLayoutNames[index]);
+        return;
+    }
     if (menuItemID >= viewMenuBase && menuItemID < viewMenuBase + (int)viewMenuIds.size())
     {
         const size_t index = (size_t)(menuItemID - viewMenuBase);
@@ -16522,6 +16571,12 @@ void ElectronicsWorkbench::menuItemSelected(int menuItemID, int)
         case layoutPresetMachine:
         case layoutPresetProgramming:
             applyWorkspaceLayoutPreset(menuItemID);
+            break;
+        case saveLayoutItem:
+            showSaveLayoutDialog();
+            break;
+        case manageLayoutsItem:
+            showManageLayoutsDialog();
             break;
         case toggleStampModeItem:
             stampModeEnabled = !stampModeEnabled;
@@ -16724,12 +16779,253 @@ void ElectronicsWorkbench::applyWorkspaceLayoutPreset(int presetId)
     root->setProperty("zones", juce::var(zones));
     root->setProperty("floating", juce::Array<juce::var>());
 
-    dockManager->applyLayout(juce::var(root));
+    juce::String applyError;
+    if (WorkspaceLayoutStore::applyLayoutSafely(*dockManager, juce::var(root), applyError))
+    {
+        if (activeCenterPanel.isNotEmpty())
+            dockManager->activatePanel(activeCenterPanel);
 
-    if (activeCenterPanel.isNotEmpty())
-        dockManager->activatePanel(activeCenterPanel);
+        appendLog("Applied workspace layout preset: " + presetName + ".");
+    }
+    else
+    {
+        appendLog("Failed to apply layout preset: " + applyError);
+    }
+}
 
-    appendLog("Applied workspace layout preset: " + presetName + ".");
+void ElectronicsWorkbench::showSaveLayoutDialog()
+{
+    if (dockManager == nullptr)
+        return;
+
+    const auto captured = dockManager->captureLayout();
+    promptForName("Save Layout", "Enter a name for the current workspace layout:", "",
+                  [this, captured](const juce::String& rawName) {
+        handleSaveLayout(rawName, captured);
+    });
+}
+
+void ElectronicsWorkbench::handleSaveLayout(const juce::String& rawName, const juce::var& captured)
+{
+    const auto name = rawName.trim();
+    if (name.isEmpty())
+    {
+        juce::AlertWindow::showMessageBoxAsync(
+            juce::MessageBoxIconType::WarningIcon,
+            "Save Layout",
+            "Layout name cannot be empty.");
+        return;
+    }
+
+    if (WorkspaceLayoutStore::isBuiltInPresetName(name))
+    {
+        juce::AlertWindow::showMessageBoxAsync(
+            juce::MessageBoxIconType::WarningIcon,
+            "Save Layout",
+            "Cannot overwrite built-in layout preset '" + name + "'. Please choose a different name.");
+        return;
+    }
+
+    if (userLayoutStore.hasLayout(name))
+    {
+        juce::AlertWindow::showAsync(
+            juce::MessageBoxOptions()
+                .withIconType(juce::MessageBoxIconType::QuestionIcon)
+                .withTitle("Replace Layout")
+                .withMessage("A saved layout named '" + name + "' already exists. Do you want to replace it?")
+                .withButton("Replace")
+                .withButton("Cancel"),
+            [this, name, captured](int result) {
+                if (result == 1)
+                    performSaveLayout(name, captured);
+            });
+        return;
+    }
+
+    performSaveLayout(name, captured);
+}
+
+void ElectronicsWorkbench::performSaveLayout(const juce::String& name, const juce::var& captured)
+{
+    juce::String err;
+    if (userLayoutStore.saveLayout(name, captured, err))
+    {
+        appendLog("Saved workspace layout: " + name + ".");
+        menuItemsChanged();
+    }
+    else
+    {
+        juce::AlertWindow::showMessageBoxAsync(
+            juce::MessageBoxIconType::WarningIcon,
+            "Save Layout",
+            "Failed to save layout: " + err);
+    }
+}
+
+void ElectronicsWorkbench::showManageLayoutsDialog()
+{
+    auto* dialog = new ManageLayoutsDialog(userLayoutStore, [this] {
+        menuItemsChanged();
+        appendLog("User layouts updated.");
+    });
+
+    juce::DialogWindow::LaunchOptions options;
+    options.content.setOwned(dialog);
+    options.dialogTitle = "Manage User Layouts";
+    options.dialogBackgroundColour = juce::Colour(0xff171b20);
+    options.useNativeTitleBar = true;
+    options.resizable = false;
+    options.launchAsync();
+}
+
+void ElectronicsWorkbench::restoreUserLayout(const juce::String& name)
+{
+    if (dockManager == nullptr)
+        return;
+
+    if (!userLayoutStore.hasLayout(name))
+    {
+        juce::AlertWindow::showMessageBoxAsync(
+            juce::MessageBoxIconType::WarningIcon,
+            "Restore Layout",
+            "Saved layout '" + name + "' could not be found.");
+        return;
+    }
+
+    const auto layoutData = userLayoutStore.getLayoutData(name);
+    juce::String err;
+    if (WorkspaceLayoutStore::applyLayoutSafely(*dockManager, layoutData, err))
+    {
+        appendLog("Restored workspace layout: " + name + ".");
+    }
+    else
+    {
+        juce::AlertWindow::showMessageBoxAsync(
+            juce::MessageBoxIconType::WarningIcon,
+            "Restore Layout",
+            "Failed to restore layout '" + name + "': " + err);
+    }
+}
+
+juce::String ElectronicsWorkbench::layoutTool(const juce::String& name, const juce::var& args)
+{
+    if (dockManager == nullptr)
+        return R"({"ok": false, "error": "Dock manager is unavailable."})";
+
+    if (name == "layout_list")
+    {
+        auto* root = new juce::DynamicObject();
+        root->setProperty("ok", true);
+        root->setProperty("tool", "layout_list");
+
+        juce::Array<juce::var> presets;
+        for (const auto& p : WorkspaceLayoutStore::getBuiltInPresetNames())
+            presets.add(p);
+        root->setProperty("presets", presets);
+
+        juce::Array<juce::var> userList;
+        for (const auto& u : userLayoutStore.getLayoutNames())
+            userList.add(u);
+        root->setProperty("userLayouts", userList);
+
+        return juce::JSON::toString(juce::var(root));
+    }
+
+    if (name == "layout_apply")
+    {
+        const auto layoutName = args.getProperty("name", {}).toString().trim();
+        if (layoutName.isEmpty())
+            return R"({"ok": false, "error": "'name' is required."})";
+
+        if (layoutName.equalsIgnoreCase("Default Layout") || layoutName.equalsIgnoreCase("Reset Dock Layout to Default"))
+        {
+            applyWorkspaceLayoutPreset(layoutPresetDefault);
+            return "{ \"ok\": true, \"tool\": \"layout_apply\", \"name\": \"Default Layout\" }";
+        }
+        if (layoutName.equalsIgnoreCase("Schematic & Circuit Construction"))
+        {
+            applyWorkspaceLayoutPreset(layoutPresetSchematic);
+            return "{ \"ok\": true, \"tool\": \"layout_apply\", \"name\": \"Schematic & Circuit Construction\" }";
+        }
+        if (layoutName.equalsIgnoreCase("Simulation & Analytics"))
+        {
+            applyWorkspaceLayoutPreset(layoutPresetSimulation);
+            return "{ \"ok\": true, \"tool\": \"layout_apply\", \"name\": \"Simulation & Analytics\" }";
+        }
+        if (layoutName.equalsIgnoreCase("Machine Builder & Systems"))
+        {
+            applyWorkspaceLayoutPreset(layoutPresetMachine);
+            return "{ \"ok\": true, \"tool\": \"layout_apply\", \"name\": \"Machine Builder & Systems\" }";
+        }
+        if (layoutName.equalsIgnoreCase("FRust & Node Programming"))
+        {
+            applyWorkspaceLayoutPreset(layoutPresetProgramming);
+            return "{ \"ok\": true, \"tool\": \"layout_apply\", \"name\": \"FRust & Node Programming\" }";
+        }
+
+        if (userLayoutStore.hasLayout(layoutName))
+        {
+            restoreUserLayout(layoutName);
+            return "{ \"ok\": true, \"tool\": \"layout_apply\", \"name\": " + jsonQuote(layoutName) + " }";
+        }
+
+        return "{ \"ok\": false, \"error\": \"Layout not found: " + layoutName + "\" }";
+    }
+
+    if (name == "layout_save")
+    {
+        const auto layoutName = args.getProperty("name", {}).toString().trim();
+        if (layoutName.isEmpty())
+            return R"({"ok": false, "error": "'name' is required."})";
+
+        if (WorkspaceLayoutStore::isBuiltInPresetName(layoutName))
+            return "{ \"ok\": false, \"error\": \"Cannot overwrite built-in preset: " + layoutName + "\" }";
+
+        const auto captured = dockManager->captureLayout();
+        juce::String err;
+        if (userLayoutStore.saveLayout(layoutName, captured, err))
+        {
+            menuItemsChanged();
+            appendLog("Saved workspace layout: " + layoutName + ".");
+            return "{ \"ok\": true, \"tool\": \"layout_save\", \"name\": " + jsonQuote(layoutName) + " }";
+        }
+        return "{ \"ok\": false, \"error\": " + jsonQuote(err) + " }";
+    }
+
+    if (name == "layout_rename")
+    {
+        const auto oldName = args.getProperty("oldName", {}).toString().trim();
+        const auto newName = args.getProperty("newName", {}).toString().trim();
+        if (oldName.isEmpty() || newName.isEmpty())
+            return R"({"ok": false, "error": "'oldName' and 'newName' are required."})";
+
+        juce::String err;
+        if (userLayoutStore.renameLayout(oldName, newName, err))
+        {
+            menuItemsChanged();
+            appendLog("Renamed workspace layout '" + oldName + "' to '" + newName + "'.");
+            return "{ \"ok\": true, \"tool\": \"layout_rename\", \"oldName\": " + jsonQuote(oldName) + ", \"newName\": " + jsonQuote(newName) + " }";
+        }
+        return "{ \"ok\": false, \"error\": " + jsonQuote(err) + " }";
+    }
+
+    if (name == "layout_delete")
+    {
+        const auto layoutName = args.getProperty("name", {}).toString().trim();
+        if (layoutName.isEmpty())
+            return R"({"ok": false, "error": "'name' is required."})";
+
+        juce::String err;
+        if (userLayoutStore.deleteLayout(layoutName, err))
+        {
+            menuItemsChanged();
+            appendLog("Deleted workspace layout: " + layoutName + ".");
+            return "{ \"ok\": true, \"tool\": \"layout_delete\", \"name\": " + jsonQuote(layoutName) + " }";
+        }
+        return "{ \"ok\": false, \"error\": " + jsonQuote(err) + " }";
+    }
+
+    return "{ \"ok\": false, \"error\": \"Unknown layout tool: " + name + "\" }";
 }
 
 juce::File ElectronicsWorkbench::layoutFile() const

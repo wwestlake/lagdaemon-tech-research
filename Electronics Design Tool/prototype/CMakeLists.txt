@@ -221,6 +221,10 @@ target_sources(DjehutiElectronicsLab PRIVATE
     Source/Auth/ProfileAvatarComponent.cpp
     Source/DjehutiMenuBarComponent.h
     Source/DjehutiMenuBarComponent.cpp
+    Source/WorkspaceLayoutStore.h
+    Source/WorkspaceLayoutStore.cpp
+    Source/ManageLayoutsDialog.h
+    Source/ManageLayoutsDialog.cpp
 )
 
 target_compile_definitions(DjehutiElectronicsLab PRIVATE
@@ -645,6 +649,8 @@ target_sources(WorkspaceUiTests PRIVATE
     Source/Auth/DesktopAuthSession.cpp
     Source/Auth/ProfileAvatarComponent.cpp
     Source/DjehutiMenuBarComponent.cpp
+    Source/WorkspaceLayoutStore.cpp
+    Source/ManageLayoutsDialog.cpp
 )
 target_include_directories(WorkspaceUiTests PRIVATE Source)
 target_compile_definitions(WorkspaceUiTests PRIVATE JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0 JUCE_MODAL_LOOPS_PERMITTED=1)

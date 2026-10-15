@@ -8,6 +8,8 @@
 #include "Auth/DesktopAuthSession.h"
 #include "Auth/ProfileAvatarComponent.h"
 #include "DjehutiMenuBarComponent.h"
+#include "WorkspaceLayoutStore.h"
+#include "ManageLayoutsDialog.h"
 #include <iostream>
 #include <cassert>
 
@@ -217,7 +219,7 @@ int main()
         public:
             juce::StringArray getMenuBarNames() override
             {
-                return { "File", "Circuit", "Analytics", "Agent", "View", "Help" };
+                return { "File", "Circuit", "Analytics", "Agent", "View", "Layout", "Help" };
             }
 
             juce::PopupMenu getMenuForIndex(int, const juce::String& menuName) override
@@ -225,11 +227,19 @@ int main()
                 juce::PopupMenu menu;
                 menu.addItem(1, menuName + " Item 1");
                 menu.addItem(2, menuName + " Item 2");
-                if (menuName == "View")
+                if (menuName == "Layout")
                 {
-                    juce::PopupMenu sub;
-                    sub.addItem(101, "Preset 1");
-                    menu.addSubMenu("Submenu", sub);
+                    menu.addItem(10, "Default Layout");
+                    menu.addItem(11, "Schematic & Circuit Construction");
+                    menu.addItem(12, "Simulation & Analytics");
+                    menu.addItem(13, "Machine Builder & Systems");
+                    menu.addItem(14, "FRust & Node Programming");
+                    menu.addSeparator();
+                    menu.addItem(15, "Save Layout...");
+                    juce::PopupMenu userSub;
+                    userSub.addItem(-1, "No saved layouts", false, false);
+                    menu.addSubMenu("User Layouts", userSub);
+                    menu.addItem(16, "Manage User Layouts...");
                 }
                 return menu;
             }
@@ -428,8 +438,8 @@ int main()
         CHECK(model.lastSelectedId == 1, "Menu command ID 1 dispatched and executed");
         CHECK(menuBar.getActiveMenuIndex() == -1, "Menu closed after command execution");
 
-        // 16. Rapid repeated open/close cycles across all 6 top-level menus
-        for (int m = 0; m < 6; ++m)
+        // 16. Rapid repeated open/close cycles across all 7 top-level menus (including Layout at index 5)
+        for (int m = 0; m < 7; ++m)
         {
             menuBar.openMenu(m);
             juce::MessageManager::getInstance()->runDispatchLoopUntil(20);
@@ -440,6 +450,157 @@ int main()
             juce::MessageManager::getInstance()->runDispatchLoopUntil(20);
             CHECK(menuBar.getActiveMenuIndex() == -1, "Menu " + juce::String(m) + " closed in cycle");
         }
+
+        // Test stationary click and switching specifically for the new Layout menu (index 5)
+        menuBar.openMenu(5);
+        juce::MessageManager::getInstance()->runDispatchLoopUntil(20);
+        CHECK(menuBar.getActiveMenuIndex() == 5, "Layout menu (index 5) opens on click");
+        CHECK(juce::Component::getCurrentlyModalComponent() != nullptr, "Layout menu popup exists");
+
+        // Single-click switch from Layout (5) to Help (6)
+        menuBar.openMenu(6);
+        juce::MessageManager::getInstance()->runDispatchLoopUntil(20);
+        CHECK(menuBar.getActiveMenuIndex() == 6, "Switched from Layout to Help on single click");
+        menuBar.closeActiveMenu();
+        juce::MessageManager::getInstance()->runDispatchLoopUntil(20);
+    }
+
+    // 17. Named User Layouts, Persistence, Recovery, and Safe Application Tests
+    {
+        std::cout << "--- Testing Named User Layouts Store and Persistence ---" << std::endl;
+
+        // Built-in presets verification
+        auto presets = WorkspaceLayoutStore::getBuiltInPresetNames();
+        CHECK(presets.size() == 5, "5 built-in presets defined");
+        CHECK(WorkspaceLayoutStore::isBuiltInPresetName("Default Layout"), "Default Layout recognized as preset");
+        CHECK(WorkspaceLayoutStore::isBuiltInPresetName("default layout"), "Preset check is case-insensitive");
+        CHECK(WorkspaceLayoutStore::isBuiltInPresetName("Schematic & Circuit Construction"), "Schematic preset recognized");
+        CHECK(WorkspaceLayoutStore::isBuiltInPresetName("Simulation & Analytics"), "Simulation preset recognized");
+        CHECK(WorkspaceLayoutStore::isBuiltInPresetName("Machine Builder & Systems"), "Machine Builder preset recognized");
+        CHECK(WorkspaceLayoutStore::isBuiltInPresetName("FRust & Node Programming"), "FRust preset recognized");
+        CHECK(!WorkspaceLayoutStore::isBuiltInPresetName("Custom Audio Rig"), "Custom layout is not a preset");
+
+        const juce::File testStorageFile = juce::File::getSpecialLocation(juce::File::tempDirectory)
+                                                .getChildFile("djehuti_test_user_layouts_" + juce::String(juce::Random::getSystemRandom().nextInt()) + ".json");
+        testStorageFile.deleteFile();
+
+        WorkspaceLayoutStore store(testStorageFile);
+        CHECK(store.getLayoutNames().isEmpty(), "Initial store is empty");
+
+        // Validate rejection of empty names
+        juce::String err;
+        CHECK(!store.saveLayout("", juce::var(new juce::DynamicObject()), err), "Reject empty layout name");
+        CHECK(!store.saveLayout("   ", juce::var(new juce::DynamicObject()), err), "Reject whitespace-only layout name");
+
+        // Validate protection of built-in presets
+        CHECK(!store.saveLayout("Default Layout", juce::var(new juce::DynamicObject()), err), "Reject overwriting Default Layout");
+        CHECK(!store.saveLayout("default layout", juce::var(new juce::DynamicObject()), err), "Reject overwriting built-in preset case-insensitively");
+        CHECK(!store.saveLayout("Simulation & Analytics", juce::var(new juce::DynamicObject()), err), "Reject overwriting Simulation preset");
+
+        // Validate capturing and saving two distinct layouts
+        auto layout1Data = dockManager.captureLayout();
+        CHECK(store.saveLayout("Alpha Layout", layout1Data, err), "Saved Alpha Layout successfully");
+        CHECK(store.hasLayout("Alpha Layout"), "Alpha Layout exists");
+        CHECK(store.hasLayout("alpha layout"), "hasLayout is case-insensitive");
+
+        // Modify workspace arrangement for layout 2: hide library, open console in Bottom
+        dockManager.hidePanel("library");
+        dockManager.showPanel("console");
+        auto layout2Data = dockManager.captureLayout();
+
+        CHECK(store.saveLayout("Beta Layout", layout2Data, err), "Saved Beta Layout successfully");
+        CHECK(store.hasLayout("Beta Layout"), "Beta Layout exists");
+
+        // Case-insensitive alphabetical listing
+        CHECK(store.saveLayout("zebra layout", layout1Data, err), "Saved zebra layout");
+        auto names = store.getLayoutNames();
+        CHECK(names.size() == 3, "3 user layouts saved");
+        CHECK(names[0] == "Alpha Layout", "First sorted is Alpha Layout");
+        CHECK(names[1] == "Beta Layout", "Second sorted is Beta Layout");
+        CHECK(names[2] == "zebra layout", "Third sorted is zebra layout");
+
+        // Case-insensitive duplicate detection and replacement
+        CHECK(store.hasLayout("alpha layout"), "Duplicate detection case-insensitive");
+        CHECK(store.saveLayout("alpha layout", layout2Data, err), "Overwriting existing layout succeeds");
+        CHECK(store.getLayoutNames().size() == 3, "Layout count remains 3 after replacement");
+
+        // Renaming validation
+        CHECK(!store.renameLayout("Alpha Layout", "", err), "Reject empty rename");
+        CHECK(!store.renameLayout("Alpha Layout", "Default Layout", err), "Reject rename to built-in preset");
+        CHECK(!store.renameLayout("Alpha Layout", "Beta Layout", err), "Reject rename to existing layout");
+        CHECK(!store.renameLayout("NonExistent", "NewName", err), "Reject rename of nonexistent layout");
+        CHECK(store.renameLayout("Alpha Layout", "Gamma Layout", err), "Rename Alpha to Gamma succeeds");
+        CHECK(!store.hasLayout("Alpha Layout"), "Old name Alpha no longer exists");
+        CHECK(store.hasLayout("Gamma Layout"), "New name Gamma exists");
+
+        // Deleting validation
+        CHECK(!store.deleteLayout("NonExistent", err), "Delete nonexistent fails");
+        CHECK(store.deleteLayout("zebra layout", err), "Delete zebra layout succeeds");
+        CHECK(!store.hasLayout("zebra layout"), "zebra layout no longer in store");
+        CHECK(store.getLayoutNames().size() == 2, "2 layouts remain after deletion");
+
+        // Persistence round-trip across instance reload (simulating application restart)
+        WorkspaceLayoutStore reloadedStore(testStorageFile);
+        auto reloadedNames = reloadedStore.getLayoutNames();
+        CHECK(reloadedNames.size() == 2, "Reloaded store contains 2 layouts");
+        CHECK(reloadedStore.hasLayout("Beta Layout"), "Beta Layout survived reload");
+        CHECK(reloadedStore.hasLayout("Gamma Layout"), "Gamma Layout survived reload");
+
+        // Corrupt storage recovery
+        const juce::File corruptFile = juce::File::getSpecialLocation(juce::File::tempDirectory)
+                                            .getChildFile("djehuti_corrupt_test_" + juce::String(juce::Random::getSystemRandom().nextInt()) + ".json");
+        corruptFile.replaceWithText("{ this is definitely not valid json ]]");
+        WorkspaceLayoutStore corruptStore(corruptFile);
+        CHECK(corruptStore.getLayoutNames().isEmpty(), "Corrupt file handled cleanly without crash");
+        corruptFile.deleteFile();
+
+        // Monitor disconnection / floating window boundary sanitization
+        juce::var testFloatingLayout = layout1Data.clone();
+        if (auto* obj = testFloatingLayout.getDynamicObject())
+        {
+            juce::Array<juce::var> fArr;
+            auto* winObj = new juce::DynamicObject();
+            winObj->setProperty("id", "schematic");
+            winObj->setProperty("x", -9999);
+            winObj->setProperty("y", -9999);
+            winObj->setProperty("w", 600);
+            winObj->setProperty("h", 450);
+            fArr.add(juce::var(winObj));
+            obj->setProperty("floating", fArr);
+        }
+        WorkspaceLayoutStore::sanitizeFloatingBounds(testFloatingLayout);
+        auto* floatArrAfter = testFloatingLayout.getProperty("floating", {}).getArray();
+        CHECK(floatArrAfter != nullptr && !floatArrAfter->isEmpty(), "Floating array preserved");
+        if (floatArrAfter != nullptr && !floatArrAfter->isEmpty())
+        {
+            int sanitizedX = (int)floatArrAfter->getReference(0).getProperty("x", -9999);
+            int sanitizedY = (int)floatArrAfter->getReference(0).getProperty("y", -9999);
+            CHECK(sanitizedX > -9000 && sanitizedY > -9000, "Offscreen floating window repositioned safely onto visible screen");
+        }
+
+        // Safe application to DockManager and document content preservation
+        rawSchematicContent->unsavedDocumentText = "Important circuit draft";
+        rawSchematicContent->stateValue = 4242;
+
+        CHECK(WorkspaceLayoutStore::applyLayoutSafely(dockManager, layout1Data, err), "applyLayoutSafely succeeded for layout 1");
+        CHECK(dockManager.isPanelOpen("library"), "Library panel open in layout 1");
+        CHECK(rawSchematicContent->unsavedDocumentText == "Important circuit draft", "Document text preserved after layout 1 apply");
+        CHECK(rawSchematicContent->stateValue == 4242, "Document state value preserved after layout 1 apply");
+
+        CHECK(WorkspaceLayoutStore::applyLayoutSafely(dockManager, layout2Data, err), "applyLayoutSafely succeeded for layout 2");
+        CHECK(!dockManager.isPanelOpen("library"), "Library panel closed in layout 2");
+        CHECK(dockManager.isPanelOpen("console"), "Console panel open in layout 2");
+        CHECK(rawSchematicContent->unsavedDocumentText == "Important circuit draft", "Document text preserved after layout 2 apply");
+        CHECK(rawSchematicContent->stateValue == 4242, "Document state value preserved after layout 2 apply");
+
+        // ManageLayoutsDialog test
+        bool layoutsChangedFired = false;
+        ManageLayoutsDialog dialog(reloadedStore, [&layoutsChangedFired] {
+            layoutsChangedFired = true;
+        });
+        CHECK(dialog.getNumRows() == 2, "ManageLayoutsDialog displays 2 saved layouts");
+
+        testStorageFile.deleteFile();
     }
 
     std::cout << "Results: " << passedChecks << " / " << totalChecks << " checks passed." << std::endl;
