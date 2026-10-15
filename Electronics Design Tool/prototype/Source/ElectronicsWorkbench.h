@@ -17,6 +17,9 @@ namespace machine_builder { class MachineBuilderPanel; struct MachineDesign; }
 namespace demo_system { class DemonstrationRunnerPanel; struct DemonstrationDefinition; struct DemonstrationRun; }
 namespace djehuti_help { class HelpPanel; }
 
+class DesktopAuthSession;
+class ProfileAvatarComponent;
+
 class ElectronicsWorkbench final : public juce::Component,
                                    public juce::DragAndDropContainer,
                                    public juce::MenuBarModel,
@@ -59,6 +62,11 @@ private:
         exportSchematicImageItem,
         preferencesItem,
         resetLayout,
+        layoutPresetDefault,
+        layoutPresetSchematic,
+        layoutPresetSimulation,
+        layoutPresetMachine,
+        layoutPresetProgramming,
         importComponent,
         runErc,
         runCompiledPreview,
@@ -66,6 +74,10 @@ private:
         openControlPanelItem,
         autoLayoutDiagramItem,
         toggleStampModeItem,
+        toggleSnapModeItem,
+        zoomInItem,
+        zoomOutItem,
+        zoomResetItem,
         openAgentSettings,
         exportAgentTools,
         openResearchSpec,
@@ -238,6 +250,7 @@ private:
     void autoLayoutDiagram();
     void applySchematicZoom(float zoom);
     void adjustSchematicZoom(float factor);
+    void applyWorkspaceLayoutPreset(int presetId);
 
     bool isAudioSimRunning = false;
     std::unique_ptr<AudioPipeline> audioPipeline;
@@ -247,17 +260,9 @@ private:
     std::unique_ptr<CreationDock::DockManager> dockManager;
 
     juce::Label titleLabel;
-    juce::TextButton newButton { "New" };
-    juce::TextButton openDiagramButton { "Open" };
-    juce::TextButton ercButton { "ERC" };
-    juce::TextButton transientButton { "Analytics" };
-    juce::TextButton compileButton { "Compile Preview" };
-    juce::ToggleButton stampModeButton { "Stamp Mode" };
-    juce::ToggleButton snapModeButton { "Snap" };
-    juce::TextButton zoomOutButton { "-" };
-    juce::TextButton zoomResetButton { "100%" };
-    juce::TextButton zoomInButton { "+" };
-    juce::TextButton helpButton { "Help" };
+    bool stampModeEnabled = false;
+    std::unique_ptr<DesktopAuthSession> authSession;
+    std::unique_ptr<ProfileAvatarComponent> profileControl;
 
     juce::TextEditor* logConsole = nullptr;
 juce::Component* logPanel = nullptr;

@@ -215,6 +215,10 @@ target_sources(DjehutiElectronicsLab PRIVATE
     Source/DemonstrationRunnerPanel.cpp
     Source/HelpSystem.h
     Source/HelpSystem.cpp
+    Source/Auth/DesktopAuthSession.h
+    Source/Auth/DesktopAuthSession.cpp
+    Source/Auth/ProfileAvatarComponent.h
+    Source/Auth/ProfileAvatarComponent.cpp
 )
 
 target_compile_definitions(DjehutiElectronicsLab PRIVATE
@@ -636,6 +640,8 @@ set_target_properties(WorkspaceUiTests PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/bin")
 target_sources(WorkspaceUiTests PRIVATE
     tools/workspace_ui_tests/WorkspaceUiTests.cpp
+    Source/Auth/DesktopAuthSession.cpp
+    Source/Auth/ProfileAvatarComponent.cpp
 )
 target_include_directories(WorkspaceUiTests PRIVATE Source)
 target_compile_definitions(WorkspaceUiTests PRIVATE JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0)

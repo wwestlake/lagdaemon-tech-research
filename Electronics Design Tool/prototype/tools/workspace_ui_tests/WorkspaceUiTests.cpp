@@ -5,6 +5,8 @@
 #include <juce_gui_extra/juce_gui_extra.h>
 
 #include <CreationDock/DockManager.h>
+#include "Auth/DesktopAuthSession.h"
+#include "Auth/ProfileAvatarComponent.h"
 #include <iostream>
 #include <cassert>
 
@@ -153,7 +155,54 @@ int main()
     dockManager.resetLayout();
     CHECK(dockManager.isPanelOpen("schematic"), "Schematic reopened by resetLayout");
     CHECK(dockManager.isPanelOpen("properties"), "Properties reopened by resetLayout");
-    CHECK(rawSchematicContent->stateValue == 999, "Schematic content survived resetLayout");
+
+    // 10. Workspace Layout Presets application and data preservation
+    auto makeZoneVar = [](const juce::StringArray& panels, int currentTab) {
+        auto* obj = new juce::DynamicObject();
+        juce::Array<juce::var> arr;
+        for (const auto& p : panels)
+            arr.add(p);
+        obj->setProperty("panels", arr);
+        obj->setProperty("currentTab", currentTab);
+        return juce::var(obj);
+    };
+
+    // Apply Simulation & Analytics Preset
+    {
+        auto* zones = new juce::DynamicObject();
+        zones->setProperty("left", makeZoneVar({ "library" }, 0));
+        zones->setProperty("center", makeZoneVar({ "control_panel", "schematic" }, 0));
+        zones->setProperty("right", makeZoneVar({ "properties" }, 0));
+        zones->setProperty("bottom", makeZoneVar({ "console" }, 0));
+
+        auto* root = new juce::DynamicObject();
+        root->setProperty("leftWidth", 220);
+        root->setProperty("rightWidth", 280);
+        root->setProperty("bottomHeight", 160);
+        root->setProperty("zones", juce::var(zones));
+        root->setProperty("floating", juce::Array<juce::var>());
+
+        dockManager.applyLayout(juce::var(root));
+        CHECK(dockManager.isPanelOpen("control_panel"), "Control panel open in Simulation preset");
+        CHECK(dockManager.isPanelActive("control_panel"), "Control panel active in Simulation preset");
+        CHECK(dockManager.isPanelOpen("schematic"), "Schematic open in Simulation preset");
+        CHECK(rawSchematicContent->stateValue == 999, "Schematic content survived preset application");
+        CHECK(rawSchematicContent->unsavedDocumentText == "Modified unsaved schematic netlist", "Document text survived preset application");
+        CHECK(rawCpContent->stateValue == 200, "Control panel content preserved in preset");
+    }
+
+    // 11. LagDaemon Authentication & ProfileAvatarComponent
+    {
+        DesktopAuthSession auth("djehuti");
+        CHECK(auth.hasValidSession(), "DesktopAuthSession loaded valid session from shared storage");
+        CHECK(auth.getSession().user.displayName == "W. Westlake", "Auth session display name is W. Westlake");
+        CHECK(auth.getSession().user.email == "wweatlake1234@gmail.com", "Auth session email matches");
+
+        ProfileAvatarComponent avatar(auth);
+        avatar.setBounds(0, 0, avatar.getPreferredWidth(), 24);
+        CHECK(avatar.getPreferredWidth() >= 84, "Profile avatar preferred width is valid");
+        CHECK(avatar.getTooltip().contains("W. Westlake"), "Avatar tooltip contains user display name");
+    }
 
     std::cout << "Results: " << passedChecks << " / " << totalChecks << " checks passed." << std::endl;
 

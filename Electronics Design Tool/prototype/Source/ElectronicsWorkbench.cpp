@@ -39,6 +39,8 @@
 #include "ErcAdvice.h"
 #include "AgentProgress.h"
 #include "HelpSystem.h"
+#include "Auth/DesktopAuthSession.h"
+#include "Auth/ProfileAvatarComponent.h"
 #include "XyceBackend.h"
 #include <thread>
 
@@ -15711,55 +15713,15 @@ ElectronicsWorkbench::ElectronicsWorkbench()
     menuBar = std::make_unique<juce::MenuBarComponent>(this);
     addAndMakeVisible(menuBar.get());
 
-    titleLabel.setText("Djehuti Electronics Lab", juce::dontSendNotification);
-    titleLabel.setFont(juce::Font(17.0f, juce::Font::bold));
-    titleLabel.setColour(juce::Label::textColourId, juce::Colour(0xffdce9ee));
-    addAndMakeVisible(titleLabel);
-
-    
-    
-    
-    
-    
-
     addKeyListener(this);
 
-    for (auto* b : { &newButton, &openDiagramButton, &ercButton, &transientButton, &compileButton,
-                     &zoomOutButton, &zoomResetButton, &zoomInButton, &helpButton })
-    {
-        b->setColour(juce::TextButton::buttonColourId, juce::Colour(0xff253341));
-        b->setColour(juce::TextButton::textColourOffId, juce::Colour(0xffdce9ee));
-        addAndMakeVisible(*b);
-    }
-    stampModeButton.setToggleState(false, juce::dontSendNotification);
-    stampModeButton.setColour(juce::ToggleButton::textColourId, juce::Colour(0xffdce9ee));
-    stampModeButton.onClick = [this] {
-        appendLog(stampModeButton.getToggleState()
-            ? "Stamp mode enabled: click the schematic to place the selected component repeatedly."
-            : "Stamp mode disabled.");
+    authSession = std::make_unique<DesktopAuthSession>("djehuti");
+    profileControl = std::make_unique<ProfileAvatarComponent>(*authSession);
+    profileControl->onSessionChanged = [this] {
+        resized();
+        repaint();
     };
-    addAndMakeVisible(stampModeButton);
-    snapModeButton.setToggleState(true, juce::dontSendNotification);
-    snapModeButton.setColour(juce::ToggleButton::textColourId, juce::Colour(0xffdce9ee));
-    addAndMakeVisible(snapModeButton);
-
-    newButton.onClick = [this] { showNewDiagramDialog(); };
-    newButton.setTooltip("New diagram in the open project (creates a project first if none is open)");
-    openDiagramButton.onClick = [this] { showOpenDiagramMenu(); };
-    openDiagramButton.setTooltip("Open a saved diagram from the current project");
-    ercButton.onClick = [this] { runElectricalRuleCheck(); };
-    transientButton.onClick = [this] { showAnalytics(); };
-    compileButton.onClick = [this] { exportFrustRealtimePreview(); };
-    snapModeButton.onClick = [this] {
-        if (setSnapEnabled != nullptr)
-            setSnapEnabled(snapModeButton.getToggleState());
-        appendLog(snapModeButton.getToggleState() ? "Schematic snap enabled." : "Schematic snap disabled.");
-    };
-    zoomOutButton.onClick = [this] { adjustSchematicZoom(1.0f / 1.2f); };
-    zoomResetButton.onClick = [this] { applySchematicZoom(1.0f); };
-    zoomInButton.onClick = [this] { adjustSchematicZoom(1.2f); };
-    helpButton.setTooltip("Documentation & Help (F1)");
-    helpButton.onClick = [this] { openHelp("overview"); };
+    addAndMakeVisible(*profileControl);
 
     dockManager = std::make_unique<CreationDock::DockManager>(*this);
     addAndMakeVisible(*dockManager);
@@ -15777,7 +15739,7 @@ ElectronicsWorkbench::ElectronicsWorkbench()
     dockManager->registerPanel("library", "Component Library", std::move(library), CreationDock::DockTargetZone::Left);
     auto schematic = std::make_unique<SchematicCanvasPanel>(
         [this] { return selectedSymbolId; },
-        [this] { return stampModeButton.getToggleState(); },
+        [this] { return stampModeEnabled; },
         [this](juce::String message) { appendLog(message); });
     auto* schematicPanel = schematic.get();
     schematicView = schematicPanel;
@@ -16279,14 +16241,15 @@ ElectronicsWorkbench::ElectronicsWorkbench()
     appendLog("Electronics research shell initialized.");
 
     circuit_sim::setCapitalMIsMilli(prefs::get("units.capital_m") != "Mega");
-    snapModeButton.setToggleState(prefs::isOn("display.snap_default"), juce::dontSendNotification);
+    if (setSnapEnabled != nullptr)
+        setSnapEnabled(prefs::isOn("display.snap_default"));
     preferenceListener = prefs::addListener([this](const juce::String& key) {
         if (key == "units.capital_m")
             circuit_sim::setCapitalMIsMilli(prefs::get(key) != "Mega");
         if (key == "display.snap_default")
         {
-            snapModeButton.setToggleState(prefs::isOn(key), juce::dontSendNotification);
-            if (setSnapEnabled != nullptr) setSnapEnabled(prefs::isOn(key));
+            if (setSnapEnabled != nullptr)
+                setSnapEnabled(prefs::isOn(key));
         }
         appendLog("Preference " + key + " = " + prefs::get(key));
     });
@@ -16325,38 +16288,23 @@ ElectronicsWorkbench::~ElectronicsWorkbench()
 void ElectronicsWorkbench::paint(juce::Graphics& g)
 {
     g.fillAll(juce::Colour(0xff171b20));
-    g.setColour(juce::Colour(0xff26323d));
-    g.fillRect(0, menuHeight, getWidth(), toolbarHeight);
+    g.setColour(juce::Colour(0xff222933));
+    g.fillRect(0, 0, getWidth(), menuHeight);
 }
 
 void ElectronicsWorkbench::resized()
 {
     auto area = getLocalBounds();
-    menuBar->setBounds(area.removeFromTop(menuHeight));
+    auto topBar = area.removeFromTop(menuHeight);
 
-    auto toolbar = area.removeFromTop(toolbarHeight).reduced(8, 4);
-    titleLabel.setBounds(toolbar.removeFromLeft(230));
-    newButton.setBounds(toolbar.removeFromLeft(70));
-    toolbar.removeFromLeft(6);
-    openDiagramButton.setBounds(toolbar.removeFromLeft(76));
-    toolbar.removeFromLeft(6);
-    ercButton.setBounds(toolbar.removeFromLeft(70));
-    toolbar.removeFromLeft(6);
-    transientButton.setBounds(toolbar.removeFromLeft(100));
-    toolbar.removeFromLeft(6);
-    compileButton.setBounds(toolbar.removeFromLeft(140));
-    toolbar.removeFromLeft(10);
-    stampModeButton.setBounds(toolbar.removeFromLeft(120));
-    snapModeButton.setBounds(toolbar.removeFromLeft(82));
-    toolbar.removeFromLeft(8);
-    zoomOutButton.setBounds(toolbar.removeFromLeft(34));
-    toolbar.removeFromLeft(4);
-    zoomResetButton.setBounds(toolbar.removeFromLeft(58));
-    toolbar.removeFromLeft(4);
-    zoomInButton.setBounds(toolbar.removeFromLeft(34));
-    toolbar.removeFromLeft(8);
-    helpButton.setBounds(toolbar.removeFromLeft(54));
-    
+    if (profileControl != nullptr)
+    {
+        const int profileWidth = profileControl->getPreferredWidth();
+        profileControl->setBounds(topBar.removeFromRight(profileWidth).reduced(2, 1));
+    }
+
+    if (menuBar != nullptr)
+        menuBar->setBounds(topBar);
 
     if (dockManager != nullptr)
         dockManager->setBounds(area);
@@ -16368,7 +16316,6 @@ void ElectronicsWorkbench::applySchematicZoom(float zoom)
     if (setSchematicZoom != nullptr)
         setSchematicZoom(clampedZoom);
 
-    zoomResetButton.setButtonText(juce::String((int)std::round(clampedZoom * 100.0f)) + "%");
     appendLog("Schematic zoom set to " + juce::String((int)std::round(clampedZoom * 100.0f)) + "%.");
 }
 
@@ -16396,11 +16343,14 @@ juce::PopupMenu ElectronicsWorkbench::getMenuForIndex(int, const juce::String& m
     }
     else if (menuName == "Circuit")
     {
-        menu.addItem(importComponent, "Import / Fetch Component Spec...");
+        menu.addItem(runErc, "Run ERC");
+        menu.addItem(runCompiledPreview, "Compile Realtime Preview");
+        menu.addSeparator();
+        menu.addItem(toggleStampModeItem, "Stamp Mode", true, stampModeEnabled);
+        menu.addItem(toggleSnapModeItem, "Snap to Grid", true, prefs::isOn("display.snap_default"));
         menu.addSeparator();
         menu.addItem(autoLayoutDiagramItem, "Auto Layout Diagram");
-        menu.addSeparator();
-        menu.addItem(runErc, "Run ERC");
+        menu.addItem(importComponent, "Import / Fetch Component Spec...");
         menu.addSeparator();
         menu.addItem(startAudioSimItem, isAudioSimRunning ? "Stop Audio Pipeline Test" : "Start Audio Pipeline Test");
         menu.addItem(loadAudioSourceItem, "Load Audio File Source...");
@@ -16422,6 +16372,25 @@ juce::PopupMenu ElectronicsWorkbench::getMenuForIndex(int, const juce::String& m
     }
     else if (menuName == "View")
     {
+        const float currentZoom = getSchematicZoom != nullptr ? getSchematicZoom() : 1.0f;
+        const int zoomPct = (int)std::round(currentZoom * 100.0f);
+        menu.addItem(zoomInItem, "Zoom In");
+        menu.addItem(zoomOutItem, "Zoom Out");
+        menu.addItem(zoomResetItem, "Reset Zoom (" + juce::String(zoomPct) + "%)");
+        menu.addSeparator();
+
+        juce::PopupMenu layoutMenu;
+        layoutMenu.addItem(layoutPresetDefault, "Default Layout");
+        layoutMenu.addItem(layoutPresetSchematic, "Schematic & Circuit Construction");
+        layoutMenu.addItem(layoutPresetSimulation, "Simulation & Analytics");
+        layoutMenu.addItem(layoutPresetMachine, "Machine Builder & Systems");
+        layoutMenu.addItem(layoutPresetProgramming, "FRust & Node Programming");
+        layoutMenu.addSeparator();
+        layoutMenu.addItem(resetLayout, "Reset Dock Layout to Default");
+        menu.addSubMenu("Workspace Layouts", layoutMenu);
+
+        menu.addSeparator();
+
         if (dockManager != nullptr)
         {
             viewMenuIds.clear();
@@ -16480,13 +16449,7 @@ juce::PopupMenu ElectronicsWorkbench::getMenuForIndex(int, const juce::String& m
             }
             if (!remainingViews.empty())
                 addGroup("Other Views", remainingViews);
-
-            menu.addSeparator();
         }
-
-        menu.addItem(toggleStampModeItem, "Stamp Mode", true, stampModeButton.getToggleState());
-        menu.addSeparator();
-        menu.addItem(resetLayout, "Reset Dock Layout");
     }
     else if (menuName == "Help")
     {
@@ -16548,12 +16511,32 @@ void ElectronicsWorkbench::menuItemSelected(int menuItemID, int)
                 appendLog(exportSchematicImage());
             break;
         case resetLayout:
-            if (dockManager != nullptr) dockManager->resetLayout();
-            appendLog("Dock layout reset.");
+        case layoutPresetDefault:
+        case layoutPresetSchematic:
+        case layoutPresetSimulation:
+        case layoutPresetMachine:
+        case layoutPresetProgramming:
+            applyWorkspaceLayoutPreset(menuItemID);
             break;
         case toggleStampModeItem:
-            stampModeButton.setToggleState(!stampModeButton.getToggleState(), juce::sendNotificationSync);
+            stampModeEnabled = !stampModeEnabled;
+            appendLog(stampModeEnabled
+                ? "Stamp mode enabled: click the schematic to place the selected component repeatedly."
+                : "Stamp mode disabled.");
             break;
+        case toggleSnapModeItem:
+        {
+            const bool newSnap = !prefs::isOn("display.snap_default");
+            juce::String err;
+            prefs::set("display.snap_default", newSnap ? "true" : "false", err);
+            if (setSnapEnabled != nullptr)
+                setSnapEnabled(newSnap);
+            appendLog(newSnap ? "Schematic snap enabled." : "Schematic snap disabled.");
+            break;
+        }
+        case zoomInItem: adjustSchematicZoom(1.2f); break;
+        case zoomOutItem: adjustSchematicZoom(1.0f / 1.2f); break;
+        case zoomResetItem: applySchematicZoom(1.0f); break;
         case importComponent: appendLog("Component ingestion stub: BYOK agent/provider workflow pending."); break;
         case autoLayoutDiagramItem: autoLayoutDiagram(); break;
         case runErc: runElectricalRuleCheck(); break;
@@ -16658,6 +16641,90 @@ void ElectronicsWorkbench::menuItemSelected(int menuItemID, int)
         case openHelpFrustItem: openHelp("frust"); break;
         default: break;
     }
+}
+
+void ElectronicsWorkbench::applyWorkspaceLayoutPreset(int presetId)
+{
+    if (dockManager == nullptr)
+        return;
+
+    if (presetId == layoutPresetDefault || presetId == resetLayout)
+    {
+        dockManager->resetLayout();
+        appendLog("Workspace layout reset to default.");
+        return;
+    }
+
+    auto makeZoneVar = [](const juce::StringArray& panels, int currentTab) {
+        auto* obj = new juce::DynamicObject();
+        juce::Array<juce::var> arr;
+        for (const auto& p : panels)
+            arr.add(p);
+        obj->setProperty("panels", arr);
+        obj->setProperty("currentTab", currentTab);
+        return juce::var(obj);
+    };
+
+    juce::StringArray leftPanels, centerPanels, rightPanels, bottomPanels;
+    juce::String activeCenterPanel;
+    juce::String presetName;
+
+    if (presetId == layoutPresetSchematic)
+    {
+        presetName = "Schematic & Circuit Construction";
+        leftPanels = { "library", "hierarchy" };
+        centerPanels = { "schematic", "pcb" };
+        rightPanels = { "properties", "agent" };
+        bottomPanels = { "log", "console" };
+        activeCenterPanel = "schematic";
+    }
+    else if (presetId == layoutPresetSimulation)
+    {
+        presetName = "Simulation & Analytics";
+        leftPanels = { "library" };
+        centerPanels = { "analytics", "control_panel", "schematic" };
+        rightPanels = { "properties" };
+        bottomPanels = { "log", "console" };
+        activeCenterPanel = "analytics";
+    }
+    else if (presetId == layoutPresetMachine)
+    {
+        presetName = "Machine Builder & Systems";
+        leftPanels = { "hierarchy" };
+        centerPanels = { "machine_builder", "mechanical_view", "demo_runner", "control_panel" };
+        rightPanels = { "properties" };
+        bottomPanels = { "log" };
+        activeCenterPanel = "machine_builder";
+    }
+    else if (presetId == layoutPresetProgramming)
+    {
+        presetName = "FRust & Node Programming";
+        leftPanels = { "library" };
+        centerPanels = { "nodes", "schematic" };
+        rightPanels = { "debugger", "properties" };
+        bottomPanels = { "frust", "console", "log" };
+        activeCenterPanel = "nodes";
+    }
+
+    auto* zones = new juce::DynamicObject();
+    zones->setProperty("left", makeZoneVar(leftPanels, 0));
+    zones->setProperty("center", makeZoneVar(centerPanels, 0));
+    zones->setProperty("right", makeZoneVar(rightPanels, 0));
+    zones->setProperty("bottom", makeZoneVar(bottomPanels, 0));
+
+    auto* root = new juce::DynamicObject();
+    root->setProperty("leftWidth", CreationDock::DockContainer::defaultLeftWidth);
+    root->setProperty("rightWidth", CreationDock::DockContainer::defaultRightWidth);
+    root->setProperty("bottomHeight", CreationDock::DockContainer::defaultBottomHeight);
+    root->setProperty("zones", juce::var(zones));
+    root->setProperty("floating", juce::Array<juce::var>());
+
+    dockManager->applyLayout(juce::var(root));
+
+    if (activeCenterPanel.isNotEmpty())
+        dockManager->activatePanel(activeCenterPanel);
+
+    appendLog("Applied workspace layout preset: " + presetName + ".");
 }
 
 juce::File ElectronicsWorkbench::layoutFile() const
@@ -19790,6 +19857,24 @@ bool ElectronicsWorkbench::keyPressed(const juce::KeyPress& key, juce::Component
         }
         openHelp(topic);
         return true;
+    }
+    if (key.getModifiers().isCtrlDown())
+    {
+        if (key.getTextCharacter() == '+' || key.getTextCharacter() == '=')
+        {
+            adjustSchematicZoom(1.2f);
+            return true;
+        }
+        if (key.getTextCharacter() == '-' || key.getTextCharacter() == '_')
+        {
+            adjustSchematicZoom(1.0f / 1.2f);
+            return true;
+        }
+        if (key.getTextCharacter() == '0' || key.getKeyCode() == juce::KeyPress::numberPad0)
+        {
+            applySchematicZoom(1.0f);
+            return true;
+        }
     }
     return false;
 }
