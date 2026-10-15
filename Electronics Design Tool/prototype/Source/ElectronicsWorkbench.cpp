@@ -16266,7 +16266,16 @@ ElectronicsWorkbench::ElectronicsWorkbench()
     djehuti_help::setGlobalHelpOpener([this](const juce::String& topicId) { openHelp(topicId); });
     djehuti_help::setGlobalUrlOpener([this](const juce::String& url) { openHelpUrl(url); });
 
-    dockManager->loadLayoutFromFile(layoutFile());
+    juce::String catalogInitErr;
+    predefinedCatalog.initialize(catalogInitErr);
+    appendLog("Predefined layout catalog: " + predefinedCatalog.getActiveCatalogFile().getFullPathName());
+    if (catalogInitErr.isNotEmpty())
+        appendLog("Layout catalog note: " + catalogInitErr);
+
+    if (!dockManager->loadLayoutFromFile(layoutFile()))
+    {
+        applyPredefinedLayout("default");
+    }
     appendLog("Electronics research shell initialized.");
 
     circuit_sim::setCapitalMIsMilli(prefs::get("units.capital_m") != "Mega");
@@ -16474,11 +16483,19 @@ juce::PopupMenu ElectronicsWorkbench::getMenuForIndex(int, const juce::String& m
     }
     else if (menuName == "Layout")
     {
-        menu.addItem(layoutPresetDefault, "Default Layout");
-        menu.addItem(layoutPresetSchematic, "Schematic & Circuit Construction");
-        menu.addItem(layoutPresetSimulation, "Simulation & Analytics");
-        menu.addItem(layoutPresetMachine, "Machine Builder & Systems");
-        menu.addItem(layoutPresetProgramming, "FRust & Node Programming");
+        juce::String catalogErr;
+        predefinedCatalog.reloadIfChanged(catalogErr);
+        if (catalogErr.isNotEmpty())
+            appendLog("Layout catalog note: " + catalogErr);
+
+        predefinedLayoutIds.clear();
+        for (const auto& preset : predefinedCatalog.getPresets())
+        {
+            const int cmdId = predefinedLayoutMenuBase + (int)predefinedLayoutIds.size();
+            predefinedLayoutIds.push_back(preset.id);
+            menu.addItem(cmdId, preset.name);
+        }
+
         menu.addSeparator();
         menu.addItem(saveLayoutItem, "Save Layout...");
 
@@ -16513,6 +16530,13 @@ juce::PopupMenu ElectronicsWorkbench::getMenuForIndex(int, const juce::String& m
 
 void ElectronicsWorkbench::menuItemSelected(int menuItemID, int)
 {
+    if (menuItemID >= predefinedLayoutMenuBase && menuItemID < predefinedLayoutMenuBase + 100)
+    {
+        const int index = menuItemID - predefinedLayoutMenuBase;
+        if (juce::isPositiveAndBelow(index, (int)predefinedLayoutIds.size()))
+            applyPredefinedLayout(predefinedLayoutIds[(size_t)index]);
+        return;
+    }
     if (menuItemID >= userLayoutMenuBase && menuItemID < userLayoutMenuBase + 1000)
     {
         const int index = menuItemID - userLayoutMenuBase;
@@ -16703,94 +16727,77 @@ void ElectronicsWorkbench::menuItemSelected(int menuItemID, int)
     }
 }
 
-void ElectronicsWorkbench::applyWorkspaceLayoutPreset(int presetId)
+void ElectronicsWorkbench::applyPredefinedLayout(const juce::String& presetIdParam)
 {
     if (dockManager == nullptr)
         return;
 
-    if (presetId == layoutPresetDefault || presetId == resetLayout)
+    const juce::String presetId = presetIdParam;
+    juce::String reloadErr;
+    predefinedCatalog.reloadIfChanged(reloadErr);
+    if (reloadErr.isNotEmpty())
+        appendLog("Layout catalog note: " + reloadErr);
+
+    const auto* preset = predefinedCatalog.findPresetById(presetId);
+    if (preset == nullptr)
     {
-        dockManager->resetLayout();
-        appendLog("Workspace layout reset to default.");
+        appendLog("Predefined layout not found: " + presetId);
+        juce::AlertWindow::showMessageBoxAsync(
+            juce::MessageBoxIconType::WarningIcon,
+            "Layout",
+            "Predefined layout '" + presetId + "' was not found in catalog (" + predefinedCatalog.getActiveCatalogFile().getFullPathName() + ").");
         return;
     }
 
-    auto makeZoneVar = [](const juce::StringArray& panels, int currentTab) {
-        auto* obj = new juce::DynamicObject();
-        juce::Array<juce::var> arr;
-        for (const auto& p : panels)
-            arr.add(p);
-        obj->setProperty("panels", arr);
-        obj->setProperty("currentTab", currentTab);
-        return juce::var(obj);
-    };
-
-    juce::StringArray leftPanels, centerPanels, rightPanels, bottomPanels;
-    juce::String activeCenterPanel;
-    juce::String presetName;
-
-    if (presetId == layoutPresetSchematic)
-    {
-        presetName = "Schematic & Circuit Construction";
-        leftPanels = { "library", "hierarchy" };
-        centerPanels = { "schematic", "pcb" };
-        rightPanels = { "properties", "agent" };
-        bottomPanels = { "log", "console" };
-        activeCenterPanel = "schematic";
-    }
-    else if (presetId == layoutPresetSimulation)
-    {
-        presetName = "Simulation & Analytics";
-        leftPanels = { "library" };
-        centerPanels = { "analytics", "control_panel", "schematic" };
-        rightPanels = { "properties" };
-        bottomPanels = { "log", "console" };
-        activeCenterPanel = "analytics";
-    }
-    else if (presetId == layoutPresetMachine)
-    {
-        presetName = "Machine Builder & Systems";
-        leftPanels = { "hierarchy" };
-        centerPanels = { "machine_builder", "mechanical_view", "demo_runner", "control_panel" };
-        rightPanels = { "properties" };
-        bottomPanels = { "log" };
-        activeCenterPanel = "machine_builder";
-    }
-    else if (presetId == layoutPresetProgramming)
-    {
-        presetName = "FRust & Node Programming";
-        leftPanels = { "library" };
-        centerPanels = { "nodes", "schematic" };
-        rightPanels = { "debugger", "properties" };
-        bottomPanels = { "frust", "console", "log" };
-        activeCenterPanel = "nodes";
-    }
-
-    auto* zones = new juce::DynamicObject();
-    zones->setProperty("left", makeZoneVar(leftPanels, 0));
-    zones->setProperty("center", makeZoneVar(centerPanels, 0));
-    zones->setProperty("right", makeZoneVar(rightPanels, 0));
-    zones->setProperty("bottom", makeZoneVar(bottomPanels, 0));
-
-    auto* root = new juce::DynamicObject();
-    root->setProperty("leftWidth", CreationDock::DockContainer::defaultLeftWidth);
-    root->setProperty("rightWidth", CreationDock::DockContainer::defaultRightWidth);
-    root->setProperty("bottomHeight", CreationDock::DockContainer::defaultBottomHeight);
-    root->setProperty("zones", juce::var(zones));
-    root->setProperty("floating", juce::Array<juce::var>());
+    const auto layoutData = preset->layoutData;
+    const auto presetName = preset->name;
 
     juce::String applyError;
-    if (WorkspaceLayoutStore::applyLayoutSafely(*dockManager, juce::var(root), applyError))
+    if (WorkspaceLayoutStore::applyLayoutSafely(*dockManager, layoutData, applyError))
     {
-        if (activeCenterPanel.isNotEmpty())
-            dockManager->activatePanel(activeCenterPanel);
+        juce::String activeCenter;
+        if (auto* centerObj = layoutData.getProperty("zones", {}).getProperty("center", {}).getDynamicObject())
+        {
+            if (auto* panelsArr = centerObj->getProperty("panels").getArray())
+            {
+                int currentTab = (int) centerObj->getProperty("currentTab");
+                if (juce::isPositiveAndBelow(currentTab, panelsArr->size()))
+                    activeCenter = (*panelsArr)[currentTab].toString();
+            }
+        }
+
+        if (activeCenter.isNotEmpty())
+            dockManager->activatePanel(activeCenter);
+
+        if (activeCenter == "help" && helpPanel != nullptr)
+            helpPanel->goHome();
 
         appendLog("Applied workspace layout preset: " + presetName + ".");
     }
     else
     {
         appendLog("Failed to apply layout preset: " + applyError);
+        juce::AlertWindow::showMessageBoxAsync(
+            juce::MessageBoxIconType::WarningIcon,
+            "Layout",
+            "Failed to apply layout '" + presetName + "':\n" + applyError);
     }
+}
+
+void ElectronicsWorkbench::applyWorkspaceLayoutPreset(int presetId)
+{
+    if (presetId == layoutPresetDefault || presetId == resetLayout)
+        applyPredefinedLayout("default");
+    else if (presetId == layoutPresetSchematic)
+        applyPredefinedLayout("schematic");
+    else if (presetId == layoutPresetSimulation)
+        applyPredefinedLayout("simulation");
+    else if (presetId == layoutPresetMachine)
+        applyPredefinedLayout("machine_builder");
+    else if (presetId == layoutPresetProgramming)
+        applyPredefinedLayout("frust");
+    else
+        applyPredefinedLayout("default");
 }
 
 void ElectronicsWorkbench::showSaveLayoutDialog()
@@ -16817,12 +16824,12 @@ void ElectronicsWorkbench::handleSaveLayout(const juce::String& rawName, const j
         return;
     }
 
-    if (WorkspaceLayoutStore::isBuiltInPresetName(name))
+    if (predefinedCatalog.isPresetNameOrId(name))
     {
         juce::AlertWindow::showMessageBoxAsync(
             juce::MessageBoxIconType::WarningIcon,
             "Save Layout",
-            "Cannot overwrite built-in layout preset '" + name + "'. Please choose a different name.");
+            "Cannot overwrite predefined layout preset '" + name + "'. Please choose a different name.");
         return;
     }
 
@@ -16914,14 +16921,23 @@ juce::String ElectronicsWorkbench::layoutTool(const juce::String& name, const ju
 
     if (name == "layout_list")
     {
+        juce::String reloadErr;
+        predefinedCatalog.reloadIfChanged(reloadErr);
+
         auto* root = new juce::DynamicObject();
         root->setProperty("ok", true);
         root->setProperty("tool", "layout_list");
 
         juce::Array<juce::var> presets;
-        for (const auto& p : WorkspaceLayoutStore::getBuiltInPresetNames())
-            presets.add(p);
+        for (const auto& p : predefinedCatalog.getPresets())
+        {
+            auto* pObj = new juce::DynamicObject();
+            pObj->setProperty("id", p.id);
+            pObj->setProperty("name", p.name);
+            presets.add(juce::var(pObj));
+        }
         root->setProperty("presets", presets);
+        root->setProperty("catalogPath", predefinedCatalog.getActiveCatalogFile().getFullPathName());
 
         juce::Array<juce::var> userList;
         for (const auto& u : userLayoutStore.getLayoutNames())
@@ -16937,30 +16953,16 @@ juce::String ElectronicsWorkbench::layoutTool(const juce::String& name, const ju
         if (layoutName.isEmpty())
             return R"({"ok": false, "error": "'name' is required."})";
 
-        if (layoutName.equalsIgnoreCase("Default Layout") || layoutName.equalsIgnoreCase("Reset Dock Layout to Default"))
+        juce::String reloadErr;
+        predefinedCatalog.reloadIfChanged(reloadErr);
+
+        const auto* preset = predefinedCatalog.findPresetByIdOrName(layoutName);
+        if (preset != nullptr)
         {
-            applyWorkspaceLayoutPreset(layoutPresetDefault);
-            return "{ \"ok\": true, \"tool\": \"layout_apply\", \"name\": \"Default Layout\" }";
-        }
-        if (layoutName.equalsIgnoreCase("Schematic & Circuit Construction"))
-        {
-            applyWorkspaceLayoutPreset(layoutPresetSchematic);
-            return "{ \"ok\": true, \"tool\": \"layout_apply\", \"name\": \"Schematic & Circuit Construction\" }";
-        }
-        if (layoutName.equalsIgnoreCase("Simulation & Analytics"))
-        {
-            applyWorkspaceLayoutPreset(layoutPresetSimulation);
-            return "{ \"ok\": true, \"tool\": \"layout_apply\", \"name\": \"Simulation & Analytics\" }";
-        }
-        if (layoutName.equalsIgnoreCase("Machine Builder & Systems"))
-        {
-            applyWorkspaceLayoutPreset(layoutPresetMachine);
-            return "{ \"ok\": true, \"tool\": \"layout_apply\", \"name\": \"Machine Builder & Systems\" }";
-        }
-        if (layoutName.equalsIgnoreCase("FRust & Node Programming"))
-        {
-            applyWorkspaceLayoutPreset(layoutPresetProgramming);
-            return "{ \"ok\": true, \"tool\": \"layout_apply\", \"name\": \"FRust & Node Programming\" }";
+            const auto targetId = preset->id;
+            const auto targetName = preset->name;
+            applyPredefinedLayout(targetId);
+            return "{ \"ok\": true, \"tool\": \"layout_apply\", \"id\": " + jsonQuote(targetId) + ", \"name\": " + jsonQuote(targetName) + " }";
         }
 
         if (userLayoutStore.hasLayout(layoutName))
@@ -16978,8 +16980,8 @@ juce::String ElectronicsWorkbench::layoutTool(const juce::String& name, const ju
         if (layoutName.isEmpty())
             return R"({"ok": false, "error": "'name' is required."})";
 
-        if (WorkspaceLayoutStore::isBuiltInPresetName(layoutName))
-            return "{ \"ok\": false, \"error\": \"Cannot overwrite built-in preset: " + layoutName + "\" }";
+        if (predefinedCatalog.isPresetNameOrId(layoutName))
+            return "{ \"ok\": false, \"error\": \"Cannot overwrite predefined layout: " + layoutName + "\" }";
 
         const auto captured = dockManager->captureLayout();
         juce::String err;

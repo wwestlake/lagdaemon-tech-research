@@ -10,6 +10,7 @@
 #include "DjehutiMenuBarComponent.h"
 #include "WorkspaceLayoutStore.h"
 #include "ManageLayoutsDialog.h"
+#include "PredefinedLayoutCatalog.h"
 #include <iostream>
 #include <cassert>
 
@@ -601,6 +602,65 @@ int main()
         CHECK(dialog.getNumRows() == 2, "ManageLayoutsDialog displays 2 saved layouts");
 
         testStorageFile.deleteFile();
+
+        // 13. Default Layout Template Verification (Schematic, Analytics, PCB, and Help & Documentation)
+        auto analyticsOwner = std::make_unique<DummyContentComponent>("Analytics", 600);
+        dockManager.registerPanel("analytics", "Analytics", std::move(analyticsOwner), CreationDock::DockTargetZone::CenterTab);
+
+        auto pcbOwner = std::make_unique<DummyContentComponent>("PCB", 700);
+        dockManager.registerPanel("pcb", "PCB", std::move(pcbOwner), CreationDock::DockTargetZone::CenterTab);
+
+        auto helpOwner = std::make_unique<DummyContentComponent>("Help & Documentation", 800);
+        dockManager.registerPanel("help", "Help & Documentation", std::move(helpOwner), CreationDock::DockTargetZone::CenterTab);
+
+        auto hierarchyOwner = std::make_unique<DummyContentComponent>("Circuit Hierarchy", 900);
+        dockManager.registerPanel("hierarchy", "Circuit Hierarchy", std::move(hierarchyOwner), CreationDock::DockTargetZone::Left);
+
+        auto agentOwner = std::make_unique<DummyContentComponent>("BYOK Agent", 1000);
+        dockManager.registerPanel("agent", "BYOK Agent", std::move(agentOwner), CreationDock::DockTargetZone::Right);
+
+        auto logOwner = std::make_unique<DummyContentComponent>("Log", 1100);
+        dockManager.registerPanel("log", "Log", std::move(logOwner), CreationDock::DockTargetZone::Bottom);
+
+        PredefinedLayoutCatalog testCatalog;
+        juce::String catalogErr;
+        CHECK(testCatalog.initialize(catalogErr), "Predefined layout catalog initialized");
+        const auto* defaultPreset = testCatalog.findPresetById("default");
+        CHECK(defaultPreset != nullptr, "Default preset found in catalog");
+        if (defaultPreset != nullptr)
+        {
+            const auto& defaultLayoutData = defaultPreset->layoutData;
+            juce::String defaultErr;
+            CHECK(PredefinedLayoutCatalog::validateSingleLayoutData(defaultLayoutData, defaultErr), "Default layout data validates cleanly");
+            CHECK(WorkspaceLayoutStore::applyLayoutSafely(dockManager, defaultLayoutData, defaultErr), "Default layout applied safely");
+        }
+
+        CHECK(dockManager.isPanelOpen("schematic"), "Default view: schematic tab is open");
+        CHECK(dockManager.isPanelOpen("analytics"), "Default view: analytics tab is open");
+        CHECK(dockManager.isPanelOpen("pcb"), "Default view: pcb tab is open");
+        CHECK(dockManager.isPanelOpen("help"), "Default view: documentation window is open");
+        CHECK(dockManager.isPanelActive("help"), "Default view: documentation window is active and displayed");
+
+        CHECK(!dockManager.isPanelOpen("control_panel"), "Default view: non-default panel (control_panel) is closed");
+
+        CHECK(dockManager.isPanelOpen("library"), "Default view: library is open");
+        CHECK(dockManager.isPanelOpen("hierarchy"), "Default view: hierarchy is open");
+        CHECK(dockManager.isPanelOpen("properties"), "Default view: properties is open");
+        CHECK(dockManager.isPanelOpen("agent"), "Default view: agent is open");
+        CHECK(dockManager.isPanelOpen("log"), "Default view: log is open");
+        CHECK(dockManager.isPanelOpen("console"), "Default view: console is open");
+
+        dockManager.activatePanel("schematic");
+        CHECK(dockManager.isPanelActive("schematic"), "Switched to schematic tab");
+
+        dockManager.activatePanel("analytics");
+        CHECK(dockManager.isPanelActive("analytics"), "Switched to analytics tab");
+
+        dockManager.activatePanel("pcb");
+        CHECK(dockManager.isPanelActive("pcb"), "Switched to pcb tab");
+
+        dockManager.activatePanel("help");
+        CHECK(dockManager.isPanelActive("help"), "Switched back to documentation window");
     }
 
     std::cout << "Results: " << passedChecks << " / " << totalChecks << " checks passed." << std::endl;

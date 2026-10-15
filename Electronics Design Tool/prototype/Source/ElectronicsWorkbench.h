@@ -7,6 +7,7 @@
 #include "CircuitSolver.h"
 #include "FrustEngine.h"
 #include "WorkspaceLayoutStore.h"
+#include "PredefinedLayoutCatalog.h"
 
 class AudioPipeline;
 
@@ -98,13 +99,17 @@ private:
     static constexpr int diagramMenuBase = 2000;
     static constexpr int analyticsMenuBase = 3000;
     static constexpr int viewMenuBase = 4000;
+    static constexpr int predefinedLayoutMenuBase = 4500;
     static constexpr int userLayoutMenuBase = 5000;
 
     std::vector<juce::String> viewMenuIds;
+    std::vector<juce::String> predefinedLayoutIds;
     juce::String viewTool(const juce::String& name, const juce::var& args);
     juce::String layoutTool(const juce::String& name, const juce::var& args);
 
+    PredefinedLayoutCatalog predefinedCatalog;
     WorkspaceLayoutStore userLayoutStore;
+    void applyPredefinedLayout(const juce::String& presetId);
     void showSaveLayoutDialog();
     void showManageLayoutsDialog();
     void handleSaveLayout(const juce::String& rawName, const juce::var& captured);

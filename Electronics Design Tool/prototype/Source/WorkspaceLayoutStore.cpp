@@ -1,4 +1,5 @@
 #include "WorkspaceLayoutStore.h"
+#include "PredefinedLayoutCatalog.h"
 #include <set>
 
 WorkspaceLayoutStore::WorkspaceLayoutStore()
@@ -19,26 +20,9 @@ juce::File WorkspaceLayoutStore::defaultStorageFile()
         .getChildFile("user_layouts.json");
 }
 
-juce::StringArray WorkspaceLayoutStore::getBuiltInPresetNames()
-{
-    return {
-        "Default Layout",
-        "Schematic & Circuit Construction",
-        "Simulation & Analytics",
-        "Machine Builder & Systems",
-        "FRust & Node Programming"
-    };
-}
-
 bool WorkspaceLayoutStore::isBuiltInPresetName(const juce::String& name)
 {
-    const auto trimmed = name.trim();
-    for (const auto& preset : getBuiltInPresetNames())
-    {
-        if (trimmed.equalsIgnoreCase(preset))
-            return true;
-    }
-    return false;
+    return PredefinedLayoutCatalog::isPredefinedName(name);
 }
 
 juce::StringArray WorkspaceLayoutStore::getLayoutNames() const

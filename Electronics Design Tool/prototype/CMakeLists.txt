@@ -225,6 +225,8 @@ target_sources(DjehutiElectronicsLab PRIVATE
     Source/WorkspaceLayoutStore.cpp
     Source/ManageLayoutsDialog.h
     Source/ManageLayoutsDialog.cpp
+    Source/PredefinedLayoutCatalog.h
+    Source/PredefinedLayoutCatalog.cpp
 )
 
 target_compile_definitions(DjehutiElectronicsLab PRIVATE
@@ -244,6 +246,9 @@ add_custom_command(TARGET DjehutiElectronicsLab POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
         "${CMAKE_CURRENT_SOURCE_DIR}/third_party/webview2/x64/WebView2Loader.dll"
         "$<TARGET_FILE_DIR:DjehutiElectronicsLab>/WebView2Loader.dll"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        "${CMAKE_CURRENT_SOURCE_DIR}/Resources/default_layouts.json"
+        "$<TARGET_FILE_DIR:DjehutiElectronicsLab>/default_layouts.json"
 )
 
 target_link_libraries(DjehutiElectronicsLab PRIVATE
@@ -651,6 +656,7 @@ target_sources(WorkspaceUiTests PRIVATE
     Source/DjehutiMenuBarComponent.cpp
     Source/WorkspaceLayoutStore.cpp
     Source/ManageLayoutsDialog.cpp
+    Source/PredefinedLayoutCatalog.cpp
 )
 target_include_directories(WorkspaceUiTests PRIVATE Source)
 target_compile_definitions(WorkspaceUiTests PRIVATE JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0 JUCE_MODAL_LOOPS_PERMITTED=1)

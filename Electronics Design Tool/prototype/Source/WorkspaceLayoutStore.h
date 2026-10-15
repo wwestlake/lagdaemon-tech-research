@@ -17,7 +17,6 @@ public:
     explicit WorkspaceLayoutStore(const juce::File& storageFile);
 
     static juce::File defaultStorageFile();
-    static juce::StringArray getBuiltInPresetNames();
     static bool isBuiltInPresetName(const juce::String& name);
 
     // Queries

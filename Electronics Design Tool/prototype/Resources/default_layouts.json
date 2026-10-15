@@ -1,0 +1,200 @@
+{
+  "version": 1,
+  "presets": [
+    {
+      "id": "default",
+      "name": "Default Layout",
+      "order": 0,
+      "leftWidth": 260,
+      "rightWidth": 280,
+      "bottomHeight": 220,
+      "zones": {
+        "left": {
+          "panels": [
+            "library",
+            "hierarchy"
+          ],
+          "currentTab": 0
+        },
+        "center": {
+          "panels": [
+            "schematic",
+            "analytics",
+            "pcb",
+            "help"
+          ],
+          "currentTab": 3
+        },
+        "right": {
+          "panels": [
+            "properties",
+            "agent"
+          ],
+          "currentTab": 0
+        },
+        "bottom": {
+          "panels": [
+            "log",
+            "console"
+          ],
+          "currentTab": 0
+        }
+      },
+      "floating": []
+    },
+    {
+      "id": "schematic",
+      "name": "Schematic & Circuit Construction",
+      "order": 1,
+      "leftWidth": 260,
+      "rightWidth": 280,
+      "bottomHeight": 220,
+      "zones": {
+        "left": {
+          "panels": [
+            "library",
+            "hierarchy"
+          ],
+          "currentTab": 0
+        },
+        "center": {
+          "panels": [
+            "schematic",
+            "pcb"
+          ],
+          "currentTab": 0
+        },
+        "right": {
+          "panels": [
+            "properties",
+            "agent"
+          ],
+          "currentTab": 0
+        },
+        "bottom": {
+          "panels": [
+            "log",
+            "console"
+          ],
+          "currentTab": 0
+        }
+      },
+      "floating": []
+    },
+    {
+      "id": "simulation",
+      "name": "Simulation & Analytics",
+      "order": 2,
+      "leftWidth": 260,
+      "rightWidth": 280,
+      "bottomHeight": 220,
+      "zones": {
+        "left": {
+          "panels": [
+            "library"
+          ],
+          "currentTab": 0
+        },
+        "center": {
+          "panels": [
+            "analytics",
+            "control_panel",
+            "schematic"
+          ],
+          "currentTab": 0
+        },
+        "right": {
+          "panels": [
+            "properties"
+          ],
+          "currentTab": 0
+        },
+        "bottom": {
+          "panels": [
+            "log",
+            "console"
+          ],
+          "currentTab": 0
+        }
+      },
+      "floating": []
+    },
+    {
+      "id": "machine_builder",
+      "name": "Machine Builder & Systems",
+      "order": 3,
+      "leftWidth": 260,
+      "rightWidth": 280,
+      "bottomHeight": 220,
+      "zones": {
+        "left": {
+          "panels": [
+            "hierarchy"
+          ],
+          "currentTab": 0
+        },
+        "center": {
+          "panels": [
+            "machine_builder",
+            "mechanical_view",
+            "demo_runner",
+            "control_panel"
+          ],
+          "currentTab": 0
+        },
+        "right": {
+          "panels": [
+            "properties"
+          ],
+          "currentTab": 0
+        },
+        "bottom": {
+          "panels": [
+            "log"
+          ],
+          "currentTab": 0
+        }
+      },
+      "floating": []
+    },
+    {
+      "id": "frust",
+      "name": "FRust & Node Programming",
+      "order": 4,
+      "leftWidth": 260,
+      "rightWidth": 280,
+      "bottomHeight": 220,
+      "zones": {
+        "left": {
+          "panels": [
+            "library"
+          ],
+          "currentTab": 0
+        },
+        "center": {
+          "panels": [
+            "nodes",
+            "schematic"
+          ],
+          "currentTab": 0
+        },
+        "right": {
+          "panels": [
+            "debugger",
+            "properties"
+          ],
+          "currentTab": 0
+        },
+        "bottom": {
+          "panels": [
+            "frust",
+            "console",
+            "log"
+          ],
+          "currentTab": 0
+        }
+      },
+      "floating": []
+    }
+  ]
+}
