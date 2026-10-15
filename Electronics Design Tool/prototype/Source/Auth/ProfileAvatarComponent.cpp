@@ -39,7 +39,18 @@ void ProfileAvatarComponent::mouseExit(const juce::MouseEvent&)
 void ProfileAvatarComponent::mouseDown(const juce::MouseEvent& e)
 {
     if (e.mods.isLeftButtonDown())
+    {
+        if (menuOpen)
+        {
+            juce::PopupMenu::dismissAllActiveMenus();
+            menuOpen = false;
+            repaint();
+            return;
+        }
+
+        juce::PopupMenu::dismissAllActiveMenus();
         showAccountMenu();
+    }
 }
 
 juce::String ProfileAvatarComponent::getInitials() const
@@ -81,11 +92,11 @@ juce::String ProfileAvatarComponent::getDisplayLabel() const
 int ProfileAvatarComponent::getPreferredWidth() const
 {
     const bool signedIn = authSession.hasValidSession();
-    juce::Font font("Segoe UI", signedIn ? 13.0f : 12.5f, juce::Font::plain);
+    juce::Font font("Segoe UI", signedIn ? 13.5f : 13.0f, juce::Font::plain);
     juce::String label = signedIn ? getDisplayLabel() : "Sign In";
     int textWidth = font.getStringWidth(label);
-    // avatar (20) + gap (6) + text + gap (6) + chevron (12) + margins (8)
-    return juce::jlimit(84, 210, 20 + 6 + textWidth + 6 + 12 + 8);
+    // avatar (24) + gap (8) + text + gap (6) + chevron (12) + margins (14)
+    return juce::jlimit(96, 240, 24 + 8 + textWidth + 6 + 12 + 14);
 }
 
 juce::String ProfileAvatarComponent::getTooltip()
@@ -107,16 +118,21 @@ void ProfileAvatarComponent::paint(juce::Graphics& g)
     if (bounds.isEmpty())
         return;
 
-    if (isHovered)
+    if (menuOpen)
     {
-        g.setColour(juce::Colour(0x22ffffff));
+        g.setColour(juce::Colour(0x38ffffff));
+        g.fillRoundedRectangle(bounds.reduced(1.0f), 4.0f);
+    }
+    else if (isHovered)
+    {
+        g.setColour(juce::Colour(0x20ffffff));
         g.fillRoundedRectangle(bounds.reduced(1.0f), 4.0f);
     }
 
     const bool signedIn = authSession.hasValidSession();
-    const float avatarSize = juce::jmin(bounds.getHeight() - 4.0f, 20.0f);
+    const float avatarSize = juce::jmin(bounds.getHeight() - 6.0f, 24.0f);
     const float avatarY = bounds.getY() + (bounds.getHeight() - avatarSize) * 0.5f;
-    const float avatarX = bounds.getX() + 4.0f;
+    const float avatarX = bounds.getX() + 6.0f;
     auto avatarBounds = juce::Rectangle<float>(avatarX, avatarY, avatarSize, avatarSize);
 
     if (signedIn)
@@ -132,13 +148,13 @@ void ProfileAvatarComponent::paint(juce::Graphics& g)
 
         // User Display Name
         auto textBounds = juce::Rectangle<float>(
-            avatarBounds.getRight() + 6.0f,
+            avatarBounds.getRight() + 8.0f,
             bounds.getY(),
-            bounds.getWidth() - (avatarBounds.getRight() + 6.0f) - 16.0f,
+            bounds.getWidth() - (avatarBounds.getRight() + 8.0f) - 18.0f,
             bounds.getHeight());
 
-        g.setColour(isHovered ? juce::Colour(0xffffffff) : juce::Colour(0xffdce9ee));
-        g.setFont(juce::Font("Segoe UI", 13.0f, juce::Font::plain));
+        g.setColour(menuOpen || isHovered ? juce::Colour(0xffffffff) : juce::Colour(0xffdce9ee));
+        g.setFont(juce::Font("Segoe UI", 13.5f, juce::Font::plain));
         g.drawText(getDisplayLabel(), textBounds, juce::Justification::centredLeft, true);
     }
     else
@@ -157,29 +173,32 @@ void ProfileAvatarComponent::paint(juce::Graphics& g)
 
         // Text "Sign In"
         auto textBounds = juce::Rectangle<float>(
-            avatarBounds.getRight() + 6.0f,
+            avatarBounds.getRight() + 8.0f,
             bounds.getY(),
-            bounds.getWidth() - (avatarBounds.getRight() + 6.0f) - 16.0f,
+            bounds.getWidth() - (avatarBounds.getRight() + 8.0f) - 18.0f,
             bounds.getHeight());
 
-        g.setColour(isHovered ? juce::Colour(0xfff1f5f9) : juce::Colour(0xff94a3b8));
-        g.setFont(juce::Font("Segoe UI", 12.5f, juce::Font::plain));
+        g.setColour(menuOpen || isHovered ? juce::Colour(0xfff1f5f9) : juce::Colour(0xff94a3b8));
+        g.setFont(juce::Font("Segoe UI", 13.0f, juce::Font::plain));
         g.drawText("Sign In", textBounds, juce::Justification::centredLeft, true);
     }
 
     // Dropdown chevron indicator at the right
-    const float chevronX = bounds.getRight() - 10.0f;
+    const float chevronX = bounds.getRight() - 11.0f;
     const float chevronY = bounds.getCentreY();
     juce::Path chevron;
     chevron.startNewSubPath(chevronX - 3.5f, chevronY - 1.5f);
     chevron.lineTo(chevronX, chevronY + 2.0f);
     chevron.lineTo(chevronX + 3.5f, chevronY - 1.5f);
-    g.setColour(isHovered ? juce::Colour(0xffcbd5e1) : juce::Colour(0xff94a3b8));
-    g.strokePath(chevron, juce::PathStrokeType(1.4f, juce::PathStrokeType::mitered, juce::PathStrokeType::rounded));
+    g.setColour(menuOpen || isHovered ? juce::Colour(0xffcbd5e1) : juce::Colour(0xff94a3b8));
+    g.strokePath(chevron, juce::PathStrokeType(1.5f, juce::PathStrokeType::mitered, juce::PathStrokeType::rounded));
 }
 
 void ProfileAvatarComponent::showAccountMenu()
 {
+    menuOpen = true;
+    repaint();
+
     juce::PopupMenu menu;
     if (authSession.hasValidSession())
     {
@@ -195,6 +214,9 @@ void ProfileAvatarComponent::showAccountMenu()
         menu.showMenuAsync(juce::PopupMenu::Options().withTargetComponent(this),
             [this](int result)
             {
+                menuOpen = false;
+                repaint();
+
                 if (result == 1)
                     showAccountInfoWindow();
                 else if (result == 2)
@@ -212,6 +234,9 @@ void ProfileAvatarComponent::showAccountMenu()
         menu.showMenuAsync(juce::PopupMenu::Options().withTargetComponent(this),
             [this](int result)
             {
+                menuOpen = false;
+                repaint();
+
                 if (result == 1)
                     authSession.beginLogin();
             });

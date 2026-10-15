@@ -18,6 +18,9 @@ public:
     int getPreferredWidth() const;
     juce::String getTooltip() override;
 
+    bool isMenuOpen() const noexcept { return menuOpen; }
+    void setMenuOpen(bool open) { menuOpen = open; repaint(); }
+
     void showAccountMenu();
     void showAccountInfoWindow();
 
@@ -26,6 +29,7 @@ public:
 private:
     DesktopAuthSession& authSession;
     bool isHovered = false;
+    bool menuOpen = false;
 
     juce::String getInitials() const;
     juce::String getDisplayLabel() const;

@@ -19,6 +19,8 @@ namespace djehuti_help { class HelpPanel; }
 
 class DesktopAuthSession;
 class ProfileAvatarComponent;
+class DjehutiMenuBarComponent;
+class MenuActivationWatcher;
 
 class ElectronicsWorkbench final : public juce::Component,
                                    public juce::DragAndDropContainer,
@@ -256,13 +258,14 @@ private:
     std::unique_ptr<AudioPipeline> audioPipeline;
     frust_engine::Engine audioEngine;
 
-    std::unique_ptr<juce::MenuBarComponent> menuBar;
+    std::unique_ptr<DjehutiMenuBarComponent> menuBar;
     std::unique_ptr<CreationDock::DockManager> dockManager;
 
     juce::Label titleLabel;
     bool stampModeEnabled = false;
     std::unique_ptr<DesktopAuthSession> authSession;
     std::unique_ptr<ProfileAvatarComponent> profileControl;
+    std::unique_ptr<MenuActivationWatcher> menuWatcher;
 
     juce::TextEditor* logConsole = nullptr;
 juce::Component* logPanel = nullptr;

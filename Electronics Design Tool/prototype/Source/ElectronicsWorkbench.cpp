@@ -42,6 +42,7 @@
 #include "Auth/DesktopAuthSession.h"
 #include "Auth/ProfileAvatarComponent.h"
 #include "XyceBackend.h"
+#include "DjehutiMenuBarComponent.h"
 #include <thread>
 
 // Interaction profiler: set DJEHUTI_DRAG_PROFILE=1 and each mouse-up appends
@@ -102,7 +103,7 @@ inline void flush(const juce::String& gesture)
 namespace
 {
 constexpr int toolbarHeight = 36;
-constexpr int menuHeight = 24;
+constexpr int menuHeight = 42;
 
 void styleTextEditor(juce::TextEditor& editor, bool mono = false)
 {
@@ -15710,7 +15711,7 @@ ElectronicsWorkbench::ElectronicsWorkbench()
     spice_library::initialize();
     audioPipeline = std::make_unique<AudioPipeline>();
 
-    menuBar = std::make_unique<juce::MenuBarComponent>(this);
+    menuBar = std::make_unique<DjehutiMenuBarComponent>(this);
     addAndMakeVisible(menuBar.get());
 
     addKeyListener(this);
@@ -15722,6 +15723,8 @@ ElectronicsWorkbench::ElectronicsWorkbench()
         repaint();
     };
     addAndMakeVisible(*profileControl);
+
+    menuWatcher = std::make_unique<MenuActivationWatcher>(*menuBar, *profileControl);
 
     dockManager = std::make_unique<CreationDock::DockManager>(*this);
     addAndMakeVisible(*dockManager);
@@ -16288,8 +16291,10 @@ ElectronicsWorkbench::~ElectronicsWorkbench()
 void ElectronicsWorkbench::paint(juce::Graphics& g)
 {
     g.fillAll(juce::Colour(0xff171b20));
-    g.setColour(juce::Colour(0xff222933));
+    g.setColour(juce::Colour(0xff1b2028));
     g.fillRect(0, 0, getWidth(), menuHeight);
+    g.setColour(juce::Colour(0xff2d3642));
+    g.fillRect(0, menuHeight - 1, getWidth(), 1);
 }
 
 void ElectronicsWorkbench::resized()
@@ -16300,7 +16305,9 @@ void ElectronicsWorkbench::resized()
     if (profileControl != nullptr)
     {
         const int profileWidth = profileControl->getPreferredWidth();
-        profileControl->setBounds(topBar.removeFromRight(profileWidth).reduced(2, 1));
+        const int controlHeight = 32;
+        const int y = (menuHeight - controlHeight) / 2;
+        profileControl->setBounds(topBar.removeFromRight(profileWidth + 8).withSizeKeepingCentre(profileWidth, controlHeight));
     }
 
     if (menuBar != nullptr)

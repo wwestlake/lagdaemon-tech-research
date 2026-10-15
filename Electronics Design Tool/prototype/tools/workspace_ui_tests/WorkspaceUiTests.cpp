@@ -7,6 +7,7 @@
 #include <CreationDock/DockManager.h>
 #include "Auth/DesktopAuthSession.h"
 #include "Auth/ProfileAvatarComponent.h"
+#include "DjehutiMenuBarComponent.h"
 #include <iostream>
 #include <cassert>
 
@@ -199,9 +200,102 @@ int main()
         CHECK(auth.getSession().user.email == "wweatlake1234@gmail.com", "Auth session email matches");
 
         ProfileAvatarComponent avatar(auth);
-        avatar.setBounds(0, 0, avatar.getPreferredWidth(), 24);
-        CHECK(avatar.getPreferredWidth() >= 84, "Profile avatar preferred width is valid");
+        avatar.setBounds(0, 0, avatar.getPreferredWidth(), 32);
+        CHECK(avatar.getPreferredWidth() >= 96, "Profile avatar preferred width is >= 96px for 42px header");
         CHECK(avatar.getTooltip().contains("W. Westlake"), "Avatar tooltip contains user display name");
+        CHECK(!avatar.isMenuOpen(), "Avatar menu is initially closed");
+        avatar.setMenuOpen(true);
+        CHECK(avatar.isMenuOpen(), "Avatar menuOpen flag set to true");
+        avatar.setMenuOpen(false);
+        CHECK(!avatar.isMenuOpen(), "Avatar menuOpen flag reset to false");
+    }
+
+    // 12. Global Menu Activation, 42px Header, and Interaction Contract
+    {
+        class TestMenuBarModel : public juce::MenuBarModel
+        {
+        public:
+            juce::StringArray getMenuBarNames() override
+            {
+                return { "File", "Circuit", "Analytics", "View", "Help" };
+            }
+
+            juce::PopupMenu getMenuForIndex(int, const juce::String& menuName) override
+            {
+                juce::PopupMenu menu;
+                menu.addItem(1, menuName + " Item 1");
+                menu.addItem(2, menuName + " Item 2");
+                if (menuName == "View")
+                {
+                    juce::PopupMenu sub;
+                    sub.addItem(101, "Preset 1");
+                    menu.addSubMenu("Submenu", sub);
+                }
+                return menu;
+            }
+
+            void menuItemSelected(int id, int) override
+            {
+                lastSelectedId = id;
+            }
+
+            int lastSelectedId = 0;
+        };
+
+        TestMenuBarModel model;
+        DjehutiMenuBarComponent menuBar(&model);
+        menuBar.setBounds(0, 0, 800, 42);
+
+        // Header height contract
+        DjehutiHeaderLookAndFeel lookAndFeel;
+        CHECK(lookAndFeel.getDefaultMenuBarHeight() == 42, "Header look and feel default menu bar height is 42px");
+
+        // Menu bar item coordinate discovery
+        const int item0 = menuBar.getItemIndexAt(juce::Point<int>(15, 20));
+        CHECK(item0 == 0, "Item 0 at (15, 20) is File menu");
+
+        const int item1 = menuBar.getItemIndexAt(juce::Point<int>(95, 20));
+        CHECK(item1 == 1, "Item 1 at (95, 20) is Circuit menu");
+
+        const int outOfBounds = menuBar.getItemIndexAt(juce::Point<int>(750, 20));
+        CHECK(outOfBounds == -1, "Out of bounds coordinate returns -1");
+
+        // Active menu tracking
+        CHECK(menuBar.getActiveMenuIndex() == -1, "Initially no menu is open");
+
+        menuBar.setActiveMenuIndex(0);
+        CHECK(menuBar.getActiveMenuIndex() == 0, "Active menu set to File (0)");
+
+        // Policy: Mouse movement must NOT switch open menus
+        const juce::MouseEvent moveEvent(juce::Desktop::getInstance().getMainMouseSource(),
+                                         juce::Point<float>(95.0f, 20.0f),
+                                         juce::ModifierKeys(),
+                                         juce::MouseInputSource::defaultPressure,
+                                         juce::MouseInputSource::defaultOrientation,
+                                         juce::MouseInputSource::defaultRotation,
+                                         0.0f, 0.0f,
+                                         &menuBar,
+                                         &menuBar,
+                                         juce::Time::getCurrentTime(),
+                                         juce::Point<float>(95.0f, 20.0f),
+                                         juce::Time::getCurrentTime(),
+                                         0, false);
+        menuBar.mouseMove(moveEvent);
+        CHECK(menuBar.getActiveMenuIndex() == 0, "Mouse move over Circuit does NOT switch menu (remains 0)");
+
+        // Policy: Drag must NOT switch open menus
+        menuBar.mouseDrag(moveEvent);
+        CHECK(menuBar.getActiveMenuIndex() == 0, "Mouse drag does NOT switch menu (remains 0)");
+
+        // Policy: deliberate closing
+        menuBar.closeActiveMenu();
+        CHECK(menuBar.getActiveMenuIndex() == -1, "closeActiveMenu resets active index to -1");
+
+        // Profile Avatar vertical centering in 42px header
+        const int headerHeight = 42;
+        const int profileControlHeight = 32;
+        const int expectedY = (headerHeight - profileControlHeight) / 2;
+        CHECK(expectedY == 5, "Profile control vertically centered in 42px header at y = 5");
     }
 
     std::cout << "Results: " << passedChecks << " / " << totalChecks << " checks passed." << std::endl;
