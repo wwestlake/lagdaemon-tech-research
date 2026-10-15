@@ -52,6 +52,69 @@ void DjehutiHeaderLookAndFeel::drawMenuBarItem(juce::Graphics& g, int width, int
 }
 
 //==============================================================================
+class DjehutiMenuBarComponent::MenuHeadingComponent : public juce::Component
+{
+public:
+    MenuHeadingComponent(DjehutiMenuBarComponent& ownerIn, int itemIndexIn, const juce::String& textIn)
+        : owner(ownerIn), itemIndex(itemIndexIn), itemText(textIn)
+    {
+        setWantsKeyboardFocus(false);
+        setMouseClickGrabsKeyboardFocus(false);
+    }
+
+    ~MenuHeadingComponent() override = default;
+
+    void paint(juce::Graphics& g) override
+    {
+        auto& lf = owner.getLookAndFeel();
+        const bool isOpen = (itemIndex == owner.getActiveMenuIndex());
+        const bool isHovered = isMouseOver() && (owner.getActiveMenuIndex() < 0);
+        lf.drawMenuBarItem(g, getWidth(), getHeight(), itemIndex, itemText, isHovered, isOpen, owner.isMouseOver(true), owner);
+    }
+
+    void mouseDown(const juce::MouseEvent& e) override
+    {
+        if (e.mods.isLeftButtonDown())
+        {
+            if (owner.getActiveMenuIndex() == itemIndex)
+            {
+                owner.closeActiveMenu();
+                return;
+            }
+
+            owner.openMenu(itemIndex);
+        }
+    }
+
+    void mouseEnter(const juce::MouseEvent&) override
+    {
+        if (owner.getActiveMenuIndex() < 0)
+            repaint();
+    }
+
+    void mouseExit(const juce::MouseEvent&) override
+    {
+        if (owner.getActiveMenuIndex() < 0)
+            repaint();
+    }
+
+    bool keyPressed(const juce::KeyPress& key) override
+    {
+        return owner.keyPressed(key);
+    }
+
+    int getItemIndex() const noexcept { return itemIndex; }
+    const juce::String& getItemText() const noexcept { return itemText; }
+
+private:
+    DjehutiMenuBarComponent& owner;
+    int itemIndex;
+    juce::String itemText;
+
+    JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(MenuHeadingComponent)
+};
+
+//==============================================================================
 DjehutiMenuBarComponent::DjehutiMenuBarComponent(juce::MenuBarModel* model)
     : juce::MenuBarComponent(model),
       headerLookAndFeel(std::make_unique<DjehutiHeaderLookAndFeel>())
@@ -59,6 +122,8 @@ DjehutiMenuBarComponent::DjehutiMenuBarComponent(juce::MenuBarModel* model)
     setLookAndFeel(headerLookAndFeel.get());
     setWantsKeyboardFocus(false);
     setMouseClickGrabsKeyboardFocus(false);
+
+    rebuildHeadings();
 }
 
 DjehutiMenuBarComponent::~DjehutiMenuBarComponent()
@@ -74,51 +139,25 @@ int DjehutiMenuBarComponent::getActiveMenuIndex() const noexcept
 void DjehutiMenuBarComponent::setActiveMenuIndex(int idx)
 {
     activeMenuIndex = idx;
-    repaint();
+    repaintHeadings();
 }
 
 int DjehutiMenuBarComponent::getItemIndexAt(juce::Point<int> p) const
 {
-    if (p.x < 0 || p.y < 0 || p.x >= getWidth() || p.y >= getHeight())
-        return -1;
-
-    auto* m = getModel();
-    if (m == nullptr)
-        return -1;
-
-    const auto names = m->getMenuBarNames();
-    int x = 0;
-    auto& lf = const_cast<DjehutiMenuBarComponent*>(this)->getLookAndFeel();
-
-    for (int i = 0; i < names.size(); ++i)
+    for (size_t i = 0; i < headingComponents.size(); ++i)
     {
-        const int w = lf.getMenuBarItemWidth(*const_cast<DjehutiMenuBarComponent*>(this), i, names[i]);
-        if (p.x >= x && p.x < x + w)
-            return i;
-        x += w;
+        if (headingComponents[i]->getBounds().contains(p))
+            return (int) i;
     }
-
     return -1;
 }
 
 juce::Rectangle<int> DjehutiMenuBarComponent::getItemBounds(int itemIndex) const
 {
-    auto* m = getModel();
-    if (m == nullptr || itemIndex < 0)
-        return {};
+    if (juce::isPositiveAndBelow(itemIndex, (int) headingComponents.size()))
+        return headingComponents[(size_t) itemIndex]->getBounds();
 
-    const auto names = m->getMenuBarNames();
-    if (itemIndex >= names.size())
-        return {};
-
-    int x = 0;
-    auto& lf = const_cast<DjehutiMenuBarComponent*>(this)->getLookAndFeel();
-
-    for (int i = 0; i < itemIndex; ++i)
-        x += lf.getMenuBarItemWidth(*const_cast<DjehutiMenuBarComponent*>(this), i, names[i]);
-
-    const int w = lf.getMenuBarItemWidth(*const_cast<DjehutiMenuBarComponent*>(this), itemIndex, names[itemIndex]);
-    return { x, 0, w, getHeight() };
+    return {};
 }
 
 void DjehutiMenuBarComponent::openMenu(int itemIndex)
@@ -134,7 +173,7 @@ void DjehutiMenuBarComponent::openMenu(int itemIndex)
         return;
 
     const auto names = m->getMenuBarNames();
-    if (!juce::isPositiveAndBelow(itemIndex, names.size()))
+    if (!juce::isPositiveAndBelow(itemIndex, names.size()) || itemIndex >= (int) headingComponents.size())
     {
         closeActiveMenu();
         return;
@@ -147,20 +186,21 @@ void DjehutiMenuBarComponent::openMenu(int itemIndex)
     juce::PopupMenu::dismissAllActiveMenus();
 
     activeMenuIndex = itemIndex;
-    hoveredItemIndex = itemIndex;
-    repaint();
+    repaintHeadings();
 
     const int seq = ++currentMenuSequence;
 
     auto menu = m->getMenuForIndex(itemIndex, names[itemIndex]);
     menu.setLookAndFeel(&getLookAndFeel());
-    const auto itemBounds = getItemBounds(itemIndex);
+
+    auto* targetComp = headingComponents[(size_t) itemIndex].get();
+    const auto itemBounds = targetComp->getBounds();
     const auto screenBounds = localAreaToGlobal(itemBounds);
 
     menu.showMenuAsync(
         juce::PopupMenu::Options()
+            .withTargetComponent(targetComp)
             .withTargetScreenArea(screenBounds)
-            .withTargetComponent(nullptr)
             .withMinimumWidth(itemBounds.getWidth()),
         [safeThis = juce::Component::SafePointer<DjehutiMenuBarComponent>(this), itemIndex, seq](int result)
         {
@@ -176,9 +216,8 @@ void DjehutiMenuBarComponent::closeActiveMenu()
     ++currentMenuSequence;
     const bool wasActive = (activeMenuIndex >= 0);
     activeMenuIndex = -1;
-    hoveredItemIndex = -1;
     juce::PopupMenu::dismissAllActiveMenus();
-    repaint();
+    repaintHeadings();
 
     if (wasActive)
     {
@@ -189,14 +228,10 @@ void DjehutiMenuBarComponent::closeActiveMenu()
 
 void DjehutiMenuBarComponent::menuDismissed(int itemIndex, int result)
 {
-    justDismissedMenuIndex = itemIndex;
-    justDismissedTime = juce::Time::getMillisecondCounter();
-
     if (activeMenuIndex == itemIndex)
     {
         activeMenuIndex = -1;
-        hoveredItemIndex = -1;
-        repaint();
+        repaintHeadings();
 
         if (auto* m = getModel())
             m->handleMenuBarActivate(false);
@@ -213,118 +248,110 @@ void DjehutiMenuBarComponent::paint(juce::Graphics& g)
 {
     auto& lf = getLookAndFeel();
     lf.drawMenuBarBackground(g, getWidth(), getHeight(), isMouseOver(true), *this);
+}
+
+void DjehutiMenuBarComponent::resized()
+{
+    juce::MenuBarComponent::resized();
+
+    auto* m = getModel();
+    if (m == nullptr)
+        return;
+
+    auto& lf = getLookAndFeel();
+    const auto names = m->getMenuBarNames();
+    int x = 0;
+
+    for (size_t i = 0; i < headingComponents.size(); ++i)
+    {
+        if (i < (size_t) names.size())
+        {
+            const int w = lf.getMenuBarItemWidth(*this, (int) i, names[(int) i]);
+            headingComponents[i]->setBounds(x, 0, w, getHeight());
+            x += w;
+        }
+    }
+}
+
+void DjehutiMenuBarComponent::menuBarItemsChanged(juce::MenuBarModel*)
+{
+    rebuildHeadings();
+    repaintHeadings();
+}
+
+void DjehutiMenuBarComponent::rebuildHeadings()
+{
+    headingComponents.clear();
 
     auto* m = getModel();
     if (m == nullptr)
         return;
 
     const auto names = m->getMenuBarNames();
-    int x = 0;
-
     for (int i = 0; i < names.size(); ++i)
     {
-        const int w = lf.getMenuBarItemWidth(*this, i, names[i]);
-        const bool isOpen = (i == activeMenuIndex);
-        const bool isHovered = (i == hoveredItemIndex);
-
-        juce::Graphics::ScopedSaveState ss(g);
-        g.setOrigin(x, 0);
-        g.reduceClipRegion(0, 0, w, getHeight());
-
-        lf.drawMenuBarItem(g, w, getHeight(), i, names[i], isHovered, isOpen, isMouseOver(true), *this);
-
-        x += w;
+        auto heading = std::make_unique<MenuHeadingComponent>(*this, i, names[i]);
+        addAndMakeVisible(*heading);
+        headingComponents.push_back(std::move(heading));
     }
+
+    resized();
+}
+
+void DjehutiMenuBarComponent::repaintHeadings()
+{
+    for (auto& h : headingComponents)
+        h->repaint();
+    repaint();
 }
 
 void DjehutiMenuBarComponent::mouseDown(const juce::MouseEvent& e)
 {
-    const auto localPos = e.getEventRelativeTo(this).getPosition();
-    const bool isInsideBar = (localPos.x >= 0 && localPos.y >= 0 && localPos.x < getWidth() && localPos.y < getHeight());
-
-    if (!isInsideBar)
+    const auto p = e.getEventRelativeTo(this).getPosition();
+    const int item = getItemIndexAt(p);
+    if (item >= 0)
+    {
+        if (activeMenuIndex == item)
+            closeActiveMenu();
+        else
+            openMenu(item);
+    }
+    else
     {
         closeActiveMenu();
-        return;
     }
-
-    const int clickedItem = getItemIndexAt(localPos);
-    if (clickedItem < 0)
-    {
-        closeActiveMenu();
-        return;
-    }
-
-    const auto now = juce::Time::getMillisecondCounter();
-    const bool wasJustDismissedByThisClick = (clickedItem == justDismissedMenuIndex && (now - justDismissedTime < 150));
-
-    if (wasJustDismissedByThisClick || clickedItem == activeMenuIndex)
-    {
-        // Toggle close: clicking the active menu title closes it cleanly
-        closeActiveMenu();
-        justDismissedMenuIndex = -1;
-        return;
-    }
-
-    // Direct single-click opening and switching between menus
-    openMenu(clickedItem);
 }
 
 void DjehutiMenuBarComponent::mouseUp(const juce::MouseEvent&)
 {
 }
 
-void DjehutiMenuBarComponent::mouseMove(const juce::MouseEvent& e)
+void DjehutiMenuBarComponent::mouseMove(const juce::MouseEvent&)
 {
-    // Pointer movement alone must never open or switch menus.
-    if (activeMenuIndex < 0)
-    {
-        const auto p = e.getEventRelativeTo(this).getPosition();
-        const int item = getItemIndexAt(p);
-        if (item != hoveredItemIndex)
-        {
-            hoveredItemIndex = item;
-            repaint();
-        }
-    }
 }
 
 void DjehutiMenuBarComponent::mouseDrag(const juce::MouseEvent&)
 {
 }
 
-void DjehutiMenuBarComponent::mouseEnter(const juce::MouseEvent& e)
+void DjehutiMenuBarComponent::mouseEnter(const juce::MouseEvent&)
 {
-    if (activeMenuIndex < 0)
-    {
-        const auto p = e.getEventRelativeTo(this).getPosition();
-        const int item = getItemIndexAt(p);
-        if (item != hoveredItemIndex)
-        {
-            hoveredItemIndex = item;
-            repaint();
-        }
-    }
 }
 
 void DjehutiMenuBarComponent::mouseExit(const juce::MouseEvent&)
 {
-    if (hoveredItemIndex != -1 && activeMenuIndex < 0)
-    {
-        hoveredItemIndex = -1;
-        repaint();
-    }
 }
 
 void DjehutiMenuBarComponent::handleCommandMessage(int commandId)
 {
+    const int lastIdx = (activeMenuIndex >= 0 ? activeMenuIndex : 0);
+    closeActiveMenu();
+
     if (commandId != 0)
     {
         if (auto* m = getModel())
-            m->menuItemSelected(commandId, activeMenuIndex >= 0 ? activeMenuIndex : 0);
+            m->menuItemSelected(commandId, lastIdx);
     }
-
-    closeActiveMenu();
 }
 
 bool DjehutiMenuBarComponent::keyPressed(const juce::KeyPress& key)

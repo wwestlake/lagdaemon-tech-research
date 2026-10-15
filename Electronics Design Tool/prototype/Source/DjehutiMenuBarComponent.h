@@ -1,6 +1,8 @@
 #pragma once
 
 #include <JuceHeader.h>
+#include <vector>
+#include <memory>
 
 class DjehutiHeaderLookAndFeel : public juce::LookAndFeel_V4
 {
@@ -21,6 +23,8 @@ public:
 class DjehutiMenuBarComponent : public juce::MenuBarComponent
 {
 public:
+    class MenuHeadingComponent;
+
     explicit DjehutiMenuBarComponent(juce::MenuBarModel* model = nullptr);
     ~DjehutiMenuBarComponent() override;
 
@@ -34,6 +38,9 @@ public:
     void closeActiveMenu();
 
     void paint(juce::Graphics& g) override;
+    void resized() override;
+    void menuBarItemsChanged(juce::MenuBarModel* newModel) override;
+
     void mouseDown(const juce::MouseEvent& e) override;
     void mouseUp(const juce::MouseEvent& e) override;
     void mouseMove(const juce::MouseEvent& e) override;
@@ -43,14 +50,15 @@ public:
     void handleCommandMessage(int commandId) override;
     bool keyPressed(const juce::KeyPress& key) override;
 
+    void rebuildHeadings();
+    void repaintHeadings();
+
 private:
     void menuDismissed(int itemIndex, int result);
 
     std::unique_ptr<DjehutiHeaderLookAndFeel> headerLookAndFeel;
+    std::vector<std::unique_ptr<MenuHeadingComponent>> headingComponents;
     int activeMenuIndex = -1;
-    int hoveredItemIndex = -1;
-    int justDismissedMenuIndex = -1;
-    juce::uint32 justDismissedTime = 0;
     int currentMenuSequence = 0;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(DjehutiMenuBarComponent)

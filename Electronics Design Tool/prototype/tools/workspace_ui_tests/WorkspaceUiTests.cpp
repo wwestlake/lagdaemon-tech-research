@@ -325,30 +325,51 @@ int main()
             juce::MessageManager::getInstance()->runDispatchLoopUntil(30);
         };
 
+        // Critical Test 1: Click File and do NOT move the mouse (stationary click)
         clickAt(juce::Point<float>(15.0f, 20.0f));
+
+        // Let the message dispatch loop run with the mouse completely stationary
+        juce::MessageManager::getInstance()->runDispatchLoopUntil(300);
 
         CHECK(menuBar.getActiveMenuIndex() == 0, "Click on File immediately opens File menu");
         auto* modalMenu0 = juce::Component::getCurrentlyModalComponent();
         CHECK(modalMenu0 != nullptr, "Modal popup window created and displayed for File menu");
         if (modalMenu0 != nullptr)
-            CHECK(modalMenu0->isVisible(), "File menu popup window is visible");
+            CHECK(modalMenu0->isVisible(), "File menu popup window is visibly displayed while mouse remains stationary");
 
-        juce::Thread::sleep(120);
+        juce::Thread::sleep(50);
 
-        // Click item 1 (Circuit): switches directly to Circuit dropdown
+        // Critical Test 2: Click Circuit while File is open -> switches directly on that same click
         clickAt(juce::Point<float>(95.0f, 20.0f));
 
-        CHECK(menuBar.getActiveMenuIndex() == 1, "Clicking Circuit switches directly to Circuit menu");
+        CHECK(menuBar.getActiveMenuIndex() == 1, "Clicking Circuit switches directly to Circuit menu on first click");
         auto* modalMenu1 = juce::Component::getCurrentlyModalComponent();
         CHECK(modalMenu1 != nullptr, "Circuit menu popup window is active");
+        if (modalMenu1 != nullptr)
+            CHECK(modalMenu1->isVisible(), "Circuit menu popup window is visible");
 
-        juce::Thread::sleep(120);
+        juce::Thread::sleep(50);
 
-        // Click item 1 again: toggles it closed
+        // Critical Test 3: Click active menu heading again -> toggles it closed
         clickAt(juce::Point<float>(95.0f, 20.0f));
 
         CHECK(menuBar.getActiveMenuIndex() == -1, "Clicking active Circuit menu again toggles it closed");
         CHECK(juce::Component::getCurrentlyModalComponent() == nullptr, "Popup window dismissed on toggle close");
+
+        juce::Thread::sleep(50);
+
+        // Critical Test 4: Click heading after dismissal -> opens immediately on first click
+        clickAt(juce::Point<float>(15.0f, 20.0f));
+        CHECK(menuBar.getActiveMenuIndex() == 0, "Clicking File after dismissal opens dropdown immediately on first click");
+        CHECK(juce::Component::getCurrentlyModalComponent() != nullptr, "Popup window opened on first click after dismissal");
+
+        juce::Thread::sleep(50);
+
+        // Critical Test 5: Click outside headings on menu bar -> dismisses the menu cleanly
+        clickAt(juce::Point<float>(500.0f, 20.0f));
+        juce::MessageManager::getInstance()->runDispatchLoopUntil(50);
+        CHECK(menuBar.getActiveMenuIndex() == -1, "Clicking outside headings dismisses the dropdown cleanly");
+        CHECK(juce::Component::getCurrentlyModalComponent() == nullptr, "Modal popup dismissed on click outside");
 
         // Profile Avatar popup interaction
         const juce::MouseEvent clickProfile(juce::Desktop::getInstance().getMainMouseSource(),
