@@ -148,6 +148,49 @@ public:
     // Generates a reduced coefficient array given a set of UI parameters
     std::vector<double> computeLiveCoefficients(const std::unordered_map<std::string, double>& liveParams) const;
 
+    // Pre-allocated scratch buffers for zero-allocation real-time live coefficient updates
+    struct LiveCoeffScratch
+    {
+        std::vector<double> CV;
+        std::vector<double> CI;
+        std::vector<double> H;      // L x L flat
+        std::vector<double> A_work; // L x L flat for Gaussian elimination
+        std::vector<double> b_work; // L
+        std::vector<double> x_work; // L
+        std::vector<double> M;      // L x L flat
+        std::vector<double> M_KLN;  // L x N flat
+        std::vector<double> M_P0L;  // L x affCols flat
+
+        void prepare(int livePorts, int nonlinPorts, int affineCols)
+        {
+            const int L = std::max(1, livePorts);
+            const int N = std::max(1, nonlinPorts);
+            const int C = std::max(1, affineCols);
+            CV.assign(L, 0.0);
+            CI.assign(L, 0.0);
+            H.assign(L * L, 0.0);
+            A_work.assign(L * L, 0.0);
+            b_work.assign(L, 0.0);
+            x_work.assign(L, 0.0);
+            M.assign(L * L, 0.0);
+            M_KLN.assign(L * N, 0.0);
+            M_P0L.assign(L * C, 0.0);
+        }
+    };
+
+    LiveCoeffScratch makeLiveCoeffScratch() const
+    {
+        LiveCoeffScratch s;
+        s.prepare(livePortCount, portCount, 1 + inputCount + stateCount);
+        return s;
+    }
+
+    // Zero-allocation coefficient reduction using ordered livePort values [0..livePortCount)
+    bool computeLiveCoefficientsNoAlloc(const double* orderedLiveValues,
+                                        int valueCount,
+                                        LiveCoeffScratch& scratch,
+                                        double* outCoeffs) const noexcept;
+
     // Newton settings.
     int maxIterations = 40;
     double tolerance = 1e-9;      // volts

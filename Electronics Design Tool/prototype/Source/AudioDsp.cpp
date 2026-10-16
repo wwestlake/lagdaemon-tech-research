@@ -47,6 +47,41 @@ Model build(const circuit_sim::Circuit& circuit, const Config& config)
     m.sampleRate = config.sampleRate;
     m.inputVolts = config.inputVolts;
     m.outputFullScaleVolts = config.outputFullScaleVolts;
+
+    if (config.sampleRate <= 0.0 || !std::isfinite(config.sampleRate))
+    {
+        m.ok = false;
+        m.error = "Invalid audio sample rate (must be positive and finite).";
+        return m;
+    }
+    if (circuit.elements().empty())
+    {
+        m.ok = false;
+        m.error = "Circuit contains no elements.";
+        return m;
+    }
+    if (config.audioInputElement < 0 || config.audioInputElement >= (int)circuit.elements().size())
+    {
+        m.ok = false;
+        m.error = "Audio input element index is missing or out of range.";
+        return m;
+    }
+    {
+        const auto inType = circuit.elements()[config.audioInputElement].type;
+        if (inType != circuit_sim::Element::Type::VoltageSource &&
+            inType != circuit_sim::Element::Type::CurrentSource)
+        {
+            m.ok = false;
+            m.error = "Audio input element must be a VoltageSource or CurrentSource.";
+            return m;
+        }
+    }
+    if (config.audioOutputNode <= 0 || config.audioOutputNode >= circuit.nodeCount())
+    {
+        m.ok = false;
+        m.error = "Audio output node is missing, ground (0), or out of range.";
+        return m;
+    }
     
     int nodes = circuit.nodeCount();
     int nodeUnknowns = nodes - 1;
@@ -110,7 +145,7 @@ Model build(const circuit_sim::Circuit& circuit, const Config& config)
             p.kind = LivePort::Kind::VariableResistor;
             p.element = (int)i;
             p.port = livePortCount;
-            p.paramId = e.paramId;
+            p.paramId = e.paramId.empty() ? ("POT_" + std::to_string(i)) : e.paramId;
             p.baseResistance = e.value;
             p.isWiperToPin2 = e.isWiperToPin2;
             m.livePorts.push_back(p);
@@ -122,7 +157,7 @@ Model build(const circuit_sim::Circuit& circuit, const Config& config)
             p.kind = LivePort::Kind::Switch;
             p.element = (int)i;
             p.port = livePortCount;
-            p.paramId = e.paramId;
+            p.paramId = e.paramId.empty() ? ("SW_" + std::to_string(i)) : e.paramId;
             m.livePorts.push_back(p);
             livePortCount++;
         }
@@ -209,8 +244,45 @@ Model build(const circuit_sim::Circuit& circuit, const Config& config)
                 }
                 break;
             }
-            default:
+            case circuit_sim::Element::Type::Vcvs:
+            {
+                int cPlus = idx(e.nodes[2]), cMinus = idx(e.nodes[3]);
+                addA(p, br, 1.0); addA(n, br, -1.0);
+                addA(br, p, 1.0); addA(br, n, -1.0);
+                addA(br, cPlus, -e.value); addA(br, cMinus, e.value);
                 break;
+            }
+            case circuit_sim::Element::Type::Vccs:
+            {
+                int cPlus = idx(e.nodes[2]), cMinus = idx(e.nodes[3]);
+                addA(p, cPlus, e.value);  addA(p, cMinus, -e.value);
+                addA(n, cPlus, -e.value); addA(n, cMinus, e.value);
+                break;
+            }
+            case circuit_sim::Element::Type::OpAmp:
+            {
+                int inPlus = idx(e.nodes[0]), inMinus = idx(e.nodes[1]), outNode = idx(e.nodes[2]);
+                double gain = e.opamp.gain > 0.0 ? e.opamp.gain : 1e5;
+                double rOut = 1e-3;
+                addA(outNode, br, 1.0);
+                addA(br, outNode, 1.0);
+                addA(br, inPlus, -gain);
+                addA(br, inMinus, gain);
+                addA(br, br, -rOut);
+                break;
+            }
+            case circuit_sim::Element::Type::Diode:
+            case circuit_sim::Element::Type::VariableResistor:
+            case circuit_sim::Element::Type::Switch:
+                // Handled via nonlinear / live ports
+                break;
+            default:
+            {
+                m.ok = false;
+                m.error = "Unsupported circuit element for real-time Audio DSP export (" +
+                          (e.name.empty() ? ("element #" + std::to_string(i)) : e.name) + ").";
+                return m;
+            }
         }
     }
     m.stateCount = stateCount;
@@ -397,13 +469,13 @@ double Model::step(std::vector<double>& ws, const double* coeffs, double audioIn
         
         for (int it = 0; it < maxIterations; ++it)
         {
-            double vt = 0.02585;
-            double is = 1e-14;
-            
             for (int p = 0; p < portCount; ++p)
             {
                 if (devices[p].kind == Device::Kind::Diode)
                 {
+                    const double em = devices[p].parameters.diode.emission > 0.0 ? devices[p].parameters.diode.emission : 1.0;
+                    const double vt = 0.02585 * em;
+                    const double is = devices[p].parameters.diode.saturationCurrent > 0.0 ? devices[p].parameters.diode.saturationCurrent : 1e-14;
                     p_v[p] = std::max(-100.0, std::min(p_v[p], 2.0));
                     double exp_val = std::exp(p_v[p] / vt);
                     current[p] = is * (exp_val - 1.0);
@@ -486,8 +558,9 @@ double Model::step(std::vector<double>& ws, const double* coeffs, double audioIn
             ws[stateCount + p] = p_v[p];
             if (devices[p].kind == Device::Kind::Diode)
             {
-                double vt = 0.02585;
-                double is = 1e-14;
+                const double em = devices[p].parameters.diode.emission > 0.0 ? devices[p].parameters.diode.emission : 1.0;
+                const double vt = 0.02585 * em;
+                const double is = devices[p].parameters.diode.saturationCurrent > 0.0 ? devices[p].parameters.diode.saturationCurrent : 1e-14;
                 p_i[p] = is * (std::exp(p_v[p] / vt) - 1.0);
             }
         }
@@ -547,6 +620,11 @@ std::string Model::frustSource() const
             ss << "    let mut deriv_" << p << " = 0.0;\n";
             ss << "    let mut F_" << p << " = 0.0;\n";
             ss << "    let mut delta_" << p << " = 0.0;\n";
+            const double em = devices[p].parameters.diode.emission > 0.0 ? devices[p].parameters.diode.emission : 1.0;
+            const double vt = 0.02585 * em;
+            const double is = devices[p].parameters.diode.saturationCurrent > 0.0 ? devices[p].parameters.diode.saturationCurrent : 1e-14;
+            ss << "    let mut vt_" << p << " = " << frustNumber(vt) << ";\n";
+            ss << "    let mut is_" << p << " = " << frustNumber(is) << ";\n";
         }
         for (int p = 0; p < portCount; ++p)
         {
@@ -554,8 +632,6 @@ std::string Model::frustSource() const
                 ss << "    let mut J_" << p << "_" << q << " = 0.0;\n";
         }
         
-        ss << "    let mut vt = 0.02585;\n";
-        ss << "    let mut is = 0.00000000000001;\n";
         ss << "    let mut it = 0;\n";
         ss << "    let mut exp_val = 0.0;\n";
         ss << "    let mut abs_delta = 1.0;\n";
@@ -568,9 +644,9 @@ std::string Model::frustSource() const
             {
                 ss << "        while (p_v_" << p << " < -100.0) { p_v_" << p << " = -100.0; };\n";
                 ss << "        while (p_v_" << p << " > 2.0) { p_v_" << p << " = 2.0; };\n";
-                ss << "        exp_val = djehuti_dsp_exp(p_v_" << p << " / vt);\n";
-                ss << "        current_" << p << " = is * (exp_val - 1.0);\n";
-                ss << "        deriv_" << p << " = (is / vt) * exp_val;\n";
+                ss << "        exp_val = djehuti_dsp_exp(p_v_" << p << " / vt_" << p << ");\n";
+                ss << "        current_" << p << " = is_" << p << " * (exp_val - 1.0);\n";
+                ss << "        deriv_" << p << " = (is_" << p << " / vt_" << p << ") * exp_val;\n";
             }
         }
         
@@ -661,7 +737,7 @@ std::string Model::frustSource() const
         {
             ss << "    ws[" << stateCount + p << "] = p_v_" << p << ";\n";
             if (devices[p].kind == Device::Kind::Diode)
-                ss << "    p_i_" << p << " = is * (djehuti_dsp_exp(p_v_" << p << " / vt) - 1.0);\n";
+                ss << "    p_i_" << p << " = is_" << p << " * (djehuti_dsp_exp(p_v_" << p << " / vt_" << p << ") - 1.0);\n";
         }
     }
     
@@ -709,7 +785,18 @@ std::string Model::frustSource() const
 
 std::vector<std::string> Model::requiredHostFunctions() { return { "djehuti_dsp_exp", "djehuti_dsp_log" }; }
 std::string Model::describe() const { return "Audio DSP Pipeline"; }
-std::string frustNumber(double value) { std::ostringstream oss; oss << value; return oss.str(); }
+std::string frustNumber(double value)
+{
+    if (!std::isfinite(value)) return "0.0";
+    std::ostringstream oss;
+    oss << std::fixed << std::setprecision(18) << value;
+    std::string s = oss.str();
+    while (s.size() > 3 && s.back() == '0' && s[s.size() - 2] != '.')
+        s.pop_back();
+    if (value < 0.0)
+        return "(" + s + ")";
+    return s;
+}
 
 int Model::coeffSize() const
 {
@@ -717,6 +804,196 @@ int Model::coeffSize() const
     return portCount * affineCols + portCount * portCount + 
            stateCount * affineCols + stateCount * portCount + 
            outAffine.size() + outQ.size();
+}
+
+static bool solveLinearFlatNoAlloc(double* A, double* b, double* x, int n) noexcept
+{
+    for (int col = 0; col < n; ++col)
+    {
+        int pivot = col;
+        double best = std::abs(A[col * n + col]);
+        for (int row = col + 1; row < n; ++row)
+        {
+            double val = std::abs(A[row * n + col]);
+            if (val > best)
+            {
+                best = val;
+                pivot = row;
+            }
+        }
+        if (best < 1e-15) return false;
+        if (pivot != col)
+        {
+            for (int c = 0; c < n; ++c)
+                std::swap(A[col * n + c], A[pivot * n + c]);
+            std::swap(b[col], b[pivot]);
+        }
+        for (int row = col + 1; row < n; ++row)
+        {
+            double f = A[row * n + col] / A[col * n + col];
+            for (int c = col; c < n; ++c)
+                A[row * n + c] -= f * A[col * n + c];
+            b[row] -= f * b[col];
+        }
+    }
+    for (int i = n - 1; i >= 0; --i)
+    {
+        double sum = b[i];
+        for (int j = i + 1; j < n; ++j)
+            sum -= A[i * n + j] * x[j];
+        x[i] = sum / A[i * n + i];
+    }
+    return true;
+}
+
+bool Model::computeLiveCoefficientsNoAlloc(const double* orderedLiveValues,
+                                           int valueCount,
+                                           LiveCoeffScratch& scratch,
+                                           double* outCoeffs) const noexcept
+{
+    if (outCoeffs == nullptr) return false;
+    const int L = livePortCount;
+    const int N = portCount;
+    const int totalP = L + N;
+    const int affCols = 1 + inputCount + stateCount;
+
+    if (L == 0)
+    {
+        double* ptr = outCoeffs;
+        std::copy(baseAffine.begin(), baseAffine.begin() + N * affCols, ptr); ptr += N * affCols;
+        std::copy(baseK.begin(), baseK.begin() + N * N, ptr); ptr += N * N;
+        std::copy(baseStateAffine.begin(), baseStateAffine.end(), ptr); ptr += stateCount * affCols;
+        std::copy(baseStateQ.begin(), baseStateQ.begin() + stateCount * N, ptr); ptr += stateCount * N;
+        std::copy(baseOutAffine.begin(), baseOutAffine.end(), ptr); ptr += affCols;
+        std::copy(baseOutQ.begin(), baseOutQ.begin() + N, ptr);
+        return true;
+    }
+
+    if ((int)scratch.CV.size() < L ||
+        (int)scratch.CI.size() < L ||
+        (int)scratch.H.size() < L * L ||
+        (int)scratch.A_work.size() < L * L ||
+        (int)scratch.b_work.size() < L ||
+        (int)scratch.x_work.size() < L ||
+        (int)scratch.M.size() < L * L ||
+        (int)scratch.M_KLN.size() < L * std::max(1, N) ||
+        (int)scratch.M_P0L.size() < L * affCols)
+    {
+        return false;
+    }
+
+    for (int j = 0; j < L; ++j)
+    {
+        const auto& lp = livePorts[j];
+        double val = (orderedLiveValues != nullptr && j < valueCount) ? orderedLiveValues[j] : 0.5;
+        if (lp.kind == LivePort::Kind::Switch)
+        {
+            if (val > 0.5) { scratch.CV[j] = 1.0; scratch.CI[j] = 0.0; }
+            else           { scratch.CV[j] = 0.0; scratch.CI[j] = 1.0; }
+        }
+        else
+        {
+            double pos = std::max(0.0, std::min(1.0, val));
+            double R = lp.baseResistance * (lp.isWiperToPin2 ? (1.0 - pos) : pos);
+            if (R < 1e-9) { scratch.CV[j] = 1.0; scratch.CI[j] = 0.0; }
+            else          { scratch.CV[j] = 1.0; scratch.CI[j] = -R; }
+        }
+    }
+
+    for (int r = 0; r < L; ++r)
+    {
+        for (int c = 0; c < L; ++c)
+        {
+            scratch.H[r * L + c] = scratch.CV[r] * baseK[r * totalP + c] + (r == c ? scratch.CI[r] : 0.0);
+        }
+    }
+
+    std::fill(scratch.M.begin(), scratch.M.begin() + L * L, 0.0);
+    for (int col = 0; col < L; ++col)
+    {
+        std::copy(scratch.H.begin(), scratch.H.begin() + L * L, scratch.A_work.begin());
+        std::fill(scratch.b_work.begin(), scratch.b_work.begin() + L, 0.0);
+        scratch.b_work[col] = -scratch.CV[col];
+        std::fill(scratch.x_work.begin(), scratch.x_work.begin() + L, 0.0);
+        if (solveLinearFlatNoAlloc(scratch.A_work.data(), scratch.b_work.data(), scratch.x_work.data(), L))
+        {
+            for (int r = 0; r < L; ++r)
+                scratch.M[r * L + col] = scratch.x_work[r];
+        }
+    }
+
+    for (int r = 0; r < L; ++r)
+    {
+        for (int c = 0; c < N; ++c)
+        {
+            double sum = 0.0;
+            for (int k = 0; k < L; ++k) sum += scratch.M[r * L + k] * baseK[k * totalP + (L + c)];
+            scratch.M_KLN[r * std::max(1, N) + c] = sum;
+        }
+        for (int c = 0; c < affCols; ++c)
+        {
+            double sum = 0.0;
+            for (int k = 0; k < L; ++k) sum += scratch.M[r * L + k] * baseAffine[k * affCols + c];
+            scratch.M_P0L[r * affCols + c] = sum;
+        }
+    }
+
+    double* ptr = outCoeffs;
+    // 1. portAffine
+    for (int r = 0; r < N; ++r)
+    {
+        for (int c = 0; c < affCols; ++c)
+        {
+            double sum = baseAffine[(L + r) * affCols + c];
+            for (int k = 0; k < L; ++k) sum += baseK[(L + r) * totalP + k] * scratch.M_P0L[k * affCols + c];
+            *ptr++ = sum;
+        }
+    }
+    // 2. portK
+    for (int r = 0; r < N; ++r)
+    {
+        for (int c = 0; c < N; ++c)
+        {
+            double sum = baseK[(L + r) * totalP + (L + c)];
+            for (int k = 0; k < L; ++k) sum += baseK[(L + r) * totalP + k] * scratch.M_KLN[k * std::max(1, N) + c];
+            *ptr++ = sum;
+        }
+    }
+    // 3. stateAffine
+    for (int r = 0; r < stateCount; ++r)
+    {
+        for (int c = 0; c < affCols; ++c)
+        {
+            double sum = baseStateAffine[r * affCols + c];
+            for (int k = 0; k < L; ++k) sum += baseStateQ[r * totalP + k] * scratch.M_P0L[k * affCols + c];
+            *ptr++ = sum;
+        }
+    }
+    // 4. stateQ
+    for (int r = 0; r < stateCount; ++r)
+    {
+        for (int c = 0; c < N; ++c)
+        {
+            double sum = baseStateQ[r * totalP + (L + c)];
+            for (int k = 0; k < L; ++k) sum += baseStateQ[r * totalP + k] * scratch.M_KLN[k * std::max(1, N) + c];
+            *ptr++ = sum;
+        }
+    }
+    // 5. outAffine
+    for (int c = 0; c < affCols; ++c)
+    {
+        double sum = baseOutAffine[c];
+        for (int k = 0; k < L; ++k) sum += baseOutQ[k] * scratch.M_P0L[k * affCols + c];
+        *ptr++ = sum;
+    }
+    // 6. outQ
+    for (int c = 0; c < N; ++c)
+    {
+        double sum = baseOutQ[L + c];
+        for (int k = 0; k < L; ++k) sum += baseOutQ[k] * scratch.M_KLN[k * std::max(1, N) + c];
+        *ptr++ = sum;
+    }
+    return true;
 }
 
 std::vector<double> Model::computeLiveCoefficients(const std::unordered_map<std::string, double>& liveParams) const

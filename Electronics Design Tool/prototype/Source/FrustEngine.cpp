@@ -101,7 +101,9 @@ void ensureHostSetup()
 {
     static std::once_flag once;
     std::call_once(once, [] {
-        frust_plugin_host_set_application_identity("djehuti-electronics-lab");
+        const char* currentId = frust_plugin_host_application_identity();
+        if (currentId == nullptr || *currentId == '\0')
+            frust_plugin_host_set_application_identity("djehuti-electronics-lab");
         frust_plugin_register_host_function("frust_dbg_tick", reinterpret_cast<void*>(&djehuti_frust_dbg_tick));
         frust_plugin_register_host_function("djehuti_frust_log", reinterpret_cast<void*>(&djehuti_frust_log));
         frust_plugin_register_host_function("djehuti_dsp_exp", reinterpret_cast<void*>(&djehuti_dsp_exp));
@@ -143,7 +145,9 @@ std::string Result::report() const
     return s;
 }
 
-std::string manifestLine(const std::string& name, const std::string& description, const std::vector<std::string>& hostFunctions)
+std::string manifestJson(const std::string& name, const std::string& description,
+                         const std::vector<std::string>& hostFunctions,
+                         const std::vector<std::string>& entryPoints)
 {
     std::string id;
     for (const char c : name)
@@ -151,15 +155,44 @@ std::string manifestLine(const std::string& name, const std::string& description
     std::string required;
     for (const auto& fn : hostFunctions)
         required += std::string(required.empty() ? "" : ",") + "{\"name\":\"" + fn + "\"}";
-    const std::string json = "{\"name\":\"" + (id.empty() ? std::string("unit") : id) + "\",\"version\":\"0.1.0\",\"description\":"
-                           + frustStringLiteral(description)
-                           + (required.empty() ? std::string() : ",\"requiredHostFunctions\":[" + required + "]") + "}";
-    return "manifest " + frustStringLiteral(json) + ";\n";
+    std::string entries;
+    for (const auto& ep : entryPoints)
+        entries += std::string(entries.empty() ? "" : ",") + frustStringLiteral(ep);
+    return "{\"name\":\"" + (id.empty() ? std::string("unit") : id) + "\",\"version\":\"0.1.0\",\"description\":"
+           + frustStringLiteral(description)
+           + (entries.empty() ? std::string() : ",\"entryPoints\":[" + entries + "]")
+           + (required.empty() ? std::string() : ",\"requiredHostFunctions\":[" + required + "]") + "}";
+}
+
+std::string manifestLine(const std::string& name, const std::string& description, const std::vector<std::string>& hostFunctions)
+{
+    return "manifest " + frustStringLiteral(manifestJson(name, description, hostFunctions)) + ";\n";
 }
 
 Result check(const std::string& unitName, const std::string& source)
 {
     return checkWithOffset(unitName, source, 0);
+}
+
+CompiledUnit compileToObject(const std::string& unitName, const std::string& source)
+{
+    ensureHostSetup();
+    CompiledUnit out;
+    auto request = requestFor(unitName, source);
+    request.emitObject = true;
+    request.captureIr = true;
+    const auto start = std::chrono::steady_clock::now();
+    const auto compiled = ::frust::Compile(request);
+    out.result.compileMs = millisecondsSince(start);
+    for (const auto& d : compiled.diagnostics)
+        out.result.diagnostics.push_back(convert(d, unitName, 0));
+    out.result.compiled = compiled.ok && !compiled.object.empty();
+    out.result.ok = out.result.compiled;
+    if (!out.result.ok && out.result.diagnostics.empty())
+        out.result.error = "Frust compilation failed to produce native object code.";
+    out.objectBytes = compiled.object;
+    out.optimizedIr = compiled.irAfterOptimization;
+    return out;
 }
 
 Engine::Engine()
@@ -182,7 +215,8 @@ Result Engine::load(const std::string& key, const std::string& source)
     FrustPluginHandle handle = nullptr;
     {
         std::lock_guard<std::mutex> loading(loadMutex());
-        handle = frust_plugin_host::loadFromSource(requestFor(unitName, source));
+        const auto isolatedName = std::to_string(reinterpret_cast<std::uintptr_t>(this)) + "_" + unitName;
+        handle = frust_plugin_host::loadFromSource(requestFor(isolatedName, source));
         if (handle == nullptr)
         {
             const char* why = frust_plugin_last_error();
@@ -199,6 +233,43 @@ Result Engine::load(const std::string& key, const std::string& source)
     if (auto found = units.find(key); found != units.end())
         frust_plugin_unload(found->second);
     units[key] = handle;
+    return result;
+}
+
+Result Engine::loadObject(const std::string& key, const std::string& manifestJsonText,
+                          const std::vector<std::uint8_t>& objectBytes)
+{
+    ensureHostSetup();
+    Result result;
+    const auto start = std::chrono::steady_clock::now();
+    FrustPluginHandle handle = nullptr;
+    {
+        std::lock_guard<std::mutex> loading(loadMutex());
+        const auto isolatedName = std::to_string(reinterpret_cast<std::uintptr_t>(this)) + "_" + key;
+        handle = frust_plugin_load_object(
+            isolatedName.c_str(),
+            manifestJsonText.c_str(),
+            objectBytes.empty() ? nullptr : objectBytes.data(),
+            objectBytes.size());
+        if (handle == nullptr)
+        {
+            const char* why = frust_plugin_last_error();
+            result.error = why != nullptr && *why != '\0' ? why : "Precompiled Frust object failed validation or linking.";
+        }
+    }
+    result.compileMs = millisecondsSince(start);
+    if (handle == nullptr)
+    {
+        result.ok = false;
+        result.compiled = false;
+        return result;
+    }
+    std::lock_guard<std::mutex> lock(mutex);
+    if (auto found = units.find(key); found != units.end())
+        frust_plugin_unload(found->second);
+    units[key] = handle;
+    result.ok = true;
+    result.compiled = true;
     return result;
 }
 

@@ -93,7 +93,8 @@ private:
         openHelpMachineBuilderItem,
         openHelpFrustItem,
         startAudioSimItem,
-        loadAudioSourceItem
+        loadAudioSourceItem,
+        exportVst3PluginItem
     };
 
     static constexpr int recentProjectBase = 1000;
@@ -193,6 +194,7 @@ private:
     juce::String runElectricalRuleCheckTool();
     juce::String exportCircuitArtifactsTool();
     juce::String exportFrustRealtimePreviewTool();
+    juce::String exportVst3PluginTool(const juce::var& args);
     juce::String writeAgentMarkdownTool(const juce::String& title, const juce::String& markdown);
     juce::String researchWebSearchTool(const juce::String& query, int maxResults) const;
     juce::String designRlcHighPassFilterTool(double cutoffHz, double impedanceOhms);
@@ -201,6 +203,7 @@ private:
     void showSpecDocument();
     void exportCircuitArtifacts();
     void exportFrustRealtimePreview();
+    void showExportVst3Dialog();
     void chooseAudioSourceFile();
     void showAnalytics();
     void showControlPanel();

@@ -127,6 +127,10 @@ target_sources(DjehutiElectronicsLab PRIVATE
     Source/CircuitSolver.h
     Source/AudioDsp.h
     Source/AudioDsp.cpp
+    Source/DspArtifactFormat.h
+    Source/DspArtifactFormat.cpp
+    Source/VstExporter.h
+    Source/VstExporter.cpp
     Source/FrustEngine.h
     Source/FrustEngine.cpp
     Source/SignalMeasure.h
@@ -309,6 +313,97 @@ target_link_libraries(DjehutiGeneratedGain PRIVATE
     juce::juce_audio_processors
 )
 juce_generate_juce_header(DjehutiGeneratedGain)
+
+juce_add_plugin(DjehutiCircuitVst
+    COMPANY_NAME "Djehuti Audio"
+    PRODUCT_NAME "Djehuti Circuit VST"
+    PLUGIN_MANUFACTURER_CODE Djht
+    PLUGIN_CODE DjCv
+    FORMATS VST3
+    IS_SYNTH FALSE
+    NEEDS_MIDI_INPUT FALSE
+    NEEDS_MIDI_OUTPUT FALSE
+    IS_MIDI_EFFECT FALSE
+    EDITOR_WANTS_KEYBOARD_FOCUS FALSE
+    COPY_PLUGIN_AFTER_BUILD FALSE
+    VST3_AUTO_MANIFEST FALSE
+    VERSION 1.0.0
+)
+
+target_sources(DjehutiCircuitVst PRIVATE
+    Source/GeneratedVst/GeneratedPluginIdentity.h
+    Source/GeneratedVst/GeneratedPluginPayload.cpp
+    Source/GeneratedVst/CircuitVstPlugin.h
+    Source/GeneratedVst/CircuitVstPlugin.cpp
+    Source/DspArtifactFormat.h
+    Source/DspArtifactFormat.cpp
+    Source/AudioDsp.h
+    Source/AudioDsp.cpp
+    Source/FrustEngine.h
+    Source/FrustEngine.cpp
+)
+target_include_directories(DjehutiCircuitVst PRIVATE Source)
+target_compile_definitions(DjehutiCircuitVst PRIVATE
+    JUCE_WEB_BROWSER=0
+    JUCE_USE_CURL=0
+    JUCE_VST3_CAN_REPLACE_VST2=0
+)
+if(MSVC)
+    target_compile_options(DjehutiCircuitVst PUBLIC "/FI${CMAKE_CURRENT_SOURCE_DIR}/Source/GeneratedVst/GeneratedPluginIdentity.h")
+    if(TARGET DjehutiCircuitVst_VST3)
+        target_compile_options(DjehutiCircuitVst_VST3 PRIVATE "/FI${CMAKE_CURRENT_SOURCE_DIR}/Source/GeneratedVst/GeneratedPluginIdentity.h")
+    endif()
+endif()
+target_link_libraries(DjehutiCircuitVst PRIVATE
+    circuit_sim
+    frust_plugin_host
+    frust_runtime
+    juce::juce_core
+    juce::juce_data_structures
+    juce::juce_events
+    juce::juce_graphics
+    juce::juce_gui_basics
+    juce::juce_audio_basics
+    juce::juce_audio_processors
+)
+juce_generate_juce_header(DjehutiCircuitVst)
+
+juce_add_console_app(VstExportTests PRODUCT_NAME "VST Export Tests")
+set_target_properties(VstExportTests PROPERTIES
+    OUTPUT_NAME "vst_export_tests"
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/bin")
+target_sources(VstExportTests PRIVATE
+    tools/vst_export_tests/VstExportTests.cpp
+    Source/GeneratedVst/GeneratedPluginPayload.cpp
+    Source/GeneratedVst/CircuitVstPlugin.cpp
+    Source/VstExporter.cpp
+    Source/DspArtifactFormat.cpp
+    Source/AudioDsp.cpp
+    Source/FrustEngine.cpp
+)
+target_include_directories(VstExportTests PRIVATE Source)
+target_compile_definitions(VstExportTests PRIVATE
+    JUCE_WEB_BROWSER=0
+    JUCE_USE_CURL=0
+    JUCE_VST3_CAN_REPLACE_VST2=0
+    JUCE_PLUGINHOST_VST3=1
+    DJEHUTI_PROTOTYPE_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}"
+    DJEHUTI_PROTOTYPE_BUILD_DIR="${CMAKE_CURRENT_BINARY_DIR}"
+)
+target_link_libraries(VstExportTests PRIVATE
+    circuit_sim
+    frust_plugin_host
+    frust_runtime
+    juce::juce_core
+    juce::juce_data_structures
+    juce::juce_events
+    juce::juce_graphics
+    juce::juce_gui_basics
+    juce::juce_audio_basics
+    juce::juce_audio_processors
+)
+juce_generate_juce_header(VstExportTests)
+add_test(NAME VstExportTests COMMAND VstExportTests)
 
 juce_add_console_app(GeneratedGainSmoke PRODUCT_NAME "Generated Gain Smoke")
 set_target_properties(GeneratedGainSmoke PROPERTIES

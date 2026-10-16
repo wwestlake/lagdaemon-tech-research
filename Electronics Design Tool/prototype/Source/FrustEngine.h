@@ -4,6 +4,7 @@
 // in memory (LLVM JIT through frust_plugin_host; nothing is written to disk and
 // no program is started) and hands back the compiled functions to call.
 
+#include <cstdint>
 #include <functional>
 #include <map>
 #include <mutex>
@@ -38,12 +39,27 @@ struct Result
     std::string report() const; // diagnostics and error as text, one per line
 };
 
+struct CompiledUnit
+{
+    Result result;
+    std::vector<std::uint8_t> objectBytes;
+    std::string optimizedIr;
+};
+
+// Raw JSON string for a plugin manifest (compatible with frust_plugin_load_object).
+std::string manifestJson(const std::string& name, const std::string& description,
+                         const std::vector<std::string>& hostFunctions = {},
+                         const std::vector<std::string>& entryPoints = {});
+
 // The manifest line every compiled unit starts with.
 std::string manifestLine(const std::string& name, const std::string& description,
                          const std::vector<std::string>& hostFunctions = {});
 
 // Compile-only check of a complete unit (manifest line included).
 Result check(const std::string& unitName, const std::string& source);
+
+// Compiles a complete Frust unit to native machine object code (x64 COFF) + optimized LLVM IR.
+CompiledUnit compileToObject(const std::string& unitName, const std::string& source);
 
 // Compiled units, each by key; functions are found by name. Loading a key
 // again replaces it. Thread-safe; loading is serialized (the plugin host's
@@ -57,6 +73,8 @@ public:
     Engine& operator=(const Engine&) = delete;
 
     Result load(const std::string& key, const std::string& source);
+    Result loadObject(const std::string& key, const std::string& manifestJsonText,
+                      const std::vector<std::uint8_t>& objectBytes);
     void* function(const std::string& key, const std::string& name) const;
     void unload(const std::string& key);
     void unloadAll();

@@ -44,6 +44,7 @@
 #include "XyceBackend.h"
 #include "DjehutiMenuBarComponent.h"
 #include "ManageLayoutsDialog.h"
+#include "VstExporter.h"
 #include <thread>
 
 // Interaction profiler: set DJEHUTI_DRAG_PROFILE=1 and each mouse-up appends
@@ -15081,8 +15082,13 @@ private:
             },
             {
                 "frust_realtime_preview_export",
-                "Export the current schematic as a Djehuti audio model package for the generic Model Player VST3 runtime.",
+                "Export the current schematic as an executable Djehuti/FRust DSP artifact (.frust-il v2 with precompiled x86_64 COFF object code) and VST3 package.",
                 R"({"type":"object","properties":{},"additionalProperties":false})"
+            },
+            {
+                "vst_export",
+                "Export the current schematic or configured 3-effect setup into a standalone Windows x64 VST3 plugin bundle (.vst3 + executable .frust-il v2 + ui.json + manifest.json).",
+                R"({"type":"object","properties":{"productName":{"type":"string","description":"Plugin product name."},"packageId":{"type":"string","description":"Stable package identifier used to derive 4CC and VST3 GUID."},"version":{"type":"string","description":"Plugin version string (e.g. 1.0.0)."},"manufacturer":{"type":"string","description":"Manufacturer name."},"mode":{"type":"string","enum":["single","three_coupled","three_independent","three_separate"],"description":"Export topology mode."},"outputDirectory":{"type":"string","description":"Optional target output folder."},"buildVst3Bundle":{"type":"boolean","description":"Whether to compile and package the standalone .vst3 binary bundle."}},"additionalProperties":false})"
             },
             {
                 "agent_write_markdown",
@@ -15273,6 +15279,11 @@ private:
 
         if (name == "frust_realtime_preview_export")
             return tools.exportRealtimePreview != nullptr ? tools.exportRealtimePreview() : "{ \"ok\": false, \"error\": \"Frust realtime preview export is unavailable.\" }";
+
+        if (name == "vst_export")
+            return tools.schematicTool != nullptr
+                ? tools.schematicTool("vst_export", parsed.isObject() ? parsed : juce::var(new juce::DynamicObject()))
+                : "{ \"ok\": false, \"error\": \"VST3 export tool is unavailable.\" }";
 
         if (name == "agent_write_markdown")
         {
@@ -16048,6 +16059,8 @@ ElectronicsWorkbench::ElectronicsWorkbench()
             return layoutTool(name, args);
         if (name.startsWith("help_") || name.startsWith("help."))
             return helpTool(name, args);
+        if (name == "vst_export")
+            return exportVst3PluginTool(args);
         return schematicPanel->runSchematicTool(name, args);
     };
     schematicPanel->outputDirectory = [this] { return generatedRunDirectory(); };
@@ -16395,6 +16408,7 @@ juce::PopupMenu ElectronicsWorkbench::getMenuForIndex(int, const juce::String& m
     {
         menu.addItem(runErc, "Run ERC");
         menu.addItem(runCompiledPreview, "Compile Realtime Preview");
+        menu.addItem(exportVst3PluginItem, "Export VST3 Plugin...");
         menu.addSeparator();
         menu.addItem(toggleStampModeItem, "Stamp Mode", true, stampModeEnabled);
         menu.addItem(toggleSnapModeItem, "Snap to Grid", true, prefs::isOn("display.snap_default"));
@@ -16414,6 +16428,7 @@ juce::PopupMenu ElectronicsWorkbench::getMenuForIndex(int, const juce::String& m
             menu.addItem(analyticsMenuBase + (int)i, analytics::analyses()[i].title + "...");
         menu.addSeparator();
         menu.addItem(runCompiledPreview, "Compile Realtime Preview");
+        menu.addItem(exportVst3PluginItem, "Export VST3 Plugin...");
     }
     else if (menuName == "Agent")
     {
@@ -16636,6 +16651,7 @@ void ElectronicsWorkbench::menuItemSelected(int menuItemID, int)
         case openAnalyticsItem: showAnalytics(); break;
         case openControlPanelItem: showControlPanel(); break;
         case runCompiledPreview: exportFrustRealtimePreview(); break;
+        case exportVst3PluginItem: showExportVst3Dialog(); break;
         case loadAudioSourceItem: chooseAudioSourceFile(); break;
         case startAudioSimItem:
         {
@@ -18463,274 +18479,147 @@ juce::String ElectronicsWorkbench::exportCircuitArtifactsTool()
 
 juce::String ElectronicsWorkbench::exportFrustRealtimePreviewTool()
 {
-    if (getCircuitJson == nullptr)
-        return "{ \"ok\": false, \"tool\": \"frust_realtime_preview_export\", \"displayTool\": \"frust.realtime_preview_export\", \"error\": \"No schematic exporter is available.\" }";
-
-    const auto runDir = generatedRunDirectory().getChildFile("frust_realtime_preview");
-    if (!runDir.createDirectory())
-    {
-        return "{ \"ok\": false, \"tool\": \"frust_realtime_preview_export\", \"displayTool\": \"frust.realtime_preview_export\", \"error\": "
-            + jsonQuote("Could not create preview directory: " + runDir.getFullPathName()) + " }";
-    }
-
-    const auto circuitJson = getCircuitJson();
-    const auto parsed = juce::JSON::parse(circuitJson);
-    const auto* root = parsed.getDynamicObject();
-    const auto* components = root != nullptr ? root->getProperty("components").getArray() : nullptr;
-    if (components == nullptr)
-        return "{ \"ok\": false, \"tool\": \"frust_realtime_preview_export\", \"displayTool\": \"frust.realtime_preview_export\", \"error\": \"Circuit JSON has no components array.\" }";
-
-    auto frustIdent = [](juce::String text) {
-        juce::String out;
-        for (auto ch : text)
-        {
-            if (juce::CharacterFunctions::isLetterOrDigit(ch))
-                out << juce::String::charToString(ch).toLowerCase();
-            else
-                out << "_";
-        }
-        while (out.contains("__"))
-            out = out.replace("__", "_");
-        out = out.trimCharactersAtStart("_").trimCharactersAtEnd("_");
-        if (out.isEmpty() || juce::CharacterFunctions::isDigit(out[0]))
-            out = "p_" + out;
-        return out;
-    };
-
-    auto isRealtimeSymbol = [](const juce::String& symbol) {
-        return symbol == "resistor" || symbol == "potentiometer" || symbol == "capacitor"
-            || symbol == "capacitor_polarized" || symbol == "variable_capacitor"
-            || symbol == "diode" || symbol == "led" || symbol == "schottky_diode"
-            || symbol == "opamp_generic" || symbol == "opamp_741" || symbol == "comparator_generic" || symbol == "comparator_lm311" || symbol == "regulator_fixed_generic" || symbol == "regulator_adjustable_generic" || symbol == "regulator_lm317" || symbol == "npn" || symbol == "pnp"
-            || symbol == "nmos" || symbol == "pmos" || symbol == "njfet" || symbol == "pjfet"
-            || symbol == "signal_source" || symbol == "ac_voltage_source" || symbol == "voltage_source"
-            || symbol == "sub_block" || symbol == "block_port" || symbol == "ground" || symbol == "power_port"
-            || symbol == "net_label" || symbol == "annotation_text";
-    };
-
-    juce::StringArray parameters;
-    juce::StringArray parameterLabels;
-    juce::StringArray supported;
-    juce::StringArray unsupported;
-    auto addParameter = [&](const juce::String& rawName, const juce::String& label) {
-        const auto id = frustIdent(rawName);
-        if (!parameters.contains(id))
-        {
-            parameters.add(id);
-            parameterLabels.add(label.isNotEmpty() ? label : rawName);
-        }
-    };
-    for (const auto& entry : *components)
-    {
-        const auto* c = entry.getDynamicObject();
-        if (c == nullptr)
-            continue;
-        const auto id = c->getProperty("id").toString();
-        const auto symbol = c->getProperty("symbol").toString();
-        if (isRealtimeSymbol(symbol)) supported.add(id + ":" + symbol);
-        else unsupported.add(id + ":" + symbol);
-
-        if (const auto* params = c->getProperty("parameters").getDynamicObject())
-        {
-            for (const auto& property : params->getProperties())
-            {
-                const auto key = property.name.toString();
-                if (!key.startsWith("paramTarget."))
-                    addParameter(id + "_" + key, id + " " + key);
-            }
-        }
-        if (symbol == "potentiometer")
-            addParameter(id + "_position", id + " Wiper");
-        const auto value = c->getProperty("value").toString();
-        if (value.isNotEmpty() && (symbol == "sub_block" || symbol == "potentiometer"))
-            addParameter(id + "_value", id + " Value");
-    }
-
-    juce::String frust;
-    frust << "// Generated by Djehuti Electronics Lab Compile Preview.\n";
-    frust << "// Model package source for the Djehuti generic VST3 runtime.\n";
-    frust << "// This is a realtime-audio lowering target, not a SPICE validation netlist.\n\n";
-    frust << "use frust_linalg::audio;\n\n";
-    frust << "struct DjehutiModelParams {\n";
-    if (parameters.isEmpty())
-        frust << "    gain: f32\n";
-    else
-        for (int i = 0; i < parameters.size(); ++i)
-            frust << "    " << parameters[i] << ": f32" << (i + 1 < parameters.size() ? "," : "") << "\n";
-    frust << "}\n\n";
-    frust << "pub fn process(input: audio::AudioBlock256f, params: DjehutiModelParams) -> audio::AudioBlock256f = {\n";
-    frust << "    let mut y: audio::AudioBlock256f = input;\n";
-    frust << "    // TODO: generated circuit solve/DSP graph goes here. Current export establishes\n";
-    frust << "    // the Frust ABI, live parameter names, and model package contract.\n";
-    frust << "    y\n";
-    frust << "}\n";
-
-    juce::String parametersJson;
-    parametersJson << "{\n";
-    parametersJson << "  \"schemaVersion\": 1,\n";
-    parametersJson << "  \"kind\": \"djehuti_model_parameters\",\n";
-    parametersJson << "  \"fixedSlotStrategy\": \"Expose stable slots P01..P128 to the VST host; map visible labels and ranges from this file.\",\n";
-    parametersJson << "  \"parameters\": [\n";
-    for (int i = 0; i < parameters.size(); ++i)
-    {
-        const auto isWiper = parameters[i].contains("position") || parameterLabels[i].containsIgnoreCase("wiper");
-        parametersJson << "    { \"slot\": \"P" << juce::String(i + 1).paddedLeft('0', 2)
-                       << "\", \"id\": " << jsonQuote(parameters[i])
-                       << ", \"label\": " << jsonQuote(parameterLabels[i])
-                       << ", \"default\": " << (isWiper ? "0.5" : "1.0")
-                       << ", \"min\": 0.0, \"max\": " << (isWiper ? "1.0" : "1.0")
-                       << ", \"unit\": " << jsonQuote(isWiper ? "fraction" : "normalized")
-                       << ", \"taper\": " << jsonQuote(isWiper ? "linear" : "linear") << " }";
-        parametersJson << (i + 1 < parameters.size() ? "," : "") << "\n";
-    }
-    parametersJson << "  ]\n";
-    parametersJson << "}\n";
-
-    juce::String uiJson;
-    uiJson << "{\n";
-    uiJson << "  \"schemaVersion\": 1,\n";
-    uiJson << "  \"kind\": \"djehuti_model_ui\",\n";
-    uiJson << "  \"title\": \"Djehuti Circuit Model\",\n";
-    uiJson << "  \"layout\": \"generated_grid\",\n";
-    uiJson << "  \"controls\": [\n";
-    for (int i = 0; i < parameters.size(); ++i)
-    {
-        const auto isWiper = parameters[i].contains("position") || parameterLabels[i].containsIgnoreCase("wiper");
-        uiJson << "    { \"param\": " << jsonQuote(parameters[i])
-               << ", \"slot\": \"P" << juce::String(i + 1).paddedLeft('0', 2)
-               << "\", \"label\": " << jsonQuote(parameterLabels[i])
-               << ", \"kind\": " << jsonQuote(isWiper ? "knob" : "slider") << " }";
-        uiJson << (i + 1 < parameters.size() ? "," : "") << "\n";
-    }
-    uiJson << "  ]\n";
-    uiJson << "}\n";
-
-    juce::String uiFrust;
-    uiFrust << "// Generated model-owned UI source for Djehuti Model Player VST3.\n";
-    uiFrust << "// Runs on the plugin editor/UI thread, not the realtime audio thread.\n\n";
-    uiFrust << "struct UiDescription {\n";
-    uiFrust << "    title: string,\n";
-    uiFrust << "    control_count: i64\n";
-    uiFrust << "}\n\n";
-    uiFrust << "struct UiEvent {\n";
-    uiFrust << "    control_id: string,\n";
-    uiFrust << "    value: f32\n";
-    uiFrust << "}\n\n";
-    uiFrust << "struct UiEventResult {\n";
-    uiFrust << "    parameter_id: string,\n";
-    uiFrust << "    value: f32\n";
-    uiFrust << "}\n\n";
-    uiFrust << "pub fn describe_ui() -> UiDescription = {\n";
-    uiFrust << "    UiDescription { title: \"Djehuti Circuit Model\", control_count: " << parameters.size() << " }\n";
-    uiFrust << "}\n\n";
-    uiFrust << "pub fn render_ui_json() -> string = {\n";
-    uiFrust << "    // The generic VST may use ui.json directly or ask this UI module\n";
-    uiFrust << "    // for a runtime-generated layout when the model changes mode.\n";
-    uiFrust << "    \"ui.json\"\n";
-    uiFrust << "}\n\n";
-    uiFrust << "pub fn handle_ui_event(event: UiEvent) -> UiEventResult = {\n";
-    uiFrust << "    UiEventResult { parameter_id: event.control_id, value: event.value }\n";
-    uiFrust << "}\n\n";
-    uiFrust << "pub fn sync_parameter(parameter_id: string, value: f32) -> UiEventResult = {\n";
-    uiFrust << "    UiEventResult { parameter_id: parameter_id, value: value }\n";
-    uiFrust << "}\n";
-
-    juce::String il;
-    il << "{\n";
-    il << "  \"schemaVersion\": 1,\n";
-    il << "  \"kind\": \"djehuti_frust_il_placeholder\",\n";
-    il << "  \"entryPoint\": \"process\",\n";
-    il << "  \"blockSize\": 256,\n";
-    il << "  \"channels\": { \"inputs\": 1, \"outputs\": 1 },\n";
-    il << "  \"source\": \"model.fr\",\n";
-    il << "  \"status\": \"source_ready_il_lowering_pending\"\n";
-    il << "}\n";
-
-    juce::String uiIl;
-    uiIl << "{\n";
-    uiIl << "  \"schemaVersion\": 1,\n";
-    uiIl << "  \"kind\": \"djehuti_frust_ui_il_placeholder\",\n";
-    uiIl << "  \"source\": \"ui.fr\",\n";
-    uiIl << "  \"thread\": \"ui\",\n";
-    uiIl << "  \"entryPoints\": [\"describe_ui\", \"render_ui_json\", \"handle_ui_event\", \"sync_parameter\"],\n";
-    uiIl << "  \"status\": \"source_ready_il_lowering_pending\"\n";
-    uiIl << "}\n";
-
-    juce::String manifest;
-    manifest << "{\n";
-    manifest << "  \"schemaVersion\": 1,\n";
-    manifest << "  \"kind\": \"djehuti_audio_model_package\",\n";
-    manifest << "  \"packageName\": \"Djehuti Circuit Model\",\n";
-    manifest << "  \"status\": " << jsonQuote(unsupported.isEmpty() ? "ready_for_lowering" : "partial") << ",\n";
-    manifest << "  \"runtime\": \"Djehuti Model Player VST3\",\n";
-    manifest << "  \"frustSource\": \"model.fr\",\n";
-    manifest << "  \"frustIl\": \"model.frust-il\",\n";
-    manifest << "  \"uiSource\": \"ui.fr\",\n";
-    manifest << "  \"uiIl\": \"ui.frust-il\",\n";
-    manifest << "  \"parameters\": \"parameters.json\",\n";
-    manifest << "  \"ui\": \"ui.json\",\n";
-    manifest << "  \"sourceCircuit\": \"circuit.json\",\n";
-    manifest << "  \"audio\": { \"inputs\": 1, \"outputs\": 1, \"blockSize\": 256 },\n";
-    manifest << "  \"uiRuntime\": {\n";
-    manifest << "    \"thread\": \"ui\",\n";
-    manifest << "    \"modelOwned\": true,\n";
-    manifest << "    \"entryPoints\": [\"describe_ui\", \"render_ui_json\", \"handle_ui_event\", \"sync_parameter\"],\n";
-    manifest << "    \"audioThreadAccess\": false\n";
-    manifest << "  },\n";
-    manifest << "  \"supportedComponents\": [";
-    for (int i = 0; i < supported.size(); ++i)
-        manifest << (i == 0 ? "" : ", ") << jsonQuote(supported[i]);
-    manifest << "],\n";
-    manifest << "  \"unsupportedComponents\": [";
-    for (int i = 0; i < unsupported.size(); ++i)
-        manifest << (i == 0 ? "" : ", ") << jsonQuote(unsupported[i]);
-    manifest << "],\n";
-    manifest << "  \"liveParameters\": [";
-    for (int i = 0; i < parameters.size(); ++i)
-        manifest << (i == 0 ? "" : ", ") << jsonQuote(parameters[i]);
-    manifest << "],\n";
-    manifest << "  \"nextImplementationStep\": \"Lower supported RC, gain, clipping, tone, and potentiometer cells into the process() DSP graph and connect it to the JUCE audio pipeline.\"\n";
-    manifest << "}\n";
-
-    const auto circuitFile = runDir.getChildFile("circuit.json");
-    const auto frustFile = runDir.getChildFile("model.fr");
-    const auto ilFile = runDir.getChildFile("model.frust-il");
-    const auto uiSourceFile = runDir.getChildFile("ui.fr");
-    const auto uiIlFile = runDir.getChildFile("ui.frust-il");
-    const auto parametersFile = runDir.getChildFile("parameters.json");
-    const auto uiFile = runDir.getChildFile("ui.json");
-    const auto manifestFile = runDir.getChildFile("manifest.json");
-    if (!circuitFile.replaceWithText(circuitJson)
-        || !frustFile.replaceWithText(frust)
-        || !ilFile.replaceWithText(il)
-        || !uiSourceFile.replaceWithText(uiFrust)
-        || !uiIlFile.replaceWithText(uiIl)
-        || !parametersFile.replaceWithText(parametersJson)
-        || !uiFile.replaceWithText(uiJson)
-        || !manifestFile.replaceWithText(manifest))
-        return "{ \"ok\": false, \"tool\": \"frust_realtime_preview_export\", \"displayTool\": \"frust.realtime_preview_export\", \"error\": \"Could not write one or more preview artifacts.\" }";
-
-    juce::String result;
-    result << "{\n";
-    result << "  \"ok\": true,\n";
-    result << "  \"schemaVersion\": 1,\n";
-    result << "  \"tool\": \"frust_realtime_preview_export\",\n";
-    result << "  \"displayTool\": \"frust.realtime_preview_export\",\n";
-    result << "  \"status\": " << jsonQuote(unsupported.isEmpty() ? "ready_for_lowering" : "partial") << ",\n";
-    result << "  \"artifactDirectory\": " << jsonQuote(runDir.getFullPathName()) << ",\n";
-    result << "  \"frustSource\": " << jsonQuote(frustFile.getFullPathName()) << ",\n";
-    result << "  \"frustIl\": " << jsonQuote(ilFile.getFullPathName()) << ",\n";
-    result << "  \"uiSource\": " << jsonQuote(uiSourceFile.getFullPathName()) << ",\n";
-    result << "  \"uiIl\": " << jsonQuote(uiIlFile.getFullPathName()) << ",\n";
-    result << "  \"parameters\": " << jsonQuote(parametersFile.getFullPathName()) << ",\n";
-    result << "  \"ui\": " << jsonQuote(uiFile.getFullPathName()) << ",\n";
-    result << "  \"manifest\": " << jsonQuote(manifestFile.getFullPathName()) << ",\n";
-    result << "  \"supportedComponentCount\": " << supported.size() << ",\n";
-    result << "  \"unsupportedComponentCount\": " << unsupported.size() << ",\n";
-    result << "  \"liveParameterCount\": " << parameters.size() << "\n";
-    result << "}\n";
-    return result;
+    auto* argsObj = new juce::DynamicObject();
+    argsObj->setProperty("buildVst3Bundle", false);
+    argsObj->setProperty("outputDirectory", generatedRunDirectory().getChildFile("frust_realtime_preview").getFullPathName());
+    return exportVst3PluginTool(juce::var(argsObj));
 }
+
+juce::String ElectronicsWorkbench::exportVst3PluginTool(const juce::var& args)
+{
+    if (getSimCircuit == nullptr)
+        return "{ \"ok\": false, \"tool\": \"vst_export\", \"displayTool\": \"vst.export\", \"error\": \"No schematic circuit extractor is available.\" }";
+
+    vst_exporter::ExportRequest req;
+    const auto cfgFile = generatedRunDirectory().getChildFile("vst_export_config.json");
+    if (cfgFile.existsAsFile())
+    {
+        std::string ignoredErr;
+        vst_exporter::loadExportConfigFromFile(cfgFile, req, ignoredErr);
+    }
+
+    req.packageId = "com.djehuti.vst." + (currentDiagram.isNotEmpty()
+        ? currentDiagram.retainCharacters("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_").toLowerCase().toStdString()
+        : std::string("circuit_effect"));
+    req.productName = currentDiagram.isNotEmpty()
+        ? ("Djehuti " + currentDiagram.toStdString())
+        : std::string("Djehuti Circuit Effect");
+    req.productVersion = "1.0.0";
+    req.manufacturerName = "Djehuti Audio";
+    req.outputDirectory = generatedRunDirectory().getChildFile("vst3_export");
+    req.buildVst3Bundle = true;
+
+    if (const auto* obj = args.getDynamicObject())
+    {
+        if (obj->hasProperty("packageId") && obj->getProperty("packageId").toString().trim().isNotEmpty())
+            req.packageId = obj->getProperty("packageId").toString().trim().toStdString();
+        if (obj->hasProperty("productName") && obj->getProperty("productName").toString().trim().isNotEmpty())
+            req.productName = obj->getProperty("productName").toString().trim().toStdString();
+        if (obj->hasProperty("version") && obj->getProperty("version").toString().trim().isNotEmpty())
+            req.productVersion = obj->getProperty("version").toString().trim().toStdString();
+        if (obj->hasProperty("manufacturer") && obj->getProperty("manufacturer").toString().trim().isNotEmpty())
+            req.manufacturerName = obj->getProperty("manufacturer").toString().trim().toStdString();
+        if (obj->hasProperty("outputDirectory") && obj->getProperty("outputDirectory").toString().trim().isNotEmpty())
+            req.outputDirectory = juce::File(obj->getProperty("outputDirectory").toString().trim());
+        if (obj->hasProperty("buildVst3Bundle"))
+            req.buildVst3Bundle = static_cast<bool>(obj->getProperty("buildVst3Bundle"));
+
+        const auto modeStr = obj->getProperty("mode").toString().trim().toLowerCase();
+        if (modeStr == "three_coupled")
+            req.mode = vst_exporter::ExportMode::ThreeEffectsCoupled;
+        else if (modeStr == "three_independent")
+            req.mode = vst_exporter::ExportMode::ThreeEffectsIndependent;
+        else if (modeStr == "three_separate")
+            req.mode = vst_exporter::ExportMode::ThreeSeparatePlugins;
+        else if (modeStr == "single")
+            req.mode = vst_exporter::ExportMode::SingleEffect;
+    }
+
+    auto simData = getSimCircuit();
+    auto activeCircuit = std::get<0>(simData);
+    auto audioIn = std::get<1>(simData);
+    auto audioOut = std::get<2>(simData);
+
+    req.circuits.clear();
+    if (!activeCircuit.elements().empty() && audioIn >= 0 && audioOut > 0)
+    {
+        dsp_artifact::BuildArtifactInput::CircuitInputSlot slot;
+        slot.slotId = "active_schematic";
+        slot.slotName = req.productName;
+        slot.circuit = activeCircuit;
+        slot.dspConfig.sampleRate = 48000.0;
+        slot.dspConfig.audioInputElement = audioIn;
+        slot.dspConfig.audioOutputNode = audioOut;
+        slot.dspConfig.inputVolts = 1.0;
+        slot.dspConfig.outputFullScaleVolts = 1.0;
+        req.circuits.push_back(std::move(slot));
+    }
+    else if (req.mode == vst_exporter::ExportMode::ThreeEffectsCoupled)
+    {
+        req.circuits.push_back(vst_exporter::makeCoupledThreeModeClipperCircuit(48000.0, req.effects));
+    }
+    else if (req.mode == vst_exporter::ExportMode::ThreeEffectsIndependent ||
+             req.mode == vst_exporter::ExportMode::ThreeSeparatePlugins)
+    {
+        req.circuits.push_back(vst_exporter::makeLinearRcToneCircuit(48000.0));
+        req.circuits.push_back(vst_exporter::makeNonlinearDiodeClipperCircuit(48000.0));
+        req.circuits.push_back(vst_exporter::makeResonantPresenceVoicingCircuit(48000.0));
+    }
+
+    if (req.circuits.empty())
+    {
+        return "{ \"ok\": false, \"tool\": \"vst_export\", \"displayTool\": \"vst.export\", \"error\": \"Schematic has no valid audio input source or output node for DSP export.\" }";
+    }
+
+    const auto expRes = vst_exporter::runExport(req);
+    vst_exporter::saveExportConfigToFile(req, cfgFile);
+
+    if (!expRes.ok || expRes.bundles.empty())
+    {
+        return "{ \"ok\": false, \"tool\": \"vst_export\", \"displayTool\": \"vst.export\", \"error\": "
+            + jsonQuote(juce::String(expRes.error)) + " }";
+    }
+
+    const auto& primary = expRes.bundles.front();
+    auto* root = new juce::DynamicObject();
+    root->setProperty("ok", true);
+    root->setProperty("schemaVersion", 2);
+    root->setProperty("tool", "vst_export");
+    root->setProperty("displayTool", "vst.export");
+    root->setProperty("status", "executable_object_ready");
+    root->setProperty("artifactDirectory", primary.packageDirectory.getFullPathName());
+    root->setProperty("frustSource", primary.frustSourceFile.getFullPathName());
+    root->setProperty("frustIl", primary.artifactFile.getFullPathName());
+    root->setProperty("ui", primary.uiSchemaFile.getFullPathName());
+    root->setProperty("manifest", primary.manifestFile.getFullPathName());
+    root->setProperty("exportConfig", primary.exportConfigFile.getFullPathName());
+    root->setProperty("vst3Bundle", primary.vst3BundleDir.getFullPathName());
+    root->setProperty("vst3Binary", primary.vst3BinaryFile.getFullPathName());
+    root->setProperty("packageId", juce::String(primary.packageId));
+    root->setProperty("productName", juce::String(primary.productName));
+    root->setProperty("pluginCode4CC", juce::String(primary.pluginCode4CC));
+    root->setProperty("vst3ComponentUidHex", juce::String(primary.vst3ComponentUidHex));
+    root->setProperty("liveParameterCount", static_cast<int>(primary.artifact.parameters.size()));
+    root->setProperty("effectCount", static_cast<int>(primary.artifact.effects.size()));
+
+    juce::Array<juce::var> bundlesArr;
+    for (const auto& b : expRes.bundles)
+    {
+        auto* bo = new juce::DynamicObject();
+        bo->setProperty("packageId", juce::String(b.packageId));
+        bo->setProperty("productName", juce::String(b.productName));
+        bo->setProperty("pluginCode4CC", juce::String(b.pluginCode4CC));
+        bo->setProperty("vst3ComponentUidHex", juce::String(b.vst3ComponentUidHex));
+        bo->setProperty("frustIl", b.artifactFile.getFullPathName());
+        bo->setProperty("vst3Bundle", b.vst3BundleDir.getFullPathName());
+        bo->setProperty("vst3Binary", b.vst3BinaryFile.getFullPathName());
+        bundlesArr.add(juce::var(bo));
+    }
+    root->setProperty("bundles", bundlesArr);
+
+    return juce::JSON::toString(juce::var(root), false);
+}
+
 
 juce::String ElectronicsWorkbench::writeAgentMarkdownTool(const juce::String& title, const juce::String& markdown)
 {
@@ -19089,10 +18978,87 @@ void ElectronicsWorkbench::exportFrustRealtimePreview()
         return;
     }
 
-    appendLog("Exported Djehuti audio model package to "
+    appendLog("Exported Djehuti executable audio artifact (.frust-il v2) to "
               + parsed.getProperty("artifactDirectory", generatedRunDirectory().getFullPathName()).toString()
               + " with " + parsed.getProperty("liveParameterCount", 0).toString()
               + " live parameter(s).");
+}
+
+void ElectronicsWorkbench::showExportVst3Dialog()
+{
+    vst_exporter::ExportRequest savedCfg;
+    const auto cfgFile = generatedRunDirectory().getChildFile("vst_export_config.json");
+    if (cfgFile.existsAsFile())
+    {
+        std::string ignoredErr;
+        vst_exporter::loadExportConfigFromFile(cfgFile, savedCfg, ignoredErr);
+    }
+
+    const juce::String defaultProd = savedCfg.productName.empty()
+        ? (currentDiagram.isNotEmpty() ? ("Djehuti " + currentDiagram) : juce::String("Djehuti Circuit Effect"))
+        : juce::String(savedCfg.productName);
+    const juce::String defaultPkg = savedCfg.packageId.empty()
+        ? ("com.djehuti.vst." + (currentDiagram.isNotEmpty()
+            ? currentDiagram.retainCharacters("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_").toLowerCase()
+            : juce::String("circuit_effect")))
+        : juce::String(savedCfg.packageId);
+    const juce::String defaultVer = savedCfg.productVersion.empty() ? "1.0.0" : juce::String(savedCfg.productVersion);
+    const juce::String defaultMfr = savedCfg.manufacturerName.empty() ? "Djehuti Audio" : juce::String(savedCfg.manufacturerName);
+    const juce::String defaultDir = (savedCfg.outputDirectory != juce::File())
+        ? savedCfg.outputDirectory.getFullPathName()
+        : generatedRunDirectory().getChildFile("vst3_export").getFullPathName();
+
+    auto* w = new juce::AlertWindow("Export Custom VST3 Plugin",
+                                    "Compile the circuit DSP model to native x64 object code (.frust-il v2) and build a standalone VST3 plugin bundle.",
+                                    juce::MessageBoxIconType::NoIcon);
+    w->addTextEditor("productName", defaultProd, "Product Name:");
+    w->addTextEditor("packageId", defaultPkg, "Package ID (determines 4CC & VST3 UID):");
+    w->addTextEditor("version", defaultVer, "Version:");
+    w->addTextEditor("manufacturer", defaultMfr, "Manufacturer:");
+    w->addComboBox("mode",
+                   { "Single Circuit Effect",
+                     "3 Selectable Effects (Coupled Circuit Modes)",
+                     "3 Selectable Effects (Independent Circuit Models)",
+                     "3 Separate VST3 Plugins" },
+                   "Effect Export Topology:");
+    if (auto* cb = w->getComboBoxComponent("mode"))
+        cb->setSelectedItemIndex(static_cast<int>(savedCfg.mode), juce::dontSendNotification);
+    w->addTextEditor("outputDirectory", defaultDir, "Output Folder:");
+    w->addButton("Export VST3", 1, juce::KeyPress(juce::KeyPress::returnKey));
+    w->addButton("Cancel", 0, juce::KeyPress(juce::KeyPress::escapeKey));
+
+    juce::Component::SafePointer<ElectronicsWorkbench> safeThis(this);
+    w->enterModalState(true, juce::ModalCallbackFunction::create([safeThis, w](int result) {
+        if (result == 1 && safeThis != nullptr)
+        {
+            auto* args = new juce::DynamicObject();
+            args->setProperty("productName", w->getTextEditorContents("productName"));
+            args->setProperty("packageId", w->getTextEditorContents("packageId"));
+            args->setProperty("version", w->getTextEditorContents("version"));
+            args->setProperty("manufacturer", w->getTextEditorContents("manufacturer"));
+            args->setProperty("outputDirectory", w->getTextEditorContents("outputDirectory"));
+            args->setProperty("buildVst3Bundle", true);
+
+            const int modeIdx = w->getComboBoxComponent("mode") != nullptr
+                ? w->getComboBoxComponent("mode")->getSelectedItemIndex()
+                : 0;
+            const char* modeNames[] = { "single", "three_coupled", "three_independent", "three_separate" };
+            args->setProperty("mode", juce::String(modeNames[juce::jlimit(0, 3, modeIdx)]));
+
+            const auto jsonRes = safeThis->exportVst3PluginTool(juce::var(args));
+            const auto parsed = juce::JSON::parse(jsonRes);
+            if (parsed.isObject() && static_cast<bool>(parsed.getProperty("ok", false)))
+            {
+                safeThis->appendLog("Exported VST3 plugin '" + parsed.getProperty("productName", {}).toString()
+                                    + "' [4CC: " + parsed.getProperty("pluginCode4CC", {}).toString()
+                                    + "] to " + parsed.getProperty("vst3Bundle", {}).toString());
+            }
+            else
+            {
+                safeThis->appendLog("VST3 export failed: " + parsed.getProperty("error", jsonRes).toString());
+            }
+        }
+    }), true);
 }
 
 void ElectronicsWorkbench::chooseAudioSourceFile()
