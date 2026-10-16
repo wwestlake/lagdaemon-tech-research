@@ -314,6 +314,17 @@ target_link_libraries(DjehutiGeneratedGain PRIVATE
 )
 juce_generate_juce_header(DjehutiGeneratedGain)
 
+set(GENERATED_VST_DIR "${CMAKE_CURRENT_BINARY_DIR}/GeneratedVst")
+file(MAKE_DIRECTORY "${GENERATED_VST_DIR}")
+if(NOT EXISTS "${GENERATED_VST_DIR}/GeneratedPluginIdentity.h")
+    file(WRITE "${GENERATED_VST_DIR}/GeneratedPluginIdentity.h"
+        "#pragma once\n// Build-owned default identity for Djehuti Circuit VST3\n#define DJEHUTI_VST_PACKAGE_ID \"com.djehuti.circuitvst\"\n#define DJEHUTI_VST_PRODUCT_NAME \"Djehuti Circuit VST\"\n#define DJEHUTI_VST_DESCRIPTION \"Djehuti Circuit VST3\"\n#define DJEHUTI_VST_MANUFACTURER \"Djehuti Audio\"\n#define DJEHUTI_VST_VERSION_STRING \"1.0.0\"\n#define DJEHUTI_VST_VERSION_HEX 0x00010000\n#define DJEHUTI_VST_PLUGIN_CODE 0x446A4376\n")
+endif()
+if(NOT EXISTS "${GENERATED_VST_DIR}/GeneratedPluginPayload.cpp")
+    file(WRITE "${GENERATED_VST_DIR}/GeneratedPluginPayload.cpp"
+        "#include \"CircuitVstPlugin.h\"\nnamespace djehuti_circuit_vst {\nconst char* getEmbeddedArtifactJson() noexcept { return \"\"; }\n}\n")
+endif()
+
 juce_add_plugin(DjehutiCircuitVst
     COMPANY_NAME "Djehuti Audio"
     BUNDLE_ID "com.djehuti.circuitvst"
@@ -332,8 +343,8 @@ juce_add_plugin(DjehutiCircuitVst
 )
 
 target_sources(DjehutiCircuitVst PRIVATE
-    Source/GeneratedVst/GeneratedPluginIdentity.h
-    Source/GeneratedVst/GeneratedPluginPayload.cpp
+    "${GENERATED_VST_DIR}/GeneratedPluginIdentity.h"
+    "${GENERATED_VST_DIR}/GeneratedPluginPayload.cpp"
     Source/GeneratedVst/CircuitVstPlugin.h
     Source/GeneratedVst/CircuitVstPlugin.cpp
     Source/DspArtifactFormat.h
@@ -343,16 +354,16 @@ target_sources(DjehutiCircuitVst PRIVATE
     Source/FrustEngine.h
     Source/FrustEngine.cpp
 )
-target_include_directories(DjehutiCircuitVst PRIVATE Source)
+target_include_directories(DjehutiCircuitVst PRIVATE "${GENERATED_VST_DIR}" Source "${CMAKE_CURRENT_SOURCE_DIR}/Source/GeneratedVst")
 target_compile_definitions(DjehutiCircuitVst PRIVATE
     JUCE_WEB_BROWSER=0
     JUCE_USE_CURL=0
     JUCE_VST3_CAN_REPLACE_VST2=0
 )
 if(MSVC)
-    target_compile_options(DjehutiCircuitVst PUBLIC "/FI${CMAKE_CURRENT_SOURCE_DIR}/Source/GeneratedVst/GeneratedPluginIdentity.h")
+    target_compile_options(DjehutiCircuitVst PRIVATE "/FI${GENERATED_VST_DIR}/GeneratedPluginIdentity.h")
     if(TARGET DjehutiCircuitVst_VST3)
-        target_compile_options(DjehutiCircuitVst_VST3 PRIVATE "/FI${CMAKE_CURRENT_SOURCE_DIR}/Source/GeneratedVst/GeneratedPluginIdentity.h")
+        target_compile_options(DjehutiCircuitVst_VST3 PRIVATE "/FI${GENERATED_VST_DIR}/GeneratedPluginIdentity.h")
     endif()
 endif()
 target_link_libraries(DjehutiCircuitVst PRIVATE
@@ -375,14 +386,14 @@ set_target_properties(VstExportTests PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/bin")
 target_sources(VstExportTests PRIVATE
     tools/vst_export_tests/VstExportTests.cpp
-    Source/GeneratedVst/GeneratedPluginPayload.cpp
+    "${GENERATED_VST_DIR}/GeneratedPluginPayload.cpp"
     Source/GeneratedVst/CircuitVstPlugin.cpp
     Source/VstExporter.cpp
     Source/DspArtifactFormat.cpp
     Source/AudioDsp.cpp
     Source/FrustEngine.cpp
 )
-target_include_directories(VstExportTests PRIVATE Source)
+target_include_directories(VstExportTests PRIVATE "${GENERATED_VST_DIR}" Source "${CMAKE_CURRENT_SOURCE_DIR}/Source/GeneratedVst")
 target_compile_definitions(VstExportTests PRIVATE
     JUCE_WEB_BROWSER=0
     JUCE_USE_CURL=0
@@ -405,6 +416,7 @@ target_link_libraries(VstExportTests PRIVATE
 )
 juce_generate_juce_header(VstExportTests)
 add_test(NAME VstExportTests COMMAND VstExportTests)
+add_test(NAME VstExportPackageVerification COMMAND VstExportTests --with-export)
 
 juce_add_console_app(GeneratedGainSmoke PRODUCT_NAME "Generated Gain Smoke")
 set_target_properties(GeneratedGainSmoke PROPERTIES

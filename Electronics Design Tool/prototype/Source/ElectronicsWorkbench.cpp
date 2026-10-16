@@ -18541,7 +18541,9 @@ juce::String ElectronicsWorkbench::exportVst3PluginTool(const juce::var& args)
     auto audioOut = std::get<2>(simData);
 
     req.circuits.clear();
-    if (!activeCircuit.elements().empty() && audioIn >= 0 && audioOut > 0)
+    const bool hasActiveCircuit = !activeCircuit.elements().empty() && audioIn >= 0 && audioOut > 0;
+
+    if (hasActiveCircuit)
     {
         dsp_artifact::BuildArtifactInput::CircuitInputSlot slot;
         slot.slotId = "active_schematic";
@@ -18553,22 +18555,69 @@ juce::String ElectronicsWorkbench::exportVst3PluginTool(const juce::var& args)
         slot.dspConfig.inputVolts = 1.0;
         slot.dspConfig.outputFullScaleVolts = 1.0;
         req.circuits.push_back(std::move(slot));
+
+        if (req.mode == vst_exporter::ExportMode::ThreeEffectsCoupled && req.effects.empty())
+        {
+            // For coupled 3-effect export on a user circuit, establish 3 mode presets
+            audio_dsp::Config dspCfg;
+            dspCfg.sampleRate = 48000.0;
+            dspCfg.audioInputElement = audioIn;
+            dspCfg.audioOutputNode = audioOut;
+            const auto tempModel = audio_dsp::build(activeCircuit, dspCfg);
+
+            std::string switchParam;
+            for (const auto& lp : tempModel.livePorts)
+            {
+                if (lp.kind == audio_dsp::LivePort::Kind::Switch)
+                {
+                    switchParam = lp.paramId;
+                    break;
+                }
+            }
+
+            req.effects.resize(3);
+            req.effects[0].id = "mode_a";
+            req.effects[0].name = "Mode A";
+            req.effects[0].description = "Primary Circuit Voicing";
+            req.effects[0].modelSlotIndex = 0;
+
+            req.effects[1].id = "mode_b";
+            req.effects[1].name = "Mode B";
+            req.effects[1].description = "Secondary Circuit Voicing";
+            req.effects[1].modelSlotIndex = 0;
+
+            req.effects[2].id = "mode_c";
+            req.effects[2].name = "Mode C";
+            req.effects[2].description = "Alternate Circuit Voicing";
+            req.effects[2].modelSlotIndex = 0;
+
+            if (!switchParam.empty())
+            {
+                req.effects[0].livePortOverrides[switchParam] = 0.0;
+                req.effects[1].livePortOverrides[switchParam] = 1.0;
+                req.effects[2].livePortOverrides[switchParam] = 0.0;
+            }
+        }
     }
-    else if (req.mode == vst_exporter::ExportMode::ThreeEffectsCoupled)
+    else if (!savedCfg.circuits.empty())
     {
-        req.circuits.push_back(vst_exporter::makeCoupledThreeModeClipperCircuit(48000.0, req.effects));
-    }
-    else if (req.mode == vst_exporter::ExportMode::ThreeEffectsIndependent ||
-             req.mode == vst_exporter::ExportMode::ThreeSeparatePlugins)
-    {
-        req.circuits.push_back(vst_exporter::makeLinearRcToneCircuit(48000.0));
-        req.circuits.push_back(vst_exporter::makeNonlinearDiodeClipperCircuit(48000.0));
-        req.circuits.push_back(vst_exporter::makeResonantPresenceVoicingCircuit(48000.0));
+        req.circuits = savedCfg.circuits;
+        if (req.effects.empty())
+            req.effects = savedCfg.effects;
+        if (req.customParameters.empty())
+            req.customParameters = savedCfg.customParameters;
     }
 
     if (req.circuits.empty())
     {
-        return "{ \"ok\": false, \"tool\": \"vst_export\", \"displayTool\": \"vst.export\", \"error\": \"Schematic has no valid audio input source or output node for DSP export.\" }";
+        return "{ \"ok\": false, \"tool\": \"vst_export\", \"displayTool\": \"vst.export\", \"error\": \"Schematic has no valid audio input source (Audio In port or AC voltage source) or output node (Audio Out port or load). Cannot export an invalid or empty schematic.\" }";
+    }
+
+    if ((req.mode == vst_exporter::ExportMode::ThreeEffectsIndependent ||
+         req.mode == vst_exporter::ExportMode::ThreeSeparatePlugins) &&
+        req.circuits.size() < 3)
+    {
+        return "{ \"ok\": false, \"tool\": \"vst_export\", \"displayTool\": \"vst.export\", \"error\": \"Export mode requires 3 independent circuit models. Only " + std::to_string(req.circuits.size()) + " circuit slot(s) provided in configuration.\" }";
     }
 
     const auto expRes = vst_exporter::runExport(req);

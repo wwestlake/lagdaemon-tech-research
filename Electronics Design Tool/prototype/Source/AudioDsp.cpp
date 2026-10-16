@@ -593,9 +593,14 @@ std::string Model::frustSource() const
     ss << "pub fn process_sample(audio_in: f64, ws: Array<f64, " << ws_size << ">, coeffs: Array<f64, " << c_size << ">) -> f64 = {\n";
     
     int affineCols = 1 + inputCount + stateCount;
+    const int offset_pAff = 0;
+    const int offset_pK   = offset_pAff + portCount * affineCols;
+    const int offset_sAff = offset_pK   + portCount * portCount;
+    const int offset_sQ   = offset_sAff + stateCount * affineCols;
+    const int offset_oAff = offset_sQ   + stateCount * portCount;
+    const int offset_oQ   = offset_oAff + affineCols;
     
     ss << "    // 1. Affine basis\n";
-    int coeff_idx = 0;
     for (int p = 0; p < portCount; ++p)
     {
         ss << "    let mut p0_" << p << " = 0.0;\n";
@@ -605,7 +610,7 @@ std::string Model::frustSource() const
             if (c == 0) term = "1.0";
             else if (c == 1) term = "audio_in";
             else term = "ws[" + std::to_string(c - 1 - inputCount) + "]";
-            ss << "    p0_" << p << " = p0_" << p << " + coeffs[" << coeff_idx++ << "] * " << term << ";\n";
+            ss << "    p0_" << p << " = p0_" << p << " + coeffs[" << offset_pAff + p * affineCols + c << "] * " << term << ";\n";
         }
     }
     
@@ -635,97 +640,123 @@ std::string Model::frustSource() const
         ss << "    let mut it = 0;\n";
         ss << "    let mut exp_val = 0.0;\n";
         ss << "    let mut abs_delta = 1.0;\n";
+        ss << "    let mut max_abs_F = 1.0;\n";
+        ss << "    let mut abs_F = 0.0;\n";
+        ss << "    let mut abs_c = 0.0;\n";
+        ss << "    let mut abs_r = 0.0;\n";
+        ss << "    let mut abs_pivot = 0.0;\n";
+        ss << "    let mut tmp_J = 0.0;\n";
+        ss << "    let mut tmp_F = 0.0;\n";
+        ss << "    let mut factor = 0.0;\n";
+        ss << "    let mut abs_p = 0.0;\n";
+        ss << "    let mut singular = 0;\n";
         
         ss << "    while (it < " << maxIterations << ") {\n";
+        ss << "        singular = 0;\n";
         
         for (int p = 0; p < portCount; ++p)
         {
             if (devices[p].kind == Device::Kind::Diode)
             {
-                ss << "        while (p_v_" << p << " < -100.0) { p_v_" << p << " = -100.0; };\n";
-                ss << "        while (p_v_" << p << " > 2.0) { p_v_" << p << " = 2.0; };\n";
+                ss << "        if (p_v_" << p << " < -100.0) { p_v_" << p << " = -100.0; };\n";
+                ss << "        if (p_v_" << p << " > 2.0) { p_v_" << p << " = 2.0; };\n";
                 ss << "        exp_val = djehuti_dsp_exp(p_v_" << p << " / vt_" << p << ");\n";
                 ss << "        current_" << p << " = is_" << p << " * (exp_val - 1.0);\n";
                 ss << "        deriv_" << p << " = (is_" << p << " / vt_" << p << ") * exp_val;\n";
             }
         }
         
+        ss << "        max_abs_F = 0.0;\n";
         for (int p = 0; p < portCount; ++p)
         {
             ss << "        F_" << p << " = p_v_" << p << " - p0_" << p << ";\n";
             for (int q = 0; q < portCount; ++q)
-                ss << "        F_" << p << " = F_" << p << " - coeffs[" << coeff_idx + p * portCount + q << "] * current_" << q << ";\n";
+                ss << "        F_" << p << " = F_" << p << " - coeffs[" << offset_pK + p * portCount + q << "] * current_" << q << ";\n";
+            ss << "        abs_F = F_" << p << ";\n";
+            ss << "        if (abs_F < 0.0) { abs_F = 0.0 - abs_F; };\n";
+            ss << "        if (abs_F > max_abs_F) { max_abs_F = abs_F; };\n";
         }
+        ss << "        if (max_abs_F < 0.000001) {\n";
+        ss << "            singular = 1;\n";
+        ss << "            it = " << maxIterations << ";\n";
+        ss << "        };\n";
         
         for (int p = 0; p < portCount; ++p)
         {
             for (int q = 0; q < portCount; ++q)
             {
-                if (p == q) ss << "        J_" << p << "_" << q << " = 1.0 - coeffs[" << coeff_idx + p * portCount + q << "] * deriv_" << q << ";\n";
-                else        ss << "        J_" << p << "_" << q << " = 0.0 - coeffs[" << coeff_idx + p * portCount + q << "] * deriv_" << q << ";\n";
+                if (p == q) ss << "        J_" << p << "_" << q << " = 1.0 - coeffs[" << offset_pK + p * portCount + q << "] * deriv_" << q << ";\n";
+                else        ss << "        J_" << p << "_" << q << " = 0.0 - coeffs[" << offset_pK + p * portCount + q << "] * deriv_" << q << ";\n";
             }
         }
-        coeff_idx += portCount * portCount;
         
         for (int c = 0; c < portCount; ++c)
         {
             for (int r = c + 1; r < portCount; ++r)
             {
-                ss << "        let mut abs_c = J_" << c << "_" << c << ";\n";
-                ss << "        if (abs_c < 0.0) { abs_c = 0.0 - abs_c; };\n";
-                ss << "        let mut abs_r = J_" << r << "_" << c << ";\n";
-                ss << "        if (abs_r < 0.0) { abs_r = 0.0 - abs_r; };\n";
-                
-                ss << "        if (abs_r > abs_c) {\n";
+                ss << "        if (singular == 0) {\n";
+                ss << "            abs_c = J_" << c << "_" << c << ";\n";
+                ss << "            if (abs_c < 0.0) { abs_c = 0.0 - abs_c; };\n";
+                ss << "            abs_r = J_" << r << "_" << c << ";\n";
+                ss << "            if (abs_r < 0.0) { abs_r = 0.0 - abs_r; };\n";
+                ss << "            if (abs_r > abs_c) {\n";
                 for (int q = c; q < portCount; ++q)
                 {
-                    ss << "            let mut tmp_J_" << q << " = J_" << c << "_" << q << ";\n";
-                    ss << "            J_" << c << "_" << q << " = J_" << r << "_" << q << ";\n";
-                    ss << "            J_" << r << "_" << q << " = tmp_J_" << q << ";\n";
+                    ss << "                tmp_J = J_" << c << "_" << q << ";\n";
+                    ss << "                J_" << c << "_" << q << " = J_" << r << "_" << q << ";\n";
+                    ss << "                J_" << r << "_" << q << " = tmp_J;\n";
                 }
-                ss << "            let mut tmp_F = F_" << c << ";\n";
-                ss << "            F_" << c << " = F_" << r << ";\n";
-                ss << "            F_" << r << " = tmp_F;\n";
+                ss << "                tmp_F = F_" << c << ";\n";
+                ss << "                F_" << c << " = F_" << r << ";\n";
+                ss << "                F_" << r << " = tmp_F;\n";
+                ss << "            };\n";
                 ss << "        };\n";
             }
             
-            ss << "        let mut abs_pivot = J_" << c << "_" << c << ";\n";
-            ss << "        if (abs_pivot < 0.0) { abs_pivot = 0.0 - abs_pivot; };\n";
-            ss << "        if (abs_pivot < 0.000000000001) {\n";
-            ss << "            it = " << maxIterations << ";\n";
-            ss << "            abs_delta = 0.0;\n";
+            ss << "        if (singular == 0) {\n";
+            ss << "            abs_pivot = J_" << c << "_" << c << ";\n";
+            ss << "            if (abs_pivot < 0.0) { abs_pivot = 0.0 - abs_pivot; };\n";
+            ss << "            if (abs_pivot < 0.000000000001) {\n";
+            ss << "                singular = 1;\n";
+            ss << "                it = " << maxIterations << ";\n";
+            ss << "            };\n";
             ss << "        };\n";
             
             for (int r = c + 1; r < portCount; ++r)
             {
-                ss << "        let mut factor_" << r << "_" << c << " = J_" << r << "_" << c << " / J_" << c << "_" << c << ";\n";
+                ss << "        if (singular == 0) {\n";
+                ss << "            factor = J_" << r << "_" << c << " / J_" << c << "_" << c << ";\n";
                 for (int q = c; q < portCount; ++q)
-                    ss << "        J_" << r << "_" << q << " = J_" << r << "_" << q << " - factor_" << r << "_" << c << " * J_" << c << "_" << q << ";\n";
-                ss << "        F_" << r << " = F_" << r << " - factor_" << r << "_" << c << " * F_" << c << ";\n";
+                    ss << "            J_" << r << "_" << q << " = J_" << r << "_" << q << " - factor * J_" << c << "_" << q << ";\n";
+                ss << "            F_" << r << " = F_" << r << " - factor * F_" << c << ";\n";
+                ss << "        };\n";
             }
         }
         
         for (int r = portCount - 1; r >= 0; --r)
         {
-            ss << "        delta_" << r << " = F_" << r << ";\n";
+            ss << "        if (singular == 0) {\n";
+            ss << "            delta_" << r << " = F_" << r << ";\n";
             for (int c = r + 1; c < portCount; ++c)
-                ss << "        delta_" << r << " = delta_" << r << " - J_" << r << "_" << c << " * delta_" << c << ";\n";
-            ss << "        delta_" << r << " = delta_" << r << " / J_" << r << "_" << r << ";\n";
+                ss << "            delta_" << r << " = delta_" << r << " - J_" << r << "_" << c << " * delta_" << c << ";\n";
+            ss << "            delta_" << r << " = delta_" << r << " / J_" << r << "_" << r << ";\n";
+            ss << "        };\n";
         }
         
-        ss << "        abs_delta = 0.0;\n";
+        ss << "        if (singular == 0) {\n";
+        ss << "            abs_delta = 0.0;\n";
         for (int p = 0; p < portCount; ++p)
         {
-            ss << "        if (delta_" << p << " > 0.05) { delta_" << p << " = 0.05; };\n";
-            ss << "        if (delta_" << p << " < -0.05) { delta_" << p << " = -0.05; };\n";
-            ss << "        p_v_" << p << " = p_v_" << p << " - delta_" << p << ";\n";
+            ss << "            if (delta_" << p << " > 0.05) { delta_" << p << " = 0.05; };\n";
+            ss << "            if (delta_" << p << " < -0.05) { delta_" << p << " = -0.05; };\n";
+            ss << "            p_v_" << p << " = p_v_" << p << " - delta_" << p << ";\n";
             
-            ss << "        let mut abs_p = delta_" << p << ";\n";
-            ss << "        if (abs_p < 0.0) { abs_p = 0.0 - abs_p; };\n";
-            ss << "        if (abs_p > abs_delta) { abs_delta = abs_p; };\n";
+            ss << "            abs_p = delta_" << p << ";\n";
+            ss << "            if (abs_p < 0.0) { abs_p = 0.0 - abs_p; };\n";
+            ss << "            if (abs_p > abs_delta) { abs_delta = abs_p; };\n";
         }
-        
-        ss << "        if (abs_delta < 0.000001) { it = " << maxIterations << "; };\n";
+        ss << "            if (abs_delta < 0.000001) { it = " << maxIterations << "; };\n";
+        ss << "        };\n";
         ss << "        it = it + 1;\n";
         ss << "    };\n";
         
@@ -747,11 +778,11 @@ std::string Model::frustSource() const
             if (c == 0) term = "1.0";
             else if (c == 1) term = "audio_in";
             else term = "ws[" + std::to_string(c - 1 - inputCount) + "]";
-            ss << "    s_new_" << s << " = s_new_" << s << " + coeffs[" << coeff_idx++ << "] * " << term << ";\n";
+            ss << "    s_new_" << s << " = s_new_" << s << " + coeffs[" << offset_sAff + s * affineCols + c << "] * " << term << ";\n";
         }
         for (int p = 0; p < portCount; ++p)
         {
-            ss << "    s_new_" << s << " = s_new_" << s << " + coeffs[" << coeff_idx++ << "] * p_i_" << p << ";\n";
+            ss << "    s_new_" << s << " = s_new_" << s << " + coeffs[" << offset_sQ + s * portCount + p << "] * p_i_" << p << ";\n";
         }
     }
     
@@ -763,11 +794,11 @@ std::string Model::frustSource() const
         if (c == 0) term = "1.0";
         else if (c == 1) term = "audio_in";
         else term = "ws[" + std::to_string(c - 1 - inputCount) + "]";
-        ss << "    y = y + coeffs[" << coeff_idx++ << "] * " << term << ";\n";
+        ss << "    y = y + coeffs[" << offset_oAff + c << "] * " << term << ";\n";
     }
     for (int p = 0; p < portCount; ++p)
     {
-        ss << "    y = y + coeffs[" << coeff_idx++ << "] * p_i_" << p << ";\n";
+        ss << "    y = y + coeffs[" << offset_oQ + p << "] * p_i_" << p << ";\n";
     }
 
     for (int s = 0; s < stateCount; ++s)

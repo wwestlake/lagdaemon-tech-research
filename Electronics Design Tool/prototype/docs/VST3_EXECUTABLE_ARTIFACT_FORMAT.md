@@ -74,3 +74,10 @@ Before any code is linked or executed, `dsp_artifact::loadAndValidateArtifactFro
 5. Every declared entry point (`process_sample`) exists as a defined symbol in the COFF symbol table.
 6. Reconstructed circuit model dimensions (`workspaceSize`, `coeffSize`) match the compiled ABI.
 7. `artifactIntegrityHashHex` matches the computed digest of the entire artifact structure.
+
+> [!NOTE]
+> **Native Executable Payload**: The embedded COFF payload consists of native x86_64 machine code compiled for the Windows platform (`targetArch = "x86_64-pc-windows-msvc"`). It is native executable code, not a portable bytecode format or sandboxed VM, and requires an x86_64 Windows host environment.
+
+> [!NOTE]
+> **Integrity Detection vs. Cryptographic Authentication**: The 64-bit hexadecimal checksums (`objectHashHex` and `artifactIntegrityHashHex`) use the FNV-1a non-cryptographic hashing algorithm to detect transmission corruption, truncation, and accidental payload mismatches during packaging and loading. They are structural integrity checks, not cryptographic signatures or anti-tamper security guarantees.
+

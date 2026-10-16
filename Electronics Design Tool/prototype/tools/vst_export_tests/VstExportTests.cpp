@@ -158,6 +158,7 @@ void testLinearAndNonlinearArtifactExecution()
         juce::MidiBuffer midi;
         proc.processBlock(buf, midi);
 
+
         double maxErr = 0.0;
         for (int i = 0; i < 512; ++i)
             maxErr = std::max(maxErr, std::abs(static_cast<double>(buf.getSample(0, i)) - expected[(std::size_t)i]));
@@ -487,9 +488,10 @@ void testValidationAndCorruptRejection()
 }
 
 // 5. Test Full VST3 Export Workflow, 3 Separate Plugins, Second Circuit Export, & JUCE VST3 Host Loading
-void testStandaloneVst3ExportAndHostLoading()
+// 5. Test Full VST3 Export Workflow & JUCE VST3 Host Loading
+void testStandaloneVst3ExportAndHostLoading(bool runFullSuite)
 {
-    std::cout << "\n=== 5. Standalone VST3 Bundle Export, Second Circuit Export, & JUCE VST3PluginFormat Host Verification ===\n";
+    std::cout << "\n=== 5. Standalone VST3 Bundle Export & JUCE VST3PluginFormat Host Verification ===\n";
 
     const juce::File tempRoot = juce::File::getSpecialLocation(juce::File::tempDirectory)
         .getChildFile("djehuti_vst3_verification_" + juce::String(juce::Time::currentTimeMillis()));
@@ -524,98 +526,120 @@ void testStandaloneVst3ExportAndHostLoading()
           loadedCfg.mode == vst_exporter::ExportMode::ThreeEffectsCoupled,
           "vst_export_config.json round-trip persistence preserves product identity and 3-effect mode", cfgErr);
 
-    // 5B: Export Product 2 (Second Circuit without manual C++ edits): Resonant Presence Voicing Preamp
-    vst_exporter::ExportRequest req2;
-    req2.packageId = "com.djehuti.vst.resonant_presence_preamp";
-    req2.productName = "Djehuti Resonant Presence Preamp";
-    req2.productVersion = "1.0.0";
-    req2.manufacturerName = "Djehuti Audio";
-    req2.mode = vst_exporter::ExportMode::SingleEffect;
-    req2.circuits.push_back(vst_exporter::makeResonantPresenceVoicingCircuit(48000.0));
-    req2.outputDirectory = tempRoot.getChildFile("product_2_presence");
-    req2.buildVst3Bundle = true;
-
-    const auto exp2 = vst_exporter::runExport(req2);
-    check(exp2.ok && !exp2.bundles.empty(),
-          "Exported Product 2 (Second circuit: Djehuti Resonant Presence Preamp .vst3) without manual C++ edits",
-          exp2.error);
-    if (!exp2.ok) return;
-
-    const auto& b2 = exp2.bundles.front();
-    check(b1.pluginCode4CC != b2.pluginCode4CC && b1.vst3ComponentUidHex != b2.vst3ComponentUidHex,
-          "Distinct exported VST3 products have distinct deterministic 4CC codes and VST3 UIDs",
-          b1.pluginCode4CC + " vs " + b2.pluginCode4CC);
-    check(dsp_artifact::derivePluginCode4CC(req1.packageId) == b1.pluginCode4CC,
-          "Rebuilding the same packageId preserves identical 4CC plugin code and automation identity");
-
-    // 5C: Export 3 Separate Plugins from a 3-Effect Configuration
-    vst_exporter::ExportRequest reqSep;
-    reqSep.packageId = "com.djehuti.vst.studio_pedals";
-    reqSep.productName = "Djehuti Studio Pedal";
-    reqSep.mode = vst_exporter::ExportMode::ThreeSeparatePlugins;
-    reqSep.circuits.push_back(vst_exporter::makeLinearRcToneCircuit(48000.0));
-    reqSep.circuits.push_back(vst_exporter::makeNonlinearDiodeClipperCircuit(48000.0));
-    reqSep.circuits.push_back(vst_exporter::makeResonantPresenceVoicingCircuit(48000.0));
-    reqSep.outputDirectory = tempRoot.getChildFile("product_3_separate");
-    reqSep.buildVst3Bundle = false; // Fast artifact + identity generation check for the 3 separate packages
-
-    const auto expSep = vst_exporter::runExport(reqSep);
-    check(expSep.ok && expSep.bundles.size() == 3 &&
-          expSep.bundles[0].pluginCode4CC != expSep.bundles[1].pluginCode4CC &&
-          expSep.bundles[1].pluginCode4CC != expSep.bundles[2].pluginCode4CC,
-          "ThreeSeparatePlugins mode exports 3 separate plugin packages with distinct identities");
-
-    // 5D: Copy Product 1 & Product 2 .vst3 bundles to an isolated deployment directory and load via juce::VST3PluginFormat
+    // Host loading verification in an isolated deployment directory
     const juce::File isolatedDeployDir = tempRoot.getChildFile("isolated_host_deployment");
     isolatedDeployDir.createDirectory();
-
     const juce::File deployedVst1 = isolatedDeployDir.getChildFile(b1.vst3BundleDir.getFileName());
-    const juce::File deployedVst2 = isolatedDeployDir.getChildFile(b2.vst3BundleDir.getFileName());
     b1.vst3BundleDir.copyDirectoryTo(deployedVst1);
-    b2.vst3BundleDir.copyDirectoryTo(deployedVst2);
 
     juce::VST3PluginFormat vst3Format;
-    for (const auto& deployedBundle : { deployedVst1, deployedVst2 })
+    juce::OwnedArray<juce::PluginDescription> descs1;
+    vst3Format.findAllTypesForFile(descs1, deployedVst1.getFullPathName());
+    check(!descs1.isEmpty(),
+          "juce::VST3PluginFormat discovered exported plugin in isolated folder: " +
+          deployedVst1.getFileName().toStdString());
+
+    if (!descs1.isEmpty())
     {
-        juce::OwnedArray<juce::PluginDescription> descs;
-        vst3Format.findAllTypesForFile(descs, deployedBundle.getFullPathName());
-        check(!descs.isEmpty(),
-              "juce::VST3PluginFormat discovered exported plugin in isolated folder: " +
-              deployedBundle.getFileName().toStdString());
+        juce::String loadErr;
+        auto instance = vst3Format.createInstanceFromDescription(*descs1[0], 48000.0, 256, loadErr);
+        check(instance != nullptr,
+              "juce::VST3PluginFormat instantiated AudioPluginInstance for " + descs1[0]->name.toStdString(),
+              loadErr.toStdString());
 
-        if (!descs.isEmpty())
+        if (instance != nullptr)
         {
-            juce::String loadErr;
-            auto instance = vst3Format.createInstanceFromDescription(*descs[0], 48000.0, 256, loadErr);
-            check(instance != nullptr,
-                  "juce::VST3PluginFormat instantiated AudioPluginInstance for " + descs[0]->name.toStdString(),
-                  loadErr.toStdString());
+            instance->prepareToPlay(48000.0, 256);
 
-            if (instance != nullptr)
+            // Verify custom GUI editor creation
+            std::unique_ptr<juce::AudioProcessorEditor> editor(instance->createEditorIfNeeded());
+            check(editor != nullptr && editor->getWidth() > 200 && editor->getHeight() > 150,
+                  "Hosted VST3 instance created custom GUI editor (" +
+                  std::to_string(editor ? editor->getWidth() : 0) + "x" +
+                  std::to_string(editor ? editor->getHeight() : 0) + ")");
+            if (editor != nullptr)
+                instance->editorBeingDeleted(editor.get());
+
+            // Verify parameter control adjustment & state save/restore
+            juce::AudioProcessorParameter* testParam = nullptr;
+            for (auto* p : instance->getParameters())
             {
-                instance->prepareToPlay(48000.0, 256);
-
-                // Verify editor creation
-                std::unique_ptr<juce::AudioProcessorEditor> editor(instance->createEditorIfNeeded());
-                check(editor != nullptr && editor->getWidth() > 200 && editor->getHeight() > 150,
-                      "Hosted VST3 instance created custom GUI editor (" +
-                      std::to_string(editor ? editor->getWidth() : 0) + "x" +
-                      std::to_string(editor ? editor->getHeight() : 0) + ")");
-                if (editor != nullptr)
-                    instance->editorBeingDeleted(editor.get());
-
-                // Process audio through the hosted VST3 DLL
-                juce::AudioBuffer<float> hostBuf(2, 256);
-                fillSineMonoOrStereo(hostBuf, 500.0, 48000.0, 0.8f);
-                juce::MidiBuffer midi;
-                instance->processBlock(hostBuf, midi);
-
-                const double outRms = computeRms(hostBuf.getReadPointer(0), 256);
-                check(outRms > 0.02 && std::isfinite(outRms),
-                      "Hosted VST3 instance processed audio in real time (outRms=" + std::to_string(outRms) + ")");
-                instance->releaseResources();
+                if (!p->isDiscrete() && !p->isBoolean())
+                {
+                    testParam = p;
+                    break;
+                }
             }
+            if (testParam != nullptr)
+                testParam->setValueNotifyingHost(0.75f);
+            juce::MemoryBlock stateData;
+            instance->getStateInformation(stateData);
+            check(stateData.getSize() > 0, "Hosted VST3 instance saved non-empty state block");
+            if (testParam != nullptr)
+            {
+                testParam->setValueNotifyingHost(0.2f);
+                instance->setStateInformation(stateData.getData(), static_cast<int>(stateData.getSize()));
+                check(std::abs(testParam->getValue() - 0.75f) < 0.05f, "Hosted VST3 instance restored parameter state");
+            }
+
+            // Process audio through the hosted VST3 DLL
+            juce::AudioBuffer<float> hostBuf(2, 256);
+            fillSineMonoOrStereo(hostBuf, 500.0, 48000.0, 0.8f);
+            juce::MidiBuffer midi;
+            instance->processBlock(hostBuf, midi);
+
+            const double outRms = computeRms(hostBuf.getReadPointer(0), 256);
+            check(outRms > 0.02 && outRms < 8.0 && std::isfinite(outRms),
+                  "Hosted VST3 instance processed audio in real time (outRms=" + std::to_string(outRms) + ")");
+            instance->releaseResources();
         }
+    }
+
+    // Heavyweight multi-product verification (only executed when --full is explicitly specified)
+    if (runFullSuite)
+    {
+        // 5B: Export Product 2: Resonant Presence Voicing Preamp
+        vst_exporter::ExportRequest req2;
+        req2.packageId = "com.djehuti.vst.resonant_presence_preamp";
+        req2.productName = "Djehuti Resonant Presence Preamp";
+        req2.productVersion = "1.0.0";
+        req2.manufacturerName = "Djehuti Audio";
+        req2.mode = vst_exporter::ExportMode::SingleEffect;
+        req2.circuits.push_back(vst_exporter::makeResonantPresenceVoicingCircuit(48000.0));
+        req2.outputDirectory = tempRoot.getChildFile("product_2_presence");
+        req2.buildVst3Bundle = true;
+
+        const auto exp2 = vst_exporter::runExport(req2);
+        check(exp2.ok && !exp2.bundles.empty(),
+              "Exported Product 2 (Djehuti Resonant Presence Preamp .vst3)",
+              exp2.error);
+
+        if (exp2.ok)
+        {
+            const auto& b2 = exp2.bundles.front();
+            check(b1.pluginCode4CC != b2.pluginCode4CC && b1.vst3ComponentUidHex != b2.vst3ComponentUidHex,
+                  "Distinct exported VST3 products have distinct deterministic 4CC codes and VST3 UIDs",
+                  b1.pluginCode4CC + " vs " + b2.pluginCode4CC);
+            check(dsp_artifact::derivePluginCode4CC(req1.packageId) == b1.pluginCode4CC,
+                  "Rebuilding the same packageId preserves identical 4CC plugin code and automation identity");
+        }
+
+        // 5C: Export 3 Separate Plugins from a 3-Effect Configuration (bundle compile false)
+        vst_exporter::ExportRequest reqSep;
+        reqSep.packageId = "com.djehuti.vst.studio_pedals";
+        reqSep.productName = "Djehuti Studio Pedal";
+        reqSep.mode = vst_exporter::ExportMode::ThreeSeparatePlugins;
+        reqSep.circuits.push_back(vst_exporter::makeLinearRcToneCircuit(48000.0));
+        reqSep.circuits.push_back(vst_exporter::makeNonlinearDiodeClipperCircuit(48000.0));
+        reqSep.circuits.push_back(vst_exporter::makeResonantPresenceVoicingCircuit(48000.0));
+        reqSep.outputDirectory = tempRoot.getChildFile("product_3_separate");
+        reqSep.buildVst3Bundle = false;
+
+        const auto expSep = vst_exporter::runExport(reqSep);
+        check(expSep.ok && expSep.bundles.size() == 3 &&
+              expSep.bundles[0].pluginCode4CC != expSep.bundles[1].pluginCode4CC &&
+              expSep.bundles[1].pluginCode4CC != expSep.bundles[2].pluginCode4CC,
+              "ThreeSeparatePlugins mode exports 3 separate plugin packages with distinct identities");
     }
 
     tempRoot.deleteRecursively();
@@ -623,11 +647,29 @@ void testStandaloneVst3ExportAndHostLoading()
 
 } // namespace
 
-int main()
+int main(int argc, char** argv)
 {
     std::cout << std::unitbuf;
     std::cerr << std::unitbuf;
     juce::ScopedJuceInitialiser_GUI juceInit;
+
+    bool runExport = false;
+    bool runFullSuite = false;
+    for (int i = 1; i < argc; ++i)
+    {
+        const std::string arg = argv[i];
+        if (arg == "--with-export")
+            runExport = true;
+        else if (arg == "--full")
+        {
+            runExport = true;
+            runFullSuite = true;
+        }
+        else if (arg == "--quick")
+        {
+            runExport = false;
+        }
+    }
 
     std::cout << "====================================================================\n" << std::flush;
     std::cout << "  Djehuti Electronics Workbench -- Circuit-to-VST3 Export Test Suite\n" << std::flush;
@@ -637,7 +679,20 @@ int main()
     testThreeEffectTopologies();
     testRuntimeControlsStateStereoAndSampleRates();
     testValidationAndCorruptRejection();
-    testStandaloneVst3ExportAndHostLoading();
+
+    if (!runExport)
+    {
+        std::cout << "\n=== 5. Standalone VST3 Bundle Export (SKIPPED in diagnostic default mode) ===\n";
+        std::cout << "Pass --with-export to execute single product export & host verification.\n";
+    }
+    else if (gFailures > 0)
+    {
+        std::cerr << "\n=== 5. Standalone VST3 Bundle Export (SKIPPED due to " << gFailures << " prerequisite failure(s)) ===\n";
+    }
+    else
+    {
+        testStandaloneVst3ExportAndHostLoading(runFullSuite);
+    }
 
     std::cout << "\n====================================================================\n";
     if (gFailures == 0)

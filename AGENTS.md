@@ -50,7 +50,7 @@ signal to stop and just build the Windows version.
 - **Commit AND push proactively, both, every time.** After every verified build/change: commit right then, push to `origin`/`master` right after. Don't wait to be asked for either one - "commit only when explicitly asked" is not and has never been a rule here (a prior version of this file said otherwise in this section while contradicting the Standard Workflow section above; that was wrong and has been corrected). The user has said this directly and repeatedly: "I have consistently said commit commit commit, you don't need my permission to commit code."
 - **Commit to protect the code - don't hold a commit waiting on tests.** Once a change builds, commit and push it; if verification is still pending, say so in the commit message and finish it in a follow-up commit. Uncommitted work is unprotected work (user, 2026-10-09).
 - **You own every uncommitted change that is part of the build, whoever made it.** Finding modified source/CMake/build files you didn't write is not a reason to leave them - commit them (say in the message they were found in the tree). The only uncommitted code allowed is what you're actively mid-way through right now. Temp files, logs and debug scratch that aren't in the build may stay untracked.
-- **This repo has no deployment - it's just a git repo.** `master` is the de facto working branch (no separate dev branch exists here); pushing straight to it carries no CI/CD or production risk. Treat pushing to `master` as routine, not something to hesitate over.
+- **This repo has no deployment - it's just a git repo.** `master` is the de facto working branch; when assigned a feature branch (e.g. `feat/...`), commit and push proactively to the feature branch, then merge into `master` and push `origin/master` upon completing the assignment.
 - Never force-push, never `--no-verify`, never skip hooks without being told to.
 
 ## Communication
@@ -78,8 +78,8 @@ signal to stop and just build the Windows version.
   viewing or analysing. (A "Run 10 Hz / 8 Ohm HPF" button wired to the
   Simulation tab silently overwrote the user's L1 on every press, 2026-10-04.)
 - Simulator/analytics changes (`CircuitSolver`, `SignalMeasure`, `Analytics`)
-  get a check in `tools/solver_tests` with the expected value worked out from
-  the analytic formula first, and the whole suite passes before the app build.
+  get a targeted check covering the specific modified equations against expected
+  analytic formulas, adhering strictly to the Permanent Validation Policy below.
 - Current state and plan: `prototype/docs/HANDOFF_SCHEMATIC_HIERARCHY.md`.
 
 ## Permanent Validation Policy (Every Session, Every Change)
