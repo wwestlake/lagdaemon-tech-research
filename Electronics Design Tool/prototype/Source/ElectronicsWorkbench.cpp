@@ -1217,8 +1217,18 @@ const std::vector<ToolSpecText>& viewToolSpecs()
             R"({"type":"object","properties":{"viewId":{"type":"string","description":"Unique identifier of the view to toggle."}},"required":["viewId"],"additionalProperties":false})"
         },
         {
+            "view_float",
+            "Float a workspace view, editor, or dockable panel into its own independent floating window by ID.",
+            R"({"type":"object","properties":{"viewId":{"type":"string","description":"Unique identifier of the view to float."}},"required":["viewId"],"additionalProperties":false})"
+        },
+        {
             "layout_list",
             "List all predefined layout presets and saved user workspace layouts.",
+            R"({"type":"object","properties":{},"additionalProperties":false})"
+        },
+        {
+            "layout_capture",
+            "Capture the current live workspace layout directly from dockManager.",
             R"({"type":"object","properties":{},"additionalProperties":false})"
         },
         {
@@ -16272,10 +16282,7 @@ ElectronicsWorkbench::ElectronicsWorkbench()
     if (catalogInitErr.isNotEmpty())
         appendLog("Layout catalog note: " + catalogInitErr);
 
-    if (!dockManager->loadLayoutFromFile(layoutFile()))
-    {
-        applyPredefinedLayout("default");
-    }
+    restoreStartupLayout();
     appendLog("Electronics research shell initialized.");
 
     circuit_sim::setCapitalMIsMilli(prefs::get("units.capital_m") != "Mega");
@@ -16313,13 +16320,14 @@ void ElectronicsWorkbench::showPreferences()
 
 ElectronicsWorkbench::~ElectronicsWorkbench()
 {
+    stopTimer();
     removeKeyListener(this);
     saveOpenComponentProgram();
     frust_exec::Executor::instance().removeListener(executionListener);
     prefs::removeListener(preferenceListener);
     preferencesWindow = nullptr;
-    if (dockManager != nullptr)
-        dockManager->saveLayoutToFile(layoutFile());
+    if (autoSaveLayoutEnabled && dockManager != nullptr)
+        flushWorkspaceLayout();
     menuBar = nullptr;
 }
 
@@ -16552,6 +16560,7 @@ void ElectronicsWorkbench::menuItemSelected(int menuItemID, int)
         {
             const auto panelId = viewMenuIds[index];
             dockManager->togglePanel(panelId);
+            markLayoutDirty();
             appendLog("View toggled: " + dockManager->getPanelTitle(panelId));
         }
         return;
@@ -16772,6 +16781,7 @@ void ElectronicsWorkbench::applyPredefinedLayout(const juce::String& presetIdPar
         if (activeCenter == "help" && helpPanel != nullptr)
             helpPanel->goHome();
 
+        markLayoutDirty();
         appendLog("Applied workspace layout preset: " + presetName + ".");
     }
     else
@@ -16903,6 +16913,7 @@ void ElectronicsWorkbench::restoreUserLayout(const juce::String& name)
     juce::String err;
     if (WorkspaceLayoutStore::applyLayoutSafely(*dockManager, layoutData, err))
     {
+        markLayoutDirty();
         appendLog("Restored workspace layout: " + name + ".");
     }
     else
@@ -16944,6 +16955,15 @@ juce::String ElectronicsWorkbench::layoutTool(const juce::String& name, const ju
             userList.add(u);
         root->setProperty("userLayouts", userList);
 
+        return juce::JSON::toString(juce::var(root));
+    }
+
+    if (name == "layout_capture")
+    {
+        auto* root = new juce::DynamicObject();
+        root->setProperty("ok", true);
+        root->setProperty("tool", "layout_capture");
+        root->setProperty("layout", dockManager->captureLayout());
         return juce::JSON::toString(juce::var(root));
     }
 
@@ -17035,6 +17055,142 @@ juce::File ElectronicsWorkbench::layoutFile() const
     return juce::File::getSpecialLocation(juce::File::userApplicationDataDirectory)
         .getChildFile("DjehutiElectronicsLab")
         .getChildFile("layout.json");
+}
+
+void ElectronicsWorkbench::restoreStartupLayout()
+{
+    if (dockManager == nullptr)
+        return;
+
+    // Suppress automatic saving during startup restoration
+    autoSaveLayoutEnabled = false;
+
+    bool restoredFromSavedState = false;
+    const auto file = layoutFile();
+
+    if (file.existsAsFile())
+    {
+        juce::String error;
+        const auto text = file.loadFileAsString();
+        if (text.trim().isNotEmpty())
+        {
+            auto parsed = juce::JSON::parse(text);
+            if (parsed.isObject())
+            {
+                if (WorkspaceLayoutStore::validateLayoutData(parsed, error))
+                {
+                    if (WorkspaceLayoutStore::applyLayoutSafely(*dockManager, parsed, error))
+                    {
+                        restoredFromSavedState = true;
+                        appendLog("Restored workspace layout from " + file.getFullPathName());
+
+                        if (auto* centerZone = parsed.getProperty("zones", {}).getProperty("center", {}).getDynamicObject())
+                        {
+                            if (auto* panelsArr = centerZone->getProperty("panels").getArray())
+                            {
+                                int currentTab = (int) centerZone->getProperty("currentTab");
+                                if (juce::isPositiveAndBelow(currentTab, panelsArr->size()))
+                                {
+                                    if ((*panelsArr)[currentTab].toString().trim() == "help" && helpPanel != nullptr)
+                                        helpPanel->goHome();
+                                }
+                            }
+                        }
+                    }
+                    else
+                    {
+                        appendLog("Failed to apply saved workspace layout: " + error + ". Falling back to Default layout.");
+                    }
+                }
+                else
+                {
+                    appendLog("Saved workspace layout validation failed: " + error + ". Falling back to Default layout.");
+                }
+            }
+            else
+            {
+                appendLog("Saved workspace layout contains malformed JSON. Falling back to Default layout.");
+            }
+        }
+        else
+        {
+            appendLog("Saved workspace layout file is empty. Falling back to Default layout.");
+        }
+    }
+
+    if (!restoredFromSavedState)
+    {
+        applyPredefinedLayout("default");
+        appendLog("Applied Default workspace layout preset.");
+    }
+
+    // Capture clean baseline and enable debounced auto-save
+    lastCapturedLayout = dockManager->captureLayout();
+    lastPersistedLayout = lastCapturedLayout.clone();
+    layoutDirty = false;
+    autoSaveLayoutEnabled = true;
+    startTimer(300);
+}
+
+void ElectronicsWorkbench::timerCallback()
+{
+    if (!autoSaveLayoutEnabled || dockManager == nullptr)
+        return;
+
+    auto current = dockManager->captureLayout();
+    const auto currentJson = juce::JSON::toString(current, false);
+    const auto lastCapturedJson = juce::JSON::toString(lastCapturedLayout, false);
+
+    if (currentJson != lastCapturedJson)
+    {
+        lastCapturedLayout = current;
+        layoutDirty = true;
+        lastLayoutChangeTime = juce::Time::getMillisecondCounter();
+    }
+    else if (layoutDirty)
+    {
+        const auto now = juce::Time::getMillisecondCounter();
+        if (now - lastLayoutChangeTime >= 1000)
+        {
+            flushWorkspaceLayout();
+        }
+    }
+}
+
+void ElectronicsWorkbench::flushWorkspaceLayout()
+{
+    if (!autoSaveLayoutEnabled || dockManager == nullptr)
+        return;
+
+    layoutDirty = false;
+    auto current = dockManager->captureLayout();
+    lastCapturedLayout = current;
+
+    const auto currentJson = juce::JSON::toString(current, false);
+    const auto lastPersistedJson = juce::JSON::toString(lastPersistedLayout, false);
+
+    if (currentJson == lastPersistedJson)
+        return;
+
+    juce::String err;
+    if (WorkspaceLayoutStore::validateLayoutData(current, err))
+    {
+        lastPersistedLayout = current.clone();
+        dockManager->saveLayoutToFile(layoutFile());
+    }
+    else
+    {
+        appendLog("Workspace layout auto-save suppressed: invalid layout: " + err);
+    }
+}
+
+void ElectronicsWorkbench::markLayoutDirty()
+{
+    if (!autoSaveLayoutEnabled || dockManager == nullptr)
+        return;
+
+    layoutDirty = true;
+    lastLayoutChangeTime = juce::Time::getMillisecondCounter();
 }
 
 
@@ -20076,6 +20232,9 @@ juce::String ElectronicsWorkbench::viewTool(const juce::String& name, const juce
             obj->setProperty("title", dockManager->getPanelTitle(id));
             obj->setProperty("isOpen", dockManager->isPanelOpen(id));
             obj->setProperty("isActive", dockManager->isPanelActive(id));
+            auto* p = dockManager->findPanelById(id);
+            bool isFloat = (p != nullptr && dockManager->zoneContainingPanel(p) == CreationDock::DockTargetZone::None && dockManager->isPanelOpen(id));
+            obj->setProperty("isFloating", isFloat);
             list.add(juce::var(obj));
         }
         auto* root = new juce::DynamicObject();
@@ -20095,17 +20254,30 @@ juce::String ElectronicsWorkbench::viewTool(const juce::String& name, const juce
     if (name == "view_show")
     {
         dockManager->showPanel(viewId);
+        markLayoutDirty();
         return "{ \"ok\": true, \"tool\": \"view_show\", \"viewId\": \"" + viewId + "\", \"isOpen\": true }";
     }
     if (name == "view_hide")
     {
         dockManager->hidePanel(viewId);
+        markLayoutDirty();
         return "{ \"ok\": true, \"tool\": \"view_hide\", \"viewId\": \"" + viewId + "\", \"isOpen\": false }";
     }
     if (name == "view_toggle")
     {
         dockManager->togglePanel(viewId);
+        markLayoutDirty();
         return "{ \"ok\": true, \"tool\": \"view_toggle\", \"viewId\": \"" + viewId + "\", \"isOpen\": " + (dockManager->isPanelOpen(viewId) ? "true" : "false") + " }";
+    }
+    if (name == "view_float")
+    {
+        if (auto* panel = dockManager->findPanelById(viewId))
+        {
+            dockManager->floatPanel(panel);
+            markLayoutDirty();
+            return "{ \"ok\": true, \"tool\": \"view_float\", \"viewId\": \"" + viewId + "\", \"isFloating\": true }";
+        }
+        return "{ \"ok\": false, \"error\": \"View not found: " + viewId + "\" }";
     }
 
     return "{ \"ok\": false, \"error\": \"Unknown view tool: " + name + "\" }";

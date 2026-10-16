@@ -425,6 +425,9 @@ void ElectronicsWorkbench::showNewDiagramDialog()
 
 void ElectronicsWorkbench::confirmCloseThen(std::function<void()> proceed)
 {
+    if (autoSaveLayoutEnabled && dockManager != nullptr)
+        flushWorkspaceLayout();
+
     if (!hasUnsavedChanges())
     {
         proceed();

@@ -417,5 +417,24 @@ bool WorkspaceLayoutStore::applyLayoutSafely(CreationDock::DockManager& dockMana
     // Apply the layout to the dock manager
     dockManager.applyLayout(sanitizedLayout);
 
+    // Explicitly activate the active tab specified for each zone
+    for (const char* zoneName : { "left", "center", "right", "bottom" })
+    {
+        auto z = zones.getProperty(zoneName, {});
+        if (z.isObject())
+        {
+            if (auto* panelIds = z.getProperty("panels", {}).getArray())
+            {
+                int currentTab = (int) z.getProperty("currentTab", 0);
+                if (juce::isPositiveAndBelow(currentTab, panelIds->size()))
+                {
+                    const auto activeId = (*panelIds)[currentTab].toString().trim();
+                    if (activeId.isNotEmpty())
+                        dockManager.activatePanel(activeId);
+                }
+            }
+        }
+    }
+
     return true;
 }

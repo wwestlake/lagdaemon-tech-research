@@ -26,7 +26,8 @@ class DjehutiMenuBarComponent;
 class ElectronicsWorkbench final : public juce::Component,
                                    public juce::DragAndDropContainer,
                                    public juce::MenuBarModel,
-                                   public juce::KeyListener
+                                   public juce::KeyListener,
+                                   private juce::Timer
 {
 public:
     ElectronicsWorkbench();
@@ -110,6 +111,17 @@ private:
     PredefinedLayoutCatalog predefinedCatalog;
     WorkspaceLayoutStore userLayoutStore;
     void applyPredefinedLayout(const juce::String& presetId);
+    void restoreStartupLayout();
+    void flushWorkspaceLayout();
+    void markLayoutDirty();
+    void timerCallback() override;
+
+    bool autoSaveLayoutEnabled = false;
+    bool layoutDirty = false;
+    uint32_t lastLayoutChangeTime = 0;
+    juce::var lastCapturedLayout;
+    juce::var lastPersistedLayout;
+
     void showSaveLayoutDialog();
     void showManageLayoutsDialog();
     void handleSaveLayout(const juce::String& rawName, const juce::var& captured);
