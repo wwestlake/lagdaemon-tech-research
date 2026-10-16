@@ -368,10 +368,10 @@ BuildArtifactResult buildExecutableArtifact(const BuildArtifactInput& input)
         }
 
         const std::string frustSrc = compiledSlot.model.frustSource();
-        const auto objCompile = frust_engine::compileToObject(frustSrc, compiledSlot.slotId);
-        if (!objCompile.ok || objCompile.objectBytes.empty())
+        const auto objCompile = frust_engine::compileToObject(compiledSlot.slotId, frustSrc);
+        if (!objCompile.result.ok || objCompile.objectBytes.empty())
         {
-            result.error = "FRust native object compilation failed for '" + compiledSlot.slotName + "': " + objCompile.error;
+            result.error = "FRust native object compilation failed for '" + compiledSlot.slotName + "': " + objCompile.result.report();
             return result;
         }
 
@@ -381,13 +381,14 @@ BuildArtifactResult buildExecutableArtifact(const BuildArtifactInput& input)
         compiledSlot.requiredHostFunctions = audio_dsp::Model::requiredHostFunctions();
         compiledSlot.runtimeManifestJson = frust_engine::manifestJson(
             artifact.packageId + "_" + compiledSlot.slotId,
-            compiledSlot.entryPoints,
-            compiledSlot.requiredHostFunctions);
+            "DSP model slot " + compiledSlot.slotName,
+            compiledSlot.requiredHostFunctions,
+            compiledSlot.entryPoints);
 
         if (input.retainDevelopmentSource)
         {
             compiledSlot.optionalFrustSource = frustSrc;
-            compiledSlot.optionalLlvmIr = objCompile.llvmIr;
+            compiledSlot.optionalLlvmIr = objCompile.optimizedIr;
         }
 
         artifact.slots.push_back(std::move(compiledSlot));

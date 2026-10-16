@@ -754,6 +754,7 @@ dsp_artifact::BuildArtifactInput::CircuitInputSlot makeNonlinearDiodeClipperCirc
     c.addDiode("D_neg1", 0, nAsym, dmSi);
     c.addDiode("D_neg2", nAsym, nClip, dmSi);
     c.addSwitch("SW_symmetry", nAsym, nClip, "sym_sw");
+    c.addResistor("R_bleed_asym", nAsym, 0, 100e6);
 
     c.addCapacitor("C_hf", nClip, 0, 10e-9);
     c.addVariableResistor("POT_tone", nClip, nOut, 4700.0, "tone_pot", false);
@@ -803,6 +804,8 @@ dsp_artifact::BuildArtifactInput::CircuitInputSlot makeCoupledThreeModeClipperCi
     c.addDiode("D_neg_b", nAsymMid, nSiBranch, dmSi);
     // Mode switch B shorts D_neg_b for symmetrical clipping, or opens it for 2-diode asymmetrical clipping
     c.addSwitch("SW_sym_mode", nAsymMid, nSiBranch, "mode_sw_sym");
+    c.addResistor("R_bleed_clip", nSiBranch, 0, 100e6);
+    c.addResistor("R_bleed_asym", nAsymMid, 0, 100e6);
 
     c.addCapacitor("C_body", nClip, 0, 15e-9);
     c.addVariableResistor("POT_tone", nClip, nOut, 6800.0, "tone_pot", false);

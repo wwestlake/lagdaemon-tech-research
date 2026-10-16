@@ -316,6 +316,7 @@ juce_generate_juce_header(DjehutiGeneratedGain)
 
 juce_add_plugin(DjehutiCircuitVst
     COMPANY_NAME "Djehuti Audio"
+    BUNDLE_ID "com.djehuti.circuitvst"
     PRODUCT_NAME "Djehuti Circuit VST"
     PLUGIN_MANUFACTURER_CODE Djht
     PLUGIN_CODE DjCv

@@ -586,7 +586,7 @@ void testStandaloneVst3ExportAndHostLoading()
         if (!descs.isEmpty())
         {
             juce::String loadErr;
-            auto instance = vst3Format.createPluginInstance(*descs[0], 48000.0, 256, loadErr);
+            auto instance = vst3Format.createInstanceFromDescription(*descs[0], 48000.0, 256, loadErr);
             check(instance != nullptr,
                   "juce::VST3PluginFormat instantiated AudioPluginInstance for " + descs[0]->name.toStdString(),
                   loadErr.toStdString());
@@ -625,11 +625,13 @@ void testStandaloneVst3ExportAndHostLoading()
 
 int main()
 {
+    std::cout << std::unitbuf;
+    std::cerr << std::unitbuf;
     juce::ScopedJuceInitialiser_GUI juceInit;
 
-    std::cout << "====================================================================\n";
-    std::cout << "  Djehuti Electronics Workbench -- Circuit-to-VST3 Export Test Suite\n";
-    std::cout << "====================================================================\n";
+    std::cout << "====================================================================\n" << std::flush;
+    std::cout << "  Djehuti Electronics Workbench -- Circuit-to-VST3 Export Test Suite\n" << std::flush;
+    std::cout << "====================================================================\n" << std::flush;
 
     testLinearAndNonlinearArtifactExecution();
     testThreeEffectTopologies();

@@ -672,13 +672,11 @@ std::string Model::frustSource() const
             for (int r = c + 1; r < portCount; ++r)
             {
                 ss << "        let mut abs_c = J_" << c << "_" << c << ";\n";
-                ss << "        while (abs_c < 0.0) { abs_c = 0.0 - abs_c; };\n";
+                ss << "        if (abs_c < 0.0) { abs_c = 0.0 - abs_c; };\n";
                 ss << "        let mut abs_r = J_" << r << "_" << c << ";\n";
-                ss << "        while (abs_r < 0.0) { abs_r = 0.0 - abs_r; };\n";
+                ss << "        if (abs_r < 0.0) { abs_r = 0.0 - abs_r; };\n";
                 
-                ss << "        let mut do_swap = 1;\n";
-                ss << "        while (abs_r <= abs_c) { do_swap = 0; abs_r = abs_c + 1.0; };\n";
-                ss << "        while (do_swap > 0) {\n";
+                ss << "        if (abs_r > abs_c) {\n";
                 for (int q = c; q < portCount; ++q)
                 {
                     ss << "            let mut tmp_J_" << q << " = J_" << c << "_" << q << ";\n";
@@ -688,16 +686,14 @@ std::string Model::frustSource() const
                 ss << "            let mut tmp_F = F_" << c << ";\n";
                 ss << "            F_" << c << " = F_" << r << ";\n";
                 ss << "            F_" << r << " = tmp_F;\n";
-                ss << "            do_swap = 0;\n";
                 ss << "        };\n";
             }
             
             ss << "        let mut abs_pivot = J_" << c << "_" << c << ";\n";
-            ss << "        while (abs_pivot < 0.0) { abs_pivot = 0.0 - abs_pivot; };\n";
-            ss << "        while (abs_pivot < 0.000000000001) {\n";
+            ss << "        if (abs_pivot < 0.0) { abs_pivot = 0.0 - abs_pivot; };\n";
+            ss << "        if (abs_pivot < 0.000000000001) {\n";
             ss << "            it = " << maxIterations << ";\n";
             ss << "            abs_delta = 0.0;\n";
-            ss << "            abs_pivot = 1.0;\n";
             ss << "        };\n";
             
             for (int r = c + 1; r < portCount; ++r)
@@ -720,16 +716,16 @@ std::string Model::frustSource() const
         ss << "        abs_delta = 0.0;\n";
         for (int p = 0; p < portCount; ++p)
         {
-            ss << "        while (delta_" << p << " > 0.05) { delta_" << p << " = 0.05; };\n";
-            ss << "        while (delta_" << p << " < -0.05) { delta_" << p << " = -0.05; };\n";
+            ss << "        if (delta_" << p << " > 0.05) { delta_" << p << " = 0.05; };\n";
+            ss << "        if (delta_" << p << " < -0.05) { delta_" << p << " = -0.05; };\n";
             ss << "        p_v_" << p << " = p_v_" << p << " - delta_" << p << ";\n";
             
             ss << "        let mut abs_p = delta_" << p << ";\n";
-            ss << "        while (abs_p < 0.0) { abs_p = 0.0 - abs_p; };\n";
-            ss << "        while (abs_p > abs_delta) { abs_delta = abs_p; };\n";
+            ss << "        if (abs_p < 0.0) { abs_p = 0.0 - abs_p; };\n";
+            ss << "        if (abs_p > abs_delta) { abs_delta = abs_p; };\n";
         }
         
-        ss << "        while (abs_delta < 0.000001) { it = " << maxIterations << "; abs_delta = 1.0; };\n";
+        ss << "        if (abs_delta < 0.000001) { it = " << maxIterations << "; };\n";
         ss << "        it = it + 1;\n";
         ss << "    };\n";
         
