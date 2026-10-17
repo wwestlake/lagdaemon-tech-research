@@ -34,8 +34,11 @@ struct ExportRequest
     std::vector<dsp_artifact::ParameterSpec> customParameters;
 
     juce::File outputDirectory;
-    juce::File cmakeBuildDirectory; // Defaults to prototype/build
-    bool buildVst3Bundle = true;    // Compile & link standalone .vst3 bundle via MSBuild /m:1
+    // Explicit developer build directory. When empty, a development checkout is recognised only
+    // from the executable's location (<prototype>/build); installed copies use the packaged
+    // Release template in <exe>/templates/vst3 and never build.
+    juce::File cmakeBuildDirectory;
+    bool buildVst3Bundle = true;    // Package the .vst3 bundle (developer: MSBuild /m:1; installed: packaged template)
     bool retainDevelopmentSource = true;
 };
 
@@ -53,6 +56,8 @@ struct ExportedPluginBundleInfo
     juce::File exportConfigFile;    // <packageDir>/vst_export_config.json
     juce::File vst3BundleDir;       // <packageDir>/<ProductName>.vst3
     juce::File vst3BinaryFile;      // <packageDir>/<ProductName>.vst3/Contents/x86_64-win/<ProductName>.vst3
+    std::string vst3BinarySource;   // "developer_build" or "packaged_release_template" (empty when not packaged)
+    std::string identityLimitation; // Non-empty when the binary's compiled identity differs from the request
     dsp_artifact::ExecutableArtifact artifact;
 };
 

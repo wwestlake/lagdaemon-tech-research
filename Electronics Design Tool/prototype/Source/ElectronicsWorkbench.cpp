@@ -15097,8 +15097,8 @@ private:
             },
             {
                 "vst_export",
-                "Export the current schematic or configured 3-effect setup into a standalone Windows x64 VST3 plugin bundle (.vst3 + executable .frust-il v2 + ui.json + manifest.json).",
-                R"({"type":"object","properties":{"productName":{"type":"string","description":"Plugin product name."},"packageId":{"type":"string","description":"Stable package identifier used to derive 4CC and VST3 GUID."},"version":{"type":"string","description":"Plugin version string (e.g. 1.0.0)."},"manufacturer":{"type":"string","description":"Manufacturer name."},"mode":{"type":"string","enum":["single","three_coupled","three_independent","three_separate"],"description":"Export topology mode."},"outputDirectory":{"type":"string","description":"Optional target output folder."},"buildVst3Bundle":{"type":"boolean","description":"Whether to compile and package the standalone .vst3 binary bundle."}},"additionalProperties":false})"
+                "Export the current schematic or configured 3-effect setup into a Windows x64 VST3 plugin bundle (.vst3 + executable .frust-il v2 + ui.json + manifest.json).",
+                R"({"type":"object","properties":{"productName":{"type":"string","description":"Plugin product name."},"packageId":{"type":"string","description":"Stable package identifier used to derive 4CC and VST3 GUID."},"version":{"type":"string","description":"Plugin version string (e.g. 1.0.0)."},"manufacturer":{"type":"string","description":"Manufacturer name."},"mode":{"type":"string","enum":["single","three_coupled","three_independent","three_separate"],"description":"Export topology mode."},"outputDirectory":{"type":"string","description":"Optional target output folder."},"buildVst3Bundle":{"type":"boolean","description":"Whether to package the .vst3 binary bundle. Installed copies copy the packaged Release runtime template (fixed template VST3 class identity; the circuit, controls and manifest go in Contents/Resources); development checkouts rebuild the VST3 target with the requested identity."}},"additionalProperties":false})"
             },
             {
                 "agent_write_markdown",
@@ -18662,6 +18662,9 @@ juce::String ElectronicsWorkbench::exportVst3PluginTool(const juce::var& args)
     root->setProperty("vst3ComponentUidHex", juce::String(primary.vst3ComponentUidHex));
     root->setProperty("liveParameterCount", static_cast<int>(primary.artifact.parameters.size()));
     root->setProperty("effectCount", static_cast<int>(primary.artifact.effects.size()));
+    root->setProperty("vst3BinarySource", juce::String(primary.vst3BinarySource));
+    if (!primary.identityLimitation.empty())
+        root->setProperty("identityLimitation", juce::String(primary.identityLimitation));
 
     juce::Array<juce::var> bundlesArr;
     for (const auto& b : expRes.bundles)
@@ -18674,6 +18677,7 @@ juce::String ElectronicsWorkbench::exportVst3PluginTool(const juce::var& args)
         bo->setProperty("frustIl", b.artifactFile.getFullPathName());
         bo->setProperty("vst3Bundle", b.vst3BundleDir.getFullPathName());
         bo->setProperty("vst3Binary", b.vst3BinaryFile.getFullPathName());
+        bo->setProperty("vst3BinarySource", juce::String(b.vst3BinarySource));
         bundlesArr.add(juce::var(bo));
     }
     root->setProperty("bundles", bundlesArr);
@@ -19070,7 +19074,7 @@ void ElectronicsWorkbench::showExportVst3Dialog()
         : generatedRunDirectory().getChildFile("vst3_export").getFullPathName();
 
     auto* w = new juce::AlertWindow("Export Custom VST3 Plugin",
-                                    "Compile the circuit DSP model to native x64 object code (.frust-il v2) and build a standalone VST3 plugin bundle.",
+                                    "Compile the circuit DSP model to native x64 object code (.frust-il v2) and package a VST3 plugin bundle.",
                                     juce::MessageBoxIconType::NoIcon);
     w->addTextEditor("productName", defaultProd, "Product Name:");
     w->addTextEditor("packageId", defaultPkg, "Package ID (determines 4CC & VST3 UID):");
@@ -19113,6 +19117,8 @@ void ElectronicsWorkbench::showExportVst3Dialog()
                 safeThis->appendLog("Exported VST3 plugin '" + parsed.getProperty("productName", {}).toString()
                                     + "' [4CC: " + parsed.getProperty("pluginCode4CC", {}).toString()
                                     + "] to " + parsed.getProperty("vst3Bundle", {}).toString());
+                if (const auto limitation = parsed.getProperty("identityLimitation", {}).toString(); limitation.isNotEmpty())
+                    safeThis->appendLog("VST3 export note: " + limitation);
             }
             else
             {
