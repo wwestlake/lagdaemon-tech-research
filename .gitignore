@@ -54,3 +54,9 @@ stderr.txt
 
 # Harmonia executables top-level directory
 harmonia_bin/
+
+# Packaging staging and installer outputs
+**/installer/stage/
+**/installer/dist/
+*.iss.bin
+

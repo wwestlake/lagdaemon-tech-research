@@ -8,14 +8,26 @@ static std::map<juce::String, ModelDef> models;
 void initialize()
 {
     models.clear();
+
+    auto dir = juce::File::getSpecialLocation(juce::File::currentExecutableFile)
+                   .getSiblingFile("data")
+                   .getChildFile("models");
+
+    if (!dir.isDirectory())
+    {
 #ifdef ELECTRONICS_RESEARCH_ROOT
-    const auto dir = juce::File(ELECTRONICS_RESEARCH_ROOT)
-        .getChildFile("prototype")
-        .getChildFile("data")
-        .getChildFile("models");
+        const auto devDir = juce::File(ELECTRONICS_RESEARCH_ROOT)
+                                .getChildFile("prototype")
+                                .getChildFile("data")
+                                .getChildFile("models");
+        if (devDir.isDirectory())
+            dir = devDir;
 #else
-    const auto dir = juce::File::getCurrentWorkingDirectory().getChildFile("data").getChildFile("models");
+        const auto cwdDir = juce::File::getCurrentWorkingDirectory().getChildFile("data").getChildFile("models");
+        if (cwdDir.isDirectory())
+            dir = cwdDir;
 #endif
+    }
 
     if (!dir.exists())
         dir.createDirectory();
