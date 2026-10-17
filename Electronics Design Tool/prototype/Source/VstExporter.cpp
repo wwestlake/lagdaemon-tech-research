@@ -112,11 +112,17 @@ bool writeGeneratedIdentityAndPayload(const juce::File& prototypeRoot,
     if (buildDir == juce::File() || !buildDir.isDirectory())
         buildDir = prototypeRoot.getChildFile("build");
 
-    const auto genDir = buildDir.getChildFile("GeneratedVst");
+    auto genDir = buildDir.getChildFile("GeneratedVst");
     if (!genDir.isDirectory() && !genDir.createDirectory())
     {
-        outError = "Failed to locate or create GeneratedVst directory in build directory: " + genDir.getFullPathName().toStdString();
-        return false;
+        genDir = juce::File::getSpecialLocation(juce::File::userApplicationDataDirectory)
+                     .getChildFile("DjehutiElectronicsLab")
+                     .getChildFile("GeneratedVst");
+        if (!genDir.isDirectory() && !genDir.createDirectory())
+        {
+            outError = "Failed to locate or create GeneratedVst directory in build directory: " + genDir.getFullPathName().toStdString();
+            return false;
+        }
     }
 
     const auto identityFile = genDir.getChildFile("GeneratedPluginIdentity.h");
@@ -260,8 +266,34 @@ bool buildAndPackageVst3Target(const juce::File& prototypeRoot,
 
     if (!sourceBinary.existsAsFile())
     {
+        const juce::File exeTemplates = juce::File::getSpecialLocation(juce::File::currentExecutableFile)
+                                            .getParentDirectory()
+                                            .getChildFile("templates")
+                                            .getChildFile("vst3");
+        if (exeTemplates.isDirectory())
+        {
+            auto matches = exeTemplates.findChildFiles(juce::File::findFiles, true, "*.vst3");
+            if (!matches.isEmpty())
+                sourceBinary = matches.getFirst();
+        }
+    }
+
+    if (!sourceBinary.existsAsFile())
+    {
+        const juce::File protoTemplates = prototypeRoot.getChildFile("templates").getChildFile("vst3");
+        if (protoTemplates.isDirectory())
+        {
+            auto matches = protoTemplates.findChildFiles(juce::File::findFiles, true, "*.vst3");
+            if (!matches.isEmpty())
+                sourceBinary = matches.getFirst();
+        }
+    }
+
+    if (!sourceBinary.existsAsFile())
+    {
         outError = "Compiled VST3 binary was not found under " +
-                   buildDir.getChildFile("DjehutiCircuitVst_artefacts").getFullPathName().toStdString();
+                   buildDir.getChildFile("DjehutiCircuitVst_artefacts").getFullPathName().toStdString() +
+                   " or templates/vst3";
         return false;
     }
 

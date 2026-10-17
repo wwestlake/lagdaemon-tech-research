@@ -2233,10 +2233,20 @@ private:
 
     bool loadSeedLibrary()
     {
-        const auto seedFile = juce::File(ELECTRONICS_RESEARCH_ROOT)
-            .getChildFile("prototype")
-            .getChildFile("data")
-            .getChildFile("component_seed.json");
+        auto seedFile = juce::File::getSpecialLocation(juce::File::currentExecutableFile)
+                            .getSiblingFile("data")
+                            .getChildFile("component_seed.json");
+        if (!seedFile.existsAsFile())
+        {
+#ifdef ELECTRONICS_RESEARCH_ROOT
+            const auto devSeed = juce::File(ELECTRONICS_RESEARCH_ROOT)
+                                     .getChildFile("prototype")
+                                     .getChildFile("data")
+                                     .getChildFile("component_seed.json");
+            if (devSeed.existsAsFile())
+                seedFile = devSeed;
+#endif
+        }
         if (!seedFile.existsAsFile())
             return false;
 
@@ -18491,11 +18501,13 @@ juce::String ElectronicsWorkbench::exportVst3PluginTool(const juce::var& args)
         return "{ \"ok\": false, \"tool\": \"vst_export\", \"displayTool\": \"vst.export\", \"error\": \"No schematic circuit extractor is available.\" }";
 
     vst_exporter::ExportRequest req;
+    vst_exporter::ExportRequest savedCfg;
     const auto cfgFile = generatedRunDirectory().getChildFile("vst_export_config.json");
     if (cfgFile.existsAsFile())
     {
         std::string ignoredErr;
-        vst_exporter::loadExportConfigFromFile(cfgFile, req, ignoredErr);
+        if (vst_exporter::loadExportConfigFromFile(cfgFile, savedCfg, ignoredErr))
+            req = savedCfg;
     }
 
     req.packageId = "com.djehuti.vst." + (currentDiagram.isNotEmpty()

@@ -330,9 +330,20 @@ std::vector<Card> loadAllCards()
 
 juce::File getKnowledgeRoot()
 {
-    return juce::File(ELECTRONICS_RESEARCH_ROOT)
-        .getChildFile("prototype")
-        .getChildFile("knowledge");
+    const auto installed = juce::File::getSpecialLocation(juce::File::currentExecutableFile)
+                               .getSiblingFile("knowledge");
+    if (installed.isDirectory())
+        return installed;
+
+#ifdef ELECTRONICS_RESEARCH_ROOT
+    const auto dev = juce::File(ELECTRONICS_RESEARCH_ROOT)
+                         .getChildFile("prototype")
+                         .getChildFile("knowledge");
+    if (dev.isDirectory())
+        return dev;
+#endif
+
+    return installed;
 }
 
 juce::File getCardsDirectory()
