@@ -66,26 +66,30 @@ std::string formatPluginCodeHex(const std::string& code4)
     return oss.str();
 }
 
-juce::File locatePrototypeRoot(const juce::File& hintBuildDir)
+constexpr const char* kTemplateBundleName = "Djehuti Circuit VST.vst3";
+constexpr const char* kDeveloperBuildConfig = "Debug";
+
+// Where the .vst3 binary of an export comes from.
+//  - DeveloperBuild: a development checkout (the app or test runs from <prototype>/bin, or the
+//    request names a CMake build directory); the DjehutiCircuitVst_VST3 target is rebuilt there
+//    with the requested identity.
+//  - PackagedTemplate: an installed copy; the precompiled Release template shipped next to the
+//    executable is copied and the requested circuit is supplied through Contents/Resources.
+struct Vst3BinaryPlan
 {
-    if (hintBuildDir != juce::File())
-    {
-        auto parent = hintBuildDir.getParentDirectory();
-        if (parent.getChildFile("CMakeLists.txt").existsAsFile())
-            return parent;
-    }
+    enum class Source { DeveloperBuild, PackagedTemplate };
+    Source source = Source::PackagedTemplate;
+    juce::File buildDir;
+    juce::File templateBinary;
+};
 
-    auto cwd = juce::File::getCurrentWorkingDirectory();
-    for (int depth = 0; depth < 5; ++depth)
-    {
-        if (cwd.getChildFile("CMakeLists.txt").existsAsFile() &&
-            cwd.getChildFile("Source").isDirectory())
-            return cwd;
-        cwd = cwd.getParentDirectory();
-    }
-
+juce::File locateDevelopmentPrototypeRoot()
+{
+    // Only the executable's own location identifies a development checkout. The working
+    // directory and fixed checkout paths are deliberately not consulted, so an installed copy
+    // never discovers (and silently depends on) a developer's source tree.
     auto exeDir = juce::File::getSpecialLocation(juce::File::currentExecutableFile).getParentDirectory();
-    for (int depth = 0; depth < 5; ++depth)
+    for (int depth = 0; depth < 4; ++depth)
     {
         if (exeDir.getChildFile("CMakeLists.txt").existsAsFile() &&
             exeDir.getChildFile("Source").isDirectory())
@@ -94,35 +98,73 @@ juce::File locatePrototypeRoot(const juce::File& hintBuildDir)
     }
 
 #if defined(DJEHUTI_PROTOTYPE_SOURCE_DIR)
+    // Developer test executables are compiled with their checkout location.
     const juce::File defDir(DJEHUTI_PROTOTYPE_SOURCE_DIR);
-    if (defDir.isDirectory())
+    if (defDir.getChildFile("CMakeLists.txt").existsAsFile())
         return defDir;
 #endif
 
-    return juce::File("D:/000 Tech Research/Electronics Design Tool/prototype");
+    return {};
 }
 
-bool writeGeneratedIdentityAndPayload(const juce::File& prototypeRoot,
-                                      const juce::File& buildDirHint,
+juce::File packagedTemplateBinary()
+{
+    return juce::File::getSpecialLocation(juce::File::currentExecutableFile)
+        .getParentDirectory()
+        .getChildFile("templates")
+        .getChildFile("vst3")
+        .getChildFile(kTemplateBundleName)
+        .getChildFile("Contents")
+        .getChildFile("x86_64-win")
+        .getChildFile(kTemplateBundleName);
+}
+
+bool resolveVst3BinaryPlan(const juce::File& requestedBuildDir, Vst3BinaryPlan& plan, std::string& outError)
+{
+    if (requestedBuildDir != juce::File())
+    {
+        plan.source = Vst3BinaryPlan::Source::DeveloperBuild;
+        plan.buildDir = requestedBuildDir;
+    }
+    else if (const auto devRoot = locateDevelopmentPrototypeRoot(); devRoot != juce::File())
+    {
+        plan.source = Vst3BinaryPlan::Source::DeveloperBuild;
+        plan.buildDir = devRoot.getChildFile("build");
+    }
+    else
+    {
+        plan.source = Vst3BinaryPlan::Source::PackagedTemplate;
+        plan.templateBinary = packagedTemplateBinary();
+        if (!plan.templateBinary.existsAsFile())
+        {
+            outError = "This installation is missing its packaged VST3 runtime template (expected " +
+                       plan.templateBinary.getFullPathName().toStdString() +
+                       "). Repair or reinstall Djehuti Electronics Workbench. Installed copies export from the "
+                       "packaged template only and do not build plugins from a development checkout.";
+            return false;
+        }
+        return true;
+    }
+
+    if (!plan.buildDir.getChildFile("DjehutiCircuitVst_VST3.vcxproj").existsAsFile())
+    {
+        outError = "Developer VST3 export needs a configured CMake build directory containing "
+                   "DjehutiCircuitVst_VST3.vcxproj, but none was found at " +
+                   plan.buildDir.getFullPathName().toStdString() + ". Configure the prototype with CMake first.";
+        return false;
+    }
+    return true;
+}
+
+bool writeGeneratedIdentityAndPayload(const juce::File& buildDir,
                                       const dsp_artifact::ExecutableArtifact& artifact,
-                                      const juce::String& artifactJson,
                                       std::string& outError)
 {
-    juce::File buildDir = buildDirHint;
-    if (buildDir == juce::File() || !buildDir.isDirectory())
-        buildDir = prototypeRoot.getChildFile("build");
-
     auto genDir = buildDir.getChildFile("GeneratedVst");
     if (!genDir.isDirectory() && !genDir.createDirectory())
     {
-        genDir = juce::File::getSpecialLocation(juce::File::userApplicationDataDirectory)
-                     .getChildFile("DjehutiElectronicsLab")
-                     .getChildFile("GeneratedVst");
-        if (!genDir.isDirectory() && !genDir.createDirectory())
-        {
-            outError = "Failed to locate or create GeneratedVst directory in build directory: " + genDir.getFullPathName().toStdString();
-            return false;
-        }
+        outError = "Failed to create GeneratedVst directory in build directory: " + genDir.getFullPathName().toStdString();
+        return false;
     }
 
     const auto identityFile = genDir.getChildFile("GeneratedPluginIdentity.h");
@@ -193,8 +235,7 @@ bool writeGeneratedIdentityAndPayload(const juce::File& prototypeRoot,
     return true;
 }
 
-bool buildAndPackageVst3Target(const juce::File& prototypeRoot,
-                               const juce::File& buildDirHint,
+bool buildAndPackageVst3Target(const Vst3BinaryPlan& plan,
                                const std::string& productName,
                                const juce::File& packageDir,
                                const juce::String& artifactJson,
@@ -205,20 +246,17 @@ bool buildAndPackageVst3Target(const juce::File& prototypeRoot,
                                std::string& outLog,
                                std::string& outError)
 {
-    juce::File buildDir = buildDirHint;
-    if (buildDir == juce::File() || !buildDir.isDirectory())
-        buildDir = prototypeRoot.getChildFile("build");
+    juce::File sourceBinary = plan.templateBinary;
 
-    const juce::File vcxproj = buildDir.getChildFile("DjehutiCircuitVst_VST3.vcxproj");
-    if (vcxproj.existsAsFile())
+    if (plan.source == Vst3BinaryPlan::Source::DeveloperBuild)
     {
-        // Invoke single-core Debug build (/m:1) on the VST3 target
+        // Developer workflow: single-core (/m:1) build of the VST3 target with the generated identity
         juce::StringArray cmd;
         cmd.add("cmake");
         cmd.add("--build");
-        cmd.add(buildDir.getFullPathName());
+        cmd.add(plan.buildDir.getFullPathName());
         cmd.add("--config");
-        cmd.add("Debug");
+        cmd.add(kDeveloperBuildConfig);
         cmd.add("--target");
         cmd.add("DjehutiCircuitVst_VST3");
         cmd.add("--");
@@ -228,7 +266,7 @@ bool buildAndPackageVst3Target(const juce::File& prototypeRoot,
         juce::ChildProcess proc;
         if (!proc.start(cmd))
         {
-            outError = "Failed to launch cmake --build for DjehutiCircuitVst_VST3.";
+            outError = "Failed to launch cmake --build for DjehutiCircuitVst_VST3. Make sure CMake is on PATH.";
             return false;
         }
         const juce::String buildOutput = proc.readAllProcessOutput();
@@ -239,61 +277,21 @@ bool buildAndPackageVst3Target(const juce::File& prototypeRoot,
                        buildOutput.toStdString();
             return false;
         }
-    }
 
-    // Locate built DjehutiCircuitVst.vst3 binary in build artefacts
-    const juce::File builtBinary = buildDir
-        .getChildFile("DjehutiCircuitVst_artefacts")
-        .getChildFile("Debug")
-        .getChildFile("VST3")
-        .getChildFile("Djehuti Circuit VST.vst3")
-        .getChildFile("Contents")
-        .getChildFile("x86_64-win")
-        .getChildFile("Djehuti Circuit VST.vst3");
-
-    juce::File sourceBinary = builtBinary;
-    if (!sourceBinary.existsAsFile())
-    {
-        // Search recursively inside DjehutiCircuitVst_artefacts for any .vst3 file
-        const juce::File artefactsDir = buildDir.getChildFile("DjehutiCircuitVst_artefacts");
-        if (artefactsDir.isDirectory())
-        {
-            auto matches = artefactsDir.findChildFiles(juce::File::findFiles, true, "*.vst3");
-            if (!matches.isEmpty())
-                sourceBinary = matches.getFirst();
-        }
+        // The known output of that build; no other configuration or plugin is substituted.
+        sourceBinary = plan.buildDir
+            .getChildFile("DjehutiCircuitVst_artefacts")
+            .getChildFile(kDeveloperBuildConfig)
+            .getChildFile("VST3")
+            .getChildFile(kTemplateBundleName)
+            .getChildFile("Contents")
+            .getChildFile("x86_64-win")
+            .getChildFile(kTemplateBundleName);
     }
 
     if (!sourceBinary.existsAsFile())
     {
-        const juce::File exeTemplates = juce::File::getSpecialLocation(juce::File::currentExecutableFile)
-                                            .getParentDirectory()
-                                            .getChildFile("templates")
-                                            .getChildFile("vst3");
-        if (exeTemplates.isDirectory())
-        {
-            auto matches = exeTemplates.findChildFiles(juce::File::findFiles, true, "*.vst3");
-            if (!matches.isEmpty())
-                sourceBinary = matches.getFirst();
-        }
-    }
-
-    if (!sourceBinary.existsAsFile())
-    {
-        const juce::File protoTemplates = prototypeRoot.getChildFile("templates").getChildFile("vst3");
-        if (protoTemplates.isDirectory())
-        {
-            auto matches = protoTemplates.findChildFiles(juce::File::findFiles, true, "*.vst3");
-            if (!matches.isEmpty())
-                sourceBinary = matches.getFirst();
-        }
-    }
-
-    if (!sourceBinary.existsAsFile())
-    {
-        outError = "Compiled VST3 binary was not found under " +
-                   buildDir.getChildFile("DjehutiCircuitVst_artefacts").getFullPathName().toStdString() +
-                   " or templates/vst3";
+        outError = "VST3 runtime binary was not found at " + sourceBinary.getFullPathName().toStdString();
         return false;
     }
 
@@ -313,9 +311,13 @@ bool buildAndPackageVst3Target(const juce::File& prototypeRoot,
     }
 
     // Embed self-contained resources inside the VST3 bundle
-    resourcesDir.getChildFile("model.frust-il").replaceWithText(artifactJson);
-    resourcesDir.getChildFile("ui.json").replaceWithText(uiJson);
-    resourcesDir.getChildFile("manifest.json").replaceWithText(manifestJsonText);
+    if (!resourcesDir.getChildFile("model.frust-il").replaceWithText(artifactJson) ||
+        !resourcesDir.getChildFile("ui.json").replaceWithText(uiJson) ||
+        !resourcesDir.getChildFile("manifest.json").replaceWithText(manifestJsonText))
+    {
+        outError = "Failed to write bundle resources to " + resourcesDir.getFullPathName().toStdString();
+        return false;
+    }
 
     return true;
 }
@@ -384,21 +386,41 @@ ExportResult exportSingleBundle(const ExportRequest& req,
     info.exportConfigFile = packageDir.getChildFile("vst_export_config.json");
     saveExportConfigToFile(req, info.exportConfigFile);
 
-    // 6. Update generated C++ identity/payload and build/package the .vst3 bundle
-    const juce::File prototypeRoot = locatePrototypeRoot(req.cmakeBuildDirectory);
-    std::string genErr;
-    if (!writeGeneratedIdentityAndPayload(prototypeRoot, req.cmakeBuildDirectory, built.artifact, built.serializedJson, genErr))
-    {
-        res.error = genErr;
-        return res;
-    }
-
+    // 6. Package the .vst3 bundle: developer checkouts rebuild the target with the generated
+    //    identity; installed copies copy the packaged Release template.
     if (req.buildVst3Bundle)
     {
+        Vst3BinaryPlan plan;
+        std::string planErr;
+        if (!resolveVst3BinaryPlan(req.cmakeBuildDirectory, plan, planErr))
+        {
+            res.error = planErr;
+            return res;
+        }
+
+        if (plan.source == Vst3BinaryPlan::Source::DeveloperBuild)
+        {
+            info.vst3BinarySource = "developer_build";
+            std::string genErr;
+            if (!writeGeneratedIdentityAndPayload(plan.buildDir, built.artifact, genErr))
+            {
+                res.error = genErr;
+                return res;
+            }
+        }
+        else
+        {
+            info.vst3BinarySource = "packaged_release_template";
+            info.identityLimitation =
+                "The packaged template's compiled VST3 class identity (factory name 'Djehuti Circuit VST', "
+                "plugin code DjCv and its component UID) is used. The requested product name, controls, "
+                "effects and state come from Contents/Resources, but hosts identify every template-based "
+                "export as the same plugin class, so two such exports cannot be told apart by a host.";
+        }
+
         std::string buildLog;
         std::string buildErr;
-        if (!buildAndPackageVst3Target(prototypeRoot,
-                                       req.cmakeBuildDirectory,
+        if (!buildAndPackageVst3Target(plan,
                                        built.artifact.productName,
                                        packageDir,
                                        built.serializedJson,
@@ -673,7 +695,9 @@ ExportResult runExport(const ExportRequest& request)
 
     const juce::File baseOutDir = (request.outputDirectory != juce::File())
         ? request.outputDirectory
-        : juce::File::getCurrentWorkingDirectory().getChildFile("exported_vst3");
+        : juce::File::getSpecialLocation(juce::File::userApplicationDataDirectory)
+              .getChildFile("DjehutiElectronicsLab")
+              .getChildFile("exported_vst3");
 
     if (request.mode == ExportMode::ThreeSeparatePlugins)
     {
