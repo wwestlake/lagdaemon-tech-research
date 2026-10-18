@@ -231,6 +231,8 @@ target_sources(DjehutiElectronicsLab PRIVATE
     Source/ManageLayoutsDialog.cpp
     Source/PredefinedLayoutCatalog.h
     Source/PredefinedLayoutCatalog.cpp
+    Source/DcadMotionCoords.h
+    Source/DcadMotionCoords.cpp
     Source/DcadMotionClient.h
     Source/DcadMotionClient.cpp
     Source/CadMotionLinkDialog.h
@@ -604,12 +606,30 @@ target_link_libraries(ControlPanelTests PRIVATE
 juce_generate_juce_header(ControlPanelTests)
 add_test(NAME ControlPanelTests COMMAND ControlPanelTests)
 
+# Fast lightweight unit tests for DCAD motion coordinates and proposal validation (pure logic, no GUI/plugins)
+juce_add_console_app(DcadCoordinateTests PRODUCT_NAME "DCAD Coordinate Tests")
+set_target_properties(DcadCoordinateTests PROPERTIES
+    OUTPUT_NAME "dcad_coordinate_tests"
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/bin")
+target_sources(DcadCoordinateTests PRIVATE
+    tools/cad_motion_tests/DcadCoordinateTests.cpp
+    Source/DcadMotionCoords.cpp
+)
+target_include_directories(DcadCoordinateTests PRIVATE Source)
+target_compile_definitions(DcadCoordinateTests PRIVATE JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0)
+target_link_libraries(DcadCoordinateTests PRIVATE
+    juce::juce_core
+)
+juce_generate_juce_header(DcadCoordinateTests)
+add_test(NAME DcadCoordinateTests COMMAND DcadCoordinateTests)
+
 juce_add_console_app(DcadMotionTests PRODUCT_NAME "DCAD Motion Tests")
 set_target_properties(DcadMotionTests PROPERTIES
     OUTPUT_NAME "dcad_motion_tests"
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/bin")
 target_sources(DcadMotionTests PRIVATE
     tools/cad_motion_tests/DcadMotionTests.cpp
+    Source/DcadMotionCoords.cpp
     Source/DcadMotionClient.cpp
     Source/SystemSimulationSession.cpp
     Source/SystemAssembly.cpp

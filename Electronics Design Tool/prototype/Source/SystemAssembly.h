@@ -235,6 +235,7 @@ struct CompiledAssemblyCircuit
         std::string quantity;
         std::string kind;
         std::string description;
+        std::string companionSignal;
     };
     std::vector<SignalMeta> metadata;
 

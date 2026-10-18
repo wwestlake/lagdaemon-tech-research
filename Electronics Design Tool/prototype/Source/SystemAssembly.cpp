@@ -1616,7 +1616,7 @@ CompiledAssemblyCircuit AssemblyCompiler::compile(const SystemAssembly& assembly
 
     auto addMeta = [&](const std::string& path, PortDomain domain, const std::string& unit,
                        const std::string& quantity, const std::string& kind, const std::string& desc, bool isInput = false,
-                       double minVal = 0.0, double maxVal = 100.0) {
+                       double minVal = 0.0, double maxVal = 100.0, const std::string& companion = "") {
         for (const auto& m : res.metadata)
             if (m.path == path) return;
         CompiledAssemblyCircuit::SignalMeta sm;
@@ -1629,6 +1629,7 @@ CompiledAssemblyCircuit AssemblyCompiler::compile(const SystemAssembly& assembly
         sm.isInput = isInput;
         sm.minVal = minVal;
         sm.maxVal = maxVal;
+        sm.companionSignal = companion;
         res.metadata.push_back(std::move(sm));
     };
 
@@ -1966,7 +1967,7 @@ CompiledAssemblyCircuit AssemblyCompiler::compile(const SystemAssembly& assembly
             res.signalNodes[inst.instanceId + ".tach"] = nTach;
             res.signalBranches[inst.instanceId + ".current"] = motor.armature;
 
-            addMeta(inst.instanceId + ".speed", PortDomain::Mechanical, "rad/s", "angular_velocity", "rate", "Motor Shaft Angular Velocity", false, 0.0, 500.0);
+            addMeta(inst.instanceId + ".speed", PortDomain::Mechanical, "rad/s", "angular_velocity", "rate", "Motor Shaft Angular Velocity", false, 0.0, 500.0, inst.instanceId + ".angle");
             addMeta(inst.instanceId + ".angle", PortDomain::Mechanical, "rad", "angle", "state", "Motor Shaft Angular Position", false, -1e6, 1e6);
             addMeta(inst.instanceId + ".current", PortDomain::Electrical, "A", "current", "state", "Motor Armature Current", false, -50.0, 50.0);
             addMeta(inst.instanceId + ".tach", PortDomain::SignalControl, "V", "voltage", "state", "Tachometer Feedback", false, -10.0, 10.0);
@@ -1980,7 +1981,7 @@ CompiledAssemblyCircuit AssemblyCompiler::compile(const SystemAssembly& assembly
                 res.signalNodes["motor.tach"] = nTach;
                 res.signalBranches["motor.current"] = motor.armature;
 
-                addMeta("motor.speed", PortDomain::Mechanical, "rad/s", "angular_velocity", "rate", "Motor Shaft Angular Velocity", false, 0.0, 500.0);
+                addMeta("motor.speed", PortDomain::Mechanical, "rad/s", "angular_velocity", "rate", "Motor Shaft Angular Velocity", false, 0.0, 500.0, "motor.angle");
                 addMeta("motor.angle", PortDomain::Mechanical, "rad", "angle", "state", "Motor Shaft Angular Position", false, -1e6, 1e6);
                 addMeta("motor.current", PortDomain::Electrical, "A", "current", "state", "Motor Armature Current", false, -50.0, 50.0);
             }

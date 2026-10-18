@@ -1,6 +1,7 @@
 #pragma once
 
 #include "SystemSimulationSession.h"
+#include "DcadMotionCoords.h"
 #include <juce_core/juce_core.h>
 
 #include <atomic>
@@ -14,8 +15,6 @@
 #include <string>
 #include <thread>
 #include <vector>
-
-
 
 namespace dcad_motion
 {
@@ -54,33 +53,6 @@ struct SignalDescriptor
     static SignalDescriptor fromJson(const juce::var& json);
 };
 
-struct ProfileMapping
-{
-    std::string joint;
-    std::string signal;
-    std::string sourceQuantity;
-    std::string sourceUnit;
-    std::string jointQuantity;
-    std::string jointUnit;
-    double unitToSI = 1.0;
-    double scale = 1.0;
-    double offset = 0.0;
-    bool hasInitialCoordinate = false;
-    double initialCoordinate = 0.0;
-
-    static ProfileMapping fromJson(const juce::var& json);
-};
-
-struct ValidationError
-{
-    std::string code;
-    std::string joint;
-    std::string signal;
-    std::string message;
-
-    juce::var toJson() const;
-};
-
 enum class LinkState
 {
     Disconnected,
@@ -92,12 +64,6 @@ enum class LinkState
     Streaming,
     Error
 };
-
-// -----------------------------------------------------------------------------
-// Unit Conversions
-// -----------------------------------------------------------------------------
-double getUnitToSIFactor(const std::string& quantity, const std::string& unit);
-bool isRateQuantity(const std::string& quantity);
 
 // -----------------------------------------------------------------------------
 // DcadMotionClient
@@ -206,18 +172,12 @@ private:
 
     std::vector<ValidationError> validateProposal(const std::vector<ProfileMapping>& mappings);
 
-    struct EvaluatedJoint
-    {
-        std::string joint;
-        double coordinate = 0.0;
-        bool hasVelocity = false;
-        double velocity = 0.0;
 
-        juce::var toJson() const;
-    };
-
-    bool computeJointCoordinates(std::vector<EvaluatedJoint>& evaluated, double simTimeSeconds);
-    std::string findCompanionPositionSignal(const std::string& rateSignal, const std::map<std::string, double>& signalValues) const;
+    bool computeJointCoordinates(std::vector<EvaluatedJoint>& evaluated,
+                                 const sim_panel::StateSnapshot& snap,
+                                 std::map<std::string, double>& outRateIntegrals,
+                                 std::map<std::string, double>& outCompanionOrigins);
+    std::string findDeclaredCompanionSignal(const std::string& rateSignal) const;
 
     // Logging helper
     void log(const std::string& message);
@@ -244,6 +204,7 @@ private:
 
     std::vector<ProfileMapping> acceptedMappings_;
     std::map<std::string, double> rateIntegrals_; // joint -> integrated coordinate
+    std::map<std::string, double> companionTimelineOrigins_; // joint -> positionSI at timeline start
 
     int timelineGeneration_ = 0;
     uint64_t sequence_ = 0;

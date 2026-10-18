@@ -38,6 +38,7 @@ struct SignalDef
     std::string description;
     std::string quantity; // "angular_velocity", "angle", "position", "linear_velocity", "voltage", "current", etc.
     std::string kind;     // "state", "rate"
+    std::string companionSignal; // explicit declared companion signal (e.g. "motor.angle" for "motor.speed")
 };
 
 struct EventItem
@@ -62,6 +63,9 @@ struct StateSnapshot
     std::map<std::string, double> numericSignals;
     std::map<std::string, bool> booleanSignals;
     std::map<std::string, std::string> textSignals;
+
+    // Simulation-owned integrated motion state (rate-integrated coordinates in SI units)
+    std::map<std::string, double> rateIntegrals;
 
     std::vector<EventItem> recentEvents;
 };
@@ -164,6 +168,10 @@ private:
 
     mutable std::mutex snapshotMutex_;
     StateSnapshot latestSnapshot_;
+
+    // Simulation-owned continuous rate integrals across accepted solver steps
+    std::map<std::string, double> authoritativeRateIntegrals_;
+    double lastSolverSimTime_ = 0.0;
 
     // Specific variables for the default closed-loop motor system
     int pwrSwitchElem_ = -1;

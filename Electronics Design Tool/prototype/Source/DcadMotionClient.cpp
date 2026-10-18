@@ -19,43 +19,6 @@ namespace dcad_motion
 {
 
 // -----------------------------------------------------------------------------
-// Unit Conversions
-// -----------------------------------------------------------------------------
-double getUnitToSIFactor(const std::string& quantity, const std::string& unit)
-{
-    static const double kPi = 3.14159265358979323846;
-    if (quantity == "angle")
-    {
-        if (unit == "rad") return 1.0;
-        if (unit == "deg") return kPi / 180.0;
-        if (unit == "rev") return 2.0 * kPi;
-    }
-    else if (quantity == "angular_velocity")
-    {
-        if (unit == "rad/s") return 1.0;
-        if (unit == "deg/s") return kPi / 180.0;
-        if (unit == "rpm") return 2.0 * kPi / 60.0;
-        if (unit == "rev/s") return 2.0 * kPi;
-    }
-    else if (quantity == "position")
-    {
-        if (unit == "m") return 1.0;
-        if (unit == "mm") return 1e-3;
-    }
-    else if (quantity == "linear_velocity")
-    {
-        if (unit == "m/s") return 1.0;
-        if (unit == "mm/s") return 1e-3;
-    }
-    return 1.0;
-}
-
-bool isRateQuantity(const std::string& quantity)
-{
-    return quantity == "angular_velocity" || quantity == "linear_velocity";
-}
-
-// -----------------------------------------------------------------------------
 // Serialization & Deserialization
 // -----------------------------------------------------------------------------
 juce::var SignalDescriptor::toJson() const
@@ -82,55 +45,6 @@ SignalDescriptor SignalDescriptor::fromJson(const juce::var& json)
         desc.kind = obj->getProperty("kind").toString().toStdString();
     }
     return desc;
-}
-
-ProfileMapping ProfileMapping::fromJson(const juce::var& json)
-{
-    ProfileMapping m;
-    if (auto* obj = json.getDynamicObject())
-    {
-        m.joint = obj->getProperty("joint").toString().toStdString();
-        m.signal = obj->getProperty("signal").toString().toStdString();
-        m.sourceQuantity = obj->getProperty("sourceQuantity").toString().toStdString();
-        m.sourceUnit = obj->getProperty("sourceUnit").toString().toStdString();
-        m.jointQuantity = obj->getProperty("jointQuantity").toString().toStdString();
-        m.jointUnit = obj->getProperty("jointUnit").toString().toStdString();
-        m.unitToSI = (double)obj->getProperty("unitToSI");
-        m.scale = (double)obj->getProperty("scale");
-        m.offset = (double)obj->getProperty("offset");
-        auto initCoordVar = obj->getProperty("initialCoordinate");
-        if (!initCoordVar.isVoid())
-        {
-            m.hasInitialCoordinate = true;
-            m.initialCoordinate = (double)initCoordVar;
-        }
-        else
-        {
-            m.hasInitialCoordinate = false;
-            m.initialCoordinate = 0.0;
-        }
-    }
-    return m;
-}
-
-juce::var ValidationError::toJson() const
-{
-    auto* obj = new juce::DynamicObject();
-    obj->setProperty("code", juce::String(code));
-    obj->setProperty("joint", juce::String(joint));
-    obj->setProperty("signal", juce::String(signal));
-    obj->setProperty("message", juce::String(message));
-    return juce::var(obj);
-}
-
-juce::var DcadMotionClient::EvaluatedJoint::toJson() const
-{
-    auto* obj = new juce::DynamicObject();
-    obj->setProperty("joint", juce::String(joint));
-    obj->setProperty("coordinate", coordinate);
-    if (hasVelocity)
-        obj->setProperty("velocity", velocity);
-    return juce::var(obj);
 }
 
 juce::var DcadMotionClient::LifecycleExecutionResult::toJson(const std::string& simId, int profRev) const
@@ -281,15 +195,32 @@ bool DcadMotionClient::connectToPipe(const std::string& pipePath)
 
 #if JUCE_WINDOWS
     juce::String widePath(pipePath);
-    HANDLE hPipe = CreateFileW(
-        (LPCWSTR)widePath.toWideCharPointer(),
-        GENERIC_READ | GENERIC_WRITE,
-        0,              // no sharing
-        NULL,           // default security
-        OPEN_EXISTING,
-        FILE_ATTRIBUTE_NORMAL,
-        NULL
-    );
+    HANDLE hPipe = INVALID_HANDLE_VALUE;
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(2000);
+    while (std::chrono::steady_clock::now() < deadline)
+    {
+        hPipe = CreateFileW(
+            (LPCWSTR)widePath.toWideCharPointer(),
+            GENERIC_READ | GENERIC_WRITE,
+            0,              // no sharing
+            NULL,           // default security
+            OPEN_EXISTING,
+            FILE_ATTRIBUTE_NORMAL,
+            NULL
+        );
+        if (hPipe != INVALID_HANDLE_VALUE)
+            break;
+
+        DWORD err = GetLastError();
+        if (err == ERROR_PIPE_BUSY)
+        {
+            WaitNamedPipeW((LPCWSTR)widePath.toWideCharPointer(), 100);
+        }
+        else
+        {
+            std::this_thread::sleep_for(std::chrono::milliseconds(20));
+        }
+    }
 
     if (hPipe == INVALID_HANDLE_VALUE)
     {
@@ -1009,90 +940,42 @@ DcadMotionClient::LifecycleExecutionResult DcadMotionClient::executeLifecycleCom
 // -----------------------------------------------------------------------------
 std::vector<ValidationError> DcadMotionClient::validateProposal(const std::vector<ProfileMapping>& mappings)
 {
-    std::vector<ValidationError> errors;
-
-    if (mappings.empty())
-    {
-        errors.push_back({ "emptyProfile", "", "", "Profile mapping list cannot be empty." });
-        return errors;
-    }
-
-    std::map<std::string, SignalDescriptor> catalog;
+    std::map<std::string, MotionSignalDef> catalog;
     for (const auto& s : signals_)
-        catalog[s.id] = s;
-
-    for (const auto& m : mappings)
     {
-        auto it = catalog.find(m.signal);
-        if (it == catalog.end())
-        {
-            errors.push_back({ "unknownSignal", m.joint, m.signal, "Signal does not exist in advertised interface." });
-            continue;
-        }
-
-        const auto& sig = it->second;
-        if (sig.quantity != m.sourceQuantity || sig.unit != m.sourceUnit)
-        {
-            errors.push_back({ "quantityMismatch", m.joint, m.signal, "Signal quantity/unit mismatch with mapping." });
-            continue;
-        }
-
-        const double expectedFactor = getUnitToSIFactor(sig.quantity, sig.unit);
-        if (std::abs(expectedFactor - m.unitToSI) > 1e-12)
-        {
-            errors.push_back({ "unitMismatch", m.joint, m.signal, "Unit-to-SI factor does not match protocol conversion table." });
-            continue;
-        }
-
-        if (std::isnan(m.scale) || std::isinf(m.scale) || std::abs(m.scale) < 1e-15)
-        {
-            errors.push_back({ "nonFiniteValue", m.joint, m.signal, "Scale factor must be non-zero finite number." });
-            continue;
-        }
-
-        // Check historical integration availability for rate sources
-        if (isRateQuantity(m.sourceQuantity))
-        {
-            const bool isAlreadyTracked = (rateIntegrals_.find(m.joint) != rateIntegrals_.end());
-            const bool atInitialTime = (currentSimTimePs_ == 0 && (!session_ || session_->simTime() <= 1e-9));
-
-            bool hasCompanion = false;
-            if (session_)
-            {
-                auto snap = session_->getSnapshot();
-                if (!findCompanionPositionSignal(m.signal, snap.numericSignals).empty())
-                    hasCompanion = true;
-            }
-
-            if (!isAlreadyTracked && !atInitialTime && !hasCompanion)
-            {
-                errors.push_back({ "integrationUnavailable", m.joint, m.signal,
-                    "Historical integration unavailable for rate source mid-run; map an authoritative state signal or reset simulation." });
-                continue;
-            }
-        }
+        MotionSignalDef def;
+        def.id = s.id;
+        def.name = s.name;
+        def.quantity = s.quantity;
+        def.unit = s.unit;
+        def.kind = s.kind;
+        def.companionSignal = findDeclaredCompanionSignal(s.id);
+        catalog[s.id] = def;
     }
 
-    return errors;
+    const bool atInitialTime = (currentSimTimePs_ == 0 && (!session_ || session_->simTime() <= 1e-9));
+
+    auto hasHist = [this](const std::string& rateSig) -> bool {
+        if (!session_) return false;
+        auto snap = session_->getSnapshot();
+        return (snap.rateIntegrals.find(rateSig) != snap.rateIntegrals.end());
+    };
+
+    return validateProposalMappings(catalog, mappings, atInitialTime, hasHist);
 }
 
-std::string DcadMotionClient::findCompanionPositionSignal(const std::string& rateSignal, const std::map<std::string, double>& signalValues) const
+std::string DcadMotionClient::findDeclaredCompanionSignal(const std::string& rateSignal) const
 {
-    if (rateSignal.length() >= 6 && rateSignal.compare(rateSignal.length() - 6, 6, ".speed") == 0)
+    if (!session_)
+        return {};
+
+    const auto& defs = session_->signalDefinitions();
+    for (const auto& d : defs)
     {
-        std::string cand = rateSignal.substr(0, rateSignal.length() - 6) + ".angle";
-        if (signalValues.find(cand) != signalValues.end())
-            return cand;
-    }
-    else if (rateSignal.length() >= 9 && rateSignal.compare(rateSignal.length() - 9, 9, ".velocity") == 0)
-    {
-        std::string cand = rateSignal.substr(0, rateSignal.length() - 9) + ".position";
-        if (signalValues.find(cand) != signalValues.end())
-            return cand;
-    }
-    else if (rateSignal == "speed" && signalValues.find("angle") != signalValues.end())
-    {
-        return "angle";
+        if (d.name == rateSignal && !d.companionSignal.empty())
+        {
+            return d.companionSignal;
+        }
     }
     return {};
 }
@@ -1100,97 +983,45 @@ std::string DcadMotionClient::findCompanionPositionSignal(const std::string& rat
 // -----------------------------------------------------------------------------
 // Joint Evaluation & Mathematical Absolute State
 // -----------------------------------------------------------------------------
-bool DcadMotionClient::computeJointCoordinates(std::vector<EvaluatedJoint>& evaluated, double simTimeSeconds)
+bool DcadMotionClient::computeJointCoordinates(std::vector<EvaluatedJoint>& evaluated,
+                                             const sim_panel::StateSnapshot& snap,
+                                             std::map<std::string, double>& outRateIntegrals,
+                                             std::map<std::string, double>& outCompanionOrigins)
 {
-    evaluated.clear();
+    auto findCompanionFunc = [this](const std::string& sig) {
+        return findDeclaredCompanionSignal(sig);
+    };
 
-    if (!session_)
-    {
-        lastErrorMessage_ = "No active simulation session attached";
-        return false;
-    }
-
-    const auto snap = session_->getSnapshot();
-    const auto& signalValues = snap.numericSignals;
-
-    double dtSim = 0.0;
-    if (lastIntegratedSimTime_ >= 0.0)
-    {
-        if (simTimeSeconds > lastIntegratedSimTime_)
-            dtSim = simTimeSeconds - lastIntegratedSimTime_;
-    }
-    else
-    {
-        lastIntegratedSimTime_ = simTimeSeconds;
-    }
-
-    for (const auto& m : acceptedMappings_)
-    {
-        EvaluatedJoint ej;
-        ej.joint = m.joint;
-
-        auto it = signalValues.find(m.signal);
-        if (it == signalValues.end())
+    auto getCompUnitToSI = [this](const std::string& comp) {
+        if (session_)
         {
-            lastErrorMessage_ = "Bound signal not present in simulation snapshot: " + m.signal;
-            log("Error: " + lastErrorMessage_);
-            return false;
-        }
-
-        double rawVal = it->second;
-        if (!std::isfinite(rawVal))
-        {
-            lastErrorMessage_ = "Bound signal has non-finite value in simulation snapshot: " + m.signal;
-            log("Error: " + lastErrorMessage_);
-            return false;
-        }
-
-        const double unitValSI = rawVal * m.unitToSI;
-        const double scaledSI = m.scale * unitValSI;
-
-        if (isRateQuantity(m.sourceQuantity))
-        {
-            std::string companion = findCompanionPositionSignal(m.signal, signalValues);
-            if (!companion.empty())
+            for (const auto& d : session_->signalDefinitions())
             {
-                double compRaw = signalValues.at(companion);
-                if (!std::isfinite(compRaw))
-                {
-                    lastErrorMessage_ = "Companion position signal has non-finite value: " + companion;
-                    log("Error: " + lastErrorMessage_);
-                    return false;
-                }
-                ej.coordinate = m.offset + compRaw * m.scale;
-                ej.hasVelocity = true;
-                ej.velocity = scaledSI;
-                rateIntegrals_[m.joint] = ej.coordinate;
-            }
-            else
-            {
-                double currentCoord = rateIntegrals_[m.joint];
-                if (dtSim > 0.0)
-                {
-                    currentCoord += scaledSI * dtSim;
-                    rateIntegrals_[m.joint] = currentCoord;
-                }
-                ej.coordinate = currentCoord;
-                ej.hasVelocity = true;
-                ej.velocity = scaledSI;
+                if (d.name == comp)
+                    return getUnitToSIFactor(d.quantity, d.unit);
             }
         }
-        else
-        {
-            ej.coordinate = m.offset + scaledSI;
-            ej.hasVelocity = false;
-            ej.velocity = 0.0;
-            rateIntegrals_[m.joint] = ej.coordinate;
-        }
+        return 1.0;
+    };
 
-        evaluated.push_back(ej);
+    bool ok = evaluateJointCoordinates(
+        acceptedMappings_,
+        snap.numericSignals,
+        snap.rateIntegrals,
+        findCompanionFunc,
+        getCompUnitToSI,
+        outRateIntegrals,
+        outCompanionOrigins,
+        evaluated,
+        lastErrorMessage_
+    );
+
+    if (!ok)
+    {
+        log("Error: " + lastErrorMessage_);
     }
 
-    lastIntegratedSimTime_ = simTimeSeconds;
-    return true;
+    return ok;
 }
 
 // -----------------------------------------------------------------------------
@@ -1268,39 +1099,63 @@ void DcadMotionClient::sendSynchronizeState(const std::string& lifecycle, bool n
 {
     std::lock_guard<std::recursive_mutex> lock(mutex_);
 
+    if (acceptedMappings_.empty())
+        return;
+
+    int newGen = timelineGeneration_;
+    uint64_t newSeq = sequence_;
+    auto stagedRateIntegrals = rateIntegrals_;
+    auto stagedCompanionOrigins = companionTimelineOrigins_;
+
     if (newTimeline)
     {
-        timelineGeneration_++;
-        currentSimTimePs_ = 0;
-        sequence_ = 0;
-        lastIntegratedSimTime_ = 0.0;
-
-        // Reset rate integrals to initial coordinates only on a genuine new timeline
+        newGen++;
+        newSeq = 0;
+        stagedCompanionOrigins.clear();
         for (const auto& m : acceptedMappings_)
         {
             if (m.hasInitialCoordinate)
-                rateIntegrals_[m.joint] = m.initialCoordinate;
+                stagedRateIntegrals[m.joint] = m.initialCoordinate;
             else
-                rateIntegrals_[m.joint] = 0.0;
+                stagedRateIntegrals[m.joint] = 0.0;
         }
     }
 
-    sequence_++;
-    currentLifecycle_ = lifecycle;
-
-    double simSec = 0.0;
+    sim_panel::StateSnapshot snap;
+    int64_t simTimePs = 0;
     if (session_)
     {
-        simSec = session_->simTime();
-        currentSimTimePs_ = (int64_t)std::round(simSec * (double)kTicksPerSecond);
+        snap = session_->getSnapshot();
+        simTimePs = (int64_t)std::round(snap.simTime * (double)kTicksPerSecond);
     }
     else
     {
-        simSec = (double)currentSimTimePs_ / (double)kTicksPerSecond;
+        simTimePs = currentSimTimePs_;
+        snap.simTime = (double)currentSimTimePs_ / (double)kTicksPerSecond;
     }
 
     std::vector<EvaluatedJoint> joints;
-    computeJointCoordinates(joints, simSec);
+    if (!computeJointCoordinates(joints, snap, stagedRateIntegrals, stagedCompanionOrigins))
+    {
+        log("Error: Full-state synchronization aborted due to coordinate evaluation failure: " + lastErrorMessage_);
+        return;
+    }
+
+    if (joints.size() != acceptedMappings_.size())
+    {
+        lastErrorMessage_ = "Evaluated joint count does not match accepted profile mapping count";
+        log("Error: " + lastErrorMessage_);
+        return;
+    }
+
+    // Evaluation succeeded for all joints: commit staged values
+    newSeq++;
+    timelineGeneration_ = newGen;
+    sequence_ = newSeq;
+    currentSimTimePs_ = simTimePs;
+    currentLifecycle_ = lifecycle;
+    rateIntegrals_ = std::move(stagedRateIntegrals);
+    companionTimelineOrigins_ = std::move(stagedCompanionOrigins);
 
     auto* obj = new juce::DynamicObject();
     obj->setProperty("type", "SynchronizeState");
@@ -1331,26 +1186,40 @@ void DcadMotionClient::sendStateFrame(const std::string& lifecycle)
     if (acceptedMappings_.empty() || awaitingStateApplied_)
         return;
 
-    double simSec = 0.0;
+    sim_panel::StateSnapshot snap;
+    int64_t simTimePs = 0;
     if (session_)
     {
-        simSec = session_->simTime();
-        currentSimTimePs_ = (int64_t)std::round(simSec * (double)kTicksPerSecond);
+        snap = session_->getSnapshot();
+        simTimePs = (int64_t)std::round(snap.simTime * (double)kTicksPerSecond);
     }
     else
     {
-        simSec = (double)currentSimTimePs_ / (double)kTicksPerSecond;
+        simTimePs = currentSimTimePs_;
+        snap.simTime = (double)currentSimTimePs_ / (double)kTicksPerSecond;
     }
 
+    auto stagedRateIntegrals = rateIntegrals_;
+    auto stagedCompanionOrigins = companionTimelineOrigins_;
+
     std::vector<EvaluatedJoint> joints;
-    if (!computeJointCoordinates(joints, simSec))
+    if (!computeJointCoordinates(joints, snap, stagedRateIntegrals, stagedCompanionOrigins))
     {
         // Coordinate computation failed due to missing signal or non-finite value
         return;
     }
 
+    if (joints.size() != acceptedMappings_.size())
+    {
+        return;
+    }
+
+    // Commit staged state
     sequence_++;
+    currentSimTimePs_ = simTimePs;
     currentLifecycle_ = lifecycle;
+    rateIntegrals_ = std::move(stagedRateIntegrals);
+    companionTimelineOrigins_ = std::move(stagedCompanionOrigins);
 
     auto* obj = new juce::DynamicObject();
     obj->setProperty("type", "StateFrame");

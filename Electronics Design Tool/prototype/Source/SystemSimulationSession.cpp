@@ -231,6 +231,8 @@ void SystemSimulationSession::setupCircuit(circuit_sim::Circuit circuit,
     pendingInputs_.clear();
     {
         std::lock_guard<std::mutex> snapshotLock(snapshotMutex_);
+        authoritativeRateIntegrals_.clear();
+        lastSolverSimTime_ = 0.0;
         latestSnapshot_.simTime = 0.0;
         latestSnapshot_.running = false;
         latestSnapshot_.paused = false;
@@ -238,6 +240,7 @@ void SystemSimulationSession::setupCircuit(circuit_sim::Circuit circuit,
         latestSnapshot_.numericSignals.clear();
         latestSnapshot_.booleanSignals.clear();
         latestSnapshot_.textSignals.clear();
+        latestSnapshot_.rateIntegrals.clear();
         for (const auto& [name, node] : outputNodeBindings_)
             latestSnapshot_.numericSignals[name] = 0.0;
         for (const auto& [name, elem] : outputBranchBindings_)
@@ -274,6 +277,7 @@ bool SystemSimulationSession::setupAssembly(const SystemAssembly& assembly, cons
         def.description = meta.description.empty() ? meta.path : meta.description;
         def.quantity = meta.quantity;
         def.kind = meta.kind;
+        def.companionSignal = meta.companionSignal;
         signalDefs_.push_back(def);
     }
 
@@ -385,8 +389,8 @@ void SystemSimulationSession::setupDefaultMotorSystem()
     outputBranchBindings_["motor.current"] = armatureElem_;
 
     signalDefs_.clear();
-    signalDefs_.push_back({ "motor.speed", DataType::Numeric, true, "rad/s", 0.0, 500.0, "Motor Shaft Angular Velocity", "angular_velocity", "rate" });
-    signalDefs_.push_back({ "motor.angle", DataType::Numeric, true, "rad", -1e6, 1e6, "Motor Shaft Angular Position", "angle", "state" });
+    signalDefs_.push_back({ "motor.speed", DataType::Numeric, true, "rad/s", 0.0, 500.0, "Motor Shaft Angular Velocity", "angular_velocity", "rate", "motor.angle" });
+    signalDefs_.push_back({ "motor.angle", DataType::Numeric, true, "rad", -1e6, 1e6, "Motor Shaft Angular Position", "angle", "state", "" });
     signalDefs_.push_back({ "motor.current", DataType::Numeric, true, "A", -50.0, 50.0, "Motor Armature Current", "current", "state" });
     signalDefs_.push_back({ "controller.drive", DataType::Numeric, true, "V", -24.0, 24.0, "Controller Output Voltage", "voltage", "state" });
     signalDefs_.push_back({ "controller.setpoint", DataType::Numeric, true, "rad/s", 0.0, 500.0, "Speed Setpoint", "angular_velocity", "state" });
@@ -411,6 +415,8 @@ void SystemSimulationSession::setupDefaultMotorSystem()
 
     {
         std::lock_guard<std::mutex> snapshotLock(snapshotMutex_);
+        authoritativeRateIntegrals_.clear();
+        lastSolverSimTime_ = 0.0;
         latestSnapshot_.simTime = 0.0;
         latestSnapshot_.running = false;
         latestSnapshot_.paused = false;
@@ -418,6 +424,7 @@ void SystemSimulationSession::setupDefaultMotorSystem()
         latestSnapshot_.numericSignals.clear();
         latestSnapshot_.booleanSignals.clear();
         latestSnapshot_.textSignals.clear();
+        latestSnapshot_.rateIntegrals.clear();
         for (const auto& [name, node] : outputNodeBindings_)
             latestSnapshot_.numericSignals[name] = 0.0;
         for (const auto& [name, elem] : outputBranchBindings_)
@@ -520,12 +527,24 @@ void SystemSimulationSession::reset()
     stop();
     currentSimTime_ = 0.0;
     isFaulted_ = false;
+    std::map<std::string, circuit_sim::Node> outNodes;
+    std::map<std::string, int> outBranches;
+    std::map<std::string, double> numInputs;
+    std::map<std::string, bool> boolInputs;
+    std::vector<SignalDef> defs;
     {
         std::lock_guard<std::mutex> lock(mutex_);
         pendingInputs_.clear();
+        outNodes = outputNodeBindings_;
+        outBranches = outputBranchBindings_;
+        numInputs = currentNumericInputs_;
+        boolInputs = currentBooleanInputs_;
+        defs = signalDefs_;
     }
     {
         std::lock_guard<std::mutex> snapshotLock(snapshotMutex_);
+        authoritativeRateIntegrals_.clear();
+        lastSolverSimTime_ = 0.0;
         latestSnapshot_.simTime = 0.0;
         latestSnapshot_.running = false;
         latestSnapshot_.paused = false;
@@ -533,6 +552,20 @@ void SystemSimulationSession::reset()
         latestSnapshot_.numericSignals.clear();
         latestSnapshot_.booleanSignals.clear();
         latestSnapshot_.textSignals.clear();
+        latestSnapshot_.rateIntegrals.clear();
+        for (const auto& [name, node] : outNodes)
+            latestSnapshot_.numericSignals[name] = 0.0;
+        for (const auto& [name, elem] : outBranches)
+            latestSnapshot_.numericSignals[name] = 0.0;
+        for (const auto& [name, val] : numInputs)
+            latestSnapshot_.numericSignals[name] = val;
+        for (const auto& [name, val] : boolInputs)
+            latestSnapshot_.booleanSignals[name] = val;
+        for (const auto& def : defs)
+        {
+            if (def.isOutput && latestSnapshot_.numericSignals.find(def.name) == latestSnapshot_.numericSignals.end())
+                latestSnapshot_.numericSignals[def.name] = 0.0;
+        }
     }
     addEventLog("Simulation reset to t = 0.000s", "CONTROL");
 }
@@ -850,6 +883,26 @@ void SystemSimulationSession::publishSnapshot(const circuit_sim::TransientSteppe
                 latestSnapshot_.numericSignals["motor.current"] = val;
         }
     }
+
+    // Accumulate simulation-owned rate integrals across accepted solver steps
+    const double curSimT = stepper.time();
+    const double dtAccepted = curSimT - lastSolverSimTime_;
+    if (dtAccepted > 0.0)
+    {
+        for (const auto& def : signalDefs_)
+        {
+            if (def.isOutput && def.kind == "rate")
+            {
+                auto it = latestSnapshot_.numericSignals.find(def.name);
+                if (it != latestSnapshot_.numericSignals.end() && std::isfinite(it->second))
+                {
+                    authoritativeRateIntegrals_[def.name] += it->second * dtAccepted;
+                }
+            }
+        }
+    }
+    lastSolverSimTime_ = curSimT;
+    latestSnapshot_.rateIntegrals = authoritativeRateIntegrals_;
 }
 
 void SystemSimulationSession::workerThreadLoop()
