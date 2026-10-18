@@ -260,6 +260,23 @@ bool SystemSimulationSession::setupAssembly(const SystemAssembly& assembly, cons
     inputElementBindings_ = std::move(compiled.inputElements);
     outputNodeBindings_ = std::move(compiled.signalNodes);
     outputBranchBindings_ = std::move(compiled.signalBranches);
+
+    signalDefs_.clear();
+    for (const auto& meta : compiled.metadata)
+    {
+        SignalDef def;
+        def.name = meta.path;
+        def.type = DataType::Numeric;
+        def.isOutput = !meta.isInput;
+        def.unit = meta.unit;
+        def.minValue = meta.minVal;
+        def.maxValue = meta.maxVal;
+        def.description = meta.description.empty() ? meta.path : meta.description;
+        def.quantity = meta.quantity;
+        def.kind = meta.kind;
+        signalDefs_.push_back(def);
+    }
+
     currentSimTime_ = 0.0;
     currentNumericInputs_.clear();
     currentBooleanInputs_.clear();
@@ -366,6 +383,22 @@ void SystemSimulationSession::setupDefaultMotorSystem()
     outputNodeBindings_["controller.setpoint"] = setpointNode;
 
     outputBranchBindings_["motor.current"] = armatureElem_;
+
+    signalDefs_.clear();
+    signalDefs_.push_back({ "motor.speed", DataType::Numeric, true, "rad/s", 0.0, 500.0, "Motor Shaft Angular Velocity", "angular_velocity", "rate" });
+    signalDefs_.push_back({ "motor.angle", DataType::Numeric, true, "rad", -1e6, 1e6, "Motor Shaft Angular Position", "angle", "state" });
+    signalDefs_.push_back({ "motor.current", DataType::Numeric, true, "A", -50.0, 50.0, "Motor Armature Current", "current", "state" });
+    signalDefs_.push_back({ "controller.drive", DataType::Numeric, true, "V", -24.0, 24.0, "Controller Output Voltage", "voltage", "state" });
+    signalDefs_.push_back({ "controller.setpoint", DataType::Numeric, true, "rad/s", 0.0, 500.0, "Speed Setpoint", "angular_velocity", "state" });
+    signalDefs_.push_back({ "lamp.running", DataType::Boolean, true, "bool", 0.0, 1.0, "Running Status Indicator", "status", "state" });
+    signalDefs_.push_back({ "lamp.fault", DataType::Boolean, true, "bool", 0.0, 1.0, "Fault Status Indicator", "status", "state" });
+    signalDefs_.push_back({ "speed_setpoint", DataType::Numeric, false, "rad/s", 0.0, 500.0, "Target Speed Control", "angular_velocity", "state" });
+    signalDefs_.push_back({ "load_torque", DataType::Numeric, false, "N*m", 0.0, 2.0, "Mechanical Load Torque", "torque", "state" });
+    signalDefs_.push_back({ "power_switch", DataType::Boolean, false, "bool", 0.0, 1.0, "System Power Switch", "control", "state" });
+    signalDefs_.push_back({ "start_button", DataType::Boolean, false, "bool", 0.0, 1.0, "Start Cycle Button", "control", "state" });
+    signalDefs_.push_back({ "stop_button", DataType::Boolean, false, "bool", 0.0, 1.0, "Stop Cycle Button", "control", "state" });
+    signalDefs_.push_back({ "estop_button", DataType::Boolean, false, "bool", 0.0, 1.0, "Emergency Stop Button", "control", "state" });
+    signalDefs_.push_back({ "reset_button", DataType::Boolean, false, "bool", 0.0, 1.0, "Fault Reset Button", "control", "state" });
 
     currentNumericInputs_["speed_setpoint"] = 300.0;
     currentNumericInputs_["load_torque"] = 0.0;

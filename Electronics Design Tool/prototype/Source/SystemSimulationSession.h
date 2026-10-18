@@ -36,6 +36,8 @@ struct SignalDef
     double minValue = 0.0;
     double maxValue = 100.0;
     std::string description;
+    std::string quantity; // "angular_velocity", "angle", "position", "linear_velocity", "voltage", "current", etc.
+    std::string kind;     // "state", "rate"
 };
 
 struct EventItem
@@ -112,11 +114,13 @@ public:
     bool isPaused() const { return isPaused_.load(); }
     double simTime() const { return currentSimTime_.load(); }
 
-    // Inspectable circuit and bindings
+    // Inspectable circuit, bindings, and signal catalog
     const circuit_sim::Circuit& baseCircuit() const { return baseCircuit_; }
     const std::map<std::string, int>& inputElementBindings() const { return inputElementBindings_; }
     const std::map<std::string, circuit_sim::Node>& outputNodeBindings() const { return outputNodeBindings_; }
     const std::map<std::string, int>& outputBranchBindings() const { return outputBranchBindings_; }
+    const std::vector<SignalDef>& signalDefinitions() const { return signalDefs_; }
+    void setSignalDefinitions(std::vector<SignalDef> defs) { signalDefs_ = std::move(defs); }
 
 private:
     void workerThreadLoop();
@@ -134,6 +138,7 @@ private:
     };
 
     circuit_sim::Circuit baseCircuit_;
+    std::vector<SignalDef> signalDefs_;
     std::map<std::string, int> inputElementBindings_;
     std::map<std::string, circuit_sim::Node> outputNodeBindings_;
     std::map<std::string, int> outputBranchBindings_;

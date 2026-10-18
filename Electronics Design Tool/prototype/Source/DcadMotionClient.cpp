@@ -201,63 +201,26 @@ std::vector<SignalDescriptor> DcadMotionClient::getSignalCatalog() const
 
 void DcadMotionClient::refreshCatalogFromActiveSession()
 {
-    // Build an authoritative catalog of signals from the session / circuit / defaults
     std::vector<SignalDescriptor> cat;
-
-    // Standard motor & motion signals
-    cat.push_back({ "motor.speed", "Motor Shaft Angular Velocity", "angular_velocity", "rad/s", "rate" });
-    cat.push_back({ "motor.angle", "Motor Shaft Position", "angle", "rad", "state" });
-    cat.push_back({ "spindle.speed", "Spindle Speed", "angular_velocity", "rpm", "rate" });
-    cat.push_back({ "carriage.position", "Carriage Linear Displacement", "position", "mm", "state" });
-    cat.push_back({ "carriage.velocity", "Carriage Linear Velocity", "linear_velocity", "m/s", "rate" });
 
     if (session_)
     {
-        const auto& snap = session_->getSnapshot();
-        for (const auto& [name, val] : snap.numericSignals)
+        const auto& defs = session_->signalDefinitions();
+        for (const auto& d : defs)
         {
-            // If already added, skip
-            bool exists = false;
-            for (const auto& s : cat)
-            {
-                if (s.id == name) { exists = true; break; }
-            }
-            if (exists) continue;
+            if (!d.isOutput)
+                continue;
 
-            SignalDescriptor desc;
-            desc.id = name;
-            desc.name = name;
-
-            std::string lower = name;
-            for (char& c : lower) c = (char)std::tolower((unsigned char)c);
-
-            if (lower.find("speed") != std::string::npos || lower.find("velocity") != std::string::npos || lower.find("omega") != std::string::npos)
+            // Only mechanical motion quantities are relevant for CAD joint motion
+            if (d.quantity == "angular_velocity" || d.quantity == "angle" ||
+                d.quantity == "linear_velocity"  || d.quantity == "position")
             {
-                if (lower.find("linear") != std::string::npos)
-                {
-                    desc.quantity = "linear_velocity";
-                    desc.unit = "m/s";
-                }
-                else
-                {
-                    desc.quantity = "angular_velocity";
-                    desc.unit = "rad/s";
-                }
-                desc.kind = "rate";
-                cat.push_back(desc);
-            }
-            else if (lower.find("angle") != std::string::npos || lower.find("theta") != std::string::npos)
-            {
-                desc.quantity = "angle";
-                desc.unit = "rad";
-                desc.kind = "state";
-                cat.push_back(desc);
-            }
-            else if (lower.find("pos") != std::string::npos || lower.find("dist") != std::string::npos)
-            {
-                desc.quantity = "position";
-                desc.unit = "m";
-                desc.kind = "state";
+                SignalDescriptor desc;
+                desc.id = d.name;
+                desc.name = d.description.empty() ? d.name : d.description;
+                desc.quantity = d.quantity;
+                desc.unit = d.unit;
+                desc.kind = d.kind.empty() ? (isRateQuantity(d.quantity) ? "rate" : "state") : d.kind;
                 cat.push_back(desc);
             }
         }
@@ -352,10 +315,7 @@ bool DcadMotionClient::connectToPipe(const std::string& pipePath)
         shouldExit_ = false;
         readBuffer_.clear();
         acceptedMappings_.clear();
-        rateIntegrals_.clear();
         executedResults_.clear();
-        sequence_ = 0;
-        timelineGeneration_ = 0;
         awaitingStateApplied_ = false;
     }
 
@@ -704,13 +664,14 @@ void DcadMotionClient::handleBindingProposal(const juce::var& msg)
             proposed.push_back(ProfileMapping::fromJson(item));
     }
 
+    const int propRevision = (int)msg.getProperty("profileRevision", 0);
     auto problems = validateProposal(proposed);
     if (!problems.empty())
     {
         log("Validation rejected " + std::to_string(problems.size()) + " proposal mappings");
-        sendBindingReject(problems);
+        sendBindingReject(propRevision, problems);
         std::lock_guard<std::recursive_mutex> lock(mutex_);
-        state_ = LinkState::Error;
+        state_ = LinkState::Advertising;
         lastErrorMessage_ = "Binding proposal rejected with validation errors";
         return;
     }
@@ -721,15 +682,17 @@ void DcadMotionClient::handleBindingProposal(const juce::var& msg)
         interfaceRevision_ = (int)msg.getProperty("interfaceRevision", 0);
         profileRevision_ = (int)msg.getProperty("profileRevision", 0);
         acceptedMappings_ = std::move(proposed);
-        rateIntegrals_.clear();
 
-        // Initialize rate coordinates
+        // Initialize rate coordinates only for new joints that are not already tracked
         for (const auto& m : acceptedMappings_)
         {
-            if (m.hasInitialCoordinate)
-                rateIntegrals_[m.joint] = m.initialCoordinate;
-            else
-                rateIntegrals_[m.joint] = 0.0;
+            if (rateIntegrals_.find(m.joint) == rateIntegrals_.end())
+            {
+                if (m.hasInitialCoordinate)
+                    rateIntegrals_[m.joint] = m.initialCoordinate;
+                else
+                    rateIntegrals_[m.joint] = 0.0;
+            }
         }
 
         state_ = LinkState::Binding;
@@ -737,8 +700,9 @@ void DcadMotionClient::handleBindingProposal(const juce::var& msg)
 
     sendBindingAccept();
 
-    // After BindingAccept, send initial SynchronizeState
-    sendSynchronizeState("paused", true);
+    // After BindingAccept, send SynchronizeState. Only start a new timeline generation on first binding.
+    const bool isFirstTimeline = (timelineGeneration_ == 0);
+    sendSynchronizeState(currentLifecycle_, isFirstTimeline);
 }
 
 void DcadMotionClient::handleStateApplied(const juce::var& msg)
@@ -1085,23 +1049,79 @@ std::vector<ValidationError> DcadMotionClient::validateProposal(const std::vecto
             errors.push_back({ "nonFiniteValue", m.joint, m.signal, "Scale factor must be non-zero finite number." });
             continue;
         }
+
+        // Check historical integration availability for rate sources
+        if (isRateQuantity(m.sourceQuantity))
+        {
+            const bool isAlreadyTracked = (rateIntegrals_.find(m.joint) != rateIntegrals_.end());
+            const bool atInitialTime = (currentSimTimePs_ == 0 && (!session_ || session_->simTime() <= 1e-9));
+
+            bool hasCompanion = false;
+            if (session_)
+            {
+                auto snap = session_->getSnapshot();
+                if (!findCompanionPositionSignal(m.signal, snap.numericSignals).empty())
+                    hasCompanion = true;
+            }
+
+            if (!isAlreadyTracked && !atInitialTime && !hasCompanion)
+            {
+                errors.push_back({ "integrationUnavailable", m.joint, m.signal,
+                    "Historical integration unavailable for rate source mid-run; map an authoritative state signal or reset simulation." });
+                continue;
+            }
+        }
     }
 
     return errors;
 }
 
+std::string DcadMotionClient::findCompanionPositionSignal(const std::string& rateSignal, const std::map<std::string, double>& signalValues) const
+{
+    if (rateSignal.length() >= 6 && rateSignal.compare(rateSignal.length() - 6, 6, ".speed") == 0)
+    {
+        std::string cand = rateSignal.substr(0, rateSignal.length() - 6) + ".angle";
+        if (signalValues.find(cand) != signalValues.end())
+            return cand;
+    }
+    else if (rateSignal.length() >= 9 && rateSignal.compare(rateSignal.length() - 9, 9, ".velocity") == 0)
+    {
+        std::string cand = rateSignal.substr(0, rateSignal.length() - 9) + ".position";
+        if (signalValues.find(cand) != signalValues.end())
+            return cand;
+    }
+    else if (rateSignal == "speed" && signalValues.find("angle") != signalValues.end())
+    {
+        return "angle";
+    }
+    return {};
+}
+
 // -----------------------------------------------------------------------------
 // Joint Evaluation & Mathematical Absolute State
 // -----------------------------------------------------------------------------
-std::vector<DcadMotionClient::EvaluatedJoint> DcadMotionClient::computeJointCoordinates(double simTimeSeconds, double dtSeconds)
+bool DcadMotionClient::computeJointCoordinates(std::vector<EvaluatedJoint>& evaluated, double simTimeSeconds)
 {
-    std::vector<EvaluatedJoint> evaluated;
+    evaluated.clear();
 
-    std::map<std::string, double> signalValues;
-    if (session_)
+    if (!session_)
     {
-        const auto snap = session_->getSnapshot();
-        signalValues = snap.numericSignals;
+        lastErrorMessage_ = "No active simulation session attached";
+        return false;
+    }
+
+    const auto snap = session_->getSnapshot();
+    const auto& signalValues = snap.numericSignals;
+
+    double dtSim = 0.0;
+    if (lastIntegratedSimTime_ >= 0.0)
+    {
+        if (simTimeSeconds > lastIntegratedSimTime_)
+            dtSim = simTimeSeconds - lastIntegratedSimTime_;
+    }
+    else
+    {
+        lastIntegratedSimTime_ = simTimeSeconds;
     }
 
     for (const auto& m : acceptedMappings_)
@@ -1109,23 +1129,20 @@ std::vector<DcadMotionClient::EvaluatedJoint> DcadMotionClient::computeJointCoor
         EvaluatedJoint ej;
         ej.joint = m.joint;
 
-        double rawVal = 0.0;
         auto it = signalValues.find(m.signal);
-        if (it != signalValues.end())
+        if (it == signalValues.end())
         {
-            rawVal = it->second;
+            lastErrorMessage_ = "Bound signal not present in simulation snapshot: " + m.signal;
+            log("Error: " + lastErrorMessage_);
+            return false;
         }
-        else
+
+        double rawVal = it->second;
+        if (!std::isfinite(rawVal))
         {
-            // Fallback for demonstration / testbench if not in snapshot
-            if (m.sourceQuantity == "position")
-                rawVal = 40.0 * std::sin(2.0 * 3.141592653589793 * 0.2 * simTimeSeconds); // +-40 mm
-            else if (m.sourceQuantity == "linear_velocity")
-                rawVal = 40.0 * 2.0 * 3.141592653589793 * 0.2 * std::cos(2.0 * 3.141592653589793 * 0.2 * simTimeSeconds);
-            else if (m.sourceQuantity == "angle")
-                rawVal = 2.0 * 3.141592653589793 * 0.5 * simTimeSeconds; // half turn / sec
-            else if (m.sourceQuantity == "angular_velocity")
-                rawVal = 30.0; // 30 rpm
+            lastErrorMessage_ = "Bound signal has non-finite value in simulation snapshot: " + m.signal;
+            log("Error: " + lastErrorMessage_);
+            return false;
         }
 
         const double unitValSI = rawVal * m.unitToSI;
@@ -1133,26 +1150,47 @@ std::vector<DcadMotionClient::EvaluatedJoint> DcadMotionClient::computeJointCoor
 
         if (isRateQuantity(m.sourceQuantity))
         {
-            // Integrated rate source
-            double currentCoord = rateIntegrals_[m.joint];
-            currentCoord += scaledSI * dtSeconds;
-            rateIntegrals_[m.joint] = currentCoord;
-
-            ej.coordinate = currentCoord;
-            ej.hasVelocity = true;
-            ej.velocity = scaledSI;
+            std::string companion = findCompanionPositionSignal(m.signal, signalValues);
+            if (!companion.empty())
+            {
+                double compRaw = signalValues.at(companion);
+                if (!std::isfinite(compRaw))
+                {
+                    lastErrorMessage_ = "Companion position signal has non-finite value: " + companion;
+                    log("Error: " + lastErrorMessage_);
+                    return false;
+                }
+                ej.coordinate = m.offset + compRaw * m.scale;
+                ej.hasVelocity = true;
+                ej.velocity = scaledSI;
+                rateIntegrals_[m.joint] = ej.coordinate;
+            }
+            else
+            {
+                double currentCoord = rateIntegrals_[m.joint];
+                if (dtSim > 0.0)
+                {
+                    currentCoord += scaledSI * dtSim;
+                    rateIntegrals_[m.joint] = currentCoord;
+                }
+                ej.coordinate = currentCoord;
+                ej.hasVelocity = true;
+                ej.velocity = scaledSI;
+            }
         }
         else
         {
-            // Absolute state source
             ej.coordinate = m.offset + scaledSI;
             ej.hasVelocity = false;
+            ej.velocity = 0.0;
+            rateIntegrals_[m.joint] = ej.coordinate;
         }
 
         evaluated.push_back(ej);
     }
 
-    return evaluated;
+    lastIntegratedSimTime_ = simTimeSeconds;
+    return true;
 }
 
 // -----------------------------------------------------------------------------
@@ -1211,11 +1249,11 @@ void DcadMotionClient::sendBindingAccept()
     log("DEWB -> BindingAccept sent");
 }
 
-void DcadMotionClient::sendBindingReject(const std::vector<ValidationError>& errors)
+void DcadMotionClient::sendBindingReject(int profileRevision, const std::vector<ValidationError>& errors)
 {
     auto* obj = new juce::DynamicObject();
     obj->setProperty("type", "BindingReject");
-    obj->setProperty("profileRevision", profileRevision_);
+    obj->setProperty("profileRevision", profileRevision);
 
     juce::Array<juce::var> errArr;
     for (const auto& e : errors)
@@ -1235,8 +1273,9 @@ void DcadMotionClient::sendSynchronizeState(const std::string& lifecycle, bool n
         timelineGeneration_++;
         currentSimTimePs_ = 0;
         sequence_ = 0;
+        lastIntegratedSimTime_ = 0.0;
 
-        // Reset rate integrals to initial coordinates
+        // Reset rate integrals to initial coordinates only on a genuine new timeline
         for (const auto& m : acceptedMappings_)
         {
             if (m.hasInitialCoordinate)
@@ -1249,8 +1288,19 @@ void DcadMotionClient::sendSynchronizeState(const std::string& lifecycle, bool n
     sequence_++;
     currentLifecycle_ = lifecycle;
 
-    double simSec = (double)currentSimTimePs_ / (double)kTicksPerSecond;
-    auto joints = computeJointCoordinates(simSec, 0.0);
+    double simSec = 0.0;
+    if (session_)
+    {
+        simSec = session_->simTime();
+        currentSimTimePs_ = (int64_t)std::round(simSec * (double)kTicksPerSecond);
+    }
+    else
+    {
+        simSec = (double)currentSimTimePs_ / (double)kTicksPerSecond;
+    }
+
+    std::vector<EvaluatedJoint> joints;
+    computeJointCoordinates(joints, simSec);
 
     auto* obj = new juce::DynamicObject();
     obj->setProperty("type", "SynchronizeState");
@@ -1281,27 +1331,26 @@ void DcadMotionClient::sendStateFrame(const std::string& lifecycle)
     if (acceptedMappings_.empty() || awaitingStateApplied_)
         return;
 
-    sequence_++;
-    currentLifecycle_ = lifecycle;
-
-    double dtSec = 0.033; // default approx frame step
+    double simSec = 0.0;
     if (session_)
     {
-        double st = session_->simTime();
-        int64_t newPs = (int64_t)std::round(st * (double)kTicksPerSecond);
-        if (newPs > currentSimTimePs_)
-        {
-            dtSec = (double)(newPs - currentSimTimePs_) / (double)kTicksPerSecond;
-            currentSimTimePs_ = newPs;
-        }
+        simSec = session_->simTime();
+        currentSimTimePs_ = (int64_t)std::round(simSec * (double)kTicksPerSecond);
     }
     else
     {
-        currentSimTimePs_ += (int64_t)std::round(dtSec * (double)kTicksPerSecond);
+        simSec = (double)currentSimTimePs_ / (double)kTicksPerSecond;
     }
 
-    double simSec = (double)currentSimTimePs_ / (double)kTicksPerSecond;
-    auto joints = computeJointCoordinates(simSec, dtSec);
+    std::vector<EvaluatedJoint> joints;
+    if (!computeJointCoordinates(joints, simSec))
+    {
+        // Coordinate computation failed due to missing signal or non-finite value
+        return;
+    }
+
+    sequence_++;
+    currentLifecycle_ = lifecycle;
 
     auto* obj = new juce::DynamicObject();
     obj->setProperty("type", "StateFrame");

@@ -1614,6 +1614,82 @@ CompiledAssemblyCircuit AssemblyCompiler::compile(const SystemAssembly& assembly
     CompiledAssemblyCircuit res;
     circuit_sim::Circuit& c = res.circuit;
 
+    auto addMeta = [&](const std::string& path, PortDomain domain, const std::string& unit,
+                       const std::string& quantity, const std::string& kind, const std::string& desc, bool isInput = false,
+                       double minVal = 0.0, double maxVal = 100.0) {
+        for (const auto& m : res.metadata)
+            if (m.path == path) return;
+        CompiledAssemblyCircuit::SignalMeta sm;
+        sm.path = path;
+        sm.domain = domain;
+        sm.unit = unit;
+        sm.quantity = quantity;
+        sm.kind = kind;
+        sm.description = desc;
+        sm.isInput = isInput;
+        sm.minVal = minVal;
+        sm.maxVal = maxVal;
+        res.metadata.push_back(std::move(sm));
+    };
+
+    auto inferQuantityAndKind = [](PortDomain domain, const std::string& unit, std::string& outQty, std::string& outKind) {
+        if (domain == PortDomain::Mechanical)
+        {
+            if (unit == "rad/s" || unit == "rpm" || unit == "deg/s" || unit == "rev/s")
+            {
+                outQty = "angular_velocity";
+                outKind = "rate";
+            }
+            else if (unit == "rad" || unit == "deg" || unit == "rev")
+            {
+                outQty = "angle";
+                outKind = "state";
+            }
+            else if (unit == "m/s" || unit == "mm/s")
+            {
+                outQty = "linear_velocity";
+                outKind = "rate";
+            }
+            else if (unit == "m" || unit == "mm")
+            {
+                outQty = "position";
+                outKind = "state";
+            }
+            else if (unit == "N*m")
+            {
+                outQty = "torque";
+                outKind = "state";
+            }
+            else if (unit == "N")
+            {
+                outQty = "force";
+                outKind = "state";
+            }
+            else
+            {
+                outQty = "mechanical";
+                outKind = "state";
+            }
+        }
+        else if (domain == PortDomain::Electrical)
+        {
+            if (unit == "V") { outQty = "voltage"; outKind = "state"; }
+            else if (unit == "A") { outQty = "current"; outKind = "state"; }
+            else { outQty = "electrical"; outKind = "state"; }
+        }
+        else if (domain == PortDomain::SignalControl)
+        {
+            if (unit == "rad/s" || unit == "rpm") { outQty = "angular_velocity"; outKind = "state"; }
+            else if (unit == "V") { outQty = "voltage"; outKind = "state"; }
+            else { outQty = "control"; outKind = "state"; }
+        }
+        else
+        {
+            outQty = "signal";
+            outKind = "state";
+        }
+    };
+
     // Node allocator map: "instance.port" -> circuit_sim::Node
     std::map<std::string, circuit_sim::Node> portNodes;
 
@@ -1890,12 +1966,23 @@ CompiledAssemblyCircuit AssemblyCompiler::compile(const SystemAssembly& assembly
             res.signalNodes[inst.instanceId + ".tach"] = nTach;
             res.signalBranches[inst.instanceId + ".current"] = motor.armature;
 
+            addMeta(inst.instanceId + ".speed", PortDomain::Mechanical, "rad/s", "angular_velocity", "rate", "Motor Shaft Angular Velocity", false, 0.0, 500.0);
+            addMeta(inst.instanceId + ".angle", PortDomain::Mechanical, "rad", "angle", "state", "Motor Shaft Angular Position", false, -1e6, 1e6);
+            addMeta(inst.instanceId + ".current", PortDomain::Electrical, "A", "current", "state", "Motor Armature Current", false, -50.0, 50.0);
+            addMeta(inst.instanceId + ".tach", PortDomain::SignalControl, "V", "voltage", "state", "Tachometer Feedback", false, -10.0, 10.0);
+            addMeta(inst.instanceId + ".v_in", PortDomain::Electrical, "V", "voltage", "state", "Motor Terminal Voltage", false, -50.0, 50.0);
+            addMeta(inst.instanceId + ".load_torque", PortDomain::Mechanical, "N*m", "torque", "state", "Mechanical Load Torque", true, 0.0, 2.0);
+
             if (res.signalNodes.find("motor.speed") == res.signalNodes.end())
             {
                 res.signalNodes["motor.speed"] = motor.shaft;
                 res.signalNodes["motor.angle"] = motor.angle;
                 res.signalNodes["motor.tach"] = nTach;
                 res.signalBranches["motor.current"] = motor.armature;
+
+                addMeta("motor.speed", PortDomain::Mechanical, "rad/s", "angular_velocity", "rate", "Motor Shaft Angular Velocity", false, 0.0, 500.0);
+                addMeta("motor.angle", PortDomain::Mechanical, "rad", "angle", "state", "Motor Shaft Angular Position", false, -1e6, 1e6);
+                addMeta("motor.current", PortDomain::Electrical, "A", "current", "state", "Motor Armature Current", false, -50.0, 50.0);
             }
         }
         else if (def->kind == SubsystemKind::SchematicReference)
@@ -2171,6 +2258,9 @@ CompiledAssemblyCircuit AssemblyCompiler::compile(const SystemAssembly& assembly
             {
                 res.signalNodes[key] = getNodeForPort(inst.instanceId, p.name);
             }
+            std::string q, k;
+            inferQuantityAndKind(p.domain, p.unit, q, k);
+            addMeta(key, p.domain, p.unit, q, k, p.description.empty() ? key : p.description, p.direction == PortDirection::Input);
         }
     }
 
@@ -2183,6 +2273,9 @@ CompiledAssemblyCircuit AssemblyCompiler::compile(const SystemAssembly& assembly
             const auto [instance, portName] = splitSignalPath(path);
             res.signalNodes[path] = getNodeForPort(instance, portName);
         }
+        std::string q, k;
+        inferQuantityAndKind(port.domain, port.unit, q, k);
+        addMeta(path, port.domain, port.unit, q, k, port.description.empty() ? path : port.description, port.direction == PortDirection::Input);
     }
 
     res.success = true;

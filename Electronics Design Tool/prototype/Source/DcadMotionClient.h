@@ -197,7 +197,7 @@ private:
     void sendHello();
     void sendSignalInterface();
     void sendBindingAccept();
-    void sendBindingReject(const std::vector<ValidationError>& errors);
+    void sendBindingReject(int profileRevision, const std::vector<ValidationError>& errors);
     void sendSynchronizeState(const std::string& lifecycle, bool newTimeline = false);
     void sendStateFrame(const std::string& lifecycle);
     void sendHeartbeat();
@@ -216,7 +216,8 @@ private:
         juce::var toJson() const;
     };
 
-    std::vector<EvaluatedJoint> computeJointCoordinates(double simTimeSeconds, double dtSeconds);
+    bool computeJointCoordinates(std::vector<EvaluatedJoint>& evaluated, double simTimeSeconds);
+    std::string findCompanionPositionSignal(const std::string& rateSignal, const std::map<std::string, double>& signalValues) const;
 
     // Logging helper
     void log(const std::string& message);
@@ -247,6 +248,7 @@ private:
     int timelineGeneration_ = 0;
     uint64_t sequence_ = 0;
     int64_t currentSimTimePs_ = 0;
+    double lastIntegratedSimTime_ = 0.0;
     std::string currentLifecycle_ = "stopped";
     bool initial_ = true;
 

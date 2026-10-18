@@ -50,26 +50,35 @@ int main()
     TEST_CHECK(!dcad_motion::isRateQuantity("angle"), "angle is state");
 
     std::cout << "[DEBUG] Step 2" << std::endl;
-    // 2. Test Client instantiation and signal catalog
+    // 2. Test Client instantiation and signal catalog from active session
     auto client = std::make_shared<dcad_motion::DcadMotionClient>();
     TEST_CHECK(client != nullptr, "Client created");
-    auto signals = client->getSignalCatalog();
-    TEST_CHECK(!signals.empty(), "Default signal catalog non-empty");
 
-    bool hasMotorSpeed = false;
-    bool hasCarriagePos = false;
-    for (const auto& s : signals)
-    {
-        if (s.id == "motor.speed") hasMotorSpeed = true;
-        if (s.id == "carriage.position") hasCarriagePos = true;
-    }
-    TEST_CHECK(hasMotorSpeed, "motor.speed present in catalog");
-    TEST_CHECK(hasCarriagePos, "carriage.position present in catalog");
-
-    // 3. Test Session Attachment & Lifecycle Command Execution (with Deduplication)
     auto session = std::make_shared<sim_panel::SystemSimulationSession>();
     session->setupDefaultMotorSystem();
     client->attachSession(session);
+
+    auto signals = client->getSignalCatalog();
+    TEST_CHECK(!signals.empty(), "Signal catalog populated from active session");
+
+    bool hasMotorSpeed = false;
+    bool hasMotorAngle = false;
+    bool hasFakeCarriage = false;
+    bool hasFakeSpindle = false;
+    for (const auto& s : signals)
+    {
+        if (s.id == "motor.speed") hasMotorSpeed = true;
+        if (s.id == "motor.angle") hasMotorAngle = true;
+        if (s.id == "carriage.position") hasFakeCarriage = true;
+        if (s.id == "spindle.speed") hasFakeSpindle = true;
+    }
+    TEST_CHECK(hasMotorSpeed, "motor.speed present in catalog");
+    TEST_CHECK(hasMotorAngle, "motor.angle present in catalog");
+    TEST_CHECK(!hasFakeCarriage, "carriage.position NOT advertised (no fake motion)");
+    TEST_CHECK(!hasFakeSpindle, "spindle.speed NOT advertised (no fake motion)");
+
+    // 3. Test Session Attachment & Lifecycle Command Execution (with Deduplication)
+    std::cout << "[DEBUG] Step 3 start" << std::endl;
 
     // Initial state check
     auto status = client->getStatus();
@@ -118,8 +127,10 @@ int main()
     TEST_CHECK(resReset.outcome == "applied", "Reset command applied");
     TEST_CHECK(resReset.lifecycle == "stopped", "Lifecycle is stopped at t=0 after reset");
     TEST_CHECK(resReset.simTimePs == 0, "Simulation time is 0 after reset");
+    std::cout << "[DEBUG] Step 3 complete" << std::endl;
 
     // 4. Test Live Named Pipe Loopback
+    std::cout << "[DEBUG] Step 4 start" << std::endl;
     // Create a mock named pipe server simulating DjehutiCAD
     std::string pipeName = "DjehutiCAD.Motion.Test." + std::to_string(GetCurrentProcessId());
     std::string pipePath = "\\\\.\\pipe\\" + pipeName;
@@ -152,6 +163,7 @@ int main()
         if (clientConnectThread.joinable())
             clientConnectThread.join();
         TEST_CHECK(connectOk.load(), "Client connected to test pipe");
+        std::cout << "[DEBUG] Step 4 pipe connected" << std::endl;
 
         // Helper to read JUCE frame from server side
         auto serverReadFrame = [hServerPipe](juce::var& out) -> bool {
@@ -224,40 +236,79 @@ int main()
         TEST_CHECK(serverReadFrame(sigIntMsg), "Server received SignalInterface");
         TEST_CHECK(sigIntMsg.getProperty("type", {}).toString() == "SignalInterface", "Message is SignalInterface");
 
-        // 4. Server proposes valid binding
+        // Verify advertised interface contains actual motor signals and no fake carriage/spindle
+        const auto* sigArr = sigIntMsg.getProperty("signals", {}).getArray();
+        TEST_CHECK(sigArr != nullptr, "Signals array present");
+        bool ifaceHasMotorSpeed = false;
+        bool ifaceHasCarriage = false;
+        if (sigArr)
+        {
+            for (const auto& s : *sigArr)
+            {
+                auto id = s.getProperty("id", {}).toString();
+                if (id == "motor.speed") ifaceHasMotorSpeed = true;
+                if (id == "carriage.position") ifaceHasCarriage = true;
+            }
+        }
+        TEST_CHECK(ifaceHasMotorSpeed, "SignalInterface advertises motor.speed");
+        TEST_CHECK(!ifaceHasCarriage, "SignalInterface does not advertise fake carriage");
+
+        // 4A. Server tests unknown signal rejection: proposes binding carriage.position
+        auto* badProp = new juce::DynamicObject();
+        badProp->setProperty("type", "BindingProposal");
+        badProp->setProperty("modelId", "cad-model-uuid-1234");
+        badProp->setProperty("interfaceRevision", 1);
+        badProp->setProperty("profileRevision", 1);
+        badProp->setProperty("simulationId", sigIntMsg.getProperty("simulationId", {}));
+        badProp->setProperty("signalInterfaceRevision", (int)sigIntMsg.getProperty("signalInterfaceRevision", 1));
+        juce::Array<juce::var> badMappings;
+        auto* bm1 = new juce::DynamicObject();
+        bm1->setProperty("joint", "joint-carriage");
+        bm1->setProperty("signal", "carriage.position");
+        bm1->setProperty("sourceQuantity", "position");
+        bm1->setProperty("sourceUnit", "mm");
+        bm1->setProperty("jointQuantity", "position");
+        bm1->setProperty("jointUnit", "m");
+        bm1->setProperty("unitToSI", 0.001);
+        bm1->setProperty("scale", 1.0);
+        bm1->setProperty("offset", 0.0);
+        badMappings.add(juce::var(bm1));
+        badProp->setProperty("mappings", badMappings);
+        serverSendFrame(juce::var(badProp));
+
+        // DEWB must reject with BindingReject (unknownSignal)
+        juce::var rejectMsg;
+        TEST_CHECK(serverReadFrame(rejectMsg), "Server received BindingReject for unadvertised signal");
+        TEST_CHECK(rejectMsg.getProperty("type", {}).toString() == "BindingReject", "Type is BindingReject");
+        const auto* errs = rejectMsg.getProperty("errors", {}).getArray();
+        TEST_CHECK(errs != nullptr && !errs->isEmpty(), "BindingReject contains errors list");
+        if (errs && !errs->isEmpty())
+        {
+            TEST_CHECK((*errs)[0].getProperty("code", {}).toString() == "unknownSignal", "Rejection error code is unknownSignal");
+        }
+
+        // 4B. Server proposes valid binding for motor.speed
         auto* prop = new juce::DynamicObject();
         prop->setProperty("type", "BindingProposal");
         prop->setProperty("modelId", "cad-model-uuid-1234");
         prop->setProperty("interfaceRevision", 1);
         prop->setProperty("profileRevision", 2);
         prop->setProperty("simulationId", sigIntMsg.getProperty("simulationId", {}));
-        prop->setProperty("signalInterfaceRevision", 1);
+        prop->setProperty("signalInterfaceRevision", (int)sigIntMsg.getProperty("signalInterfaceRevision", 1));
 
         juce::Array<juce::var> mappings;
         auto* m1 = new juce::DynamicObject();
-        m1->setProperty("joint", "joint-carriage");
-        m1->setProperty("signal", "carriage.position");
-        m1->setProperty("sourceQuantity", "position");
-        m1->setProperty("sourceUnit", "mm");
-        m1->setProperty("jointQuantity", "position");
-        m1->setProperty("jointUnit", "m");
-        m1->setProperty("unitToSI", 0.001);
+        m1->setProperty("joint", "joint-spindle");
+        m1->setProperty("signal", "motor.speed");
+        m1->setProperty("sourceQuantity", "angular_velocity");
+        m1->setProperty("sourceUnit", "rad/s");
+        m1->setProperty("jointQuantity", "angle");
+        m1->setProperty("jointUnit", "rad");
+        m1->setProperty("unitToSI", 1.0);
         m1->setProperty("scale", 1.0);
         m1->setProperty("offset", 0.0);
+        m1->setProperty("initialCoordinate", 0.0);
         mappings.add(juce::var(m1));
-
-        auto* m2 = new juce::DynamicObject();
-        m2->setProperty("joint", "joint-spindle");
-        m2->setProperty("signal", "motor.speed");
-        m2->setProperty("sourceQuantity", "angular_velocity");
-        m2->setProperty("sourceUnit", "rad/s");
-        m2->setProperty("jointQuantity", "angle");
-        m2->setProperty("jointUnit", "rad");
-        m2->setProperty("unitToSI", 1.0);
-        m2->setProperty("scale", 1.0);
-        m2->setProperty("offset", 0.0);
-        m2->setProperty("initialCoordinate", 0.0);
-        mappings.add(juce::var(m2));
 
         prop->setProperty("mappings", mappings);
         serverSendFrame(juce::var(prop));
@@ -273,12 +324,14 @@ int main()
         TEST_CHECK(serverReadFrame(syncMsg), "Server received SynchronizeState");
         TEST_CHECK(syncMsg.getProperty("type", {}).toString() == "SynchronizeState", "Type is SynchronizeState");
         auto seq = syncMsg.getProperty("sequence", {}).toString();
+        int initialTimeline = (int)syncMsg.getProperty("timelineGeneration", 0);
+        TEST_CHECK(initialTimeline == 1, "Initial timelineGeneration is 1");
 
         // 7. Server acknowledges with StateApplied
         auto* applied = new juce::DynamicObject();
         applied->setProperty("type", "StateApplied");
         applied->setProperty("simulationId", sigIntMsg.getProperty("simulationId", {}));
-        applied->setProperty("timelineGeneration", syncMsg.getProperty("timelineGeneration", {}));
+        applied->setProperty("timelineGeneration", initialTimeline);
         applied->setProperty("profileRevision", 2);
         applied->setProperty("sequence", seq);
         applied->setProperty("duplicate", false);
@@ -295,7 +348,7 @@ int main()
         startCmd->setProperty("modelId", "cad-model-uuid-1234");
         startCmd->setProperty("simulationId", sigIntMsg.getProperty("simulationId", {}));
         startCmd->setProperty("profileRevision", 2);
-        startCmd->setProperty("timelineGeneration", syncMsg.getProperty("timelineGeneration", {}));
+        startCmd->setProperty("timelineGeneration", initialTimeline);
         startCmd->setProperty("command", "start");
         serverSendFrame(juce::var(startCmd));
 
@@ -321,7 +374,7 @@ int main()
         pauseCmd->setProperty("modelId", "cad-model-uuid-1234");
         pauseCmd->setProperty("simulationId", sigIntMsg.getProperty("simulationId", {}));
         pauseCmd->setProperty("profileRevision", 2);
-        pauseCmd->setProperty("timelineGeneration", syncMsg.getProperty("timelineGeneration", {}));
+        pauseCmd->setProperty("timelineGeneration", initialTimeline);
         pauseCmd->setProperty("command", "pause");
         serverSendFrame(juce::var(pauseCmd));
 
@@ -339,6 +392,76 @@ int main()
             }
         }
         TEST_CHECK(gotResult, "Server received confirmed LifecycleResult for pause");
+
+        // 10. Test Paused Behavior: verify simulation time and coordinates are stationary
+        auto pausedStatus = client->getStatus();
+        int64_t pausedTimePs = pausedStatus.simTimePs;
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        auto pausedStatus2 = client->getStatus();
+        TEST_CHECK(pausedStatus2.simTimePs == pausedTimePs, "Simulation time does not advance while paused");
+
+        // 11. Test Reconnect and State Preservation across Transport Reconnection
+        client->disconnect(false);
+        CloseHandle(hServerPipe);
+
+        hServerPipe = CreateNamedPipeA(
+            pipePath.c_str(),
+            PIPE_ACCESS_DUPLEX,
+            PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT,
+            1,
+            65536,
+            65536,
+            3000,
+            NULL
+        );
+        TEST_CHECK(hServerPipe != INVALID_HANDLE_VALUE, "Server named pipe recreated for reconnect check");
+
+        std::atomic<bool> reconOk { false };
+        std::thread reconnectThread([&] {
+            std::this_thread::sleep_for(std::chrono::milliseconds(50));
+            reconOk = client->connectToPipe(pipePath);
+        });
+
+        BOOL reconConnected = ConnectNamedPipe(hServerPipe, NULL) ? TRUE : (GetLastError() == ERROR_PIPE_CONNECTED);
+        TEST_CHECK(reconConnected, "Server accepted pipe connection after reconnect");
+        if (reconnectThread.joinable())
+            reconnectThread.join();
+        TEST_CHECK(reconOk.load(), "Client reconnected to pipe");
+
+        // Server receives Hello from reconnected DEWB
+        juce::var reconHello;
+        TEST_CHECK(serverReadFrame(reconHello), "Server received Hello after reconnect");
+
+        // Server answers with Hello and MechanicalInterface
+        serverSendFrame(juce::var(srvHello));
+        serverSendFrame(juce::var(srvMech));
+
+        // Server receives SignalInterface
+        juce::var reconSigInt;
+        TEST_CHECK(serverReadFrame(reconSigInt), "Server received SignalInterface after reconnect");
+
+        // Server re-proposes binding (profileRevision 3)
+        auto* reconProp = new juce::DynamicObject();
+        reconProp->setProperty("type", "BindingProposal");
+        reconProp->setProperty("modelId", "cad-model-uuid-1234");
+        reconProp->setProperty("interfaceRevision", 1);
+        reconProp->setProperty("profileRevision", 3);
+        reconProp->setProperty("simulationId", reconSigInt.getProperty("simulationId", {}));
+        reconProp->setProperty("signalInterfaceRevision", (int)reconSigInt.getProperty("signalInterfaceRevision", 1));
+        reconProp->setProperty("mappings", mappings);
+        serverSendFrame(juce::var(reconProp));
+
+        // DEWB answers with BindingAccept
+        juce::var reconAccept;
+        TEST_CHECK(serverReadFrame(reconAccept), "Server received BindingAccept after reconnect");
+
+        // DEWB sends SynchronizeState
+        juce::var reconSync;
+        TEST_CHECK(serverReadFrame(reconSync), "Server received SynchronizeState after reconnect");
+        int reconTimeline = (int)reconSync.getProperty("timelineGeneration", 0);
+        TEST_CHECK(reconTimeline == initialTimeline, "Timeline generation preserved across reconnect (not reset)");
+        int64_t reconSimTime = (int64_t)std::stoll(reconSync.getProperty("simTimePs", "0").toString().toStdString());
+        TEST_CHECK(reconSimTime == pausedTimePs, "Simulation time preserved across reconnect (not reset)");
 
         // Clean disconnect
         client->disconnect(true);

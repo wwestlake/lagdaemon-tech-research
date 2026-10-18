@@ -232,6 +232,9 @@ struct CompiledAssemblyCircuit
         double minVal = 0.0;
         double maxVal = 100.0;
         bool isInput = false;
+        std::string quantity;
+        std::string kind;
+        std::string description;
     };
     std::vector<SignalMeta> metadata;
 
