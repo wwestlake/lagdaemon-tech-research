@@ -529,6 +529,9 @@ int main()
                    "Server received LifecycleResult for pause");
         TEST_CHECK(pauseRes.getProperty("outcome", {}).toString() == "applied", "Pause outcome applied");
 
+        // Allow worker solver thread to complete any in-flight step and park on pause cv
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+
         auto pausedStatus = client->getStatus();
         int64_t pausedTimePs = pausedStatus.simTimePs;
 
@@ -536,16 +539,13 @@ int main()
         // 4.6 Reconnection & State Preservation (Requirement 4)
         // ---------------------------------------------------------------------
         std::cout << "[STAGE] Step 4.6: Reconnect & coordinate preservation" << std::endl;
-        std::cout << "[DEBUG 4.6] 1. Disconnecting client" << std::endl;
         client->disconnect(false);
 
-        std::cout << "[DEBUG 4.6] 2. Closing server pipe" << std::endl;
         CancelIo(hServerPipe);
         CloseHandle(hServerPipe);
         guard.hPipe = INVALID_HANDLE_VALUE;
         std::this_thread::sleep_for(std::chrono::milliseconds(50));
 
-        std::cout << "[DEBUG 4.6] 3. Recreating server named pipe" << std::endl;
         hServerPipe = CreateNamedPipeA(
             pipePath.c_str(),
             PIPE_ACCESS_DUPLEX | FILE_FLAG_OVERLAPPED,
@@ -559,23 +559,18 @@ int main()
         guard.hPipe = hServerPipe;
         TEST_CHECK(hServerPipe != INVALID_HANDLE_VALUE, "Server named pipe recreated for reconnect check");
 
-        std::cout << "[DEBUG 4.6] 4. Starting reconnect client thread" << std::endl;
         std::atomic<bool> reconOk { false };
         std::thread reconnectThread([&] {
             std::this_thread::sleep_for(std::chrono::milliseconds(50));
             reconOk = client->connectToPipe(pipePath);
-            std::cout << "[DEBUG 4.6] Client connectToPipe returned: " << (reconOk.load() ? "TRUE" : "FALSE") << std::endl;
         });
 
-        std::cout << "[DEBUG 4.6] 5. Connecting server pipe" << std::endl;
         BOOL reconConnected = boundedConnectServerPipe(hServerPipe, std::chrono::milliseconds(3000));
-        std::cout << "[DEBUG 4.6] Server connect returned: " << (reconConnected ? "TRUE" : "FALSE") << std::endl;
         TEST_CHECK(reconConnected, "Server accepted pipe connection after reconnect");
         if (reconnectThread.joinable())
             reconnectThread.join();
         TEST_CHECK(reconOk.load(), "Client reconnected to pipe");
 
-        std::cout << "[DEBUG 4.6] 6. Waiting for ReconHello" << std::endl;
         juce::var reconHello;
         TEST_CHECK(serverWaitForMessage("ReconHello", "Hello", std::chrono::milliseconds(3000), reconHello), "Server received Hello after reconnect");
 
@@ -596,11 +591,9 @@ int main()
         srvMech2->setProperty("joints", juce::var(juce::Array<juce::var>()));
         serverSendFrame(juce::var(srvMech2));
 
-        std::cout << "[DEBUG 4.6] 7. Waiting for ReconSignalInterface" << std::endl;
         juce::var reconSigInt;
         TEST_CHECK(serverWaitForMessage("ReconSignalInterface", "SignalInterface", std::chrono::milliseconds(3000), reconSigInt), "Server received SignalInterface after reconnect");
 
-        std::cout << "[DEBUG 4.6] 8. Sending ReconProp" << std::endl;
         // Re-propose binding (profileRevision 3)
         auto* reconProp = new juce::DynamicObject();
         reconProp->setProperty("type", "BindingProposal");
@@ -612,11 +605,9 @@ int main()
         reconProp->setProperty("mappings", mappings);
         serverSendFrame(juce::var(reconProp));
 
-        std::cout << "[DEBUG 4.6] 9. Waiting for ReconAccept" << std::endl;
         juce::var reconAccept;
         TEST_CHECK(serverWaitForMessage("ReconBindingAccept", "BindingAccept", std::chrono::milliseconds(3000), reconAccept), "Server received BindingAccept after reconnect");
 
-        std::cout << "[DEBUG 4.6] 10. Waiting for ReconSync" << std::endl;
         juce::var reconSync;
         TEST_CHECK(serverWaitForMessage("ReconSynchronizeState", "SynchronizeState", std::chrono::milliseconds(3000), reconSync), "Server received SynchronizeState after reconnect");
         int reconTimeline = (int)reconSync.getProperty("timelineGeneration", 0);
