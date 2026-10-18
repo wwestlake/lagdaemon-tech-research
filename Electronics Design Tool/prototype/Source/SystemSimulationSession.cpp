@@ -418,6 +418,12 @@ bool SystemSimulationSession::start()
     thread_ = std::make_unique<std::thread>(&SystemSimulationSession::workerThreadLoop, this);
     isRunning_ = true;
 
+    {
+        std::lock_guard<std::mutex> snapshotLock(snapshotMutex_);
+        latestSnapshot_.running = true;
+        latestSnapshot_.paused = false;
+    }
+
     addEventLog("Simulation session started", "CONTROL");
     return true;
 }
@@ -425,12 +431,20 @@ bool SystemSimulationSession::start()
 void SystemSimulationSession::pause()
 {
     isPaused_ = true;
+    {
+        std::lock_guard<std::mutex> snapshotLock(snapshotMutex_);
+        latestSnapshot_.paused = true;
+    }
     addEventLog("Simulation paused", "CONTROL");
 }
 
 void SystemSimulationSession::resume()
 {
     isPaused_ = false;
+    {
+        std::lock_guard<std::mutex> snapshotLock(snapshotMutex_);
+        latestSnapshot_.paused = false;
+    }
     cv_.notify_all();
     addEventLog("Simulation resumed", "CONTROL");
 }

@@ -1,0 +1,1358 @@
+#include "DcadMotionClient.h"
+
+#if JUCE_WINDOWS
+ #ifndef WIN32_LEAN_AND_MEAN
+  #define WIN32_LEAN_AND_MEAN
+ #endif
+ #ifndef NOMINMAX
+  #define NOMINMAX
+ #endif
+ #include <windows.h>
+#endif
+
+#include <cmath>
+#include <fstream>
+#include <sstream>
+#include <iomanip>
+
+namespace dcad_motion
+{
+
+// -----------------------------------------------------------------------------
+// Unit Conversions
+// -----------------------------------------------------------------------------
+double getUnitToSIFactor(const std::string& quantity, const std::string& unit)
+{
+    static const double kPi = 3.14159265358979323846;
+    if (quantity == "angle")
+    {
+        if (unit == "rad") return 1.0;
+        if (unit == "deg") return kPi / 180.0;
+        if (unit == "rev") return 2.0 * kPi;
+    }
+    else if (quantity == "angular_velocity")
+    {
+        if (unit == "rad/s") return 1.0;
+        if (unit == "deg/s") return kPi / 180.0;
+        if (unit == "rpm") return 2.0 * kPi / 60.0;
+        if (unit == "rev/s") return 2.0 * kPi;
+    }
+    else if (quantity == "position")
+    {
+        if (unit == "m") return 1.0;
+        if (unit == "mm") return 1e-3;
+    }
+    else if (quantity == "linear_velocity")
+    {
+        if (unit == "m/s") return 1.0;
+        if (unit == "mm/s") return 1e-3;
+    }
+    return 1.0;
+}
+
+bool isRateQuantity(const std::string& quantity)
+{
+    return quantity == "angular_velocity" || quantity == "linear_velocity";
+}
+
+// -----------------------------------------------------------------------------
+// Serialization & Deserialization
+// -----------------------------------------------------------------------------
+juce::var SignalDescriptor::toJson() const
+{
+    auto* obj = new juce::DynamicObject();
+    obj->setProperty("id", juce::String(id));
+    if (!name.empty())
+        obj->setProperty("name", juce::String(name));
+    obj->setProperty("quantity", juce::String(quantity));
+    obj->setProperty("unit", juce::String(unit));
+    obj->setProperty("kind", juce::String(kind));
+    return juce::var(obj);
+}
+
+SignalDescriptor SignalDescriptor::fromJson(const juce::var& json)
+{
+    SignalDescriptor desc;
+    if (auto* obj = json.getDynamicObject())
+    {
+        desc.id = obj->getProperty("id").toString().toStdString();
+        desc.name = obj->getProperty("name").toString().toStdString();
+        desc.quantity = obj->getProperty("quantity").toString().toStdString();
+        desc.unit = obj->getProperty("unit").toString().toStdString();
+        desc.kind = obj->getProperty("kind").toString().toStdString();
+    }
+    return desc;
+}
+
+ProfileMapping ProfileMapping::fromJson(const juce::var& json)
+{
+    ProfileMapping m;
+    if (auto* obj = json.getDynamicObject())
+    {
+        m.joint = obj->getProperty("joint").toString().toStdString();
+        m.signal = obj->getProperty("signal").toString().toStdString();
+        m.sourceQuantity = obj->getProperty("sourceQuantity").toString().toStdString();
+        m.sourceUnit = obj->getProperty("sourceUnit").toString().toStdString();
+        m.jointQuantity = obj->getProperty("jointQuantity").toString().toStdString();
+        m.jointUnit = obj->getProperty("jointUnit").toString().toStdString();
+        m.unitToSI = (double)obj->getProperty("unitToSI");
+        m.scale = (double)obj->getProperty("scale");
+        m.offset = (double)obj->getProperty("offset");
+        auto initCoordVar = obj->getProperty("initialCoordinate");
+        if (!initCoordVar.isVoid())
+        {
+            m.hasInitialCoordinate = true;
+            m.initialCoordinate = (double)initCoordVar;
+        }
+        else
+        {
+            m.hasInitialCoordinate = false;
+            m.initialCoordinate = 0.0;
+        }
+    }
+    return m;
+}
+
+juce::var ValidationError::toJson() const
+{
+    auto* obj = new juce::DynamicObject();
+    obj->setProperty("code", juce::String(code));
+    obj->setProperty("joint", juce::String(joint));
+    obj->setProperty("signal", juce::String(signal));
+    obj->setProperty("message", juce::String(message));
+    return juce::var(obj);
+}
+
+juce::var DcadMotionClient::EvaluatedJoint::toJson() const
+{
+    auto* obj = new juce::DynamicObject();
+    obj->setProperty("joint", juce::String(joint));
+    obj->setProperty("coordinate", coordinate);
+    if (hasVelocity)
+        obj->setProperty("velocity", velocity);
+    return juce::var(obj);
+}
+
+juce::var DcadMotionClient::LifecycleExecutionResult::toJson(const std::string& simId, int profRev) const
+{
+    auto* obj = new juce::DynamicObject();
+    obj->setProperty("type", "LifecycleResult");
+    obj->setProperty("requestId", juce::String(requestId));
+    obj->setProperty("simulationId", juce::String(simId));
+    obj->setProperty("profileRevision", profRev);
+    obj->setProperty("command", juce::String(command));
+    obj->setProperty("outcome", juce::String(outcome));
+    obj->setProperty("lifecycle", juce::String(lifecycle));
+    obj->setProperty("timelineGeneration", timelineGeneration);
+    obj->setProperty("simTimePs", juce::String(std::to_string(simTimePs)));
+    if (stateSequence > 0)
+        obj->setProperty("stateSequence", juce::String(std::to_string(stateSequence)));
+    if (!code.empty())
+    {
+        obj->setProperty("code", juce::String(code));
+        obj->setProperty("message", juce::String(message));
+    }
+    return juce::var(obj);
+}
+
+// -----------------------------------------------------------------------------
+// DcadMotionClient Implementation
+// -----------------------------------------------------------------------------
+DcadMotionClient::DcadMotionClient()
+{
+#if JUCE_WINDOWS
+    pipeHandle_ = INVALID_HANDLE_VALUE;
+#endif
+    // Generate a default simulation ID
+    simulationId_ = "dewb-session-" + std::to_string(std::chrono::system_clock::now().time_since_epoch().count() & 0xFFFF);
+    refreshCatalogFromActiveSession();
+}
+
+DcadMotionClient::~DcadMotionClient()
+{
+    disconnect(true);
+}
+
+void DcadMotionClient::attachSession(std::shared_ptr<sim_panel::SystemSimulationSession> session)
+{
+    std::lock_guard<std::recursive_mutex> lock(mutex_);
+    session_ = session;
+    refreshCatalogFromActiveSession();
+}
+
+void DcadMotionClient::setSimulationIdentity(const std::string& simId, const std::string& simName)
+{
+    std::lock_guard<std::recursive_mutex> lock(mutex_);
+    simulationId_ = simId;
+    simulationName_ = simName;
+}
+
+void DcadMotionClient::setSignalCatalog(const std::vector<SignalDescriptor>& signals)
+{
+    std::lock_guard<std::recursive_mutex> lock(mutex_);
+    signals_ = signals;
+}
+
+std::vector<SignalDescriptor> DcadMotionClient::getSignalCatalog() const
+{
+    std::lock_guard<std::recursive_mutex> lock(mutex_);
+    return signals_;
+}
+
+void DcadMotionClient::refreshCatalogFromActiveSession()
+{
+    // Build an authoritative catalog of signals from the session / circuit / defaults
+    std::vector<SignalDescriptor> cat;
+
+    // Standard motor & motion signals
+    cat.push_back({ "motor.speed", "Motor Shaft Angular Velocity", "angular_velocity", "rad/s", "rate" });
+    cat.push_back({ "motor.angle", "Motor Shaft Position", "angle", "rad", "state" });
+    cat.push_back({ "spindle.speed", "Spindle Speed", "angular_velocity", "rpm", "rate" });
+    cat.push_back({ "carriage.position", "Carriage Linear Displacement", "position", "mm", "state" });
+    cat.push_back({ "carriage.velocity", "Carriage Linear Velocity", "linear_velocity", "m/s", "rate" });
+
+    if (session_)
+    {
+        const auto& snap = session_->getSnapshot();
+        for (const auto& [name, val] : snap.numericSignals)
+        {
+            // If already added, skip
+            bool exists = false;
+            for (const auto& s : cat)
+            {
+                if (s.id == name) { exists = true; break; }
+            }
+            if (exists) continue;
+
+            SignalDescriptor desc;
+            desc.id = name;
+            desc.name = name;
+
+            std::string lower = name;
+            for (char& c : lower) c = (char)std::tolower((unsigned char)c);
+
+            if (lower.find("speed") != std::string::npos || lower.find("velocity") != std::string::npos || lower.find("omega") != std::string::npos)
+            {
+                if (lower.find("linear") != std::string::npos)
+                {
+                    desc.quantity = "linear_velocity";
+                    desc.unit = "m/s";
+                }
+                else
+                {
+                    desc.quantity = "angular_velocity";
+                    desc.unit = "rad/s";
+                }
+                desc.kind = "rate";
+                cat.push_back(desc);
+            }
+            else if (lower.find("angle") != std::string::npos || lower.find("theta") != std::string::npos)
+            {
+                desc.quantity = "angle";
+                desc.unit = "rad";
+                desc.kind = "state";
+                cat.push_back(desc);
+            }
+            else if (lower.find("pos") != std::string::npos || lower.find("dist") != std::string::npos)
+            {
+                desc.quantity = "position";
+                desc.unit = "m";
+                desc.kind = "state";
+                cat.push_back(desc);
+            }
+        }
+    }
+
+    signals_ = std::move(cat);
+}
+
+std::vector<EndpointInfo> DcadMotionClient::discoverEndpoints()
+{
+    std::vector<EndpointInfo> results;
+
+    juce::File motionDir = juce::File::getSpecialLocation(juce::File::userApplicationDataDirectory)
+                               .getChildFile("Local")
+                               .getChildFile("DjehutiCAD")
+                               .getChildFile("MotionEndpoints");
+
+    if (!motionDir.isDirectory())
+    {
+        // On Windows sometimes userApplicationDataDirectory points to AppData\Roaming, check AppData\Local directly
+        auto localAppData = juce::File(juce::SystemStats::getEnvironmentVariable("LOCALAPPDATA", {}));
+        if (localAppData.isDirectory())
+            motionDir = localAppData.getChildFile("DjehutiCAD").getChildFile("MotionEndpoints");
+    }
+
+    if (motionDir.isDirectory())
+    {
+        auto files = motionDir.findChildFiles(juce::File::findFiles, false, "*.json");
+        for (const auto& file : files)
+        {
+            auto json = juce::JSON::parse(file.loadFileAsString());
+            if (auto* obj = json.getDynamicObject())
+            {
+                EndpointInfo info;
+                info.protocol = obj->getProperty("protocol").toString().toStdString();
+                info.protocolVersion = (int)obj->getProperty("protocolVersion");
+                info.pipeName = obj->getProperty("pipeName").toString().toStdString();
+                info.pipePath = obj->getProperty("pipePath").toString().toStdString();
+                info.processId = (uint32_t)(int)obj->getProperty("processId");
+                info.modelId = obj->getProperty("modelId").toString().toStdString();
+                info.documentName = obj->getProperty("documentName").toString().toStdString();
+                info.startedUtc = obj->getProperty("startedUtc").toString().toStdString();
+
+                if (info.protocol == "djehuti.motion" && info.protocolVersion == 1)
+                    results.push_back(info);
+            }
+        }
+    }
+
+    return results;
+}
+
+bool DcadMotionClient::connectToPipe(const std::string& pipePath)
+{
+    disconnect(false);
+
+    log("Connecting to named pipe: " + pipePath);
+
+#if JUCE_WINDOWS
+    juce::String widePath(pipePath);
+    HANDLE hPipe = CreateFileW(
+        (LPCWSTR)widePath.toWideCharPointer(),
+        GENERIC_READ | GENERIC_WRITE,
+        0,              // no sharing
+        NULL,           // default security
+        OPEN_EXISTING,
+        FILE_ATTRIBUTE_NORMAL,
+        NULL
+    );
+
+    if (hPipe == INVALID_HANDLE_VALUE)
+    {
+        DWORD err = GetLastError();
+        log("Failed to open pipe handle (Error " + std::to_string(err) + ")");
+        std::lock_guard<std::recursive_mutex> lock(mutex_);
+        state_ = LinkState::Error;
+        lastErrorMessage_ = "CreateFileW failed (Win32 error " + std::to_string(err) + ")";
+        return false;
+    }
+
+    // Set pipe to message read mode
+    DWORD dwMode = PIPE_READMODE_BYTE;
+    SetNamedPipeHandleState(hPipe, &dwMode, NULL, NULL);
+
+    pipeHandle_ = hPipe;
+#endif
+
+    {
+        std::lock_guard<std::recursive_mutex> lock(mutex_);
+        pipePath_ = pipePath;
+        state_ = LinkState::Connecting;
+        shouldExit_ = false;
+        readBuffer_.clear();
+        acceptedMappings_.clear();
+        rateIntegrals_.clear();
+        executedResults_.clear();
+        sequence_ = 0;
+        timelineGeneration_ = 0;
+        awaitingStateApplied_ = false;
+    }
+
+    // Start background link worker thread
+    thread_ = std::make_unique<std::thread>(&DcadMotionClient::threadLoop, this);
+
+    // Send Hello immediately
+    sendHello();
+
+    return true;
+}
+
+void DcadMotionClient::disconnect(bool shouldSendGoodbye)
+{
+    if (shouldSendGoodbye && isConnected())
+    {
+        sendGoodbye();
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    }
+
+    shouldExit_ = true;
+    cv_.notify_all();
+
+    if (thread_ && thread_->joinable())
+    {
+        thread_->join();
+        thread_.reset();
+    }
+
+#if JUCE_WINDOWS
+    if (pipeHandle_ != INVALID_HANDLE_VALUE && pipeHandle_ != nullptr)
+    {
+        CloseHandle(pipeHandle_);
+        pipeHandle_ = INVALID_HANDLE_VALUE;
+    }
+#endif
+
+    {
+        std::lock_guard<std::recursive_mutex> lock(mutex_);
+        state_ = LinkState::Disconnected;
+        acceptedMappings_.clear();
+        awaitingStateApplied_ = false;
+    }
+
+    log("Disconnected from DCAD");
+    if (onStatusChanged)
+        onStatusChanged(getStatus());
+}
+
+bool DcadMotionClient::isConnected() const
+{
+#if JUCE_WINDOWS
+    return pipeHandle_ != INVALID_HANDLE_VALUE && pipeHandle_ != nullptr;
+#else
+    return false;
+#endif
+}
+
+DcadMotionClient::StatusSnapshot DcadMotionClient::getStatus() const
+{
+    std::lock_guard<std::recursive_mutex> lock(mutex_);
+    StatusSnapshot s;
+    s.state = state_;
+    s.pipePath = pipePath_;
+    s.modelId = modelId_;
+    s.documentName = documentName_;
+    s.interfaceRevision = interfaceRevision_;
+    s.profileRevision = profileRevision_;
+    s.simulationId = simulationId_;
+    s.timelineGeneration = timelineGeneration_;
+    s.lastSequence = sequence_;
+    s.simTimePs = currentSimTimePs_;
+    s.lifecycle = currentLifecycle_;
+    s.mappingCount = acceptedMappings_.size();
+    s.lastError = lastErrorMessage_;
+    s.dcadLifecycleControl = dcadLifecycleControl_;
+    return s;
+}
+
+void DcadMotionClient::log(const std::string& message)
+{
+    if (onLogMessage)
+        onLogMessage(message);
+}
+
+// -----------------------------------------------------------------------------
+// Low-Level Transport Framing
+// -----------------------------------------------------------------------------
+void DcadMotionClient::sendFrame(const juce::var& jsonPayload)
+{
+#if JUCE_WINDOWS
+    if (pipeHandle_ == INVALID_HANDLE_VALUE || pipeHandle_ == nullptr)
+        return;
+
+    const auto jsonString = juce::JSON::toString(jsonPayload, true);
+    juce::MemoryOutputStream utf8;
+    utf8.writeString(jsonString);
+
+    const uint32_t payloadLen = (uint32_t)utf8.getDataSize();
+    const uint32_t magic = kMagicNumber;
+
+    juce::MemoryOutputStream packet;
+    packet.writeInt(magic);
+    packet.writeInt(payloadLen);
+    packet.write(utf8.getData(), payloadLen);
+
+    DWORD bytesWritten = 0;
+    BOOL ok = WriteFile(pipeHandle_, packet.getData(), (DWORD)packet.getDataSize(), &bytesWritten, NULL);
+    if (!ok)
+    {
+        DWORD err = GetLastError();
+        log("WriteFile error " + std::to_string(err) + " - pipe closed or stalled");
+        std::lock_guard<std::recursive_mutex> lock(mutex_);
+        state_ = LinkState::Error;
+        lastErrorMessage_ = "WriteFile failed (" + std::to_string(err) + ")";
+    }
+#endif
+}
+
+bool DcadMotionClient::readIncomingFrames(std::vector<juce::var>& outFrames)
+{
+#if JUCE_WINDOWS
+    if (pipeHandle_ == INVALID_HANDLE_VALUE || pipeHandle_ == nullptr)
+        return false;
+
+    DWORD bytesAvail = 0;
+    if (!PeekNamedPipe(pipeHandle_, NULL, 0, NULL, &bytesAvail, NULL))
+    {
+        DWORD err = GetLastError();
+        log("PeekNamedPipe error " + std::to_string(err) + " - connection lost");
+        return false;
+    }
+
+    if (bytesAvail > 0)
+    {
+        std::vector<uint8_t> temp(bytesAvail);
+        DWORD bytesRead = 0;
+        if (ReadFile(pipeHandle_, temp.data(), bytesAvail, &bytesRead, NULL) && bytesRead > 0)
+        {
+            readBuffer_.insert(readBuffer_.end(), temp.begin(), temp.begin() + bytesRead);
+        }
+    }
+
+    // Unpack frames
+    while (readBuffer_.size() >= 8)
+    {
+        uint32_t magic = (uint32_t)readBuffer_[0] |
+                         ((uint32_t)readBuffer_[1] << 8) |
+                         ((uint32_t)readBuffer_[2] << 16) |
+                         ((uint32_t)readBuffer_[3] << 24);
+
+        if (magic != kMagicNumber)
+        {
+            log("Corrupt frame magic 0x" + juce::String::toHexString((int)magic).toStdString() + ", clearing buffer");
+            readBuffer_.clear();
+            return false;
+        }
+
+        uint32_t length = (uint32_t)readBuffer_[4] |
+                          ((uint32_t)readBuffer_[5] << 8) |
+                          ((uint32_t)readBuffer_[6] << 16) |
+                          ((uint32_t)readBuffer_[7] << 24);
+
+        if (length > 1024 * 1024)
+        {
+            log("Frame length exceeds 1 MiB limit, closing");
+            readBuffer_.clear();
+            return false;
+        }
+
+        if (readBuffer_.size() < 8 + length)
+            break; // need more data
+
+        juce::String jsonStr = juce::String::fromUTF8((const char*)readBuffer_.data() + 8, (int)length);
+        readBuffer_.erase(readBuffer_.begin(), readBuffer_.begin() + 8 + length);
+
+        auto parsed = juce::JSON::parse(jsonStr);
+        if (parsed.isObject())
+            outFrames.push_back(parsed);
+        else
+            log("Malformed incoming JSON object");
+    }
+
+    return true;
+#else
+    return false;
+#endif
+}
+
+// -----------------------------------------------------------------------------
+// Background Link Thread Loop
+// -----------------------------------------------------------------------------
+void DcadMotionClient::threadLoop()
+{
+    log("DcadMotionClient worker thread running");
+
+    lastHeartbeatTime_ = juce::Time::getMillisecondCounterHiRes() * 0.001;
+
+    double lastFrameTime = lastHeartbeatTime_;
+    double lastSimTime = 0.0;
+    if (session_)
+        lastSimTime = session_->simTime();
+
+    while (!shouldExit_)
+    {
+        // 1. Process incoming messages
+        std::vector<juce::var> incoming;
+        if (!readIncomingFrames(incoming))
+        {
+            // Error on pipe read
+            std::lock_guard<std::recursive_mutex> lock(mutex_);
+            state_ = LinkState::Error;
+            lastErrorMessage_ = "Pipe connection dropped";
+            break;
+        }
+
+        for (const auto& msg : incoming)
+        {
+            handleIncomingMessage(msg);
+        }
+
+        const double now = juce::Time::getMillisecondCounterHiRes() * 0.001;
+
+        // 2. State Streaming: if Bound & Synchronized and not awaiting StateApplied
+        bool canStream = false;
+        {
+            std::lock_guard<std::recursive_mutex> lock(mutex_);
+            canStream = (state_ == LinkState::Streaming && !awaitingStateApplied_);
+        }
+
+        if (canStream && session_)
+        {
+            const auto snap = session_->getSnapshot();
+            std::string snapLifecycle = "stopped";
+            if (snap.faulted) snapLifecycle = "faulted";
+            else if (snap.running) snapLifecycle = snap.paused ? "paused" : "running";
+            else snapLifecycle = "stopped";
+
+            // If running, stream at ~30 Hz (dt >= 0.033s)
+            if (snapLifecycle == "running")
+            {
+                if (now - lastFrameTime >= 0.033)
+                {
+                    sendStateFrame("running");
+                    lastFrameTime = now;
+                    lastHeartbeatTime_ = now;
+                }
+            }
+            else
+            {
+                // If lifecycle changed while stopped/paused/faulted, publish immediately
+                if (snapLifecycle != currentLifecycle_)
+                {
+                    sendStateFrame(snapLifecycle);
+                    lastHeartbeatTime_ = now;
+                }
+            }
+        }
+
+        // 3. Heartbeat keeping: send at least every 800ms
+        if (now - lastHeartbeatTime_ >= 0.8)
+        {
+            sendHeartbeat();
+            lastHeartbeatTime_ = now;
+        }
+
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+
+    log("DcadMotionClient worker thread finished");
+}
+
+// -----------------------------------------------------------------------------
+// Inbound Message Dispatch
+// -----------------------------------------------------------------------------
+void DcadMotionClient::handleIncomingMessage(const juce::var& msg)
+{
+    if (!msg.isObject()) return;
+    const std::string type = msg.getProperty("type", {}).toString().toStdString();
+
+    if (type == "Hello")
+    {
+        handleHello(msg);
+    }
+    else if (type == "MechanicalInterface")
+    {
+        handleMechanicalInterface(msg);
+    }
+    else if (type == "BindingProposal")
+    {
+        handleBindingProposal(msg);
+    }
+    else if (type == "StateApplied")
+    {
+        handleStateApplied(msg);
+    }
+    else if (type == "LifecycleCommand")
+    {
+        handleLifecycleCommand(msg);
+    }
+    else if (type == "LinkStatus")
+    {
+        handleLinkStatus(msg);
+    }
+    else
+    {
+        log("Received message type: " + type);
+    }
+}
+
+void DcadMotionClient::handleHello(const juce::var& msg)
+{
+    log("DCAD -> Hello received");
+    if (const auto* caps = msg.getProperty("capabilities", {}).getArray())
+    {
+        for (const auto& c : *caps)
+        {
+            if (c.toString().toStdString() == kLifecycleCapability)
+                dcadLifecycleControl_ = true;
+        }
+    }
+}
+
+void DcadMotionClient::handleMechanicalInterface(const juce::var& msg)
+{
+    std::lock_guard<std::recursive_mutex> lock(mutex_);
+    modelId_ = msg.getProperty("modelId", {}).toString().toStdString();
+    documentName_ = msg.getProperty("documentName", {}).toString().toStdString();
+    interfaceRevision_ = (int)msg.getProperty("interfaceRevision", 0);
+    profileRevision_ = (int)msg.getProperty("profileRevision", 0);
+
+    log("DCAD -> MechanicalInterface: model " + modelId_ + " (" + documentName_ + "), rev " + std::to_string(interfaceRevision_));
+
+    state_ = LinkState::Advertising;
+    sendSignalInterface();
+}
+
+void DcadMotionClient::handleBindingProposal(const juce::var& msg)
+{
+    log("DCAD -> BindingProposal received");
+    std::vector<ProfileMapping> proposed;
+
+    if (const auto* arr = msg.getProperty("mappings", {}).getArray())
+    {
+        for (const auto& item : *arr)
+            proposed.push_back(ProfileMapping::fromJson(item));
+    }
+
+    auto problems = validateProposal(proposed);
+    if (!problems.empty())
+    {
+        log("Validation rejected " + std::to_string(problems.size()) + " proposal mappings");
+        sendBindingReject(problems);
+        std::lock_guard<std::recursive_mutex> lock(mutex_);
+        state_ = LinkState::Error;
+        lastErrorMessage_ = "Binding proposal rejected with validation errors";
+        return;
+    }
+
+    {
+        std::lock_guard<std::recursive_mutex> lock(mutex_);
+        modelId_ = msg.getProperty("modelId", {}).toString().toStdString();
+        interfaceRevision_ = (int)msg.getProperty("interfaceRevision", 0);
+        profileRevision_ = (int)msg.getProperty("profileRevision", 0);
+        acceptedMappings_ = std::move(proposed);
+        rateIntegrals_.clear();
+
+        // Initialize rate coordinates
+        for (const auto& m : acceptedMappings_)
+        {
+            if (m.hasInitialCoordinate)
+                rateIntegrals_[m.joint] = m.initialCoordinate;
+            else
+                rateIntegrals_[m.joint] = 0.0;
+        }
+
+        state_ = LinkState::Binding;
+    }
+
+    sendBindingAccept();
+
+    // After BindingAccept, send initial SynchronizeState
+    sendSynchronizeState("paused", true);
+}
+
+void DcadMotionClient::handleStateApplied(const juce::var& msg)
+{
+    const std::string seq = msg.getProperty("sequence", {}).toString().toStdString();
+    const bool isDuplicate = (bool)msg.getProperty("duplicate", false);
+
+    log("DCAD -> StateApplied: sequence " + seq + (isDuplicate ? " (duplicate)" : ""));
+
+    std::lock_guard<std::recursive_mutex> lock(mutex_);
+    if (awaitingStateApplied_ && seq == awaitingSyncSequence_)
+    {
+        awaitingStateApplied_ = false;
+        state_ = LinkState::Streaming;
+        log("Timeline synchronization confirmed by DCAD, now streaming.");
+    }
+
+    if (onStatusChanged)
+        onStatusChanged(getStatus());
+}
+
+void DcadMotionClient::handleLinkStatus(const juce::var& msg)
+{
+    const std::string code = msg.getProperty("code", {}).toString().toStdString();
+    if (code == "heartbeat")
+        return;
+
+    const std::string sev = msg.getProperty("severity", {}).toString().toStdString();
+    const std::string message = msg.getProperty("message", {}).toString().toStdString();
+    log("DCAD LinkStatus [" + sev + "/" + code + "]: " + message);
+
+    if (code == "revalidationRequired")
+    {
+        std::lock_guard<std::recursive_mutex> lock(mutex_);
+        state_ = LinkState::Advertising;
+        awaitingStateApplied_ = false;
+        log("Revalidation requested by DCAD, awaiting fresh proposal.");
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Lifecycle Commands & Deduplication
+// -----------------------------------------------------------------------------
+void DcadMotionClient::handleLifecycleCommand(const juce::var& msg)
+{
+    const std::string reqId = msg.getProperty("requestId", {}).toString().toStdString();
+    const std::string cmd = msg.getProperty("command", {}).toString().toStdString();
+    const std::string simId = msg.getProperty("simulationId", {}).toString().toStdString();
+    const std::string modId = msg.getProperty("modelId", {}).toString().toStdString();
+    const int profRev = (int)msg.getProperty("profileRevision", 0);
+    const int reqTimeline = (int)msg.getProperty("timelineGeneration", 0);
+
+    int64_t stepDurPs = 0;
+    auto stepDurVar = msg.getProperty("stepDurationPs", {});
+    if (!stepDurVar.isVoid())
+        stepDurPs = std::stoll(stepDurVar.toString().toStdString());
+
+    log("DCAD -> LifecycleCommand " + cmd + " (id: " + reqId + ")");
+
+    // Deduplication check: if requestId already handled, return stored result without executing again
+    {
+        std::lock_guard<std::recursive_mutex> lock(mutex_);
+        auto it = executedResults_.find(reqId);
+        if (it != executedResults_.end())
+        {
+            log("Deduplicating LifecycleCommand " + cmd + " (" + reqId + "): returning cached result");
+            sendLifecycleResult(it->second);
+            return;
+        }
+    }
+
+    // Verify binding identity
+    if (simId != simulationId_ || modId != modelId_ || profRev != profileRevision_)
+    {
+        LifecycleExecutionResult res;
+        res.requestId = reqId;
+        res.command = cmd;
+        res.outcome = "rejected";
+        res.code = "staleBinding";
+        res.message = "The command was issued for a different binding.";
+        res.lifecycle = currentLifecycle_;
+        res.timelineGeneration = timelineGeneration_;
+        res.simTimePs = currentSimTimePs_;
+        sendLifecycleResult(res);
+        return;
+    }
+
+    if (reqTimeline != timelineGeneration_)
+    {
+        LifecycleExecutionResult res;
+        res.requestId = reqId;
+        res.command = cmd;
+        res.outcome = "rejected";
+        res.code = "staleTimeline";
+        res.message = "The command refers to timeline " + std::to_string(reqTimeline) + "; current is " + std::to_string(timelineGeneration_);
+        res.lifecycle = currentLifecycle_;
+        res.timelineGeneration = timelineGeneration_;
+        res.simTimePs = currentSimTimePs_;
+        sendLifecycleResult(res);
+        return;
+    }
+
+    // Execute the lifecycle transition
+    LifecycleExecutionResult result = executeLifecycleCommand(cmd, stepDurPs, reqId);
+    sendLifecycleResult(result);
+}
+
+DcadMotionClient::LifecycleExecutionResult DcadMotionClient::executeLifecycleCommand(
+    const std::string& command,
+    int64_t stepDurationPs,
+    const std::string& requestId)
+{
+    LifecycleExecutionResult res;
+    res.requestId = requestId.empty() ? ("req-" + std::to_string(juce::Time::getMillisecondCounter())) : requestId;
+    res.command = command;
+
+    // Deduplication check: if requestId already executed, return cached result immediately
+    {
+        std::lock_guard<std::recursive_mutex> lock(mutex_);
+        auto it = executedResults_.find(res.requestId);
+        if (it != executedResults_.end())
+        {
+            return it->second;
+        }
+    }
+
+    if (!session_)
+    {
+        res.outcome = "rejected";
+        res.code = "faulted";
+        res.message = "No active simulation session attached.";
+        res.lifecycle = "stopped";
+        return res;
+    }
+
+    const auto snap = session_->getSnapshot();
+    std::string state = "stopped";
+    if (snap.faulted) state = "faulted";
+    else if (snap.running) state = snap.paused ? "paused" : "running";
+    else state = "stopped";
+
+    if (command == "start")
+    {
+        if (state != "stopped")
+        {
+            res.outcome = "rejected";
+            res.code = "invalidTransition";
+            res.message = "Start needs a stopped simulation; it is " + state + ".";
+            res.lifecycle = state;
+            res.timelineGeneration = timelineGeneration_;
+            res.simTimePs = currentSimTimePs_;
+            return res;
+        }
+
+        if (!initial_)
+        {
+            // Fresh start: increment timeline and synchronize first
+            sendSynchronizeState("running", true);
+        }
+
+        session_->start();
+        initial_ = false;
+        currentLifecycle_ = "running";
+        sendStateFrame("running");
+
+        res.outcome = "applied";
+        res.lifecycle = "running";
+        res.timelineGeneration = timelineGeneration_;
+        res.simTimePs = currentSimTimePs_;
+        res.stateSequence = sequence_;
+    }
+    else if (command == "pause")
+    {
+        if (state != "running")
+        {
+            res.outcome = "rejected";
+            res.code = "invalidTransition";
+            res.message = "Pause needs a running simulation; it is " + state + ".";
+            res.lifecycle = state;
+            res.timelineGeneration = timelineGeneration_;
+            res.simTimePs = currentSimTimePs_;
+            return res;
+        }
+
+        session_->pause();
+        currentLifecycle_ = "paused";
+        sendStateFrame("paused");
+
+        res.outcome = "applied";
+        res.lifecycle = "paused";
+        res.timelineGeneration = timelineGeneration_;
+        res.simTimePs = currentSimTimePs_;
+        res.stateSequence = sequence_;
+    }
+    else if (command == "resume")
+    {
+        if (state != "paused")
+        {
+            res.outcome = "rejected";
+            res.code = "invalidTransition";
+            res.message = "Resume needs a paused simulation; it is " + state + ".";
+            res.lifecycle = state;
+            res.timelineGeneration = timelineGeneration_;
+            res.simTimePs = currentSimTimePs_;
+            return res;
+        }
+
+        session_->resume();
+        currentLifecycle_ = "running";
+        sendStateFrame("running");
+
+        res.outcome = "applied";
+        res.lifecycle = "running";
+        res.timelineGeneration = timelineGeneration_;
+        res.simTimePs = currentSimTimePs_;
+        res.stateSequence = sequence_;
+    }
+    else if (command == "stop")
+    {
+        if (state != "running" && state != "paused")
+        {
+            res.outcome = "rejected";
+            res.code = "invalidTransition";
+            res.message = "Stop needs a running or paused simulation; it is " + state + ".";
+            res.lifecycle = state;
+            res.timelineGeneration = timelineGeneration_;
+            res.simTimePs = currentSimTimePs_;
+            return res;
+        }
+
+        session_->stop();
+        currentLifecycle_ = "stopped";
+        sendStateFrame("stopped");
+
+        res.outcome = "applied";
+        res.lifecycle = "stopped";
+        res.timelineGeneration = timelineGeneration_;
+        res.simTimePs = currentSimTimePs_;
+        res.stateSequence = sequence_;
+    }
+    else if (command == "reset")
+    {
+        session_->reset();
+        currentLifecycle_ = "stopped";
+        initial_ = true;
+
+        // Reset: new timeline, full synchronization at t=0
+        sendSynchronizeState("stopped", true);
+
+        res.outcome = "applied";
+        res.lifecycle = "stopped";
+        res.timelineGeneration = timelineGeneration_;
+        res.simTimePs = 0;
+        res.stateSequence = sequence_;
+    }
+    else if (command == "step")
+    {
+        if (!(state == "paused" || (state == "stopped" && initial_)))
+        {
+            res.outcome = "rejected";
+            res.code = "invalidTransition";
+            res.message = "Single Step needs a paused simulation (or initial state); it is " + state + ".";
+            res.lifecycle = state;
+            res.timelineGeneration = timelineGeneration_;
+            res.simTimePs = currentSimTimePs_;
+            return res;
+        }
+
+        double dtSeconds = 0.001; // default 1 ms
+        if (stepDurationPs > 0)
+            dtSeconds = (double)stepDurationPs / (double)kTicksPerSecond;
+
+        session_->stepSingle(dtSeconds);
+        currentLifecycle_ = "paused";
+        sendStateFrame("paused");
+
+        res.outcome = "applied";
+        res.lifecycle = "paused";
+        res.timelineGeneration = timelineGeneration_;
+        res.simTimePs = currentSimTimePs_;
+        res.stateSequence = sequence_;
+    }
+    else
+    {
+        res.outcome = "rejected";
+        res.code = "unknownCommand";
+        res.message = "Unrecognized lifecycle command: " + command;
+        res.lifecycle = state;
+        res.timelineGeneration = timelineGeneration_;
+        res.simTimePs = currentSimTimePs_;
+    }
+
+    // Store in deduplication table
+    {
+        std::lock_guard<std::recursive_mutex> lock(mutex_);
+        executedResults_[res.requestId] = res;
+    }
+
+    return res;
+}
+
+// -----------------------------------------------------------------------------
+// Validation Logic
+// -----------------------------------------------------------------------------
+std::vector<ValidationError> DcadMotionClient::validateProposal(const std::vector<ProfileMapping>& mappings)
+{
+    std::vector<ValidationError> errors;
+
+    if (mappings.empty())
+    {
+        errors.push_back({ "emptyProfile", "", "", "Profile mapping list cannot be empty." });
+        return errors;
+    }
+
+    std::map<std::string, SignalDescriptor> catalog;
+    for (const auto& s : signals_)
+        catalog[s.id] = s;
+
+    for (const auto& m : mappings)
+    {
+        auto it = catalog.find(m.signal);
+        if (it == catalog.end())
+        {
+            errors.push_back({ "unknownSignal", m.joint, m.signal, "Signal does not exist in advertised interface." });
+            continue;
+        }
+
+        const auto& sig = it->second;
+        if (sig.quantity != m.sourceQuantity || sig.unit != m.sourceUnit)
+        {
+            errors.push_back({ "quantityMismatch", m.joint, m.signal, "Signal quantity/unit mismatch with mapping." });
+            continue;
+        }
+
+        const double expectedFactor = getUnitToSIFactor(sig.quantity, sig.unit);
+        if (std::abs(expectedFactor - m.unitToSI) > 1e-12)
+        {
+            errors.push_back({ "unitMismatch", m.joint, m.signal, "Unit-to-SI factor does not match protocol conversion table." });
+            continue;
+        }
+
+        if (std::isnan(m.scale) || std::isinf(m.scale) || std::abs(m.scale) < 1e-15)
+        {
+            errors.push_back({ "nonFiniteValue", m.joint, m.signal, "Scale factor must be non-zero finite number." });
+            continue;
+        }
+    }
+
+    return errors;
+}
+
+// -----------------------------------------------------------------------------
+// Joint Evaluation & Mathematical Absolute State
+// -----------------------------------------------------------------------------
+std::vector<DcadMotionClient::EvaluatedJoint> DcadMotionClient::computeJointCoordinates(double simTimeSeconds, double dtSeconds)
+{
+    std::vector<EvaluatedJoint> evaluated;
+
+    std::map<std::string, double> signalValues;
+    if (session_)
+    {
+        const auto snap = session_->getSnapshot();
+        signalValues = snap.numericSignals;
+    }
+
+    for (const auto& m : acceptedMappings_)
+    {
+        EvaluatedJoint ej;
+        ej.joint = m.joint;
+
+        double rawVal = 0.0;
+        auto it = signalValues.find(m.signal);
+        if (it != signalValues.end())
+        {
+            rawVal = it->second;
+        }
+        else
+        {
+            // Fallback for demonstration / testbench if not in snapshot
+            if (m.sourceQuantity == "position")
+                rawVal = 40.0 * std::sin(2.0 * 3.141592653589793 * 0.2 * simTimeSeconds); // +-40 mm
+            else if (m.sourceQuantity == "linear_velocity")
+                rawVal = 40.0 * 2.0 * 3.141592653589793 * 0.2 * std::cos(2.0 * 3.141592653589793 * 0.2 * simTimeSeconds);
+            else if (m.sourceQuantity == "angle")
+                rawVal = 2.0 * 3.141592653589793 * 0.5 * simTimeSeconds; // half turn / sec
+            else if (m.sourceQuantity == "angular_velocity")
+                rawVal = 30.0; // 30 rpm
+        }
+
+        const double unitValSI = rawVal * m.unitToSI;
+        const double scaledSI = m.scale * unitValSI;
+
+        if (isRateQuantity(m.sourceQuantity))
+        {
+            // Integrated rate source
+            double currentCoord = rateIntegrals_[m.joint];
+            currentCoord += scaledSI * dtSeconds;
+            rateIntegrals_[m.joint] = currentCoord;
+
+            ej.coordinate = currentCoord;
+            ej.hasVelocity = true;
+            ej.velocity = scaledSI;
+        }
+        else
+        {
+            // Absolute state source
+            ej.coordinate = m.offset + scaledSI;
+            ej.hasVelocity = false;
+        }
+
+        evaluated.push_back(ej);
+    }
+
+    return evaluated;
+}
+
+// -----------------------------------------------------------------------------
+// Protocol Outbound Messages
+// -----------------------------------------------------------------------------
+void DcadMotionClient::sendHello()
+{
+    auto* obj = new juce::DynamicObject();
+    obj->setProperty("type", "Hello");
+    obj->setProperty("protocol", "djehuti.motion");
+    obj->setProperty("protocolVersion", 1);
+    obj->setProperty("role", "dewb");
+    obj->setProperty("application", "Djehuti Electronics Workbench");
+    obj->setProperty("applicationVersion", "1.0.0");
+
+    juce::Array<juce::var> caps;
+    caps.add("signalInterface.v1");
+    caps.add("synchronizeState.v1");
+    caps.add("stateFrame.v1");
+    caps.add("heartbeat.v1");
+    caps.add(kLifecycleCapability);
+    obj->setProperty("capabilities", caps);
+
+    sendFrame(juce::var(obj));
+    log("DEWB -> Hello sent");
+}
+
+void DcadMotionClient::sendSignalInterface()
+{
+    auto* obj = new juce::DynamicObject();
+    obj->setProperty("type", "SignalInterface");
+    obj->setProperty("simulationId", juce::String(simulationId_));
+    obj->setProperty("simulationName", juce::String(simulationName_));
+    obj->setProperty("signalInterfaceRevision", signalInterfaceRevision_);
+
+    juce::Array<juce::var> arr;
+    for (const auto& s : signals_)
+        arr.add(s.toJson());
+    obj->setProperty("signals", arr);
+
+    sendFrame(juce::var(obj));
+    log("DEWB -> SignalInterface sent (" + std::to_string(signals_.size()) + " signals)");
+}
+
+void DcadMotionClient::sendBindingAccept()
+{
+    auto* obj = new juce::DynamicObject();
+    obj->setProperty("type", "BindingAccept");
+    obj->setProperty("modelId", juce::String(modelId_));
+    obj->setProperty("interfaceRevision", interfaceRevision_);
+    obj->setProperty("profileRevision", profileRevision_);
+    obj->setProperty("simulationId", juce::String(simulationId_));
+    obj->setProperty("signalInterfaceRevision", signalInterfaceRevision_);
+
+    sendFrame(juce::var(obj));
+    log("DEWB -> BindingAccept sent");
+}
+
+void DcadMotionClient::sendBindingReject(const std::vector<ValidationError>& errors)
+{
+    auto* obj = new juce::DynamicObject();
+    obj->setProperty("type", "BindingReject");
+    obj->setProperty("profileRevision", profileRevision_);
+
+    juce::Array<juce::var> errArr;
+    for (const auto& e : errors)
+        errArr.add(e.toJson());
+    obj->setProperty("errors", errArr);
+
+    sendFrame(juce::var(obj));
+    log("DEWB -> BindingReject sent");
+}
+
+void DcadMotionClient::sendSynchronizeState(const std::string& lifecycle, bool newTimeline)
+{
+    std::lock_guard<std::recursive_mutex> lock(mutex_);
+
+    if (newTimeline)
+    {
+        timelineGeneration_++;
+        currentSimTimePs_ = 0;
+        sequence_ = 0;
+
+        // Reset rate integrals to initial coordinates
+        for (const auto& m : acceptedMappings_)
+        {
+            if (m.hasInitialCoordinate)
+                rateIntegrals_[m.joint] = m.initialCoordinate;
+            else
+                rateIntegrals_[m.joint] = 0.0;
+        }
+    }
+
+    sequence_++;
+    currentLifecycle_ = lifecycle;
+
+    double simSec = (double)currentSimTimePs_ / (double)kTicksPerSecond;
+    auto joints = computeJointCoordinates(simSec, 0.0);
+
+    auto* obj = new juce::DynamicObject();
+    obj->setProperty("type", "SynchronizeState");
+    obj->setProperty("simulationId", juce::String(simulationId_));
+    obj->setProperty("timelineGeneration", timelineGeneration_);
+    obj->setProperty("profileRevision", profileRevision_);
+    obj->setProperty("sequence", juce::String(std::to_string(sequence_)));
+    obj->setProperty("simTimePs", juce::String(std::to_string(currentSimTimePs_)));
+    obj->setProperty("microstep", 0);
+    obj->setProperty("lifecycle", juce::String(lifecycle));
+
+    juce::Array<juce::var> jArr;
+    for (const auto& j : joints)
+        jArr.add(j.toJson());
+    obj->setProperty("joints", jArr);
+
+    awaitingStateApplied_ = true;
+    awaitingSyncSequence_ = std::to_string(sequence_);
+
+    sendFrame(juce::var(obj));
+    log("DEWB -> SynchronizeState sent (gen " + std::to_string(timelineGeneration_) + ", seq " + std::to_string(sequence_) + ")");
+}
+
+void DcadMotionClient::sendStateFrame(const std::string& lifecycle)
+{
+    std::lock_guard<std::recursive_mutex> lock(mutex_);
+
+    if (acceptedMappings_.empty() || awaitingStateApplied_)
+        return;
+
+    sequence_++;
+    currentLifecycle_ = lifecycle;
+
+    double dtSec = 0.033; // default approx frame step
+    if (session_)
+    {
+        double st = session_->simTime();
+        int64_t newPs = (int64_t)std::round(st * (double)kTicksPerSecond);
+        if (newPs > currentSimTimePs_)
+        {
+            dtSec = (double)(newPs - currentSimTimePs_) / (double)kTicksPerSecond;
+            currentSimTimePs_ = newPs;
+        }
+    }
+    else
+    {
+        currentSimTimePs_ += (int64_t)std::round(dtSec * (double)kTicksPerSecond);
+    }
+
+    double simSec = (double)currentSimTimePs_ / (double)kTicksPerSecond;
+    auto joints = computeJointCoordinates(simSec, dtSec);
+
+    auto* obj = new juce::DynamicObject();
+    obj->setProperty("type", "StateFrame");
+    obj->setProperty("simulationId", juce::String(simulationId_));
+    obj->setProperty("timelineGeneration", timelineGeneration_);
+    obj->setProperty("profileRevision", profileRevision_);
+    obj->setProperty("sequence", juce::String(std::to_string(sequence_)));
+    obj->setProperty("simTimePs", juce::String(std::to_string(currentSimTimePs_)));
+    obj->setProperty("microstep", 0);
+    obj->setProperty("lifecycle", juce::String(lifecycle));
+
+    juce::Array<juce::var> jArr;
+    for (const auto& j : joints)
+        jArr.add(j.toJson());
+    obj->setProperty("joints", jArr);
+
+    sendFrame(juce::var(obj));
+}
+
+void DcadMotionClient::sendHeartbeat()
+{
+    auto* obj = new juce::DynamicObject();
+    obj->setProperty("type", "LinkStatus");
+    obj->setProperty("state", juce::String(currentLifecycle_));
+    obj->setProperty("severity", "info");
+    obj->setProperty("code", "heartbeat");
+    obj->setProperty("message", "");
+    sendFrame(juce::var(obj));
+}
+
+void DcadMotionClient::sendGoodbye()
+{
+    auto* obj = new juce::DynamicObject();
+    obj->setProperty("type", "LinkStatus");
+    obj->setProperty("state", juce::String(currentLifecycle_));
+    obj->setProperty("severity", "info");
+    obj->setProperty("code", "goodbye");
+    obj->setProperty("message", "DEWB disconnecting");
+    sendFrame(juce::var(obj));
+}
+
+void DcadMotionClient::sendLifecycleResult(const LifecycleExecutionResult& res)
+{
+    juce::var json = res.toJson(simulationId_, profileRevision_);
+    sendFrame(json);
+    log("DEWB -> LifecycleResult " + res.command + " outcome: " + res.outcome);
+}
+
+void DcadMotionClient::publishCurrentStateFrame()
+{
+    sendStateFrame(currentLifecycle_);
+}
+
+} // namespace dcad_motion

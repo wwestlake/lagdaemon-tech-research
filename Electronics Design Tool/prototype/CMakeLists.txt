@@ -231,6 +231,10 @@ target_sources(DjehutiElectronicsLab PRIVATE
     Source/ManageLayoutsDialog.cpp
     Source/PredefinedLayoutCatalog.h
     Source/PredefinedLayoutCatalog.cpp
+    Source/DcadMotionClient.h
+    Source/DcadMotionClient.cpp
+    Source/CadMotionLinkDialog.h
+    Source/CadMotionLinkDialog.cpp
 )
 
 target_compile_definitions(DjehutiElectronicsLab PRIVATE
@@ -599,6 +603,40 @@ target_link_libraries(ControlPanelTests PRIVATE
 )
 juce_generate_juce_header(ControlPanelTests)
 add_test(NAME ControlPanelTests COMMAND ControlPanelTests)
+
+juce_add_console_app(DcadMotionTests PRODUCT_NAME "DCAD Motion Tests")
+set_target_properties(DcadMotionTests PROPERTIES
+    OUTPUT_NAME "dcad_motion_tests"
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/bin")
+target_sources(DcadMotionTests PRIVATE
+    tools/cad_motion_tests/DcadMotionTests.cpp
+    Source/DcadMotionClient.cpp
+    Source/SystemSimulationSession.cpp
+    Source/SystemAssembly.cpp
+    Source/ControlPanelModel.cpp
+    Source/FrustComponent.cpp
+    Source/FrustComponentCompiler.cpp
+    Source/NodeDesignerPanel.cpp
+    Source/NodeCompiler.cpp
+    Source/FrustEngine.cpp
+    Source/SchematicSymbols.cpp
+    Source/MechanicalSceneModel.cpp
+    Source/MachineModel.cpp
+    Source/DemonstrationModel.cpp
+)
+target_include_directories(DcadMotionTests PRIVATE Source)
+target_compile_definitions(DcadMotionTests PRIVATE JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0)
+target_link_libraries(DcadMotionTests PRIVATE
+    circuit_sim
+    frust_plugin_host
+    juce::juce_core
+    juce::juce_events
+    juce::juce_graphics
+    juce::juce_data_structures
+    juce::juce_gui_basics
+)
+juce_generate_juce_header(DcadMotionTests)
+add_test(NAME DcadMotionTests COMMAND DcadMotionTests)
 
 juce_add_console_app(ModelDrivenSimulationTests PRODUCT_NAME "Model Driven Simulation Tests")
 set_target_properties(ModelDrivenSimulationTests PROPERTIES

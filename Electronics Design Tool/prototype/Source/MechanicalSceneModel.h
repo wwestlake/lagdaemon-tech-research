@@ -137,7 +137,7 @@ struct Mat4
     Vec3 transformPoint(const Vec3& p) const
     {
         double x = m[0] * p.x + m[4] * p.y + m[8]  * p.z + m[12];
-        double y = m[1] * p.x + m[5] * p.y + m[9]  * p.y + m[13];
+        double y = m[1] * p.x + m[5] * p.y + m[9]  * p.z + m[13];
         double z = m[2] * p.x + m[6] * p.y + m[10] * p.z + m[14];
         double w = m[3] * p.x + m[7] * p.y + m[11] * p.z + m[15];
         if (std::abs(w) > 1e-12 && std::abs(w - 1.0) > 1e-9)

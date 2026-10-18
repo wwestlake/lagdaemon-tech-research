@@ -45,6 +45,8 @@
 #include "DjehutiMenuBarComponent.h"
 #include "ManageLayoutsDialog.h"
 #include "VstExporter.h"
+#include "DcadMotionClient.h"
+#include "CadMotionLinkDialog.h"
 #include <thread>
 
 // Interaction profiler: set DJEHUTI_DRAG_PROFILE=1 and each mouse-up appends
@@ -16069,6 +16071,8 @@ ElectronicsWorkbench::ElectronicsWorkbench()
             return layoutTool(name, args);
         if (name.startsWith("help_") || name.startsWith("help."))
             return helpTool(name, args);
+        if (name.startsWith("cad_motion_") || name.startsWith("cad_motion."))
+            return cadMotionTool(name, args);
         if (name == "vst_export")
             return exportVst3PluginTool(args);
         return schematicPanel->runSchematicTool(name, args);
@@ -16400,12 +16404,17 @@ void ElectronicsWorkbench::adjustSchematicZoom(float factor)
 
 juce::StringArray ElectronicsWorkbench::getMenuBarNames()
 {
-    return { "File", "Circuit", "Analytics", "Agent", "View", "Layout", "Help" };
+    return { "File", "Circuit", "Analytics", "Tools", "Agent", "View", "Layout", "Help" };
 }
 
 juce::PopupMenu ElectronicsWorkbench::getMenuForIndex(int, const juce::String& menuName)
 {
     juce::PopupMenu menu;
+    if (menuName == "Tools")
+    {
+        menu.addItem(cadMotionLinkItem, "CAD Motion Link...");
+        return menu;
+    }
     if (menuName == "File")
     {
         addProjectMenuItems(menu);
@@ -16752,6 +16761,7 @@ void ElectronicsWorkbench::menuItemSelected(int menuItemID, int)
             else appendLog("BYOK agent settings are unavailable.");
             break;
         case exportAgentTools: exportAssistantToolManifest(); break;
+        case cadMotionLinkItem: showCadMotionLinkDialog(); break;
         case openResearchSpec: showSpecDocument(); break;
         case openDocumentationItem: openHelp("overview"); break;
         case openHelpSchematicItem: openHelp("schematic"); break;
@@ -16918,6 +16928,35 @@ void ElectronicsWorkbench::showManageLayoutsDialog()
     options.dialogBackgroundColour = juce::Colour(0xff171b20);
     options.useNativeTitleBar = true;
     options.resizable = false;
+    options.launchAsync();
+}
+
+void ElectronicsWorkbench::showCadMotionLinkDialog()
+{
+    if (!cadMotionClient)
+    {
+        cadMotionClient = std::make_shared<dcad_motion::DcadMotionClient>();
+        if (controlPanel && controlPanel->getSession())
+        {
+            cadMotionClient->attachSession(std::shared_ptr<sim_panel::SystemSimulationSession>(controlPanel->getSession(), [](void*){}));
+        }
+    }
+    else
+    {
+        if (controlPanel && controlPanel->getSession() && !cadMotionClient->getSession())
+        {
+            cadMotionClient->attachSession(std::shared_ptr<sim_panel::SystemSimulationSession>(controlPanel->getSession(), [](void*){}));
+        }
+    }
+
+    auto* dialog = new dcad_motion::CadMotionLinkDialog(cadMotionClient);
+
+    juce::DialogWindow::LaunchOptions options;
+    options.content.setOwned(dialog);
+    options.dialogTitle = "CAD Motion Link - DjehutiCAD";
+    options.dialogBackgroundColour = juce::Colour(0xff1b2026);
+    options.useNativeTitleBar = true;
+    options.resizable = true;
     options.launchAsync();
 }
 
@@ -20248,6 +20287,157 @@ juce::String ElectronicsWorkbench::demoTool(const juce::String& name, const juce
     }
 
     return "{ \"ok\": false, \"error\": \"Unknown demonstration tool: " + name + "\" }";
+}
+
+juce::String ElectronicsWorkbench::cadMotionTool(const juce::String& name, const juce::var& args)
+{
+    if (!cadMotionClient)
+    {
+        cadMotionClient = std::make_shared<dcad_motion::DcadMotionClient>();
+        if (controlPanel && controlPanel->getSession())
+        {
+            cadMotionClient->attachSession(std::shared_ptr<sim_panel::SystemSimulationSession>(controlPanel->getSession(), [](void*){}));
+        }
+    }
+    else if (controlPanel && controlPanel->getSession() && !cadMotionClient->getSession())
+    {
+        cadMotionClient->attachSession(std::shared_ptr<sim_panel::SystemSimulationSession>(controlPanel->getSession(), [](void*){}));
+    }
+
+    if (name == "cad_motion_discover" || name == "cad_motion.discover")
+    {
+        auto endpoints = dcad_motion::DcadMotionClient::discoverEndpoints();
+        juce::DynamicObject::Ptr root = new juce::DynamicObject();
+        root->setProperty("ok", true);
+        root->setProperty("tool", "cad_motion_discover");
+        juce::Array<juce::var> epList;
+        for (const auto& ep : endpoints)
+        {
+            auto* o = new juce::DynamicObject();
+            o->setProperty("pipeName", juce::String(ep.pipeName));
+            o->setProperty("pipePath", juce::String(ep.pipePath));
+            o->setProperty("processId", (int)ep.processId);
+            o->setProperty("modelId", juce::String(ep.modelId));
+            o->setProperty("documentName", juce::String(ep.documentName));
+            o->setProperty("startedUtc", juce::String(ep.startedUtc));
+            epList.add(juce::var(o));
+        }
+        root->setProperty("endpoints", juce::var(epList));
+        return juce::JSON::toString(juce::var(root.get()));
+    }
+
+    if (name == "cad_motion_connect" || name == "cad_motion.connect")
+    {
+        juce::String pipePath;
+        if (args.isObject())
+            pipePath = args.getProperty("pipePath", {}).toString().trim();
+        else if (args.isString())
+            pipePath = args.toString().trim();
+
+        if (pipePath.isEmpty())
+        {
+            // Auto-discover if no pipe provided
+            auto endpoints = dcad_motion::DcadMotionClient::discoverEndpoints();
+            if (!endpoints.empty())
+                pipePath = juce::String(endpoints[0].pipePath);
+        }
+
+        if (pipePath.isEmpty())
+            return R"({"ok": false, "error": "No pipePath provided and no active CAD endpoints discovered."})";
+
+        bool ok = cadMotionClient->connectToPipe(pipePath.toStdString());
+        juce::DynamicObject::Ptr root = new juce::DynamicObject();
+        root->setProperty("ok", ok);
+        root->setProperty("tool", "cad_motion_connect");
+        root->setProperty("pipePath", pipePath);
+        if (!ok)
+            root->setProperty("error", "Failed to connect to pipe: " + pipePath);
+        return juce::JSON::toString(juce::var(root.get()));
+    }
+
+    if (name == "cad_motion_disconnect" || name == "cad_motion.disconnect")
+    {
+        cadMotionClient->disconnect(true);
+        return R"({"ok": true, "tool": "cad_motion_disconnect", "status": "disconnected"})";
+    }
+
+    if (name == "cad_motion_status" || name == "cad_motion.status")
+    {
+        auto s = cadMotionClient->getStatus();
+        juce::DynamicObject::Ptr root = new juce::DynamicObject();
+        root->setProperty("ok", true);
+        root->setProperty("tool", "cad_motion_status");
+
+        juce::String stateStr;
+        switch (s.state)
+        {
+            case dcad_motion::LinkState::Disconnected: stateStr = "Disconnected"; break;
+            case dcad_motion::LinkState::Connecting:   stateStr = "Connecting"; break;
+            case dcad_motion::LinkState::Handshaking:  stateStr = "Handshaking"; break;
+            case dcad_motion::LinkState::Advertising:  stateStr = "Advertising"; break;
+            case dcad_motion::LinkState::Binding:      stateStr = "Binding"; break;
+            case dcad_motion::LinkState::Synchronizing:stateStr = "Synchronizing"; break;
+            case dcad_motion::LinkState::Streaming:    stateStr = "Streaming"; break;
+            case dcad_motion::LinkState::Error:        stateStr = "Error"; break;
+        }
+
+        root->setProperty("state", stateStr);
+        root->setProperty("pipePath", juce::String(s.pipePath));
+        root->setProperty("modelId", juce::String(s.modelId));
+        root->setProperty("documentName", juce::String(s.documentName));
+        root->setProperty("interfaceRevision", juce::var(s.interfaceRevision));
+        root->setProperty("profileRevision", juce::var(s.profileRevision));
+        root->setProperty("simulationId", juce::String(s.simulationId));
+        root->setProperty("timelineGeneration", juce::var(s.timelineGeneration));
+        root->setProperty("sequence", juce::String(std::to_string(s.lastSequence)));
+        root->setProperty("simTimePs", juce::String(std::to_string(s.simTimePs)));
+        root->setProperty("lifecycle", juce::String(s.lifecycle));
+        root->setProperty("mappingCount", juce::var((int)s.mappingCount));
+        root->setProperty("dcadLifecycleControl", juce::var(s.dcadLifecycleControl));
+        if (!s.lastError.empty())
+            root->setProperty("lastError", juce::String(s.lastError));
+
+        return juce::JSON::toString(juce::var(root.get()));
+    }
+
+    if (name == "cad_motion_lifecycle" || name == "cad_motion.lifecycle")
+    {
+        if (!args.isObject())
+            return R"({"ok": false, "error": "cad_motion_lifecycle requires arguments object with command field."})";
+
+        const juce::String cmd = args.getProperty("command", {}).toString().trim();
+        int64_t stepDurPs = 0;
+        auto stepDurVar = args.getProperty("stepDurationPs", {});
+        if (!stepDurVar.isVoid())
+            stepDurPs = std::stoll(stepDurVar.toString().toStdString());
+
+        const juce::String reqId = args.getProperty("requestId", {}).toString().trim();
+
+        auto res = cadMotionClient->executeLifecycleCommand(cmd.toStdString(), stepDurPs, reqId.toStdString());
+
+        juce::DynamicObject::Ptr root = new juce::DynamicObject();
+        root->setProperty("ok", juce::var(res.outcome == "applied"));
+        root->setProperty("tool", "cad_motion_lifecycle");
+        root->setProperty("command", juce::String(res.command));
+        root->setProperty("outcome", juce::String(res.outcome));
+        root->setProperty("lifecycle", juce::String(res.lifecycle));
+        root->setProperty("timelineGeneration", juce::var(res.timelineGeneration));
+        root->setProperty("simTimePs", juce::String(std::to_string(res.simTimePs)));
+        if (!res.code.empty())
+            root->setProperty("code", juce::String(res.code));
+        if (!res.message.empty())
+            root->setProperty("message", juce::String(res.message));
+
+        return juce::JSON::toString(juce::var(root.get()));
+    }
+
+    if (name == "cad_motion_dialog" || name == "cad_motion.dialog")
+    {
+        showCadMotionLinkDialog();
+        return R"({"ok": true, "tool": "cad_motion_dialog", "status": "opened"})";
+    }
+
+    return "{ \"ok\": false, \"error\": \"Unknown cad_motion tool: " + name + "\" }";
 }
 
 juce::String ElectronicsWorkbench::viewTool(const juce::String& name, const juce::var& args)

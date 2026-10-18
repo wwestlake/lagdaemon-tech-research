@@ -18,6 +18,7 @@ namespace mechanical_scene { class MechanicalViewComponent; }
 namespace machine_builder { class MachineBuilderPanel; struct MachineDesign; }
 namespace demo_system { class DemonstrationRunnerPanel; struct DemonstrationDefinition; struct DemonstrationRun; }
 namespace djehuti_help { class HelpPanel; }
+namespace dcad_motion { class DcadMotionClient; }
 
 class DesktopAuthSession;
 class ProfileAvatarComponent;
@@ -94,7 +95,8 @@ private:
         openHelpFrustItem,
         startAudioSimItem,
         loadAudioSourceItem,
-        exportVst3PluginItem
+        exportVst3PluginItem,
+        cadMotionLinkItem
     };
 
     static constexpr int recentProjectBase = 1000;
@@ -228,9 +230,12 @@ private:
     juce::String mechanicalTool(const juce::String& name, const juce::var& args);
     juce::String machineTool(const juce::String& name, const juce::var& args);
     juce::String demoTool(const juce::String& name, const juce::var& args);
+    juce::String cadMotionTool(const juce::String& name, const juce::var& args);
     void showMechanicalView();
     void showMachineBuilder();
     void showDemonstrationRunner();
+    void showCadMotionLinkDialog();
+    std::shared_ptr<dcad_motion::DcadMotionClient> cadMotionClient;
     // FRust execution and the debugger (FrustExecution): frust_run,
     // node_program_run and node_debug_* answer when the program reaches the
     // state asked for, never blocking the message thread.
