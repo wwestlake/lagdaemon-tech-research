@@ -199,6 +199,7 @@ target_sources(DjehutiElectronicsLab PRIVATE
     Source/FrustAudioGenerator.cpp
     Source/SystemSimulationSession.h
     Source/SystemSimulationSession.cpp
+    Source/SystemSimulationSessionAssembly.cpp
     Source/ControlPanelModel.h
     Source/ControlPanelModel.cpp
     Source/ControlPanelComponent.h
@@ -577,6 +578,7 @@ set_target_properties(ControlPanelTests PROPERTIES
 target_sources(ControlPanelTests PRIVATE 
     tools/control_panel_tests/ControlPanelTests.cpp
     Source/SystemSimulationSession.cpp
+    Source/SystemSimulationSessionAssembly.cpp
     Source/ControlPanelModel.cpp
     Source/SystemAssembly.cpp
     Source/FrustComponent.cpp
@@ -632,30 +634,26 @@ target_sources(DcadMotionTests PRIVATE
     Source/DcadMotionCoords.cpp
     Source/DcadMotionClient.cpp
     Source/SystemSimulationSession.cpp
-    Source/SystemAssembly.cpp
-    Source/ControlPanelModel.cpp
-    Source/FrustComponent.cpp
-    Source/FrustComponentCompiler.cpp
-    Source/NodeDesignerPanel.cpp
-    Source/NodeCompiler.cpp
-    Source/FrustEngine.cpp
-    Source/SchematicSymbols.cpp
-    Source/MechanicalSceneModel.cpp
-    Source/MachineModel.cpp
-    Source/DemonstrationModel.cpp
 )
 target_include_directories(DcadMotionTests PRIVATE Source)
 target_compile_definitions(DcadMotionTests PRIVATE JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0)
 target_link_libraries(DcadMotionTests PRIVATE
     circuit_sim
-    frust_plugin_host
     juce::juce_core
     juce::juce_events
-    juce::juce_graphics
-    juce::juce_data_structures
-    juce::juce_gui_basics
+    juce::juce_graphics # types used by the existing assembly declarations
 )
 juce_generate_juce_header(DcadMotionTests)
+# These pipe/session checks exercise the default motor circuit, not assembly or
+# program compilation. The unchanged setupAssembly adapter lives in its own
+# translation unit, deliberately excluded with compiler/editor dependencies.
+# Avoid a full symbol PDB as well:
+# the default incremental/full-debug link exhausts memory on the 16 GB lab PC.
+target_compile_options(DcadMotionTests PRIVATE $<$<CONFIG:Debug>:/Gy>)
+target_link_options(DcadMotionTests PRIVATE
+    $<$<CONFIG:Debug>:/OPT:REF>
+    $<$<CONFIG:Debug>:/INCREMENTAL:NO>
+    $<$<CONFIG:Debug>:/DEBUG:FASTLINK>)
 add_test(NAME DcadMotionTests COMMAND DcadMotionTests)
 
 juce_add_console_app(ModelDrivenSimulationTests PRODUCT_NAME "Model Driven Simulation Tests")
@@ -665,6 +663,7 @@ set_target_properties(ModelDrivenSimulationTests PROPERTIES
 target_sources(ModelDrivenSimulationTests PRIVATE
     tools/model_driven_sim_tests/ModelDrivenSimulationTests.cpp
     Source/SystemSimulationSession.cpp
+    Source/SystemSimulationSessionAssembly.cpp
     Source/ControlPanelModel.cpp
     Source/SystemAssembly.cpp
     Source/FrustComponent.cpp
@@ -709,6 +708,7 @@ target_sources(ControlPanelUiTests PRIVATE
     Source/Analytics.cpp
     Source/SignalMeasure.cpp
     Source/SystemSimulationSession.cpp
+    Source/SystemSimulationSessionAssembly.cpp
     Source/SystemAssembly.cpp
     Source/FrustComponent.cpp
     Source/FrustComponentCompiler.cpp
@@ -745,6 +745,7 @@ target_sources(MachineBuilderUiTests PRIVATE
     Source/MachineBuilderPanel.cpp
     Source/MachineModel.cpp
     Source/SystemSimulationSession.cpp
+    Source/SystemSimulationSessionAssembly.cpp
     Source/ControlPanelComponent.cpp
     Source/ControlPanelModel.cpp
     Source/MechanicalViewComponent.cpp
@@ -877,6 +878,7 @@ target_sources(MachineBuilderSmokeTests PRIVATE
     Source/MachineBuilderPanel.cpp
     Source/MachineModel.cpp
     Source/SystemSimulationSession.cpp
+    Source/SystemSimulationSessionAssembly.cpp
     Source/ControlPanelComponent.cpp
     Source/ControlPanelModel.cpp
     Source/MechanicalViewComponent.cpp

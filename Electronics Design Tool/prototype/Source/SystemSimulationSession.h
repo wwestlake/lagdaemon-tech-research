@@ -51,6 +51,7 @@ struct EventItem
 // Snapshot of simulation state published to UI
 struct StateSnapshot
 {
+    uint64_t timelineRevision = 0; // changes only when numerical time is reinitialized
     double simTime = 0.0;
     double wallTimeSeconds = 0.0;
     double targetRate = 1.0;
@@ -93,12 +94,12 @@ public:
     bool setupAssembly(const class SystemAssembly& assembly, const juce::File& projectFolder = {});
 
     // Simulation lifecycle commands
-    bool start();
-    void pause();
-    void resume();
+    bool start(bool initiallyPaused = false);
+    bool pause();
+    bool resume();
     void stop();
-    void reset();
-    void stepSingle(double dtSeconds = 0.001);
+    bool reset();
+    bool stepSingle(double dtSeconds = 0.001);
 
     // Time pacing: 1.0 = real-time, 2.0 = 2x speed, 0.5 = half speed, 0.0 = free run
     void setExecutionRate(double rateFactor);
@@ -150,6 +151,13 @@ private:
     std::unique_ptr<std::thread> thread_;
     mutable std::mutex mutex_;
     std::condition_variable cv_;
+    // Serialize lifecycle callers; completion is signalled by the existing worker.
+    std::recursive_mutex lifecycleMutex_;
+    bool workerReady_ = false;
+    bool workerParked_ = false;
+    bool hasStarted_ = false;
+    uint64_t requestedStep_ = 0;
+    uint64_t completedStep_ = 0;
     bool shouldExit_ = false;
 
     std::atomic<bool> isRunning_ { false };

@@ -138,6 +138,7 @@ public:
     LifecycleExecutionResult executeLifecycleCommand(const std::string& command,
                                                     int64_t stepDurationPs = 0,
                                                     const std::string& requestId = "");
+    static bool parseStepDuration(const juce::var& value, int64_t& ticks);
 
     // Direct solver frame injection / polling
     void publishCurrentStateFrame();
@@ -148,7 +149,7 @@ public:
 
 private:
     void threadLoop();
-    void sendFrame(const juce::var& jsonPayload);
+    bool sendFrame(const juce::var& jsonPayload);
     bool readIncomingFrames(std::vector<juce::var>& outFrames);
     void handleIncomingMessage(const juce::var& msg);
 
@@ -164,11 +165,14 @@ private:
     void sendSignalInterface();
     void sendBindingAccept();
     void sendBindingReject(int profileRevision, const std::vector<ValidationError>& errors);
-    void sendSynchronizeState(const std::string& lifecycle, bool newTimeline = false);
-    void sendStateFrame(const std::string& lifecycle);
+    bool sendSynchronizeState(const std::string& lifecycle, bool newTimeline = false);
+    bool sendStateFrame(const std::string& lifecycle);
     void sendHeartbeat();
     void sendGoodbye();
     void sendLifecycleResult(const LifecycleExecutionResult& res);
+    void finishPendingLifecycle(bool synchronized, const std::string& reason = "");
+    void checkLifecycleTimeout();
+    std::string sessionLifecycle() const;
 
     std::vector<ValidationError> validateProposal(const std::vector<ProfileMapping>& mappings);
 
@@ -215,6 +219,12 @@ private:
 
     // Deduplication table: requestId -> LifecycleExecutionResult
     std::map<std::string, LifecycleExecutionResult> executedResults_;
+    std::map<std::string, std::string> requestSignatures_;
+    LifecycleExecutionResult pendingLifecycle_;
+    bool pendingLifecycleActive_ = false;
+    bool pendingLifecycleRemote_ = false;
+    std::chrono::steady_clock::time_point syncDeadline_;
+    uint64_t sessionTimelineRevision_ = 0;
 
     // Threading & I/O
     std::unique_ptr<std::thread> thread_;

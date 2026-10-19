@@ -277,8 +277,9 @@ int main()
             CloseHandle(ov.hEvent);
         };
 
+        std::vector<juce::var> received;
         // Bounded frame reader: strictly bounded by stage budget
-        auto serverWaitForMessage = [&hServerPipe](
+        auto serverWaitForMessage = [&hServerPipe, &received](
             const std::string& stageName,
             const std::string& expectedType,
             std::chrono::milliseconds budget,
@@ -340,6 +341,7 @@ int main()
                     auto parsed = juce::JSON::parse(juce::String::fromUTF8(buf.data(), (int)len));
                     if (parsed.isObject())
                     {
+                        received.push_back(parsed);
                         std::string type = parsed.getProperty("type", {}).toString().toStdString();
                         if (type == expectedType)
                         {
@@ -357,7 +359,7 @@ int main()
             }
 
             const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - stageStart).count();
-            std::cerr << "FAILED: [" << stageName << "] Timed out after " << elapsed << " ms waiting for message '"
+            std::cerr << "TIMEOUT: [" << stageName << "] Timed out after " << elapsed << " ms waiting for message '"
                       << expectedType << "' (budget: " << budget.count() << " ms)" << std::endl;
             return false;
         };
@@ -488,52 +490,150 @@ int main()
         std::this_thread::sleep_for(std::chrono::milliseconds(50));
         TEST_CHECK(client->getStatus().state == dcad_motion::LinkState::Streaming, "Client transitioned to Streaming after StateApplied");
 
-        // ---------------------------------------------------------------------
-        // 4.5 Bounded Lifecycle commands: Start & Pause
-        // ---------------------------------------------------------------------
-        std::cout << "[STAGE] Step 4.5: Bounded lifecycle command execution" << std::endl;
-        auto* startCmd = new juce::DynamicObject();
-        startCmd->setProperty("type", "LifecycleCommand");
-        startCmd->setProperty("requestId", "server-req-start-1");
-        startCmd->setProperty("modelId", "cad-model-uuid-1234");
-        startCmd->setProperty("simulationId", sigIntMsg.getProperty("simulationId", {}));
-        startCmd->setProperty("profileRevision", 2);
-        startCmd->setProperty("timelineGeneration", initialTimeline);
-        startCmd->setProperty("command", "start");
-        serverSendFrame(juce::var(startCmd));
-
-        juce::var startRes;
-        auto matchStart = [](const juce::var& msg) {
-            return msg.getProperty("requestId", {}).toString() == "server-req-start-1";
+        // Lifecycle acceptance is exercised exclusively over the production pipe.
+        std::cout << "[STAGE] Wire lifecycle sequence and publication ordering" << std::endl;
+        int requestNumber = 0;
+        auto ticksOf = [](const juce::var& v) {
+            return v.getProperty("simTimePs", "0").toString().getLargeIntValue();
         };
-        TEST_CHECK(serverWaitForMessage("LifecycleStart", "LifecycleResult", std::chrono::milliseconds(3000), startRes, matchStart),
-                   "Server received LifecycleResult for start");
-        TEST_CHECK(startRes.getProperty("outcome", {}).toString() == "applied", "Start outcome applied");
-
-        // Send Pause command
-        auto* pauseCmd = new juce::DynamicObject();
-        pauseCmd->setProperty("type", "LifecycleCommand");
-        pauseCmd->setProperty("requestId", "server-req-pause-1");
-        pauseCmd->setProperty("modelId", "cad-model-uuid-1234");
-        pauseCmd->setProperty("simulationId", sigIntMsg.getProperty("simulationId", {}));
-        pauseCmd->setProperty("profileRevision", 2);
-        pauseCmd->setProperty("timelineGeneration", initialTimeline);
-        pauseCmd->setProperty("command", "pause");
-        serverSendFrame(juce::var(pauseCmd));
-
-        juce::var pauseRes;
-        auto matchPause = [](const juce::var& msg) {
-            return msg.getProperty("requestId", {}).toString() == "server-req-pause-1";
+        auto makeCommand = [&](const char* command, const char* duration = nullptr) {
+            auto* o = new juce::DynamicObject();
+            o->setProperty("type", "LifecycleCommand");
+            o->setProperty("requestId", "wire-" + juce::String(++requestNumber));
+            o->setProperty("modelId", "cad-model-uuid-1234");
+            o->setProperty("simulationId", sigIntMsg.getProperty("simulationId", {}));
+            o->setProperty("profileRevision", client->getStatus().profileRevision);
+            o->setProperty("timelineGeneration", client->getStatus().timelineGeneration);
+            o->setProperty("command", command);
+            if (duration) o->setProperty("stepDurationPs", duration);
+            return juce::var(o);
         };
-        TEST_CHECK(serverWaitForMessage("LifecyclePause", "LifecycleResult", std::chrono::milliseconds(3000), pauseRes, matchPause),
-                   "Server received LifecycleResult for pause");
-        TEST_CHECK(pauseRes.getProperty("outcome", {}).toString() == "applied", "Pause outcome applied");
+        auto waitResult = [&](const juce::var& command, juce::var& result, const char* outcome = nullptr) {
+            return serverWaitForMessage("LifecycleResult", "LifecycleResult", std::chrono::milliseconds(3000), result,
+                [&](const juce::var& m) {
+                    return m.getProperty("requestId", {}) == command.getProperty("requestId", {})
+                        && (outcome ? m.getProperty("outcome", {}).toString() == outcome
+                                    : m.getProperty("outcome", {}).toString() != "accepted");
+                });
+        };
+        auto verifyPublication = [&](const juce::var& result) {
+            const auto seq = result.getProperty("stateSequence", {}).toString();
+            bool stateBeforeResult = false;
+            for (const auto& m : received)
+            {
+                const auto type = m.getProperty("type", {}).toString();
+                if ((type == "StateFrame" || type == "SynchronizeState")
+                    && m.getProperty("sequence", {}).toString() == seq
+                    && m.getProperty("timelineGeneration", {}) == result.getProperty("timelineGeneration", {})
+                    && ticksOf(m) == ticksOf(result)) stateBeforeResult = true;
+                if (type == "LifecycleResult" && m.getProperty("requestId", {}) == result.getProperty("requestId", {})
+                    && m.getProperty("outcome", {}).toString() == "applied") break;
+            }
+            TEST_CHECK(stateBeforeResult, "Complete matching state precedes applied lifecycle result");
+        };
+        auto roundTrip = [&](const juce::var& command, const char* outcome = "applied", const char* code = nullptr) {
+            serverSendFrame(command);
+            juce::var result;
+            TEST_CHECK(waitResult(command, result), "Correlated lifecycle result received");
+            TEST_CHECK(result.getProperty("outcome", {}).toString() == outcome, "Lifecycle outcome matches expectation");
+            TEST_CHECK(result.getProperty("command", {}) == command.getProperty("command", {}), "Result command is correlated");
+            TEST_CHECK(result.getProperty("simulationId", {}) == sigIntMsg.getProperty("simulationId", {}), "Result simulation identity matches");
+            if (code) TEST_CHECK(result.getProperty("code", {}).toString() == code, "Explicit rejection code matches");
+            if (juce::String(outcome) == "applied") verifyPublication(result);
+            return result;
+        };
+        auto ackSync = [&](const juce::var& sync) {
+            auto* ack = new juce::DynamicObject();
+            ack->setProperty("type", "StateApplied");
+            for (const auto* field : {"simulationId", "profileRevision", "timelineGeneration", "sequence"})
+                ack->setProperty(field, sync.getProperty(field, {}));
+            serverSendFrame(juce::var(ack));
+        };
+        session->setExecutionRate(0.001); // pacing interval is 5 seconds; lifecycle must interrupt it
+        const auto startCommand = makeCommand("start");
+        auto startResult = roundTrip(startCommand);
+        TEST_CHECK(startResult.getProperty("lifecycle", {}).toString() == "running", "Start runs");
+        roundTrip(makeCommand("start"), "rejected", "invalidTransition");
+        const auto pauseWall = std::chrono::steady_clock::now();
+        auto pauseResult = roundTrip(makeCommand("pause"));
+        TEST_CHECK(std::chrono::steady_clock::now() - pauseWall < std::chrono::seconds(1), "Pause promptly interrupts slow wall-clock pacing");
+        const auto frozen = session->getSnapshot();
+        std::this_thread::sleep_for(std::chrono::milliseconds(30));
+        TEST_CHECK(session->getSnapshot().simTime == frozen.simTime, "Pause result means worker is quiescent");
+        TEST_CHECK(session->getSnapshot().numericSignals == frozen.numericSignals, "Paused numerical state is preserved");
+        const auto stepCommand = makeCommand("step", "7000000000");
+        auto stepResult = roundTrip(stepCommand);
+        TEST_CHECK(ticksOf(stepResult) - ticksOf(pauseResult) == 7000000000LL, "Step advances exactly requested 7 ms before result");
+        TEST_CHECK(stepResult.getProperty("lifecycle", {}).toString() == "paused", "Step remains paused");
+        const auto stepped = session->getSnapshot();
+        auto duplicateStep = roundTrip(stepCommand);
+        TEST_CHECK(ticksOf(duplicateStep) == ticksOf(stepResult), "Retry returns original step result");
+        TEST_CHECK(session->getSnapshot().simTime == stepped.simTime, "Step retry never executes twice");
+        for (const auto* bad : {"0", "-1", "abc", "9223372036854775808", "1.5", ""})
+            roundTrip(makeCommand("step", bad), "rejected", "invalidStep");
+        roundTrip(makeCommand("step"), "rejected", "invalidStep");
+        roundTrip(makeCommand("unsupported"), "rejected", "unknownCommand");
+        auto stale = makeCommand("resume");
+        stale.getDynamicObject()->setProperty("timelineGeneration", initialTimeline - 1);
+        roundTrip(stale, "rejected", "staleTimeline");
+        auto wrongBinding = makeCommand("resume");
+        wrongBinding.getDynamicObject()->setProperty("modelId", "another-model");
+        roundTrip(wrongBinding, "rejected", "staleBinding");
+        roundTrip(makeCommand("resume"));
+        const auto stopWall = std::chrono::steady_clock::now();
+        auto stopResult = roundTrip(makeCommand("stop"));
+        TEST_CHECK(std::chrono::steady_clock::now() - stopWall < std::chrono::seconds(1), "Stop promptly interrupts slow wall-clock pacing");
+        session->setExecutionRate(1.0);
+        const auto stopped = session->getSnapshot();
+        TEST_CHECK(!stopped.running && ticksOf(stopResult) == (int64_t)std::llround(stopped.simTime * dcad_motion::kTicksPerSecond), "Stop retains committed final time");
+        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+        TEST_CHECK(session->getSnapshot().numericSignals == stopped.numericSignals, "Stop retains final numerical state");
 
-        // Allow worker solver thread to complete any in-flight step and park on pause cv
-        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        auto resetCommand = makeCommand("reset");
+        serverSendFrame(resetCommand);
+        juce::var resetSync, resetAccepted, resetResult;
+        TEST_CHECK(serverWaitForMessage("ResetSync", "SynchronizeState", std::chrono::milliseconds(3000), resetSync), "Reset publishes full new timeline");
+        TEST_CHECK(waitResult(resetCommand, resetAccepted, "accepted"), "Reset is pending until CAD applies state");
+        TEST_CHECK(ticksOf(resetSync) == 0 && (int)resetSync.getProperty("timelineGeneration", 0) > initialTimeline, "Reset initial time on new timeline");
+        // A stale acknowledgement with the same sequence must not complete reset.
+        auto wrongAck = resetSync.clone();
+        wrongAck.getDynamicObject()->setProperty("type", "StateApplied");
+        wrongAck.getDynamicObject()->setProperty("simulationId", "obsolete-simulation");
+        serverSendFrame(wrongAck);
+        std::this_thread::sleep_for(std::chrono::milliseconds(30));
+        TEST_CHECK(client->getStatus().state == dcad_motion::LinkState::Synchronizing, "Wrong simulation acknowledgement ignored");
+        wrongAck.getDynamicObject()->setProperty("simulationId", sigIntMsg.getProperty("simulationId", {}));
+        wrongAck.getDynamicObject()->setProperty("timelineGeneration", initialTimeline);
+        serverSendFrame(wrongAck);
+        std::this_thread::sleep_for(std::chrono::milliseconds(30));
+        TEST_CHECK(client->getStatus().state == dcad_motion::LinkState::Synchronizing, "Wrong timeline acknowledgement ignored");
+        auto busy = makeCommand("start");
+        roundTrip(busy, "rejected", "busy");
+        ackSync(resetSync);
+        TEST_CHECK(waitResult(resetCommand, resetResult), "Reset applied after exact state acknowledgement");
+        TEST_CHECK(resetResult.getProperty("outcome", {}).toString() == "applied" && ticksOf(resetResult) == 0, "Reset completes at zero");
+        verifyPublication(resetResult);
+        roundTrip(resetCommand); // identical request retains its old originating timeline
 
-        auto pausedStatus = client->getStatus();
-        int64_t pausedTimePs = pausedStatus.simTimePs;
+        // Initial-state step must never race an initial free-running worker chunk.
+        auto initialStep = roundTrip(makeCommand("step", "1000000000"));
+        TEST_CHECK(ticksOf(initialStep) == 1000000000LL, "Step from initial stopped state advances exactly 1 ms");
+        roundTrip(makeCommand("stop"));
+        // Fresh start must synchronize t=0 before starting the worker.
+        auto restartCommand = makeCommand("start");
+        serverSendFrame(restartCommand);
+        juce::var restartSync, restartAccepted, restartResult;
+        TEST_CHECK(serverWaitForMessage("RestartSync", "SynchronizeState", std::chrono::milliseconds(3000), restartSync), "Fresh Start synchronizes a new timeline");
+        TEST_CHECK(waitResult(restartCommand, restartAccepted, "accepted"), "Fresh Start awaits CAD");
+        TEST_CHECK(ticksOf(restartSync) == 0 && !session->isRunning(), "Fresh Start prepared at zero and does not run before acknowledgement");
+        ackSync(restartSync);
+        TEST_CHECK(waitResult(restartCommand, restartResult), "Fresh Start finishes after CAD acknowledgement");
+        TEST_CHECK(restartResult.getProperty("outcome", {}).toString() == "applied", "Fresh Start applied");
+        verifyPublication(restartResult);
+        auto pausedAgain = roundTrip(makeCommand("pause"));
+        initialTimeline = (int)pausedAgain.getProperty("timelineGeneration", 0);
+        int64_t pausedTimePs = ticksOf(pausedAgain);
+        const double pausedCoordinate = client->getSession()->getSnapshot().numericSignals.at("motor.angle");
 
         // ---------------------------------------------------------------------
         // 4.6 Reconnection & State Preservation (Requirement 4)
@@ -620,8 +720,75 @@ int main()
         if (reconJoints && !reconJoints->isEmpty())
         {
             double rCoord = (double)(*reconJoints)[0].getProperty("coordinate", 0.0);
-            TEST_CHECK(std::abs(rCoord - 0.5) < 1e-6, "Coordinate 0.5 rad preserved across reconnect without reset");
+            TEST_CHECK(std::abs(rCoord - (0.5 + pausedCoordinate)) < 1e-6, "Coordinate preserved across reconnect without reset");
         }
+
+        ackSync(reconSync);
+        // Completed requests survive reconnection; reusing the original step id must not step again.
+        auto retryAfterReconnect = stepCommand.clone();
+        retryAfterReconnect.getDynamicObject()->setProperty("profileRevision", 3);
+        serverSendFrame(retryAfterReconnect);
+        juce::var reconnectRetry;
+        TEST_CHECK(waitResult(retryAfterReconnect, reconnectRetry), "Retry after reconnect returns cached result");
+        TEST_CHECK(ticksOf(reconnectRetry) == ticksOf(stepResult), "Reconnect retry preserves original step outcome");
+        TEST_CHECK((int64_t)std::llround(session->getSnapshot().simTime * dcad_motion::kTicksPerSecond) == pausedTimePs, "Reconnect retry does not execute a second step");
+
+        // Missing acknowledgement has a bounded terminal result and cannot restart on late ack.
+        auto timeoutReset = makeCommand("reset");
+        timeoutReset.getDynamicObject()->setProperty("profileRevision", 3);
+        serverSendFrame(timeoutReset);
+        juce::var timeoutSync, timeoutAccepted, timeoutResult;
+        TEST_CHECK(serverWaitForMessage("TimeoutSync", "SynchronizeState", std::chrono::milliseconds(3000), timeoutSync), "Timeout fixture receives reset state");
+        TEST_CHECK(waitResult(timeoutReset, timeoutAccepted, "accepted"), "Timeout fixture receives accepted");
+        TEST_CHECK(serverWaitForMessage("AckTimeout", "LifecycleResult", std::chrono::milliseconds(6500), timeoutResult,
+            [&](const juce::var& m) { return m.getProperty("requestId", {}) == timeoutReset.getProperty("requestId", {}) && m.getProperty("outcome", {}).toString() == "rejected"; }), "Missing StateApplied returns bounded rejection");
+        TEST_CHECK(timeoutResult.getProperty("code", {}).toString() == "faulted", "Timeout explains unconfirmed CAD state");
+        ackSync(timeoutSync);
+        std::this_thread::sleep_for(std::chrono::milliseconds(30));
+        TEST_CHECK(!session->isRunning() && client->getStatus().state == dcad_motion::LinkState::Error, "Late acknowledgement cannot revive timed-out transaction");
+
+        auto reconnectBound = [&] {
+            client->disconnect(false);
+            CloseHandle(hServerPipe);
+            guard.hPipe = hServerPipe = CreateNamedPipeA(pipePath.c_str(), PIPE_ACCESS_DUPLEX | FILE_FLAG_OVERLAPPED,
+                PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT, 1, 65536, 65536, 1000, nullptr);
+            std::thread connector([&] { client->connectToPipe(pipePath); });
+            const bool connected = boundedConnectServerPipe(hServerPipe, std::chrono::milliseconds(3000));
+            connector.join();
+            TEST_CHECK(connected, "Lifecycle recovery reconnects transport");
+            juce::var peerHello;
+            TEST_CHECK(serverWaitForMessage("RecoveryHello", "Hello", std::chrono::milliseconds(3000), peerHello), "Recovery starts a fresh handshake");
+            auto hello = juce::JSON::parse(R"({"type":"Hello","protocol":"djehuti.motion","protocolVersion":1,"role":"dcad","capabilities":["lifecycleControl.v1"]})");
+            serverSendFrame(hello);
+            serverSendFrame(juce::JSON::parse(R"({"type":"MechanicalInterface","modelId":"cad-model-uuid-1234","documentName":"Recovery","interfaceRevision":1,"profileRevision":3})"));
+            juce::var signals;
+            TEST_CHECK(serverWaitForMessage("RecoverySignals", "SignalInterface", std::chrono::milliseconds(3000), signals), "Recovery revalidates signal interface");
+            auto proposal = juce::JSON::parse(R"({"type":"BindingProposal","modelId":"cad-model-uuid-1234","interfaceRevision":1,"profileRevision":3})");
+            proposal.getDynamicObject()->setProperty("simulationId", signals.getProperty("simulationId", {}));
+            proposal.getDynamicObject()->setProperty("mappings", mappings);
+            serverSendFrame(proposal);
+            juce::var accepted, synchronized;
+            TEST_CHECK(serverWaitForMessage("RecoveryAccept", "BindingAccept", std::chrono::milliseconds(3000), accepted), "Recovery rebinds");
+            TEST_CHECK(serverWaitForMessage("RecoverySync", "SynchronizeState", std::chrono::milliseconds(3000), synchronized), "Recovery fully synchronizes");
+            ackSync(synchronized);
+            const auto readyDeadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(500);
+            while (client->getStatus().state != dcad_motion::LinkState::Streaming && std::chrono::steady_clock::now() < readyDeadline)
+                std::this_thread::sleep_for(std::chrono::milliseconds(2));
+            TEST_CHECK(client->getStatus().state == dcad_motion::LinkState::Streaming, "Recovery waits for StateApplied");
+        };
+        reconnectBound();
+        roundTrip(makeCommand("start"));
+        roundTrip(makeCommand("pause"));
+        roundTrip(makeCommand("stop"));
+        auto interruptedStart = makeCommand("start");
+        serverSendFrame(interruptedStart);
+        juce::var interruptedSync, interruptedAccepted;
+        TEST_CHECK(serverWaitForMessage("InterruptedStartSync", "SynchronizeState", std::chrono::milliseconds(3000), interruptedSync), "Fresh start prepares state before interrupted synchronization");
+        TEST_CHECK(waitResult(interruptedStart, interruptedAccepted, "accepted"), "Interrupted start is pending");
+        reconnectBound(); // never acknowledge the old start's synchronization
+        TEST_CHECK(!session->isRunning() && session->getSnapshot().simTime == 0.0, "Disconnect cancels deferred start without running");
+        roundTrip(interruptedStart, "rejected", "faulted");
+        TEST_CHECK(!session->isRunning(), "Retry after reconnect cannot execute an interrupted start");
 
         // ---------------------------------------------------------------------
         // 4.7 Bounded Deliberate Timeout Check (Requirement 4)

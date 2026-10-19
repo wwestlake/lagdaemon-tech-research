@@ -1,5 +1,4 @@
 #include "SystemSimulationSession.h"
-#include "SystemAssembly.h"
 
 #include <algorithm>
 #include <cmath>
@@ -226,6 +225,8 @@ void SystemSimulationSession::setupCircuit(circuit_sim::Circuit circuit,
     outputNodeBindings_ = outputNodeBindings;
     outputBranchBindings_ = outputBranchBindings;
     currentSimTime_ = 0.0;
+    hasStarted_ = false;
+    isFaulted_ = false;
     currentNumericInputs_.clear();
     currentBooleanInputs_.clear();
     pendingInputs_.clear();
@@ -233,6 +234,7 @@ void SystemSimulationSession::setupCircuit(circuit_sim::Circuit circuit,
         std::lock_guard<std::mutex> snapshotLock(snapshotMutex_);
         authoritativeRateIntegrals_.clear();
         lastSolverSimTime_ = 0.0;
+        ++latestSnapshot_.timelineRevision;
         latestSnapshot_.simTime = 0.0;
         latestSnapshot_.running = false;
         latestSnapshot_.paused = false;
@@ -246,67 +248,6 @@ void SystemSimulationSession::setupCircuit(circuit_sim::Circuit circuit,
         for (const auto& [name, elem] : outputBranchBindings_)
             latestSnapshot_.numericSignals[name] = 0.0;
     }
-}
-
-bool SystemSimulationSession::setupAssembly(const SystemAssembly& assembly, const juce::File& projectFolder)
-{
-    stop();
-    auto compiled = AssemblyCompiler::compile(assembly, projectFolder);
-    if (!compiled.success)
-    {
-        addEventLog("Assembly compilation failed: " + compiled.error, "FAULT");
-        return false;
-    }
-
-    std::lock_guard<std::mutex> lock(mutex_);
-    baseCircuit_ = std::move(compiled.circuit);
-    inputElementBindings_ = std::move(compiled.inputElements);
-    outputNodeBindings_ = std::move(compiled.signalNodes);
-    outputBranchBindings_ = std::move(compiled.signalBranches);
-
-    signalDefs_.clear();
-    for (const auto& meta : compiled.metadata)
-    {
-        SignalDef def;
-        def.name = meta.path;
-        def.type = DataType::Numeric;
-        def.isOutput = !meta.isInput;
-        def.unit = meta.unit;
-        def.minValue = meta.minVal;
-        def.maxValue = meta.maxVal;
-        def.description = meta.description.empty() ? meta.path : meta.description;
-        def.quantity = meta.quantity;
-        def.kind = meta.kind;
-        def.companionSignal = meta.companionSignal;
-        signalDefs_.push_back(def);
-    }
-
-    currentSimTime_ = 0.0;
-    currentNumericInputs_.clear();
-    currentBooleanInputs_.clear();
-    pendingInputs_.clear();
-
-    {
-        std::lock_guard<std::mutex> snapshotLock(snapshotMutex_);
-        latestSnapshot_.simTime = 0.0;
-        latestSnapshot_.running = false;
-        latestSnapshot_.paused = false;
-        latestSnapshot_.faulted = false;
-        latestSnapshot_.numericSignals.clear();
-        latestSnapshot_.booleanSignals.clear();
-        latestSnapshot_.textSignals.clear();
-        for (const auto& [name, node] : outputNodeBindings_)
-            latestSnapshot_.numericSignals[name] = 0.0;
-        for (const auto& [name, elem] : outputBranchBindings_)
-            latestSnapshot_.numericSignals[name] = 0.0;
-        for (const auto& [name, val] : currentNumericInputs_)
-            latestSnapshot_.numericSignals[name] = val;
-        for (const auto& [name, val] : currentBooleanInputs_)
-            latestSnapshot_.booleanSignals[name] = val;
-    }
-
-    addEventLog("System Assembly Loaded: " + assembly.name, "INFO");
-    return true;
 }
 
 void SystemSimulationSession::setupDefaultMotorSystem()
@@ -417,6 +358,7 @@ void SystemSimulationSession::setupDefaultMotorSystem()
         std::lock_guard<std::mutex> snapshotLock(snapshotMutex_);
         authoritativeRateIntegrals_.clear();
         lastSolverSimTime_ = 0.0;
+        ++latestSnapshot_.timelineRevision;
         latestSnapshot_.simTime = 0.0;
         latestSnapshot_.running = false;
         latestSnapshot_.paused = false;
@@ -439,58 +381,70 @@ void SystemSimulationSession::setupDefaultMotorSystem()
     addEventLog("System Initialized: Ready", "INFO");
 }
 
-bool SystemSimulationSession::start()
+bool SystemSimulationSession::start(bool initiallyPaused)
 {
+    std::lock_guard<std::recursive_mutex> lifecycleLock(lifecycleMutex_);
     if (isRunning_.load())
+        return initiallyPaused ? pause() : (isPaused_.load() ? resume() : true);
+    // A new worker always starts at t=0; expose that reset as a new timeline.
+    if (hasStarted_ && !reset()) return false;
+    if (thread_ && thread_->joinable()) thread_->join();
     {
-        if (isPaused_.load())
-        {
-            resume();
-            return true;
-        }
-        return true;
+        std::lock_guard<std::mutex> lock(mutex_);
+        shouldExit_ = false;
+        workerReady_ = false;
+        workerParked_ = false;
+        singleStepRequested_ = false;
+        isPaused_ = initiallyPaused;
+        isRunning_ = true;
+        hasStarted_ = true;
     }
-
-    shouldExit_ = false;
-    isPaused_ = false;
-    singleStepRequested_ = false;
-
     thread_ = std::make_unique<std::thread>(&SystemSimulationSession::workerThreadLoop, this);
-    isRunning_ = true;
-
-    {
-        std::lock_guard<std::mutex> snapshotLock(snapshotMutex_);
-        latestSnapshot_.running = true;
-        latestSnapshot_.paused = false;
-    }
-
+    std::unique_lock<std::mutex> lock(mutex_);
+    const bool ready = cv_.wait_for(lock, std::chrono::seconds(3), [this] {
+        return workerReady_ || !isRunning_.load();
+    });
+    lock.unlock();
+    if (!ready || isFaulted_.load() || !isRunning_.load()) return false;
     addEventLog("Simulation session started", "CONTROL");
     return true;
 }
 
-void SystemSimulationSession::pause()
+bool SystemSimulationSession::pause()
 {
+    std::lock_guard<std::recursive_mutex> lifecycleLock(lifecycleMutex_);
+    if (!isRunning_.load()) return false;
+    std::unique_lock<std::mutex> lock(mutex_);
     isPaused_ = true;
-    {
-        std::lock_guard<std::mutex> snapshotLock(snapshotMutex_);
-        latestSnapshot_.paused = true;
-    }
+    cv_.notify_all();
+    const bool parked = cv_.wait_for(lock, std::chrono::seconds(3), [this] {
+        return workerParked_ || !isRunning_.load();
+    });
+    lock.unlock();
+    if (!parked || !isRunning_.load() || isFaulted_.load()) return false;
     addEventLog("Simulation paused", "CONTROL");
+    return true;
 }
 
-void SystemSimulationSession::resume()
+bool SystemSimulationSession::resume()
 {
-    isPaused_ = false;
+    std::lock_guard<std::recursive_mutex> lifecycleLock(lifecycleMutex_);
+    if (!isRunning_.load() || isFaulted_.load()) return false;
     {
+        std::lock_guard<std::mutex> lock(mutex_);
+        isPaused_ = false;
+        workerParked_ = false;
         std::lock_guard<std::mutex> snapshotLock(snapshotMutex_);
         latestSnapshot_.paused = false;
     }
     cv_.notify_all();
     addEventLog("Simulation resumed", "CONTROL");
+    return true;
 }
 
 void SystemSimulationSession::stop()
 {
+    std::lock_guard<std::recursive_mutex> lifecycleLock(lifecycleMutex_);
     if (!isRunning_.load() && !thread_)
     {
         std::lock_guard<std::mutex> snapshotLock(snapshotMutex_);
@@ -522,65 +476,60 @@ void SystemSimulationSession::stop()
     addEventLog("Simulation stopped", "CONTROL");
 }
 
-void SystemSimulationSession::reset()
+bool SystemSimulationSession::reset()
 {
+    std::lock_guard<std::recursive_mutex> lifecycleLock(lifecycleMutex_);
     stop();
     currentSimTime_ = 0.0;
     isFaulted_ = false;
-    std::map<std::string, circuit_sim::Node> outNodes;
-    std::map<std::string, int> outBranches;
-    std::map<std::string, double> numInputs;
-    std::map<std::string, bool> boolInputs;
-    std::vector<SignalDef> defs;
+    hasStarted_ = false;
     {
         std::lock_guard<std::mutex> lock(mutex_);
         pendingInputs_.clear();
-        outNodes = outputNodeBindings_;
-        outBranches = outputBranchBindings_;
-        numInputs = currentNumericInputs_;
-        boolInputs = currentBooleanInputs_;
-        defs = signalDefs_;
+        singleStepRequested_ = false;
     }
     {
         std::lock_guard<std::mutex> snapshotLock(snapshotMutex_);
+        ++latestSnapshot_.timelineRevision;
         authoritativeRateIntegrals_.clear();
         lastSolverSimTime_ = 0.0;
-        latestSnapshot_.simTime = 0.0;
-        latestSnapshot_.running = false;
-        latestSnapshot_.paused = false;
-        latestSnapshot_.faulted = false;
+        latestSnapshot_.rateIntegrals.clear();
         latestSnapshot_.numericSignals.clear();
         latestSnapshot_.booleanSignals.clear();
         latestSnapshot_.textSignals.clear();
-        latestSnapshot_.rateIntegrals.clear();
-        for (const auto& [name, node] : outNodes)
-            latestSnapshot_.numericSignals[name] = 0.0;
-        for (const auto& [name, elem] : outBranches)
-            latestSnapshot_.numericSignals[name] = 0.0;
-        for (const auto& [name, val] : numInputs)
-            latestSnapshot_.numericSignals[name] = val;
-        for (const auto& [name, val] : boolInputs)
-            latestSnapshot_.booleanSignals[name] = val;
-        for (const auto& def : defs)
-        {
-            if (def.isOutput && latestSnapshot_.numericSignals.find(def.name) == latestSnapshot_.numericSignals.end())
-                latestSnapshot_.numericSignals[def.name] = 0.0;
-        }
     }
+    // Publish initialized numerical state, including nonzero initial conditions.
+    circuit_sim::TransientStepper initial(baseCircuit_);
+    if (!initial.init())
+    {
+        isFaulted_ = true;
+        std::lock_guard<std::mutex> snapshotLock(snapshotMutex_);
+        latestSnapshot_.simTime = 0.0;
+        latestSnapshot_.faulted = true;
+        latestSnapshot_.faultReason = initial.error();
+        return false;
+    }
+    applyAllCurrentInputs(initial);
+    publishSnapshot(initial);
     addEventLog("Simulation reset to t = 0.000s", "CONTROL");
+    return true;
 }
 
-void SystemSimulationSession::stepSingle(double dtSeconds)
+bool SystemSimulationSession::stepSingle(double dtSeconds)
 {
-    if (!isRunning_.load())
-    {
-        start();
-        pause();
-    }
-    std::lock_guard<std::mutex> lock(mutex_);
-    singleStepRequested_ = true;
+    std::lock_guard<std::recursive_mutex> lifecycleLock(lifecycleMutex_);
+    if (!std::isfinite(dtSeconds) || dtSeconds <= 0.0) return false;
+    if (!isRunning_.load() && !start(true)) return false;
+    if (!isPaused_.load() || !pause()) return false;
+    std::unique_lock<std::mutex> lock(mutex_);
+    const auto request = ++requestedStep_;
     singleStepDt_ = dtSeconds;
+    singleStepRequested_ = true;
+    workerParked_ = false;
     cv_.notify_all();
+    return cv_.wait_for(lock, std::chrono::seconds(3), [this, request] {
+        return completedStep_ >= request || !isRunning_.load();
+    }) && completedStep_ >= request && !isFaulted_.load();
 }
 
 void SystemSimulationSession::setExecutionRate(double rateFactor)
@@ -912,7 +861,15 @@ void SystemSimulationSession::workerThreadLoop()
     {
         isFaulted_ = true;
         addEventLog("Stepper initialization failed: " + stepper.error(), "FAULT");
-        isRunning_ = false;
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            isRunning_ = false;
+            std::lock_guard<std::mutex> snapshotLock(snapshotMutex_);
+            latestSnapshot_.running = false;
+            latestSnapshot_.faulted = true;
+            latestSnapshot_.faultReason = stepper.error();
+        }
+        cv_.notify_all();
         return;
     }
 
@@ -920,6 +877,11 @@ void SystemSimulationSession::workerThreadLoop()
     applyAllCurrentInputs(stepper);
 
     publishSnapshot(stepper);
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        workerReady_ = true;
+    }
+    cv_.notify_all();
 
     auto lastWallTime = std::chrono::steady_clock::now();
     double simClock = 0.0;
@@ -934,7 +896,14 @@ void SystemSimulationSession::workerThreadLoop()
 
             if (isPaused_ && !singleStepRequested_)
             {
+                workerParked_ = true;
+                {
+                    std::lock_guard<std::mutex> snapshotLock(snapshotMutex_);
+                    latestSnapshot_.paused = true;
+                }
+                cv_.notify_all();
                 cv_.wait(lock, [this] { return shouldExit_ || !isPaused_ || singleStepRequested_; });
+                workerParked_ = false;
                 if (shouldExit_)
                     break;
                 lastWallTime = std::chrono::steady_clock::now();
@@ -968,6 +937,12 @@ void SystemSimulationSession::workerThreadLoop()
 
             currentSimTime_ = stepper.time();
             publishSnapshot(stepper);
+            if (doStep)
+            {
+                std::lock_guard<std::mutex> lock(mutex_);
+                completedStep_ = requestedStep_;
+                cv_.notify_all();
+            }
         }
 
         // Pacing with wall clock
@@ -980,7 +955,10 @@ void SystemSimulationSession::workerThreadLoop()
 
             if (nextWallDeadline > now)
             {
-                std::this_thread::sleep_for(nextWallDeadline - now);
+                std::unique_lock<std::mutex> lock(mutex_);
+                cv_.wait_until(lock, nextWallDeadline, [this] {
+                    return shouldExit_ || isPaused_.load() || singleStepRequested_;
+                });
             }
             lastWallTime = std::chrono::steady_clock::now();
         }
@@ -990,7 +968,16 @@ void SystemSimulationSession::workerThreadLoop()
         }
     }
 
-    isRunning_ = false;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        isRunning_ = false;
+        workerParked_ = false;
+        std::lock_guard<std::mutex> snapshotLock(snapshotMutex_);
+        latestSnapshot_.running = false;
+        latestSnapshot_.faulted = isFaulted_.load();
+        if (isFaulted_.load()) latestSnapshot_.faultReason = stepper.error();
+    }
+    cv_.notify_all();
 }
 
 } // namespace sim_panel

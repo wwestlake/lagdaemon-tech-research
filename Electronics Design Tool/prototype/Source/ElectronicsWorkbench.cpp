@@ -911,6 +911,20 @@ const std::vector<ToolSpecText>& analyticsToolSpecs()
 const std::vector<ToolSpecText>& controlPanelToolSpecs()
 {
     static const std::vector<ToolSpecText> specs = {
+        // Existing link operations needed to establish and inspect lifecycle readiness.
+        { "cad_motion_connect", "Connect the existing CAD named-pipe link; synchronize before issuing lifecycle commands.",
+          R"({"type":"object","properties":{"pipePath":{"type":"string"}},"additionalProperties":false})" },
+        { "cad_motion_disconnect", "Disconnect CAD transport without changing simulation execution.",
+          R"({"type":"object","properties":{},"additionalProperties":false})" },
+        { "cad_motion_status", "Inspect CAD link readiness, confirmed timeline, sequence, lifecycle and synchronization errors.",
+          R"({"type":"object","properties":{},"additionalProperties":false})" },
+        {
+            "cad_motion_lifecycle",
+            "Execute start, pause, resume, stop, reset or step through the CAD-linked simulation lifecycle. "
+            "Step requires positive decimal stepDurationPs. accepted means awaiting CAD StateApplied, not complete. "
+            "Keep requestId and arguments unchanged when retrying/querying the stored outcome; never issue a new id to retry a step.",
+            R"({"type":"object","properties":{"command":{"type":"string","enum":["start","pause","resume","stop","reset","step"]},"stepDurationPs":{"type":"string","description":"Positive int64 decimal picoseconds, required for step."},"requestId":{"type":"string","description":"Stable operation id, reused for retries and outcome queries."}},"required":["command"],"additionalProperties":false})"
+        },
         {
             "simulation_control",
             "Control the interactive system simulation session (run, pause, resume, stop, reset, step) and adjust execution rate.",
@@ -20408,21 +20422,24 @@ juce::String ElectronicsWorkbench::cadMotionTool(const juce::String& name, const
         const juce::String cmd = args.getProperty("command", {}).toString().trim();
         int64_t stepDurPs = 0;
         auto stepDurVar = args.getProperty("stepDurationPs", {});
-        if (!stepDurVar.isVoid())
-            stepDurPs = std::stoll(stepDurVar.toString().toStdString());
+        if (cmd == "step" && !dcad_motion::DcadMotionClient::parseStepDuration(stepDurVar, stepDurPs))
+            return R"({"ok": false, "code": "invalidStep", "error": "stepDurationPs must be a positive int64 decimal interval."})";
 
         const juce::String reqId = args.getProperty("requestId", {}).toString().trim();
 
         auto res = cadMotionClient->executeLifecycleCommand(cmd.toStdString(), stepDurPs, reqId.toStdString());
 
         juce::DynamicObject::Ptr root = new juce::DynamicObject();
-        root->setProperty("ok", juce::var(res.outcome == "applied"));
+        root->setProperty("ok", juce::var(res.outcome != "rejected"));
         root->setProperty("tool", "cad_motion_lifecycle");
+        root->setProperty("requestId", juce::String(res.requestId));
         root->setProperty("command", juce::String(res.command));
         root->setProperty("outcome", juce::String(res.outcome));
         root->setProperty("lifecycle", juce::String(res.lifecycle));
         root->setProperty("timelineGeneration", juce::var(res.timelineGeneration));
         root->setProperty("simTimePs", juce::String(std::to_string(res.simTimePs)));
+        if (res.stateSequence > 0)
+            root->setProperty("stateSequence", juce::String(std::to_string(res.stateSequence)));
         if (!res.code.empty())
             root->setProperty("code", juce::String(res.code));
         if (!res.message.empty())

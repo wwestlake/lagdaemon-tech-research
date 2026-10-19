@@ -14,6 +14,41 @@
 #include <fstream>
 #include <sstream>
 #include <iomanip>
+#include <limits>
+
+#if JUCE_WINDOWS
+namespace {
+bool boundedPipeIo(HANDLE pipe, void* data, DWORD size, DWORD& transferred, bool writing,
+                   const std::atomic<bool>& exiting)
+{
+    OVERLAPPED operation{};
+    operation.hEvent = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+    if (!operation.hEvent) return false;
+    BOOL ok = writing ? WriteFile(pipe, data, size, &transferred, &operation)
+                      : ReadFile(pipe, data, size, &transferred, &operation);
+    if (!ok && GetLastError() == ERROR_IO_PENDING)
+    {
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+        while (!exiting.load() && std::chrono::steady_clock::now() < deadline)
+        {
+            if (WaitForSingleObject(operation.hEvent, 20) == WAIT_OBJECT_0)
+            {
+                ok = GetOverlappedResult(pipe, &operation, &transferred, FALSE);
+                break;
+            }
+        }
+        if (!ok)
+        {
+            CancelIoEx(pipe, &operation);
+            // The OVERLAPPED and its buffer must outlive cancellation completion.
+            GetOverlappedResult(pipe, &operation, &transferred, TRUE);
+        }
+    }
+    CloseHandle(operation.hEvent);
+    return ok != FALSE;
+}
+}
+#endif
 
 namespace dcad_motion
 {
@@ -90,6 +125,13 @@ DcadMotionClient::~DcadMotionClient()
 void DcadMotionClient::attachSession(std::shared_ptr<sim_panel::SystemSimulationSession> session)
 {
     std::lock_guard<std::recursive_mutex> lock(mutex_);
+    if (session_ != session)
+    {
+        finishPendingLifecycle(false, "Simulation session replaced.");
+        executedResults_.clear();
+        requestSignatures_.clear();
+        initial_ = true;
+    }
     session_ = session;
     refreshCatalogFromActiveSession();
 }
@@ -97,6 +139,12 @@ void DcadMotionClient::attachSession(std::shared_ptr<sim_panel::SystemSimulation
 void DcadMotionClient::setSimulationIdentity(const std::string& simId, const std::string& simName)
 {
     std::lock_guard<std::recursive_mutex> lock(mutex_);
+    if (simulationId_ != simId)
+    {
+        finishPendingLifecycle(false, "Simulation identity replaced.");
+        executedResults_.clear();
+        requestSignatures_.clear();
+    }
     simulationId_ = simId;
     simulationName_ = simName;
 }
@@ -205,7 +253,7 @@ bool DcadMotionClient::connectToPipe(const std::string& pipePath)
             0,              // no sharing
             NULL,           // default security
             OPEN_EXISTING,
-            FILE_ATTRIBUTE_NORMAL,
+            FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OVERLAPPED,
             NULL
         );
         if (hPipe != INVALID_HANDLE_VALUE)
@@ -246,7 +294,7 @@ bool DcadMotionClient::connectToPipe(const std::string& pipePath)
         shouldExit_ = false;
         readBuffer_.clear();
         acceptedMappings_.clear();
-        executedResults_.clear();
+        dcadLifecycleControl_ = false;
         awaitingStateApplied_ = false;
     }
 
@@ -286,6 +334,7 @@ void DcadMotionClient::disconnect(bool shouldSendGoodbye)
 
     {
         std::lock_guard<std::recursive_mutex> lock(mutex_);
+        finishPendingLifecycle(false, "Disconnected before CAD confirmed the state; reconnect and inspect the synchronized state.");
         state_ = LinkState::Disconnected;
         acceptedMappings_.clear();
         awaitingStateApplied_ = false;
@@ -335,11 +384,12 @@ void DcadMotionClient::log(const std::string& message)
 // -----------------------------------------------------------------------------
 // Low-Level Transport Framing
 // -----------------------------------------------------------------------------
-void DcadMotionClient::sendFrame(const juce::var& jsonPayload)
+bool DcadMotionClient::sendFrame(const juce::var& jsonPayload)
 {
 #if JUCE_WINDOWS
+    std::lock_guard<std::recursive_mutex> lock(mutex_);
     if (pipeHandle_ == INVALID_HANDLE_VALUE || pipeHandle_ == nullptr)
-        return;
+        return false;
 
     const auto jsonString = juce::JSON::toString(jsonPayload, true);
     juce::MemoryOutputStream utf8;
@@ -354,15 +404,20 @@ void DcadMotionClient::sendFrame(const juce::var& jsonPayload)
     packet.write(utf8.getData(), payloadLen);
 
     DWORD bytesWritten = 0;
-    BOOL ok = WriteFile(pipeHandle_, packet.getData(), (DWORD)packet.getDataSize(), &bytesWritten, NULL);
-    if (!ok)
+    const bool ok = boundedPipeIo(pipeHandle_, const_cast<void*>(packet.getData()),
+                                  (DWORD)packet.getDataSize(), bytesWritten, true, shouldExit_);
+    if (!ok || bytesWritten != packet.getDataSize())
     {
         DWORD err = GetLastError();
         log("WriteFile error " + std::to_string(err) + " - pipe closed or stalled");
         std::lock_guard<std::recursive_mutex> lock(mutex_);
         state_ = LinkState::Error;
         lastErrorMessage_ = "WriteFile failed (" + std::to_string(err) + ")";
+        return false;
     }
+    return true;
+#else
+    return false;
 #endif
 }
 
@@ -384,7 +439,7 @@ bool DcadMotionClient::readIncomingFrames(std::vector<juce::var>& outFrames)
     {
         std::vector<uint8_t> temp(bytesAvail);
         DWORD bytesRead = 0;
-        if (ReadFile(pipeHandle_, temp.data(), bytesAvail, &bytesRead, NULL) && bytesRead > 0)
+        if (boundedPipeIo(pipeHandle_, temp.data(), bytesAvail, bytesRead, false, shouldExit_) && bytesRead > 0)
         {
             readBuffer_.insert(readBuffer_.end(), temp.begin(), temp.begin() + bytesRead);
         }
@@ -460,6 +515,8 @@ void DcadMotionClient::threadLoop()
             std::lock_guard<std::recursive_mutex> lock(mutex_);
             state_ = LinkState::Error;
             lastErrorMessage_ = "Pipe connection dropped";
+            finishPendingLifecycle(false, "Connection lost before CAD confirmed the state.");
+            awaitingStateApplied_ = false;
             break;
         }
 
@@ -468,6 +525,7 @@ void DcadMotionClient::threadLoop()
             handleIncomingMessage(msg);
         }
 
+        checkLifecycleTimeout();
         const double now = juce::Time::getMillisecondCounterHiRes() * 0.001;
 
         // 2. State Streaming: if Bound & Synchronized and not awaiting StateApplied
@@ -479,12 +537,20 @@ void DcadMotionClient::threadLoop()
 
         if (canStream && session_)
         {
+            std::lock_guard<std::recursive_mutex> lock(mutex_);
+            if (state_ != LinkState::Streaming || awaitingStateApplied_) continue;
             const auto snap = session_->getSnapshot();
             std::string snapLifecycle = "stopped";
             if (snap.faulted) snapLifecycle = "faulted";
             else if (snap.running) snapLifecycle = snap.paused ? "paused" : "running";
             else snapLifecycle = "stopped";
 
+            if (snap.timelineRevision != sessionTimelineRevision_ || snap.simTime * kTicksPerSecond + 0.5 < currentSimTimePs_)
+            {
+                initial_ = !snap.running && snap.simTime == 0.0;
+                sendSynchronizeState(snapLifecycle, true);
+                continue;
+            }
             // If running, stream at ~30 Hz (dt >= 0.033s)
             if (snapLifecycle == "running")
             {
@@ -498,7 +564,7 @@ void DcadMotionClient::threadLoop()
             else
             {
                 // If lifecycle changed while stopped/paused/faulted, publish immediately
-                if (snapLifecycle != currentLifecycle_)
+                if (snapLifecycle != currentLifecycle_ || (int64_t)std::llround(snap.simTime * kTicksPerSecond) != currentSimTimePs_)
                 {
                     sendStateFrame(snapLifecycle);
                     lastHeartbeatTime_ = now;
@@ -573,6 +639,8 @@ void DcadMotionClient::handleHello(const juce::var& msg)
 void DcadMotionClient::handleMechanicalInterface(const juce::var& msg)
 {
     std::lock_guard<std::recursive_mutex> lock(mutex_);
+    finishPendingLifecycle(false, "CAD mechanical binding changed before synchronization completed.");
+    awaitingStateApplied_ = false;
     modelId_ = msg.getProperty("modelId", {}).toString().toStdString();
     documentName_ = msg.getProperty("documentName", {}).toString().toStdString();
     interfaceRevision_ = (int)msg.getProperty("interfaceRevision", 0);
@@ -633,7 +701,8 @@ void DcadMotionClient::handleBindingProposal(const juce::var& msg)
 
     // After BindingAccept, send SynchronizeState. Only start a new timeline generation on first binding.
     const bool isFirstTimeline = (timelineGeneration_ == 0);
-    sendSynchronizeState(currentLifecycle_, isFirstTimeline);
+    const auto snap = session_ ? session_->getSnapshot() : sim_panel::StateSnapshot{};
+    sendSynchronizeState(sessionLifecycle(), isFirstTimeline || snap.timelineRevision != sessionTimelineRevision_);
 }
 
 void DcadMotionClient::handleStateApplied(const juce::var& msg)
@@ -644,11 +713,22 @@ void DcadMotionClient::handleStateApplied(const juce::var& msg)
     log("DCAD -> StateApplied: sequence " + seq + (isDuplicate ? " (duplicate)" : ""));
 
     std::lock_guard<std::recursive_mutex> lock(mutex_);
-    if (awaitingStateApplied_ && seq == awaitingSyncSequence_)
+    if (awaitingStateApplied_ && seq == awaitingSyncSequence_
+        && msg.getProperty("simulationId", {}).toString().toStdString() == simulationId_
+        && (int)msg.getProperty("profileRevision", 0) == profileRevision_
+        && (int)msg.getProperty("timelineGeneration", 0) == timelineGeneration_)
     {
+        if (session_ && session_->getSnapshot().timelineRevision != sessionTimelineRevision_)
+        {
+            finishPendingLifecycle(false, "DEWB timeline changed while CAD was applying the state.");
+            awaitingStateApplied_ = false;
+            sendSynchronizeState(sessionLifecycle(), true);
+            return;
+        }
         awaitingStateApplied_ = false;
         state_ = LinkState::Streaming;
         log("Timeline synchronization confirmed by DCAD, now streaming.");
+        finishPendingLifecycle(true);
     }
 
     if (onStatusChanged)
@@ -668,276 +748,223 @@ void DcadMotionClient::handleLinkStatus(const juce::var& msg)
     if (code == "revalidationRequired")
     {
         std::lock_guard<std::recursive_mutex> lock(mutex_);
+        finishPendingLifecycle(false, "Binding changed before lifecycle synchronization completed.");
         state_ = LinkState::Advertising;
         awaitingStateApplied_ = false;
         log("Revalidation requested by DCAD, awaiting fresh proposal.");
+    }
+    else if (code == "mechanismUnsolved" || code == "synchronizeRequired")
+    {
+        std::lock_guard<std::recursive_mutex> lock(mutex_);
+        finishPendingLifecycle(false, "CAD could not apply the synchronized state: " + message);
+        awaitingStateApplied_ = false;
+        state_ = LinkState::Error;
+        lastErrorMessage_ = code + ": " + message + "; rebind or reconnect after resolving the cause.";
     }
 }
 
 // -----------------------------------------------------------------------------
 // Lifecycle Commands & Deduplication
 // -----------------------------------------------------------------------------
+bool DcadMotionClient::parseStepDuration(const juce::var& value, int64_t& ticks)
+{
+    const auto text = value.toString().toStdString();
+    if (text.empty()) return false;
+    uint64_t n = 0;
+    for (const auto c : text)
+    {
+        if (c < '0' || c > '9' || n > (uint64_t(std::numeric_limits<int64_t>::max()) - (c - '0')) / 10)
+            return false;
+        n = n * 10 + (c - '0');
+    }
+    ticks = (int64_t)n;
+    return ticks > 0;
+}
+
+std::string DcadMotionClient::sessionLifecycle() const
+{
+    if (!session_) return "stopped";
+    const auto snap = session_->getSnapshot();
+    return snap.faulted ? "faulted" : !snap.running ? "stopped" : snap.paused ? "paused" : "running";
+}
+
 void DcadMotionClient::handleLifecycleCommand(const juce::var& msg)
 {
-    const std::string reqId = msg.getProperty("requestId", {}).toString().toStdString();
-    const std::string cmd = msg.getProperty("command", {}).toString().toStdString();
-    const std::string simId = msg.getProperty("simulationId", {}).toString().toStdString();
-    const std::string modId = msg.getProperty("modelId", {}).toString().toStdString();
-    const int profRev = (int)msg.getProperty("profileRevision", 0);
-    const int reqTimeline = (int)msg.getProperty("timelineGeneration", 0);
-
-    int64_t stepDurPs = 0;
-    auto stepDurVar = msg.getProperty("stepDurationPs", {});
-    if (!stepDurVar.isVoid())
-        stepDurPs = std::stoll(stepDurVar.toString().toStdString());
-
-    log("DCAD -> LifecycleCommand " + cmd + " (id: " + reqId + ")");
-
-    // Deduplication check: if requestId already handled, return stored result without executing again
+    std::lock_guard<std::recursive_mutex> lock(mutex_);
+    const auto id = msg.getProperty("requestId", {}).toString().toStdString();
+    const auto cmd = msg.getProperty("command", {}).toString().toStdString();
+    auto reject = [&](const std::string& code, const std::string& message) {
+        LifecycleExecutionResult r;
+        r.requestId = id; r.command = cmd; r.outcome = "rejected";
+        r.code = code; r.message = message; r.lifecycle = sessionLifecycle();
+        r.timelineGeneration = timelineGeneration_; r.simTimePs = currentSimTimePs_;
+        sendLifecycleResult(r);
+    };
+    if (id.empty()) { reject("busy", "A nonempty requestId is required."); return; }
+    if (msg.getProperty("simulationId", {}).toString().toStdString() != simulationId_
+        || msg.getProperty("modelId", {}).toString().toStdString() != modelId_
+        || (int)msg.getProperty("profileRevision", 0) != profileRevision_)
+    { reject("staleBinding", "Command binding does not match the active simulation/model/profile."); return; }
+    int64_t ticks = 0;
+    if (cmd == "step" && !parseStepDuration(msg.getProperty("stepDurationPs", {}), ticks))
+    { reject("invalidStep", "stepDurationPs must be a positive int64 decimal interval."); return; }
+    // Retry lookup precedes timeline validation: Reset's successful result has a new timeline.
+    if (executedResults_.count(id))
     {
-        std::lock_guard<std::recursive_mutex> lock(mutex_);
-        auto it = executedResults_.find(reqId);
-        if (it != executedResults_.end())
-        {
-            log("Deduplicating LifecycleCommand " + cmd + " (" + reqId + "): returning cached result");
-            sendLifecycleResult(it->second);
-            return;
-        }
-    }
-
-    // Verify binding identity
-    if (simId != simulationId_ || modId != modelId_ || profRev != profileRevision_)
-    {
-        LifecycleExecutionResult res;
-        res.requestId = reqId;
-        res.command = cmd;
-        res.outcome = "rejected";
-        res.code = "staleBinding";
-        res.message = "The command was issued for a different binding.";
-        res.lifecycle = currentLifecycle_;
-        res.timelineGeneration = timelineGeneration_;
-        res.simTimePs = currentSimTimePs_;
-        sendLifecycleResult(res);
+        sendLifecycleResult(executeLifecycleCommand(cmd, ticks, id));
         return;
     }
-
-    if (reqTimeline != timelineGeneration_)
+    if (!dcadLifecycleControl_ || state_ != LinkState::Streaming || awaitingStateApplied_)
+    { reject("busy", "Lifecycle control requires a negotiated, synchronized binding."); return; }
+    if (session_ && session_->getSnapshot().timelineRevision != sessionTimelineRevision_)
     {
-        LifecycleExecutionResult res;
-        res.requestId = reqId;
-        res.command = cmd;
-        res.outcome = "rejected";
-        res.code = "staleTimeline";
-        res.message = "The command refers to timeline " + std::to_string(reqTimeline) + "; current is " + std::to_string(timelineGeneration_);
-        res.lifecycle = currentLifecycle_;
-        res.timelineGeneration = timelineGeneration_;
-        res.simTimePs = currentSimTimePs_;
-        sendLifecycleResult(res);
+        sendSynchronizeState(sessionLifecycle(), true);
+        reject("staleTimeline", "DEWB reinitialized its timeline; wait for full synchronization.");
         return;
     }
-
-    // Execute the lifecycle transition
-    LifecycleExecutionResult result = executeLifecycleCommand(cmd, stepDurPs, reqId);
+    if ((int)msg.getProperty("timelineGeneration", 0) != timelineGeneration_)
+    { reject("staleTimeline", "Command refers to an obsolete simulation timeline."); return; }
+    auto result = executeLifecycleCommand(cmd, ticks, id);
+    if (result.outcome == "accepted") pendingLifecycleRemote_ = true;
     sendLifecycleResult(result);
 }
 
 DcadMotionClient::LifecycleExecutionResult DcadMotionClient::executeLifecycleCommand(
-    const std::string& command,
-    int64_t stepDurationPs,
-    const std::string& requestId)
+    const std::string& command, int64_t stepDurationPs, const std::string& requestId)
 {
+    std::lock_guard<std::recursive_mutex> lock(mutex_);
     LifecycleExecutionResult res;
-    res.requestId = requestId.empty() ? ("req-" + std::to_string(juce::Time::getMillisecondCounter())) : requestId;
+    res.requestId = requestId.empty() ? juce::Uuid().toString().toStdString() : requestId;
     res.command = command;
-
-    // Deduplication check: if requestId already executed, return cached result immediately
+    res.lifecycle = sessionLifecycle();
+    res.timelineGeneration = timelineGeneration_;
+    res.simTimePs = session_ ? (int64_t)std::llround(session_->getSnapshot().simTime * kTicksPerSecond) : 0;
+    const auto signature = simulationId_ + "|" + modelId_ + "|" + command + "|" + std::to_string(stepDurationPs);
+    auto found = executedResults_.find(res.requestId);
+    if (found != executedResults_.end())
     {
-        std::lock_guard<std::recursive_mutex> lock(mutex_);
-        auto it = executedResults_.find(res.requestId);
-        if (it != executedResults_.end())
-        {
-            return it->second;
-        }
-    }
-
-    if (!session_)
-    {
-        res.outcome = "rejected";
-        res.code = "faulted";
-        res.message = "No active simulation session attached.";
-        res.lifecycle = "stopped";
+        if (requestSignatures_[res.requestId] == signature) return found->second;
+        res.outcome = "rejected"; res.code = "busy";
+        res.message = "requestId was already used for a different operation.";
         return res;
     }
-
-    const auto snap = session_->getSnapshot();
-    std::string state = "stopped";
-    if (snap.faulted) state = "faulted";
-    else if (snap.running) state = snap.paused ? "paused" : "running";
-    else state = "stopped";
-
-    if (command == "start")
-    {
-        if (state != "stopped")
+    auto finish = [&](const std::string& outcome, const std::string& code = "", const std::string& message = "") {
+        res.outcome = outcome; res.code = code; res.message = message;
+        res.lifecycle = sessionLifecycle(); res.timelineGeneration = timelineGeneration_;
+        res.simTimePs = session_ ? (int64_t)std::llround(session_->getSnapshot().simTime * kTicksPerSecond) : 0;
+        if (outcome == "applied")
         {
-            res.outcome = "rejected";
-            res.code = "invalidTransition";
-            res.message = "Start needs a stopped simulation; it is " + state + ".";
-            res.lifecycle = state;
-            res.timelineGeneration = timelineGeneration_;
-            res.simTimePs = currentSimTimePs_;
-            return res;
+            res.stateSequence = acceptedMappings_.empty() ? 0 : sequence_;
+            if (res.stateSequence != 0) res.simTimePs = currentSimTimePs_;
         }
-
-        if (!initial_)
-        {
-            // Fresh start: increment timeline and synchronize first
-            sendSynchronizeState("running", true);
-        }
-
-        session_->start();
-        initial_ = false;
-        currentLifecycle_ = "running";
-        sendStateFrame("running");
-
-        res.outcome = "applied";
-        res.lifecycle = "running";
-        res.timelineGeneration = timelineGeneration_;
-        res.simTimePs = currentSimTimePs_;
-        res.stateSequence = sequence_;
-    }
-    else if (command == "pause")
-    {
-        if (state != "running")
-        {
-            res.outcome = "rejected";
-            res.code = "invalidTransition";
-            res.message = "Pause needs a running simulation; it is " + state + ".";
-            res.lifecycle = state;
-            res.timelineGeneration = timelineGeneration_;
-            res.simTimePs = currentSimTimePs_;
-            return res;
-        }
-
-        session_->pause();
-        currentLifecycle_ = "paused";
-        sendStateFrame("paused");
-
-        res.outcome = "applied";
-        res.lifecycle = "paused";
-        res.timelineGeneration = timelineGeneration_;
-        res.simTimePs = currentSimTimePs_;
-        res.stateSequence = sequence_;
-    }
-    else if (command == "resume")
-    {
-        if (state != "paused")
-        {
-            res.outcome = "rejected";
-            res.code = "invalidTransition";
-            res.message = "Resume needs a paused simulation; it is " + state + ".";
-            res.lifecycle = state;
-            res.timelineGeneration = timelineGeneration_;
-            res.simTimePs = currentSimTimePs_;
-            return res;
-        }
-
-        session_->resume();
-        currentLifecycle_ = "running";
-        sendStateFrame("running");
-
-        res.outcome = "applied";
-        res.lifecycle = "running";
-        res.timelineGeneration = timelineGeneration_;
-        res.simTimePs = currentSimTimePs_;
-        res.stateSequence = sequence_;
-    }
-    else if (command == "stop")
-    {
-        if (state != "running" && state != "paused")
-        {
-            res.outcome = "rejected";
-            res.code = "invalidTransition";
-            res.message = "Stop needs a running or paused simulation; it is " + state + ".";
-            res.lifecycle = state;
-            res.timelineGeneration = timelineGeneration_;
-            res.simTimePs = currentSimTimePs_;
-            return res;
-        }
-
-        session_->stop();
-        currentLifecycle_ = "stopped";
-        sendStateFrame("stopped");
-
-        res.outcome = "applied";
-        res.lifecycle = "stopped";
-        res.timelineGeneration = timelineGeneration_;
-        res.simTimePs = currentSimTimePs_;
-        res.stateSequence = sequence_;
-    }
-    else if (command == "reset")
-    {
-        session_->reset();
-        currentLifecycle_ = "stopped";
-        initial_ = true;
-
-        // Reset: new timeline, full synchronization at t=0
-        sendSynchronizeState("stopped", true);
-
-        res.outcome = "applied";
-        res.lifecycle = "stopped";
-        res.timelineGeneration = timelineGeneration_;
-        res.simTimePs = 0;
-        res.stateSequence = sequence_;
-    }
-    else if (command == "step")
-    {
-        if (!(state == "paused" || (state == "stopped" && initial_)))
-        {
-            res.outcome = "rejected";
-            res.code = "invalidTransition";
-            res.message = "Single Step needs a paused simulation (or initial state); it is " + state + ".";
-            res.lifecycle = state;
-            res.timelineGeneration = timelineGeneration_;
-            res.simTimePs = currentSimTimePs_;
-            return res;
-        }
-
-        double dtSeconds = 0.001; // default 1 ms
-        if (stepDurationPs > 0)
-            dtSeconds = (double)stepDurationPs / (double)kTicksPerSecond;
-
-        session_->stepSingle(dtSeconds);
-        currentLifecycle_ = "paused";
-        sendStateFrame("paused");
-
-        res.outcome = "applied";
-        res.lifecycle = "paused";
-        res.timelineGeneration = timelineGeneration_;
-        res.simTimePs = currentSimTimePs_;
-        res.stateSequence = sequence_;
-    }
-    else
-    {
-        res.outcome = "rejected";
-        res.code = "unknownCommand";
-        res.message = "Unrecognized lifecycle command: " + command;
-        res.lifecycle = state;
-        res.timelineGeneration = timelineGeneration_;
-        res.simTimePs = currentSimTimePs_;
-    }
-
-    // Store in deduplication table
-    {
-        std::lock_guard<std::recursive_mutex> lock(mutex_);
         executedResults_[res.requestId] = res;
-    }
+        requestSignatures_[res.requestId] = signature;
+        return res;
+    };
+    if (pendingLifecycleActive_) return finish("rejected", "busy", "Another lifecycle operation is awaiting CAD synchronization.");
+    if (!session_) return finish("rejected", "faulted", "No active simulation session.");
+    if (command != "start" && command != "pause" && command != "resume" && command != "stop" && command != "reset" && command != "step")
+        return finish("rejected", "unknownCommand", "Unsupported lifecycle command: " + command);
+    if (command == "step" && (stepDurationPs <= 0 || res.simTimePs < 0
+        || stepDurationPs > std::numeric_limits<int64_t>::max() - res.simTimePs
+        || (double)res.simTimePs / kTicksPerSecond + (double)stepDurationPs / kTicksPerSecond
+               <= (double)res.simTimePs / kTicksPerSecond))
+        return finish("rejected", "invalidStep", "Step requires a positive, representable interval within the int64 simulation timeline.");
+    const auto state = res.lifecycle;
+    const auto snap = session_->getSnapshot();
+    const bool initial = initial_ && snap.simTime == 0.0;
+    if ((command == "start" && state != "stopped")
+        || (command == "pause" && state != "running")
+        || (command == "resume" && state != "paused")
+        || (command == "stop" && state != "running" && state != "paused")
+        || (command == "step" && state != "paused" && !(state == "stopped" && initial)))
+        return finish("rejected", state == "faulted" ? "faulted" : "invalidTransition", "Cannot " + command + " while " + state + ".");
+    const bool bound = !acceptedMappings_.empty() && isConnected();
+    if (bound && (state_ != LinkState::Streaming || awaitingStateApplied_))
+        return finish("rejected", "busy", "Wait for the active binding's full-state synchronization.");
 
-    return res;
+    if (command == "reset" || (command == "start" && !initial))
+    {
+        if (!session_->reset()) return finish("rejected", "faulted", "Simulation initial state could not be prepared.");
+        initial_ = true;
+        if (bound)
+        {
+            if (!sendSynchronizeState("stopped", true))
+                return finish("rejected", "faulted", "Simulation reset, but complete CAD synchronization could not be sent.");
+            pendingLifecycle_ = finish("accepted");
+            pendingLifecycleActive_ = true;
+            pendingLifecycleRemote_ = false;
+            return pendingLifecycle_;
+        }
+    }
+    bool ok = true;
+    if (command == "start") { ok = session_->start(); initial_ = false; }
+    else if (command == "pause") ok = session_->pause();
+    else if (command == "resume") ok = session_->resume();
+    else if (command == "stop") session_->stop();
+    else if (command == "step") { ok = session_->stepSingle((double)stepDurationPs / kTicksPerSecond); initial_ = false; }
+    currentLifecycle_ = sessionLifecycle();
+    if (!ok)
+    {
+        if (bound) sendStateFrame(currentLifecycle_);
+        return finish("rejected", "faulted", "Simulation worker did not complete " + command + "; inspect the current state before retrying.");
+    }
+    if (bound && !sendStateFrame(currentLifecycle_))
+        return finish("rejected", "faulted", "DEWB performed the operation, but its complete state could not be published to CAD.");
+    return finish("applied");
 }
 
-// -----------------------------------------------------------------------------
-// Validation Logic
-// -----------------------------------------------------------------------------
+void DcadMotionClient::finishPendingLifecycle(bool synchronized, const std::string& reason)
+{
+    std::lock_guard<std::recursive_mutex> lock(mutex_);
+    if (!pendingLifecycleActive_) return;
+    auto result = pendingLifecycle_;
+    const bool remote = pendingLifecycleRemote_;
+    pendingLifecycleActive_ = false;
+    pendingLifecycleRemote_ = false;
+    bool ok = synchronized;
+    if (ok && session_ && (sessionLifecycle() != "stopped"
+        || (int64_t)std::llround(session_->getSnapshot().simTime * kTicksPerSecond) != currentSimTimePs_))
+    {
+        ok = false;
+        result.message = "Simulation changed while awaiting CAD; inspect the current state before issuing another command.";
+    }
+    if (ok && result.command == "start")
+    {
+        ok = session_ && session_->start();
+        initial_ = false;
+        if (ok) ok = sendStateFrame(sessionLifecycle());
+    }
+    result.outcome = ok ? "applied" : "rejected";
+    result.lifecycle = sessionLifecycle();
+    result.timelineGeneration = timelineGeneration_;
+    result.simTimePs = session_ ? (int64_t)std::llround(session_->getSnapshot().simTime * kTicksPerSecond) : currentSimTimePs_;
+    result.stateSequence = sequence_;
+    if (ok) result.simTimePs = currentSimTimePs_;
+    if (!ok)
+    {
+        result.code = "faulted";
+        if (result.message.empty())
+            result.message = reason.empty() ? "Could not start/publish after CAD synchronization." : reason;
+        lastErrorMessage_ = result.message;
+    }
+    executedResults_[result.requestId] = result;
+    if (remote && isConnected() && state_ != LinkState::Disconnected && state_ != LinkState::Error)
+        sendLifecycleResult(result);
+}
+
+void DcadMotionClient::checkLifecycleTimeout()
+{
+    std::lock_guard<std::recursive_mutex> lock(mutex_);
+    if (awaitingStateApplied_ && std::chrono::steady_clock::now() >= syncDeadline_)
+    {
+        finishPendingLifecycle(false, "CAD state acknowledgement timed out; DEWB remains at its prepared state. Reconnect to synchronize.");
+        awaitingStateApplied_ = false;
+        state_ = LinkState::Error;
+        lastErrorMessage_ = "CAD synchronization timed out; reconnect to recover.";
+    }
+}
+
 std::vector<ValidationError> DcadMotionClient::validateProposal(const std::vector<ProfileMapping>& mappings)
 {
     std::map<std::string, MotionSignalDef> catalog;
@@ -1095,12 +1122,12 @@ void DcadMotionClient::sendBindingReject(int profileRevision, const std::vector<
     log("DEWB -> BindingReject sent");
 }
 
-void DcadMotionClient::sendSynchronizeState(const std::string& lifecycle, bool newTimeline)
+bool DcadMotionClient::sendSynchronizeState(const std::string& lifecycle, bool newTimeline)
 {
     std::lock_guard<std::recursive_mutex> lock(mutex_);
 
     if (acceptedMappings_.empty())
-        return;
+        return false;
 
     int newGen = timelineGeneration_;
     uint64_t newSeq = sequence_;
@@ -1138,14 +1165,14 @@ void DcadMotionClient::sendSynchronizeState(const std::string& lifecycle, bool n
     if (!computeJointCoordinates(joints, snap, stagedRateIntegrals, stagedCompanionOrigins))
     {
         log("Error: Full-state synchronization aborted due to coordinate evaluation failure: " + lastErrorMessage_);
-        return;
+        return false;
     }
 
     if (joints.size() != acceptedMappings_.size())
     {
         lastErrorMessage_ = "Evaluated joint count does not match accepted profile mapping count";
         log("Error: " + lastErrorMessage_);
-        return;
+        return false;
     }
 
     // Evaluation succeeded for all joints: commit staged values
@@ -1172,19 +1199,24 @@ void DcadMotionClient::sendSynchronizeState(const std::string& lifecycle, bool n
         jArr.add(j.toJson());
     obj->setProperty("joints", jArr);
 
+    sessionTimelineRevision_ = snap.timelineRevision;
+    state_ = LinkState::Synchronizing;
+    syncDeadline_ = std::chrono::steady_clock::now() + std::chrono::seconds(5);
     awaitingStateApplied_ = true;
     awaitingSyncSequence_ = std::to_string(sequence_);
 
-    sendFrame(juce::var(obj));
+    const bool sent = sendFrame(juce::var(obj));
     log("DEWB -> SynchronizeState sent (gen " + std::to_string(timelineGeneration_) + ", seq " + std::to_string(sequence_) + ")");
+    if (!sent) awaitingStateApplied_ = false;
+    return sent;
 }
 
-void DcadMotionClient::sendStateFrame(const std::string& lifecycle)
+bool DcadMotionClient::sendStateFrame(const std::string& lifecycle)
 {
     std::lock_guard<std::recursive_mutex> lock(mutex_);
 
     if (acceptedMappings_.empty() || awaitingStateApplied_)
-        return;
+        return false;
 
     sim_panel::StateSnapshot snap;
     int64_t simTimePs = 0;
@@ -1206,12 +1238,12 @@ void DcadMotionClient::sendStateFrame(const std::string& lifecycle)
     if (!computeJointCoordinates(joints, snap, stagedRateIntegrals, stagedCompanionOrigins))
     {
         // Coordinate computation failed due to missing signal or non-finite value
-        return;
+        return false;
     }
 
     if (joints.size() != acceptedMappings_.size())
     {
-        return;
+        return false;
     }
 
     // Commit staged state
@@ -1236,7 +1268,8 @@ void DcadMotionClient::sendStateFrame(const std::string& lifecycle)
         jArr.add(j.toJson());
     obj->setProperty("joints", jArr);
 
-    sendFrame(juce::var(obj));
+    sessionTimelineRevision_ = snap.timelineRevision;
+    return sendFrame(juce::var(obj));
 }
 
 void DcadMotionClient::sendHeartbeat()
