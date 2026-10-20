@@ -31,6 +31,8 @@
 #include <djehuti_route/outline.h>
 #include "Preferences.h"
 #include "AudioPipeline.h"
+#include "AudioTestRender.h"
+#include "TestMode.h"
 #include "AudioDsp.h"
 #include "SpiceLibrary.h"
 #include "CircuitHierarchyPanel.h"
@@ -855,6 +857,63 @@ struct ToolSpecText
     juce::String name, description, schema;
 };
 
+const std::vector<ToolSpecText>& testModeToolSpecs()
+{
+    static const std::vector<ToolSpecText> specs = {
+        {
+            "test_mode_toggle",
+            "Toggle non-destructive Test Mode on or off for the current schematic. In Test Mode the schematic design is locked and virtual test harnesses/audio stimuli/probes can be attached without altering the circuit.",
+            R"({"type":"object","properties":{"active":{"type":"boolean","description":"True to enter Test Mode, false to exit. If omitted, toggles current state."}},"additionalProperties":false})"
+        },
+        {
+            "test_mode_status",
+            "Query current Test Mode status, including active state, active setup name, list of all test setups, and last test run results.",
+            R"({"type":"object","properties":{},"additionalProperties":false})"
+        },
+        {
+            "test_setup_create",
+            "Create a new named test setup for non-destructive circuit testing.",
+            R"({"type":"object","properties":{"name":{"type":"string","description":"Unique name for the test setup, e.g. '12AX7 Guitar Preamp Test'."}},"required":["name"],"additionalProperties":false})"
+        },
+        {
+            "test_setup_select",
+            "Select an existing test setup by name to make it active.",
+            R"({"type":"object","properties":{"name":{"type":"string","description":"Name of the test setup to select."}},"required":["name"],"additionalProperties":false})"
+        },
+        {
+            "test_setup_rename",
+            "Rename an existing test setup.",
+            R"({"type":"object","properties":{"oldName":{"type":"string","description":"Current name of the test setup."},"newName":{"type":"string","description":"New name for the test setup."}},"required":["oldName","newName"],"additionalProperties":false})"
+        },
+        {
+            "test_setup_delete",
+            "Delete an existing test setup by name.",
+            R"({"type":"object","properties":{"name":{"type":"string","description":"Name of the test setup to delete."}},"required":["name"],"additionalProperties":false})"
+        },
+        {
+            "test_setup_list",
+            "List all independent test setups saved for the current schematic.",
+            R"({"type":"object","properties":{},"additionalProperties":false})"
+        },
+        {
+            "test_setup_configure",
+            "Configure inputs, outputs, probes, and stimulus parameters for a test setup without altering the schematic diagram.",
+            R"({"type":"object","properties":{"name":{"type":"string","description":"Name of the setup to configure (optional, defaults to active setup)."},"inputMode":{"type":"string","description":"'replace' to substitute an existing source, or 'virtual' to drive an undriven circuit node."},"inputRefdes":{"type":"string","description":"For replace mode: reference designator of source, e.g. 'VIN'."},"inputNode":{"type":"string","description":"For virtual mode: node/pin label, e.g. 'V1.G' or 'C_IN.1'."},"inputPeakVolts":{"type":"number","description":"Peak stimulus voltage in Volts (e.g. 0.1 for 100 mV)."},"stimulusType":{"type":"string","description":"'file' for recorded WAV audio, or 'sine' for sine wave test tone."},"audioFilePath":{"type":"string","description":"Path to audio WAV recording file."},"sineFrequencyHz":{"type":"number","description":"Sine tone frequency in Hz."},"sineDurationSec":{"type":"number","description":"Sine tone duration in seconds."},"outputNode":{"type":"string","description":"Output measurement node/pin label, e.g. 'OUT' or 'R_LOAD.1'."},"probeNodes":{"type":"array","items":{"type":"string"},"description":"Extra probe node/pin labels to measure, e.g. ['V1.P', 'V1.K']."}},"additionalProperties":false})"
+        },
+        {
+            "test_setup_run",
+            "Run non-destructive audio/transient test simulation through the circuit model for a test setup, measuring gain, output peak, RMS, and DC bias operating points.",
+            R"({"type":"object","properties":{"name":{"type":"string","description":"Name of the test setup to run (optional, defaults to active setup)."},"audition":{"type":"boolean","description":"True to immediately audition/play the rendered audio output through the audio output device."}},"additionalProperties":false})"
+        },
+        {
+            "test_setup_export_audio",
+            "Export the last rendered test audio output of a test setup to a 16-bit PCM WAV file.",
+            R"({"type":"object","properties":{"name":{"type":"string","description":"Name of the test setup (optional, defaults to active setup)."},"path":{"type":"string","description":"Destination file path for the exported WAV file."}},"required":["path"],"additionalProperties":false})"
+        }
+    };
+    return specs;
+}
+
 const std::vector<ToolSpecText>& analyticsToolSpecs()
 {
     static const auto specs = [] {
@@ -1314,6 +1373,9 @@ std::string liveToolText(const char* text)
 bool isSchematicTool(const juce::String& name)
 {
     for (const auto& spec : schematicToolSpecs)
+        if (name == spec.name)
+            return true;
+    for (const auto& spec : testModeToolSpecs())
         if (name == spec.name)
             return true;
     for (const auto& spec : analyticsToolSpecs())
@@ -2804,6 +2866,358 @@ class SchematicCanvasPanel final : public juce::Component,
                                    public juce::DragAndDropTarget
 {
 public:
+    class TestModeBarComponent : public juce::Component
+    {
+    public:
+        TestModeBarComponent(SchematicCanvasPanel& owner) : canvas(owner)
+        {
+            badgeLabel.setText("TEST MODE (LOCKED)", juce::dontSendNotification);
+            badgeLabel.setFont(juce::Font(13.0f, juce::Font::bold));
+            badgeLabel.setColour(juce::Label::textColourId, juce::Colour(0xffe056fd));
+            addAndMakeVisible(badgeLabel);
+
+            exitButton.setColour(juce::TextButton::buttonColourId, juce::Colour(0xff222a35));
+            exitButton.setColour(juce::TextButton::textColourOffId, juce::Colour(0xffff7675));
+            exitButton.onClick = [this] { canvas.exitTestMode(); };
+            addAndMakeVisible(exitButton);
+
+            setupLabel.setFont(juce::Font(12.0f));
+            setupLabel.setColour(juce::Label::textColourId, juce::Colour(0xff93a7b0));
+            addAndMakeVisible(setupLabel);
+
+            setupBox.setColour(juce::ComboBox::backgroundColourId, juce::Colour(0xff18222c));
+            setupBox.setColour(juce::ComboBox::textColourId, juce::Colour(0xffdce9ee));
+            setupBox.onChange = [this] {
+                if (updating) return;
+                canvas.testMode.selectSetup(setupBox.getText());
+                updateFromManager();
+                canvas.repaint();
+            };
+            addAndMakeVisible(setupBox);
+
+            auto styleBtn = [](juce::TextButton& btn, juce::Colour bg = juce::Colour(0xff18222c), juce::Colour text = juce::Colour(0xffdce9ee)) {
+                btn.setColour(juce::TextButton::buttonColourId, bg);
+                btn.setColour(juce::TextButton::textColourOffId, text);
+            };
+
+            styleBtn(newSetupButton);
+            newSetupButton.onClick = [this] {
+                int count = (int)canvas.testMode.getSetups().size() + 1;
+                juce::String newName = "Setup " + juce::String(count);
+                canvas.testMode.createSetup(newName);
+                updateFromManager();
+                canvas.repaint();
+            };
+            addAndMakeVisible(newSetupButton);
+
+            styleBtn(renameSetupButton);
+            renameSetupButton.onClick = [this] {
+                if (auto* s = canvas.testMode.getActiveSetup())
+                {
+                    const auto oldName = s->name;
+                    auto* dialog = new juce::AlertWindow("Rename Test Setup", "Enter new name for '" + oldName + "':", juce::AlertWindow::NoIcon);
+                    dialog->addTextEditor("name", oldName, "Name:");
+                    dialog->addButton("OK", 1, juce::KeyPress(juce::KeyPress::returnKey));
+                    dialog->addButton("Cancel", 0, juce::KeyPress(juce::KeyPress::escapeKey));
+                    dialog->enterModalState(true, juce::ModalCallbackFunction::create([this, dialog, oldName](int result) {
+                        std::unique_ptr<juce::AlertWindow> owner(dialog);
+                        if (result != 1) return;
+                        auto newName = dialog->getTextEditorContents("name").trim();
+                        if (newName.isNotEmpty())
+                        {
+                            canvas.testMode.renameSetup(oldName, newName);
+                            updateFromManager();
+                            canvas.repaint();
+                        }
+                    }));
+                }
+            };
+            addAndMakeVisible(renameSetupButton);
+
+            styleBtn(deleteSetupButton);
+            deleteSetupButton.onClick = [this] {
+                if (auto* s = canvas.testMode.getActiveSetup())
+                {
+                    canvas.testMode.deleteSetup(s->name);
+                    updateFromManager();
+                    canvas.repaint();
+                }
+            };
+            addAndMakeVisible(deleteSetupButton);
+
+            styleBtn(runButton, juce::Colour(0xff3b2754), juce::Colour(0xffe056fd));
+            runButton.onClick = [this] { canvas.runTestSetup(nullptr, true); };
+            addAndMakeVisible(runButton);
+
+            styleBtn(stopButton, juce::Colour(0xff382225), juce::Colour(0xffff7675));
+            stopButton.onClick = [this] {
+                if (canvas.audioPipeline) canvas.audioPipeline->stopRenderedAudio();
+            };
+            addAndMakeVisible(stopButton);
+
+            styleBtn(exportButton);
+            exportButton.onClick = [this] {
+                if (auto* s = canvas.testMode.getActiveSetup())
+                {
+                    auto outDir = canvas.outputDirectory != nullptr ? canvas.outputDirectory() : juce::File::getSpecialLocation(juce::File::tempDirectory);
+                    auto dest = outDir.getChildFile("test_output_" + juce::File::createLegalFileName(s->name) + ".wav");
+                    juce::String err;
+                    canvas.exportRenderedAudio(s, dest.getFullPathName(), &err);
+                    if (canvas.onStatus) canvas.onStatus("Exported rendered test audio: " + dest.getFullPathName());
+                }
+            };
+            addAndMakeVisible(exportButton);
+
+            inputModeBox.addItem("Replace Source", 1);
+            inputModeBox.addItem("Virtual Node", 2);
+            inputModeBox.setColour(juce::ComboBox::backgroundColourId, juce::Colour(0xff18222c));
+            inputModeBox.onChange = [this] {
+                if (updating) return;
+                if (auto* s = canvas.testMode.getActiveSetup())
+                {
+                    s->inputMode = (inputModeBox.getSelectedId() == 2) ? "virtual" : "replace";
+                    updateFromManager();
+                    canvas.repaint();
+                }
+            };
+            addAndMakeVisible(inputModeBox);
+
+            auto styleEditor = [](juce::TextEditor& ed) {
+                ed.setColour(juce::TextEditor::backgroundColourId, juce::Colour(0xff151c23));
+                ed.setColour(juce::TextEditor::textColourId, juce::Colour(0xffdce9ee));
+                ed.setColour(juce::TextEditor::outlineColourId, juce::Colour(0xff26323d));
+            };
+
+            styleEditor(inputTargetEditor);
+            inputTargetEditor.onFocusLost = [this] {
+                if (auto* s = canvas.testMode.getActiveSetup())
+                {
+                    if (s->inputMode == "virtual") s->inputNode = inputTargetEditor.getText().trim();
+                    else s->inputRefdes = inputTargetEditor.getText().trim();
+                    canvas.repaint();
+                }
+            };
+            addAndMakeVisible(inputTargetEditor);
+
+            stimulusBox.addItem("WAV File", 1);
+            stimulusBox.addItem("1 kHz Sine", 2);
+            stimulusBox.setColour(juce::ComboBox::backgroundColourId, juce::Colour(0xff18222c));
+            stimulusBox.onChange = [this] {
+                if (updating) return;
+                if (auto* s = canvas.testMode.getActiveSetup())
+                {
+                    s->stimulusType = (stimulusBox.getSelectedId() == 2) ? "sine" : "file";
+                    updateFromManager();
+                }
+            };
+            addAndMakeVisible(stimulusBox);
+
+            styleEditor(audioFileEditor);
+            audioFileEditor.onFocusLost = [this] {
+                if (auto* s = canvas.testMode.getActiveSetup())
+                    s->audioFilePath = audioFileEditor.getText().trim();
+            };
+            addAndMakeVisible(audioFileEditor);
+
+            styleBtn(browseButton);
+            browseButton.onClick = [this] {
+                fileChooser = std::make_unique<juce::FileChooser>("Select Audio Test Recording", juce::File::getCurrentWorkingDirectory(), "*.wav");
+                fileChooser->launchAsync(juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectFiles,
+                    [this](const juce::FileChooser& fc) {
+                        auto result = fc.getResult();
+                        if (result.existsAsFile())
+                        {
+                            if (auto* s = canvas.testMode.getActiveSetup())
+                            {
+                                s->audioFilePath = result.getFullPathName();
+                                audioFileEditor.setText(s->audioFilePath, juce::dontSendNotification);
+                            }
+                        }
+                    });
+            };
+            addAndMakeVisible(browseButton);
+
+            levelLabel.setFont(juce::Font(12.0f));
+            levelLabel.setColour(juce::Label::textColourId, juce::Colour(0xff93a7b0));
+            addAndMakeVisible(levelLabel);
+
+            styleEditor(peakVoltsEditor);
+            peakVoltsEditor.onFocusLost = [this] {
+                if (auto* s = canvas.testMode.getActiveSetup())
+                    s->inputPeakVolts = std::max(0.001, peakVoltsEditor.getText().trim().getDoubleValue());
+            };
+            addAndMakeVisible(peakVoltsEditor);
+
+            outLabel.setFont(juce::Font(12.0f));
+            outLabel.setColour(juce::Label::textColourId, juce::Colour(0xff93a7b0));
+            addAndMakeVisible(outLabel);
+
+            styleEditor(outputNodeEditor);
+            outputNodeEditor.onFocusLost = [this] {
+                if (auto* s = canvas.testMode.getActiveSetup())
+                {
+                    s->outputNode = outputNodeEditor.getText().trim();
+                    canvas.repaint();
+                }
+            };
+            addAndMakeVisible(outputNodeEditor);
+
+            probesLabel.setFont(juce::Font(12.0f));
+            probesLabel.setColour(juce::Label::textColourId, juce::Colour(0xff93a7b0));
+            addAndMakeVisible(probesLabel);
+
+            styleEditor(probesEditor);
+            probesEditor.onFocusLost = [this] {
+                if (auto* s = canvas.testMode.getActiveSetup())
+                {
+                    s->probeNodes.clear();
+                    for (const auto& token : juce::StringArray::fromTokens(probesEditor.getText(), ", ;", ""))
+                        s->probeNodes.add(token.trim());
+                    canvas.repaint();
+                }
+            };
+            addAndMakeVisible(probesEditor);
+
+            resultsLabel.setFont(juce::Font(12.0f, juce::Font::bold));
+            resultsLabel.setColour(juce::Label::textColourId, juce::Colour(0xff00d2d3));
+            addAndMakeVisible(resultsLabel);
+        }
+
+        void updateFromManager()
+        {
+            updating = true;
+            setupBox.clear(juce::dontSendNotification);
+            const auto& setups = canvas.testMode.getSetups();
+            for (size_t i = 0; i < setups.size(); ++i)
+                setupBox.addItem(setups[i].name, (int)i + 1);
+
+            const auto* s = canvas.testMode.getActiveSetup();
+            if (s != nullptr)
+            {
+                setupBox.setSelectedId(canvas.testMode.getActiveSetupIndex() + 1, juce::dontSendNotification);
+                inputModeBox.setSelectedId(s->inputMode == "virtual" ? 2 : 1, juce::dontSendNotification);
+                inputTargetEditor.setText(s->inputMode == "virtual" ? s->inputNode : s->inputRefdes, juce::dontSendNotification);
+                stimulusBox.setSelectedId(s->stimulusType == "sine" ? 2 : 1, juce::dontSendNotification);
+                audioFileEditor.setText(s->audioFilePath, juce::dontSendNotification);
+                peakVoltsEditor.setText(juce::String(s->inputPeakVolts, 2) + " V", juce::dontSendNotification);
+                outputNodeEditor.setText(s->outputNode, juce::dontSendNotification);
+                probesEditor.setText(s->probeNodes.joinIntoString(", "), juce::dontSendNotification);
+                resultsLabel.setText(s->hasResult ? s->lastSummary : "Click [Run & Audition] to test circuit response.", juce::dontSendNotification);
+            }
+            else
+            {
+                resultsLabel.setText("No active test setup.", juce::dontSendNotification);
+            }
+            updating = false;
+        }
+
+        void paint(juce::Graphics& g) override
+        {
+            g.fillAll(juce::Colour(0xff12171e));
+            g.setColour(juce::Colour(0xff26323d));
+            g.drawHorizontalLine(getHeight() - 1, 0.0f, (float)getWidth());
+            g.setColour(juce::Colour(0xffa855f7).withAlpha(0.6f));
+            g.drawHorizontalLine(0, 0.0f, (float)getWidth());
+        }
+
+        void resized() override
+        {
+            // Row 1
+            badgeLabel.setBounds(8, 6, 160, 24);
+            exitButton.setBounds(174, 6, 120, 24);
+            setupLabel.setBounds(304, 6, 45, 24);
+            setupBox.setBounds(350, 6, 140, 24);
+            newSetupButton.setBounds(496, 6, 48, 24);
+            renameSetupButton.setBounds(548, 6, 58, 24);
+            deleteSetupButton.setBounds(610, 6, 52, 24);
+            runButton.setBounds(672, 6, 125, 24);
+            stopButton.setBounds(802, 6, 52, 24);
+            exportButton.setBounds(858, 6, 95, 24);
+
+            // Row 2
+            inputModeBox.setBounds(8, 34, 115, 24);
+            inputTargetEditor.setBounds(127, 34, 65, 24);
+            stimulusBox.setBounds(196, 34, 90, 24);
+            audioFileEditor.setBounds(290, 34, 150, 24);
+            browseButton.setBounds(444, 34, 64, 24);
+            levelLabel.setBounds(512, 34, 35, 24);
+            peakVoltsEditor.setBounds(549, 34, 55, 24);
+            outLabel.setBounds(608, 34, 30, 24);
+            outputNodeEditor.setBounds(640, 34, 65, 24);
+            probesLabel.setBounds(709, 34, 48, 24);
+            probesEditor.setBounds(759, 34, 110, 24);
+
+            // Row 3
+            resultsLabel.setBounds(8, 60, getWidth() - 16, 20);
+        }
+
+    private:
+        SchematicCanvasPanel& canvas;
+        bool updating = false;
+        std::unique_ptr<juce::FileChooser> fileChooser;
+        juce::Label badgeLabel;
+        juce::TextButton exitButton { "✕ Exit Test Mode" };
+        juce::Label setupLabel { {}, "Setup:" };
+        juce::ComboBox setupBox;
+        juce::TextButton newSetupButton { "+ New" };
+        juce::TextButton renameSetupButton { "Rename" };
+        juce::TextButton deleteSetupButton { "Delete" };
+        juce::TextButton runButton { "▶ Run & Audition" };
+        juce::TextButton stopButton { "⏹ Stop" };
+        juce::TextButton exportButton { "💾 Export WAV" };
+        juce::ComboBox inputModeBox;
+        juce::TextEditor inputTargetEditor;
+        juce::ComboBox stimulusBox;
+        juce::TextEditor audioFileEditor;
+        juce::TextButton browseButton { "Browse..." };
+        juce::Label levelLabel { {}, "Peak:" };
+        juce::TextEditor peakVoltsEditor;
+        juce::Label outLabel { {}, "Out:" };
+        juce::TextEditor outputNodeEditor;
+        juce::Label probesLabel { {}, "Probes:" };
+        juce::TextEditor probesEditor;
+        juce::Label resultsLabel;
+    };
+
+    test_mode::TestModeManager testMode;
+    AudioPipeline* audioPipeline = nullptr;
+    void setAudioPipeline(AudioPipeline* p) { audioPipeline = p; }
+    std::unique_ptr<TestModeBarComponent> testModeBar;
+    juce::TextButton enterTestModeButton { "Test Mode" };
+
+    void enterTestMode()
+    {
+        testMode.setActive(true);
+        enterTestModeButton.setVisible(false);
+        if (testModeBar != nullptr)
+        {
+            testModeBar->setVisible(true);
+            testModeBar->updateFromManager();
+        }
+        if (onStatus) onStatus("Entered Test Mode: non-destructive circuit testing harness.");
+        repaint();
+    }
+
+    void exitTestMode()
+    {
+        if (audioPipeline != nullptr)
+            audioPipeline->stopRenderedAudio();
+        testMode.setActive(false);
+        if (testModeBar != nullptr)
+            testModeBar->setVisible(false);
+        enterTestModeButton.setVisible(true);
+        if (onStatus) onStatus("Exited Test Mode: schematic editing restored.");
+        repaint();
+    }
+
+    void selectTestSetup(const juce::String& name)
+    {
+        testMode.selectSetup(name);
+        if (testModeBar != nullptr)
+            testModeBar->updateFromManager();
+        repaint();
+    }
+
     SchematicCanvasPanel(std::function<juce::String()> getSelectedSymbol,
                          std::function<bool()> getStampMode,
                          std::function<void(juce::String)> onMessage)
@@ -2818,10 +3232,21 @@ public:
             safe->routeSignature.clear();
             safe->repaint();
         });
+
+        enterTestModeButton.setButtonText("Test Mode");
+        enterTestModeButton.setColour(juce::TextButton::buttonColourId, juce::Colour(0xff1d2731));
+        enterTestModeButton.setColour(juce::TextButton::textColourOffId, juce::Colour(0xffe056fd));
+        enterTestModeButton.onClick = [this] { enterTestMode(); };
+        addAndMakeVisible(enterTestModeButton);
+
+        testModeBar = std::make_unique<TestModeBarComponent>(*this);
+        addChildComponent(testModeBar.get());
     }
 
     ~SchematicCanvasPanel() override
     {
+        if (audioPipeline != nullptr)
+            audioPipeline->stopRenderedAudio();
         prefs::removeListener(preferenceListener);
     }
 
@@ -3176,6 +3601,17 @@ public:
         }
 
         const auto previousProbes = probes;
+        if (root->hasProperty("testMode"))
+            testMode.fromVar(root->getProperty("testMode"));
+        else if (root->hasProperty("testSetups"))
+        {
+            juce::var v(new juce::DynamicObject());
+            v.getDynamicObject()->setProperty("setups", root->getProperty("testSetups"));
+            v.getDynamicObject()->setProperty("activeSetup", root->getProperty("activeTestSetup"));
+            testMode.fromVar(v);
+        }
+        if (testModeBar != nullptr)
+            testModeBar->updateFromManager();
         instances = std::move(loadedInstances);
         junctions = std::move(loadedJunctions);
         junctionSheets = std::move(loadedJunctionSheets);
@@ -3416,8 +3852,12 @@ public:
                  << ", \"net\": " << quote(netForNode(probe.node, netNames))
                  << " }";
         }
-        text << "\n  ]\n";
-        text << "}\n";
+        text << "\n  ]";
+        if (!testMode.getSetups().empty())
+        {
+            text << ",\n  \"testMode\": " << juce::JSON::toString(testMode.toVar(), true);
+        }
+        text << "\n}\n";
         return text;
     }
 
@@ -3986,8 +4426,17 @@ public:
         drawSelectionBox(g);
         drawSelectedWire(g);
         { drag_profile::Scope p("paint.ercAnnotations"); drawErcAnnotations(g); }
+        if (testMode.isActive())
+        {
+            drawTestModeOverlay(g);
+        }
         g.restoreState();
         drawBreadcrumb(g);
+        if (testMode.isActive())
+        {
+            g.setColour(juce::Colour(0xffe056fd).withAlpha(0.25f));
+            g.drawRect(getLocalBounds(), 2);
+        }
 
         g.setColour(juce::Colour(0xff93a7b0));
         g.setFont(juce::Font(13.0f));
@@ -4042,9 +4491,144 @@ public:
         }
     }
 
+    void drawTestModeOverlay(juce::Graphics& g)
+    {
+        const auto* s = testMode.getActiveSetup();
+        if (s == nullptr)
+            return;
+
+        const float dashPattern[] = { 6.0f, 4.0f };
+
+        // 1. Virtual input stimulus lead & box
+        juce::Point<float> inPt;
+        bool hasIn = false;
+        if (s->inputMode == "replace")
+        {
+            for (const auto& inst : instances)
+            {
+                if (inst.refdes == s->inputRefdes)
+                {
+                    inPt = inst.position;
+                    hasIn = true;
+                    break;
+                }
+            }
+        }
+        else
+        {
+            WireNode n;
+            juce::String err;
+            if (nodeFromLabel(s->inputNode, n, err))
+            {
+                inPt = nodePosition(n);
+                hasIn = true;
+            }
+        }
+
+        if (hasIn)
+        {
+            juce::Rectangle<float> box(inPt.x - 145.0f, inPt.y - 18.0f, 110.0f, 36.0f);
+            g.setColour(juce::Colour(0xff2a1638));
+            g.fillRoundedRectangle(box, 4.0f);
+            g.setColour(juce::Colour(0xffd066e2));
+            g.drawRoundedRectangle(box, 4.0f, 1.5f);
+            g.setFont(juce::Font(11.0f, juce::Font::bold));
+            g.drawText("⚡ STIMULUS", box.removeFromTop(18.0f), juce::Justification::centred);
+            g.setFont(juce::Font(10.0f));
+            g.setColour(juce::Colour(0xffe9bcf2));
+            g.drawText(s->stimulusType == "sine" ? "1kHz Sine" : "WAV Riff", box, juce::Justification::centred);
+
+            g.setColour(juce::Colour(0xffd066e2));
+            g.drawDashedLine(juce::Line<float>(inPt.x - 35.0f, inPt.y, inPt.x - 4.0f, inPt.y), dashPattern, 2, 2.0f);
+            g.fillEllipse(inPt.x - 4.0f, inPt.y - 4.0f, 8.0f, 8.0f);
+        }
+
+        // 2. Virtual output probe lead & box
+        juce::Point<float> outPt;
+        bool hasOut = false;
+        WireNode outNode;
+        juce::String outErr;
+        if (nodeFromLabel(s->outputNode, outNode, outErr))
+        {
+            outPt = nodePosition(outNode);
+            hasOut = true;
+        }
+
+        if (hasOut)
+        {
+            juce::Rectangle<float> box(outPt.x + 35.0f, outPt.y - 18.0f, 110.0f, 36.0f);
+            g.setColour(juce::Colour(0xff0e2832));
+            g.fillRoundedRectangle(box, 4.0f);
+            g.setColour(juce::Colour(0xff00d2d3));
+            g.drawRoundedRectangle(box, 4.0f, 1.5f);
+            g.setFont(juce::Font(11.0f, juce::Font::bold));
+            g.drawText("OUTPUT PROBE", box.removeFromTop(18.0f), juce::Justification::centred);
+            g.setFont(juce::Font(10.0f));
+            g.setColour(juce::Colour(0xffa8f0f0));
+            g.drawText(s->hasResult ? juce::String(s->lastOutputPeak, 2) + "V pk" : "Monitor", box, juce::Justification::centred);
+
+            g.setColour(juce::Colour(0xff00d2d3));
+            g.drawDashedLine(juce::Line<float>(outPt.x + 4.0f, outPt.y, outPt.x + 35.0f, outPt.y), dashPattern, 2, 2.0f);
+            g.fillEllipse(outPt.x - 4.0f, outPt.y - 4.0f, 8.0f, 8.0f);
+        }
+
+        // 3. Voltage probes
+        for (const auto& probeLabel : s->probeNodes)
+        {
+            WireNode pn;
+            juce::String pe;
+            if (nodeFromLabel(probeLabel, pn, pe))
+            {
+                auto pt = nodePosition(pn);
+                juce::Rectangle<float> pBox(pt.x - 30.0f, pt.y - 36.0f, 60.0f, 22.0f);
+                g.setColour(juce::Colour(0xff332200));
+                g.fillRoundedRectangle(pBox, 3.0f);
+                g.setColour(juce::Colour(0xffffa502));
+                g.drawRoundedRectangle(pBox, 3.0f, 1.2f);
+                g.setFont(juce::Font(10.0f, juce::Font::bold));
+                g.drawText(probeLabel, pBox, juce::Justification::centred);
+                g.drawDashedLine(juce::Line<float>(pt.x, pt.y - 14.0f, pt.x, pt.y - 2.0f), dashPattern, 2, 1.5f);
+                g.fillEllipse(pt.x - 3.0f, pt.y - 3.0f, 6.0f, 6.0f);
+            }
+        }
+    }
+
     void mouseDown(const juce::MouseEvent& event) override
     {
         grabKeyboardFocus();
+        if (testMode.isActive())
+        {
+            if (event.mods.isMiddleButtonDown())
+            {
+                beginPan(event.position);
+                return;
+            }
+            const auto modelPosition = viewToCanvas(event.position);
+            const auto hit = hitTestPin(modelPosition);
+            if (hit.instanceIndex >= 0)
+            {
+                const auto clickedLabel = pinLabel(hit);
+                if (auto* s = testMode.getActiveSetup())
+                {
+                    if (event.mods.isRightButtonDown())
+                    {
+                        s->outputNode = clickedLabel;
+                        if (onStatus) onStatus("Test Mode: output set to " + clickedLabel);
+                    }
+                    else
+                    {
+                        if (s->inputMode == "replace")
+                            s->inputRefdes = instances[(size_t)hit.instanceIndex].refdes;
+                        else
+                            s->inputNode = clickedLabel;
+                        if (onStatus) onStatus("Test Mode: input set to " + (s->inputMode == "replace" ? s->inputRefdes : s->inputNode));
+                    }
+                    if (testModeBar != nullptr) testModeBar->updateFromManager();
+                    repaint();
+                }
+            }
+            return;
+        }
         for (const auto& [area, sheet] : breadcrumbAreas)
             if (area.contains(event.position))
             {
@@ -4212,7 +4796,12 @@ public:
         }
     }
 
-    void resized() override {}
+    void resized() override
+    {
+        enterTestModeButton.setBounds(getWidth() - 130, 8, 118, 26);
+        if (testModeBar != nullptr)
+            testModeBar->setBounds(0, 0, getWidth(), 86);
+    }
 
     void mouseMove(const juce::MouseEvent& event) override
     {
@@ -11600,6 +12189,293 @@ public:
         return folder.getChildFile("schematic_" + juce::File::createLegalFileName(sheetLabel).replaceCharacter(' ', '_') + ".png");
     }
 
+    juce::String runTestSetup(test_mode::TestSetup* setup, bool startAudition = true, juce::String* outError = nullptr)
+    {
+        if (setup == nullptr)
+            setup = testMode.getActiveSetup();
+        if (setup == nullptr)
+        {
+            const juce::String err = "No active test setup to run.";
+            if (outError != nullptr) *outError = err;
+            return toolFailure("test_setup_run", err);
+        }
+
+        auto sim = buildSimNetlist();
+        if (sim.error.isNotEmpty())
+        {
+            const juce::String err = "Circuit build error: " + sim.error;
+            if (outError != nullptr) *outError = err;
+            return toolFailure("test_setup_run", err);
+        }
+
+        audio_test::Request request;
+        request.circuit = sim.circuit; // Private copy for test simulation
+        request.inputPeakVolts = setup->inputPeakVolts;
+        request.sampleRate = 48000.0;
+
+        // Resolve input
+        if (setup->inputMode == "replace")
+        {
+            const auto it = sim.elementOfPart.find(setup->inputRefdes);
+            if (it == sim.elementOfPart.end())
+            {
+                int foundElem = -1;
+                for (size_t i = 0; i < instances.size(); ++i)
+                {
+                    if (instances[i].refdes == setup->inputRefdes)
+                    {
+                        const auto elemIt = sim.elementOfPart.find(instances[i].refdes);
+                        if (elemIt != sim.elementOfPart.end())
+                            foundElem = elemIt->second;
+                        break;
+                    }
+                }
+                if (foundElem < 0)
+                {
+                    const juce::String err = "Cannot find source '" + setup->inputRefdes + "' to replace in circuit.";
+                    if (outError != nullptr) *outError = err;
+                    return toolFailure("test_setup_run", err);
+                }
+                request.inputElement = foundElem;
+            }
+            else
+            {
+                request.inputElement = it->second;
+            }
+        }
+        else // virtual mode
+        {
+            juce::String resolveErr;
+            circuit_sim::Node inNode = simNodeForLabel(sim, setup->inputNode, resolveErr);
+            if (inNode < 0)
+            {
+                const auto netIt = sim.nodeOfNet.find(setup->inputNode);
+                if (netIt != sim.nodeOfNet.end())
+                    inNode = netIt->second;
+                else
+                {
+                    const juce::String err = "Cannot resolve virtual input node '" + setup->inputNode + "': " + resolveErr;
+                    if (outError != nullptr) *outError = err;
+                    return toolFailure("test_setup_run", err);
+                }
+            }
+
+            const auto conflict = audio_test::checkVirtualInput(sim.circuit, inNode);
+            if (!conflict.empty())
+            {
+                const juce::String err = "Virtual input conflict: " + juce::String(conflict);
+                if (outError != nullptr) *outError = err;
+                return toolFailure("test_setup_run", err);
+            }
+            request.virtualInputNode = inNode;
+        }
+
+        // Resolve output node
+        {
+            juce::String outErr;
+            circuit_sim::Node outNode = -1;
+            if (setup->outputNode.isNotEmpty())
+            {
+                outNode = simNodeForLabel(sim, setup->outputNode, outErr);
+                if (outNode < 0)
+                {
+                    const auto netIt = sim.nodeOfNet.find(setup->outputNode);
+                    if (netIt != sim.nodeOfNet.end())
+                        outNode = netIt->second;
+                }
+            }
+            if (outNode < 0)
+            {
+                if (sim.audioOutputNode >= 0)
+                    outNode = sim.audioOutputNode;
+                else
+                {
+                    const juce::String err = "Cannot resolve output node '" + setup->outputNode + "': " + outErr;
+                    if (outError != nullptr) *outError = err;
+                    return toolFailure("test_setup_run", err);
+                }
+            }
+            request.outputNode = outNode;
+        }
+
+        // Resolve probes
+        for (const auto& probeLabel : setup->probeNodes)
+        {
+            juce::String pErr;
+            circuit_sim::Node pNode = simNodeForLabel(sim, probeLabel, pErr);
+            if (pNode < 0)
+            {
+                const auto netIt = sim.nodeOfNet.find(probeLabel);
+                if (netIt != sim.nodeOfNet.end())
+                    pNode = netIt->second;
+            }
+            if (pNode >= 0)
+                request.probes.push_back({ probeLabel.toStdString(), pNode });
+        }
+
+        // Load or generate stimulus
+        if (setup->stimulusType == "file")
+        {
+            juce::File audioFile(setup->audioFilePath);
+            if (!audioFile.existsAsFile())
+            {
+                auto candidate = juce::File::getCurrentWorkingDirectory().getChildFile(setup->audioFilePath);
+                if (candidate.existsAsFile())
+                    audioFile = candidate;
+                else
+                {
+                    candidate = juce::File("prototype/examples/tube_amplifiers/guitar_riff.wav");
+                    if (candidate.existsAsFile())
+                        audioFile = candidate;
+                }
+            }
+
+            if (!audioFile.existsAsFile())
+            {
+                const juce::String err = "Audio test file not found: " + setup->audioFilePath;
+                if (outError != nullptr) *outError = err;
+                return toolFailure("test_setup_run", err);
+            }
+
+            juce::AudioFormatManager formatMgr;
+            formatMgr.registerBasicFormats();
+            std::unique_ptr<juce::AudioFormatReader> reader(formatMgr.createReaderFor(audioFile));
+            if (reader == nullptr)
+            {
+                const juce::String err = "Failed to decode audio file: " + audioFile.getFullPathName();
+                if (outError != nullptr) *outError = err;
+                return toolFailure("test_setup_run", err);
+            }
+
+            request.sampleRate = reader->sampleRate;
+            const int maxSamples = (int)std::min((juce::int64)96000, reader->lengthInSamples);
+            juce::AudioBuffer<float> tempBuf((int)reader->numChannels, maxSamples);
+            reader->read(&tempBuf, 0, maxSamples, 0, true, true);
+
+            request.samples.resize((size_t)maxSamples);
+            if (reader->numChannels >= 2)
+            {
+                for (int s = 0; s < maxSamples; ++s)
+                    request.samples[(size_t)s] = 0.5f * (tempBuf.getSample(0, s) + tempBuf.getSample(1, s));
+            }
+            else
+            {
+                for (int s = 0; s < maxSamples; ++s)
+                    request.samples[(size_t)s] = tempBuf.getSample(0, s);
+            }
+        }
+        else // sine wave
+        {
+            request.sampleRate = 48000.0;
+            const int numSamples = std::max(480, (int)std::round(setup->sineDurationSec * 48000.0));
+            request.samples.resize((size_t)numSamples);
+            const double freq = setup->sineFrequencyHz > 0.0 ? setup->sineFrequencyHz : 1000.0;
+            const double omega = 2.0 * juce::MathConstants<double>::pi * freq;
+            for (int s = 0; s < numSamples; ++s)
+            {
+                const double t = (double)s / 48000.0;
+                request.samples[(size_t)s] = (float)std::sin(omega * t);
+            }
+        }
+
+        // Run simulation render
+        const auto result = audio_test::render(request);
+        if (!result.ok)
+        {
+            const juce::String err = "Audio test simulation failed: " + juce::String(result.error);
+            if (outError != nullptr) *outError = err;
+            return toolFailure("test_setup_run", err);
+        }
+
+        // Cache results on setup
+        setup->hasResult = true;
+        setup->lastInputPeak = result.inputPeak;
+        setup->lastOutputPeak = result.output.peak;
+        setup->lastOutputRms = result.output.rms;
+        setup->lastOutputDc = result.output.quiescent;
+        setup->lastGainLinear = result.inputPeak > 1e-6 ? (result.output.peak / result.inputPeak) : 0.0;
+        setup->lastGainDb = setup->lastGainLinear > 1e-6 ? (20.0 * std::log10(setup->lastGainLinear)) : -100.0;
+        setup->lastRenderedOutput = result.output.volts;
+        setup->lastSampleRate = result.sampleRate;
+
+        juce::String summary;
+        summary << "Gain: " << (setup->lastGainDb >= 0.0 ? "+" : "") << juce::String(setup->lastGainDb, 1) << " dB ("
+                << juce::String(setup->lastGainLinear, 1) << "x) | Out: "
+                << juce::String(setup->lastOutputPeak, 2) << " Vpk, " << juce::String(setup->lastOutputRms, 2) << " Vrms | DC: "
+                << juce::String(setup->lastOutputDc, 2) << " V";
+        for (const auto& probe : result.probes)
+            summary << " | " << probe.label << ": " << juce::String(probe.quiescent, 1) << " V";
+        setup->lastSummary = summary;
+
+        if (testModeBar != nullptr)
+            testModeBar->updateFromManager();
+
+        if (startAudition && audioPipeline != nullptr && !setup->lastRenderedOutput.empty())
+        {
+            audioPipeline->playRenderedAudio(setup->lastRenderedOutput, setup->lastSampleRate, 0.4f);
+        }
+
+        repaint();
+
+        // Build return JSON
+        juce::String json;
+        json << "{\n";
+        json << "  \"ok\": true,\n";
+        json << "  \"setup\": " << quote(setup->name) << ",\n";
+        json << "  \"inputDescription\": " << quote(result.inputDescription) << ",\n";
+        json << "  \"sampleRate\": " << result.sampleRate << ",\n";
+        json << "  \"samples\": " << result.input.size() << ",\n";
+        json << "  \"inputPeakVolts\": " << result.inputPeak << ",\n";
+        json << "  \"inputRmsVolts\": " << result.inputRms << ",\n";
+        json << "  \"outputPeakVolts\": " << result.output.peak << ",\n";
+        json << "  \"outputRmsVolts\": " << result.output.rms << ",\n";
+        json << "  \"outputDcVolts\": " << result.output.quiescent << ",\n";
+        json << "  \"gainLinear\": " << setup->lastGainLinear << ",\n";
+        json << "  \"gainDb\": " << setup->lastGainDb << ",\n";
+        json << "  \"steps\": " << result.steps << ",\n";
+        json << "  \"wallSeconds\": " << result.wallSeconds << ",\n";
+        json << "  \"solverDevices\": " << quote(result.solverDevices) << ",\n";
+        json << "  \"probes\": [\n";
+        for (size_t i = 0; i < result.probes.size(); ++i)
+        {
+            const auto& p = result.probes[i];
+            if (i != 0) json << ",\n";
+            json << "    { \"label\": " << quote(p.label) << ", \"quiescent\": " << p.quiescent
+                 << ", \"peak\": " << p.peak << ", \"rms\": " << p.rms << " }";
+        }
+        json << "\n  ]\n";
+        json << "}";
+        return json;
+    }
+
+    juce::String exportRenderedAudio(test_mode::TestSetup* setup, const juce::String& path, juce::String* outError = nullptr)
+    {
+        if (setup == nullptr) setup = testMode.getActiveSetup();
+        if (setup == nullptr || setup->lastRenderedOutput.empty())
+        {
+            const juce::String err = "No rendered audio available to export. Run the test setup first.";
+            if (outError != nullptr) *outError = err;
+            return toolFailure("test_setup_export_audio", err);
+        }
+
+        juce::File dest(path);
+        if (dest.isDirectory())
+            dest = dest.getChildFile("test_output_" + juce::File::createLegalFileName(setup->name) + ".wav");
+
+        dest.getParentDirectory().createDirectory();
+        if (!AudioPipeline::exportToWav(dest, setup->lastRenderedOutput, setup->lastSampleRate))
+        {
+            const juce::String err = "Failed to write WAV file to " + dest.getFullPathName();
+            if (outError != nullptr) *outError = err;
+            return toolFailure("test_setup_export_audio", err);
+        }
+
+        juce::String json;
+        json << "{\n  \"ok\": true,\n  \"path\": " << quote(dest.getFullPathName()) << ",\n  \"samples\": "
+             << setup->lastRenderedOutput.size() << ",\n  \"sampleRate\": " << setup->lastSampleRate << "\n}";
+        return json;
+    }
+
     juce::String runSchematicTool(const juce::String& name, const juce::var& args)
     {
         if (name == "instrument_read")
@@ -11617,6 +12493,157 @@ public:
         if (name == "instrument_plot_data")
             return plotterDataJson(args.getProperty("refdes", {}).toString(), (int)args.getProperty("max_points", 400));
         auto arg = [&](const char* key) { return args.getProperty(key, {}).toString().trim(); };
+        if (name == "test_mode_toggle")
+        {
+            const bool willBeActive = args.hasProperty("active") ? (bool)args.getProperty("active", false) : !testMode.isActive();
+            if (willBeActive) enterTestMode(); else exitTestMode();
+            juce::String json;
+            json << "{\n  \"ok\": true,\n  \"active\": " << (testMode.isActive() ? "true" : "false");
+            if (const auto* s = testMode.getActiveSetup())
+                json << ",\n  \"activeSetup\": " << quote(s->name);
+            json << "\n}";
+            return json;
+        }
+        if (name == "test_mode_status")
+        {
+            juce::String json;
+            json << "{\n  \"ok\": true,\n  \"active\": " << (testMode.isActive() ? "true" : "false");
+            if (const auto* s = testMode.getActiveSetup())
+                json << ",\n  \"activeSetup\": " << quote(s->name);
+            json << ",\n  \"setups\": [";
+            const auto& setups = testMode.getSetups();
+            for (size_t i = 0; i < setups.size(); ++i)
+            {
+                if (i != 0) json << ", ";
+                json << quote(setups[i].name);
+            }
+            json << "]";
+            if (const auto* s = testMode.getActiveSetup())
+            {
+                if (s->hasResult)
+                {
+                    json << ",\n  \"lastResult\": {\n";
+                    json << "    \"gainDb\": " << s->lastGainDb << ",\n";
+                    json << "    \"gainLinear\": " << s->lastGainLinear << ",\n";
+                    json << "    \"outputPeak\": " << s->lastOutputPeak << ",\n";
+                    json << "    \"outputRms\": " << s->lastOutputRms << ",\n";
+                    json << "    \"outputDc\": " << s->lastOutputDc << ",\n";
+                    json << "    \"summary\": " << quote(s->lastSummary) << "\n  }";
+                }
+            }
+            json << "\n}";
+            return json;
+        }
+        if (name == "test_setup_create")
+        {
+            const auto setupName = arg("name");
+            if (setupName.isEmpty())
+                return toolFailure(name, "Missing required parameter 'name'.");
+            if (!testMode.createSetup(setupName))
+                return toolFailure(name, "Setup '" + setupName + "' already exists or invalid name.");
+            if (testModeBar != nullptr) testModeBar->updateFromManager();
+            return "{ \"ok\": true, \"name\": " + quote(setupName) + " }";
+        }
+        if (name == "test_setup_select")
+        {
+            const auto setupName = arg("name");
+            if (!testMode.selectSetup(setupName))
+                return toolFailure(name, "Setup '" + setupName + "' not found.");
+            if (testModeBar != nullptr) testModeBar->updateFromManager();
+            repaint();
+            return "{ \"ok\": true, \"selected\": " + quote(setupName) + " }";
+        }
+        if (name == "test_setup_rename")
+        {
+            const auto oldName = arg("oldName");
+            const auto newName = arg("newName");
+            if (!testMode.renameSetup(oldName, newName))
+                return toolFailure(name, "Could not rename setup from '" + oldName + "' to '" + newName + "'.");
+            if (testModeBar != nullptr) testModeBar->updateFromManager();
+            return "{ \"ok\": true, \"oldName\": " + quote(oldName) + ", \"newName\": " + quote(newName) + " }";
+        }
+        if (name == "test_setup_delete")
+        {
+            const auto setupName = arg("name");
+            if (!testMode.deleteSetup(setupName))
+                return toolFailure(name, "Setup '" + setupName + "' not found.");
+            if (testModeBar != nullptr) testModeBar->updateFromManager();
+            repaint();
+            return "{ \"ok\": true, \"deleted\": " + quote(setupName) + " }";
+        }
+        if (name == "test_setup_list")
+        {
+            juce::String json;
+            json << "{\n  \"ok\": true,\n  \"setups\": [\n";
+            const auto& setups = testMode.getSetups();
+            for (size_t i = 0; i < setups.size(); ++i)
+            {
+                if (i != 0) json << ",\n";
+                json << "    " << juce::JSON::toString(setups[i].toVar(), false);
+            }
+            json << "\n  ]\n}";
+            return json;
+        }
+        if (name == "test_setup_configure")
+        {
+            const auto setupName = arg("name");
+            auto* s = setupName.isNotEmpty() ? nullptr : testMode.getActiveSetup();
+            if (setupName.isNotEmpty())
+            {
+                for (auto& candidate : testMode.getSetups())
+                    if (candidate.name == setupName) { s = &candidate; break; }
+            }
+            if (s == nullptr)
+                return toolFailure(name, "Setup '" + setupName + "' not found.");
+
+            if (args.hasProperty("inputMode")) s->inputMode = args["inputMode"].toString();
+            if (args.hasProperty("inputRefdes")) s->inputRefdes = args["inputRefdes"].toString();
+            if (args.hasProperty("inputNode")) s->inputNode = args["inputNode"].toString();
+            if (args.hasProperty("inputPeakVolts")) s->inputPeakVolts = (double)args["inputPeakVolts"];
+            if (args.hasProperty("stimulusType")) s->stimulusType = args["stimulusType"].toString();
+            if (args.hasProperty("audioFilePath")) s->audioFilePath = args["audioFilePath"].toString();
+            if (args.hasProperty("sineFrequencyHz")) s->sineFrequencyHz = (double)args["sineFrequencyHz"];
+            if (args.hasProperty("sineDurationSec")) s->sineDurationSec = (double)args["sineDurationSec"];
+            if (args.hasProperty("outputNode")) s->outputNode = args["outputNode"].toString();
+            if (args.hasProperty("probeNodes"))
+            {
+                s->probeNodes.clear();
+                if (const auto* arr = args["probeNodes"].getArray())
+                    for (const auto& item : *arr) s->probeNodes.add(item.toString());
+            }
+
+            if (testModeBar != nullptr) testModeBar->updateFromManager();
+            repaint();
+            return "{ \"ok\": true, \"setup\": " + juce::JSON::toString(s->toVar(), false) + " }";
+        }
+        if (name == "test_setup_run")
+        {
+            const auto setupName = arg("name");
+            auto* s = setupName.isNotEmpty() ? nullptr : testMode.getActiveSetup();
+            if (setupName.isNotEmpty())
+            {
+                for (auto& candidate : testMode.getSetups())
+                    if (candidate.name == setupName) { s = &candidate; break; }
+            }
+            const bool audition = args.hasProperty("audition") ? (bool)args["audition"] : false;
+            juce::String err;
+            return runTestSetup(s, audition, &err);
+        }
+        if (name == "test_setup_export_audio")
+        {
+            const auto setupName = arg("name");
+            auto* s = setupName.isNotEmpty() ? nullptr : testMode.getActiveSetup();
+            if (setupName.isNotEmpty())
+            {
+                for (auto& candidate : testMode.getSetups())
+                    if (candidate.name == setupName) { s = &candidate; break; }
+            }
+            const auto destPath = arg("path");
+            if (destPath.isEmpty())
+                return toolFailure(name, "Missing required parameter 'path'.");
+            juce::String err;
+            return exportRenderedAudio(s, destPath, &err);
+        }
         if (name == "preferences_list")
         {
             const auto query = arg("query").toLowerCase();
@@ -15764,6 +16791,8 @@ private:
             definitions.push_back({ spec.name.toStdString(), spec.description.toStdString(), spec.schema.toStdString() });
         for (const auto& spec : viewToolSpecs())
             definitions.push_back({ spec.name.toStdString(), spec.description.toStdString(), spec.schema.toStdString() });
+        for (const auto& spec : testModeToolSpecs())
+            definitions.push_back({ spec.name.toStdString(), spec.description.toStdString(), spec.schema.toStdString() });
         return definitions;
     }
 
@@ -16405,6 +17434,7 @@ ElectronicsWorkbench::ElectronicsWorkbench()
         [this](juce::String message) { appendLog(message); });
     auto* schematicPanel = schematic.get();
     schematicView = schematicPanel;
+    schematicPanel->setAudioPipeline(audioPipeline.get());
     setSnapEnabled = [schematicPanel](bool enabled) {
         schematicPanel->setSnapEnabled(enabled);
     };
@@ -18233,6 +19263,8 @@ juce::String ElectronicsWorkbench::buildAssistantToolManifestJson() const
     for (const auto& spec : demoToolSpecs())
         manifestSpecs.push_back(spec);
     for (const auto& spec : viewToolSpecs())
+        manifestSpecs.push_back(spec);
+    for (const auto& spec : testModeToolSpecs())
         manifestSpecs.push_back(spec);
     for (const auto& spec : djehuti_help::helpToolSpecs())
         manifestSpecs.push_back({ spec.name, spec.description, spec.schema });

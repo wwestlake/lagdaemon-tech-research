@@ -4,7 +4,7 @@
   "name": "Vacuum Tube Amplifiers",
   "description": "Validation and demonstration circuits for 12AX7 and 12AU7 small-signal dual triodes",
   "created": "2026-10-20T09:16:18.150-04:00",
-  "lastDiagram": "12au7_driver_stage",
+  "lastDiagram": "Vacuum Tube Guitar Amp",
   "diagrams": [
     {
       "name": "12AX7 Common Cathode",
@@ -21,6 +21,10 @@
     {
       "name": "12au7_driver_stage",
       "file": "diagrams/12au7_driver_stage.diagram.json"
+    },
+    {
+      "name": "Vacuum Tube Guitar Amp",
+      "file": "diagrams/Vacuum Tube Guitar Amp.diagram.json"
     }
   ]
 }

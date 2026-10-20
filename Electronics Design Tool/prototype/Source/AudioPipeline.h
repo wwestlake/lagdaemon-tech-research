@@ -33,7 +33,16 @@ public:
     void audioDeviceStopped() override;
     
     juce::AudioDeviceManager& getDeviceManager() { return deviceManager; }
+    juce::AudioFormatManager& getFormatManager() { return formatManager; }
     void setRouting(const juce::String& inType, const juce::String& inFile, const juce::String& outType, const juce::String& outFile);
+
+    // Audition playback of rendered audio
+    void playRenderedAudio(const std::vector<float>& samples, double sampleRate, float volume = 0.5f);
+    void stopRenderedAudio();
+    bool isPlayingRenderedAudio() const;
+
+    // Export audio to WAV file
+    static bool exportToWav(const juce::File& file, const std::vector<float>& samples, double sampleRate);
 
 private:
     juce::AudioDeviceManager deviceManager;
@@ -47,5 +56,11 @@ private:
     bool useHardwareOut = true;
     std::vector<float> fileInputBuffer;
     std::vector<float> tempOutBuffer;
+
+    // Rendered playback
+    std::vector<float> playbackSamples;
+    std::atomic<size_t> playbackPosition { 0 };
+    std::atomic<bool> isPlaying { false };
+    float playbackGain = 0.5f;
 };
 

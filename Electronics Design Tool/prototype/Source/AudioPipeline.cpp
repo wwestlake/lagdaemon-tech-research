@@ -75,6 +75,33 @@ void AudioPipeline::audioDeviceIOCallbackWithContext(
         }
     }
 
+    if (isPlaying.load())
+    {
+        juce::ScopedLock lock(callbackLock);
+        size_t pos = playbackPosition.load();
+        const size_t total = playbackSamples.size();
+        for (int s = 0; s < numSamples; ++s)
+        {
+            float val = 0.0f;
+            if (pos < total)
+            {
+                val = playbackSamples[pos++] * playbackGain;
+            }
+            else
+            {
+                isPlaying.store(false);
+                break;
+            }
+            for (int ch = 0; ch < numOutputChannels; ++ch)
+            {
+                if (outputChannelData[ch] != nullptr)
+                    outputChannelData[ch][s] += val;
+            }
+        }
+        playbackPosition.store(pos);
+        return;
+    }
+
     juce::ScopedLock lock(callbackLock);
     if (processCallback)
     {
@@ -167,5 +194,56 @@ void AudioPipeline::audioDeviceStopped()
 {
     fileInputBuffer.clear();
     tempOutBuffer.clear();
+}
+
+void AudioPipeline::playRenderedAudio(const std::vector<float>& samples, double sampleRate, float volume)
+{
+    juce::ScopedLock lock(callbackLock);
+    playbackSamples = samples;
+    playbackPosition.store(0);
+    playbackGain = volume;
+    isPlaying.store(!samples.empty());
+}
+
+void AudioPipeline::stopRenderedAudio()
+{
+    isPlaying.store(false);
+}
+
+bool AudioPipeline::isPlayingRenderedAudio() const
+{
+    return isPlaying.load();
+}
+
+bool AudioPipeline::exportToWav(const juce::File& file, const std::vector<float>& samples, double sampleRate)
+{
+    if (samples.empty())
+        return false;
+
+    file.deleteFile();
+    juce::WavAudioFormat wavFormat;
+    std::unique_ptr<juce::AudioFormatWriter> writer(
+        wavFormat.createWriterFor(new juce::FileOutputStream(file),
+                                  sampleRate > 0.0 ? sampleRate : 48000.0,
+                                  1,
+                                  16,
+                                  {}, 0));
+    if (writer == nullptr)
+        return false;
+
+    float maxVal = 0.0f;
+    for (float v : samples)
+        maxVal = std::max(maxVal, std::abs(v));
+
+    float scale = 1.0f;
+    if (maxVal > 1.0f)
+        scale = 0.95f / maxVal;
+
+    std::vector<float> scaled(samples.size());
+    for (size_t i = 0; i < samples.size(); ++i)
+        scaled[i] = samples[i] * scale;
+
+    const float* channelData[] = { scaled.data() };
+    return writer->writeFromFloatArrays(channelData, 1, (int)samples.size());
 }
 
