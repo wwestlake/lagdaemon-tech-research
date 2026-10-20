@@ -100,6 +100,144 @@ struct SubFixture
     }
 };
 
+struct FixtureTerminal
+{
+    juce::String id;
+    juce::String name;
+    juce::Point<float> relativePos;
+    bool isOutput = false;
+};
+
+struct FixtureEquipment
+{
+    juce::String id;
+    juce::String type = "audio_input"; // "audio_input", "audio_output", "signal_gen", "probe"
+    juce::String name;
+    juce::Point<float> pos { 80.0f, 180.0f };
+    juce::String instancePath;
+
+    juce::String stimulusType = "file";
+    juce::String audioFilePath;
+    double sineFrequencyHz = 1000.0;
+    double sineDurationSec = 0.05;
+    double peakVolts = 0.1;
+    bool isOverride = true;
+    juce::String overrideRefdes = "VIN";
+
+    double measuredPeak = 0.0;
+    double measuredRms = 0.0;
+    double measuredDc = 0.0;
+    double gainDb = 0.0;
+
+    std::vector<FixtureTerminal> getTerminals() const
+    {
+        std::vector<FixtureTerminal> terms;
+        if (type == "audio_input" || type == "signal_gen")
+            terms.push_back({ "out", "OUT", { 140.0f, 32.0f }, true });
+        else if (type == "audio_output" || type == "probe")
+            terms.push_back({ "in", "IN", { 0.0f, 32.0f }, false });
+        return terms;
+    }
+
+    juce::Rectangle<float> getBounds() const
+    {
+        return juce::Rectangle<float>(pos.x, pos.y, 140.0f, 64.0f);
+    }
+
+    juce::var toVar() const
+    {
+        auto* obj = new juce::DynamicObject();
+        obj->setProperty("id", id);
+        obj->setProperty("type", type);
+        obj->setProperty("name", name);
+        obj->setProperty("x", pos.x);
+        obj->setProperty("y", pos.y);
+        obj->setProperty("instancePath", instancePath);
+        obj->setProperty("stimulusType", stimulusType);
+        obj->setProperty("audioFilePath", audioFilePath);
+        obj->setProperty("sineFrequencyHz", sineFrequencyHz);
+        obj->setProperty("sineDurationSec", sineDurationSec);
+        obj->setProperty("peakVolts", peakVolts);
+        obj->setProperty("isOverride", isOverride);
+        obj->setProperty("overrideRefdes", overrideRefdes);
+        obj->setProperty("measuredPeak", measuredPeak);
+        obj->setProperty("measuredRms", measuredRms);
+        obj->setProperty("measuredDc", measuredDc);
+        obj->setProperty("gainDb", gainDb);
+        return juce::var(obj);
+    }
+
+    static FixtureEquipment fromVar(const juce::var& v)
+    {
+        FixtureEquipment eq;
+        if (!v.isObject()) return eq;
+        eq.id = v.getProperty("id", {}).toString();
+        eq.type = v.getProperty("type", "audio_input").toString();
+        eq.name = v.getProperty("name", eq.type).toString();
+        eq.pos.x = (float)(double)v.getProperty("x", 80.0);
+        eq.pos.y = (float)(double)v.getProperty("y", 180.0);
+        eq.instancePath = v.getProperty("instancePath", {}).toString();
+        eq.stimulusType = v.getProperty("stimulusType", "file").toString();
+        eq.audioFilePath = v.getProperty("audioFilePath", {}).toString();
+        eq.sineFrequencyHz = (double)v.getProperty("sineFrequencyHz", 1000.0);
+        eq.sineDurationSec = (double)v.getProperty("sineDurationSec", 0.05);
+        eq.peakVolts = (double)v.getProperty("peakVolts", 0.1);
+        eq.isOverride = (bool)v.getProperty("isOverride", true);
+        eq.overrideRefdes = v.getProperty("overrideRefdes", "VIN").toString();
+        eq.measuredPeak = (double)v.getProperty("measuredPeak", 0.0);
+        eq.measuredRms = (double)v.getProperty("measuredRms", 0.0);
+        eq.measuredDc = (double)v.getProperty("measuredDc", 0.0);
+        eq.gainDb = (double)v.getProperty("gainDb", 0.0);
+        return eq;
+    }
+};
+
+struct FixtureConnection
+{
+    juce::String id;
+    juce::String equipmentId;
+    juce::String terminalId = "out";
+    juce::String targetRefdes;
+    int targetPinIndex = -1;
+    juce::String targetPinLabel;
+    int targetWireIndex = -1;
+    juce::Point<float> targetPoint;
+    juce::String instancePath;
+
+    juce::var toVar() const
+    {
+        auto* obj = new juce::DynamicObject();
+        obj->setProperty("id", id);
+        obj->setProperty("equipmentId", equipmentId);
+        obj->setProperty("terminalId", terminalId);
+        obj->setProperty("targetRefdes", targetRefdes);
+        obj->setProperty("targetPinIndex", targetPinIndex);
+        obj->setProperty("targetPinLabel", targetPinLabel);
+        obj->setProperty("targetWireIndex", targetWireIndex);
+        obj->setProperty("targetX", targetPoint.x);
+        obj->setProperty("targetY", targetPoint.y);
+        obj->setProperty("instancePath", instancePath);
+        return juce::var(obj);
+    }
+
+    static FixtureConnection fromVar(const juce::var& v)
+    {
+        FixtureConnection c;
+        if (!v.isObject()) return c;
+        c.id = v.getProperty("id", {}).toString();
+        c.equipmentId = v.getProperty("equipmentId", {}).toString();
+        c.terminalId = v.getProperty("terminalId", "out").toString();
+        c.targetRefdes = v.getProperty("targetRefdes", {}).toString();
+        c.targetPinIndex = (int)v.getProperty("targetPinIndex", -1);
+        c.targetPinLabel = v.getProperty("targetPinLabel", {}).toString();
+        c.targetWireIndex = (int)v.getProperty("targetWireIndex", -1);
+        c.targetPoint.x = (float)(double)v.getProperty("targetX", 0.0);
+        c.targetPoint.y = (float)(double)v.getProperty("targetY", 0.0);
+        c.instancePath = v.getProperty("instancePath", {}).toString();
+        return c;
+    }
+};
+
 struct TestSetup
 {
     juce::String name;
@@ -118,6 +256,10 @@ struct TestSetup
     std::vector<HierarchicalBreak> connectionBreaks; // Virtual connection cuts
     std::vector<SubFixture> subFixtures;             // Per-instance sub-fixtures
 
+    // Graphical test fixture equipment & wiring
+    std::vector<FixtureEquipment> equipment;
+    std::vector<FixtureConnection> fixtureConnections;
+
     // Last test result cache
     bool hasResult = false;
     double lastInputPeak = 0.0;
@@ -129,6 +271,342 @@ struct TestSetup
     juce::String lastSummary;
     std::vector<float> lastRenderedOutput;
     double lastSampleRate = 48000.0;
+
+    FixtureEquipment* getEquipment(const juce::String& eqId)
+    {
+        for (auto& eq : equipment)
+            if (eq.id.equalsIgnoreCase(eqId)) return &eq;
+        return nullptr;
+    }
+
+    const FixtureEquipment* getEquipment(const juce::String& eqId) const
+    {
+        for (const auto& eq : equipment)
+            if (eq.id.equalsIgnoreCase(eqId)) return &eq;
+        return nullptr;
+    }
+
+    FixtureConnection* getConnection(const juce::String& connId)
+    {
+        for (auto& c : fixtureConnections)
+            if (c.id.equalsIgnoreCase(connId)) return &c;
+        return nullptr;
+    }
+
+    const FixtureConnection* getConnection(const juce::String& connId) const
+    {
+        for (const auto& c : fixtureConnections)
+            if (c.id.equalsIgnoreCase(connId)) return &c;
+        return nullptr;
+    }
+
+    bool addEquipment(const FixtureEquipment& eq)
+    {
+        for (auto& existing : equipment)
+        {
+            if (existing.id.equalsIgnoreCase(eq.id))
+            {
+                existing = eq;
+                syncSetupFromEquipment();
+                return true;
+            }
+        }
+        equipment.push_back(eq);
+        syncSetupFromEquipment();
+        return true;
+    }
+
+    bool removeEquipment(const juce::String& eqId)
+    {
+        bool found = false;
+        equipment.erase(std::remove_if(equipment.begin(), equipment.end(),
+            [&](const FixtureEquipment& eq) {
+                if (eq.id.equalsIgnoreCase(eqId)) { found = true; return true; }
+                return false;
+            }), equipment.end());
+
+        fixtureConnections.erase(std::remove_if(fixtureConnections.begin(), fixtureConnections.end(),
+            [&](const FixtureConnection& c) { return c.equipmentId.equalsIgnoreCase(eqId); }),
+            fixtureConnections.end());
+
+        if (found) syncSetupFromEquipment();
+        return found;
+    }
+
+    bool addConnection(const FixtureConnection& conn)
+    {
+        for (auto& c : fixtureConnections)
+        {
+            if (c.id.equalsIgnoreCase(conn.id) ||
+                (c.equipmentId.equalsIgnoreCase(conn.equipmentId) && c.terminalId.equalsIgnoreCase(conn.terminalId)))
+            {
+                c = conn;
+                syncSetupFromEquipment();
+                return true;
+            }
+        }
+        fixtureConnections.push_back(conn);
+        syncSetupFromEquipment();
+        return true;
+    }
+
+    bool removeConnection(const juce::String& connId)
+    {
+        bool found = false;
+        fixtureConnections.erase(std::remove_if(fixtureConnections.begin(), fixtureConnections.end(),
+            [&](const FixtureConnection& c) {
+                if (c.id.equalsIgnoreCase(connId) || c.equipmentId.equalsIgnoreCase(connId)) { found = true; return true; }
+                return false;
+            }), fixtureConnections.end());
+
+        if (found) syncSetupFromEquipment();
+        return found;
+    }
+
+    void syncSetupFromEquipment()
+    {
+        for (const auto& eq : equipment)
+        {
+            if (eq.type == "audio_input" || eq.type == "signal_gen")
+            {
+                if (eq.instancePath.isEmpty())
+                {
+                    stimulusType = eq.stimulusType;
+                    audioFilePath = eq.audioFilePath;
+                    sineFrequencyHz = eq.sineFrequencyHz;
+                    sineDurationSec = eq.sineDurationSec;
+                    inputPeakVolts = eq.peakVolts;
+                    if (eq.isOverride && eq.overrideRefdes.isNotEmpty())
+                    {
+                        inputMode = "replace";
+                        inputRefdes = eq.overrideRefdes;
+                    }
+                    else
+                    {
+                        for (const auto& c : fixtureConnections)
+                        {
+                            if (c.equipmentId.equalsIgnoreCase(eq.id))
+                            {
+                                inputMode = "virtual";
+                                inputNode = c.targetPinLabel;
+                                break;
+                            }
+                        }
+                    }
+                }
+                else
+                {
+                    auto* sf = getSubFixture(eq.instancePath, true);
+                    if (sf != nullptr)
+                    {
+                        sf->stimulusEnabled = true;
+                        sf->stimulusType = eq.stimulusType;
+                        sf->sineFrequencyHz = eq.sineFrequencyHz;
+                        sf->sineDurationSec = eq.sineDurationSec;
+                        sf->inputPeakVolts = eq.peakVolts;
+                        for (const auto& c : fixtureConnections)
+                        {
+                            if (c.equipmentId.equalsIgnoreCase(eq.id))
+                            {
+                                sf->inputNode = c.targetPinLabel;
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+            else if (eq.type == "audio_output")
+            {
+                for (const auto& c : fixtureConnections)
+                {
+                    if (c.equipmentId.equalsIgnoreCase(eq.id))
+                    {
+                        if (eq.instancePath.isEmpty())
+                            outputNode = c.targetPinLabel;
+                        else
+                        {
+                            auto* sf = getSubFixture(eq.instancePath, true);
+                            if (sf != nullptr) sf->outputNode = c.targetPinLabel;
+                        }
+                        break;
+                    }
+                }
+            }
+            else if (eq.type == "probe")
+            {
+                for (const auto& c : fixtureConnections)
+                {
+                    if (c.equipmentId.equalsIgnoreCase(eq.id) && c.targetPinLabel.isNotEmpty())
+                    {
+                        if (eq.instancePath.isEmpty())
+                        {
+                            if (!probeNodes.contains(c.targetPinLabel))
+                                probeNodes.add(c.targetPinLabel);
+                        }
+                        else
+                        {
+                            auto* sf = getSubFixture(eq.instancePath, true);
+                            if (sf != nullptr && !sf->probeNodes.contains(c.targetPinLabel))
+                                sf->probeNodes.add(c.targetPinLabel);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    void syncEquipmentFromSetup()
+    {
+        if (equipment.empty())
+        {
+            // Populate default equipment matching this setup
+            FixtureEquipment eqIn;
+            eqIn.id = "audio_in_1";
+            eqIn.type = (stimulusType == "sine" ? "signal_gen" : "audio_input");
+            eqIn.name = (stimulusType == "sine" ? "Signal Generator" : "Audio Input");
+            eqIn.pos = { 80.0f, 220.0f };
+            eqIn.stimulusType = stimulusType;
+            eqIn.audioFilePath = audioFilePath;
+            eqIn.sineFrequencyHz = sineFrequencyHz;
+            eqIn.sineDurationSec = sineDurationSec;
+            eqIn.peakVolts = inputPeakVolts;
+            eqIn.isOverride = (inputMode == "replace");
+            eqIn.overrideRefdes = inputRefdes;
+            equipment.push_back(eqIn);
+
+            FixtureConnection connIn;
+            connIn.id = "conn_in_1";
+            connIn.equipmentId = "audio_in_1";
+            connIn.terminalId = "out";
+            connIn.targetRefdes = (inputMode == "replace" ? inputRefdes : juce::String());
+            connIn.targetPinLabel = (inputMode == "replace" ? inputRefdes : inputNode);
+            fixtureConnections.push_back(connIn);
+
+            FixtureEquipment eqOut;
+            eqOut.id = "audio_out_1";
+            eqOut.type = "audio_output";
+            eqOut.name = "Audio Sink";
+            eqOut.pos = { 760.0f, 220.0f };
+            eqOut.measuredPeak = lastOutputPeak;
+            eqOut.measuredRms = lastOutputRms;
+            eqOut.measuredDc = lastOutputDc;
+            eqOut.gainDb = lastGainDb;
+            equipment.push_back(eqOut);
+
+            if (outputNode.isNotEmpty())
+            {
+                FixtureConnection connOut;
+                connOut.id = "conn_out_1";
+                connOut.equipmentId = "audio_out_1";
+                connOut.terminalId = "in";
+                connOut.targetPinLabel = outputNode;
+                fixtureConnections.push_back(connOut);
+            }
+
+            int pIdx = 1;
+            for (const auto& p : probeNodes)
+            {
+                FixtureEquipment pEq;
+                pEq.id = "probe_" + juce::String(pIdx);
+                pEq.type = "probe";
+                pEq.name = "Probe: " + p;
+                pEq.pos = { 320.0f + (pIdx - 1) * 140.0f, 80.0f };
+                equipment.push_back(pEq);
+
+                FixtureConnection pConn;
+                pConn.id = "conn_probe_" + juce::String(pIdx);
+                pConn.equipmentId = pEq.id;
+                pConn.terminalId = "in";
+                pConn.targetPinLabel = p;
+                fixtureConnections.push_back(pConn);
+                ++pIdx;
+            }
+
+            for (const auto& sf : subFixtures)
+            {
+                if (sf.stimulusEnabled && sf.inputNode.isNotEmpty())
+                {
+                    FixtureEquipment sfIn;
+                    sfIn.id = "audio_in_" + sf.instancePath;
+                    sfIn.type = (sf.stimulusType == "sine" ? "signal_gen" : "audio_input");
+                    sfIn.name = "Sub Stimulus (" + sf.instancePath + ")";
+                    sfIn.pos = { 80.0f, 220.0f };
+                    sfIn.instancePath = sf.instancePath;
+                    sfIn.stimulusType = sf.stimulusType;
+                    sfIn.sineFrequencyHz = sf.sineFrequencyHz;
+                    sfIn.sineDurationSec = sf.sineDurationSec;
+                    sfIn.peakVolts = sf.inputPeakVolts;
+                    sfIn.isOverride = false;
+                    equipment.push_back(sfIn);
+
+                    FixtureConnection sfConn;
+                    sfConn.id = "conn_in_" + sf.instancePath;
+                    sfConn.equipmentId = sfIn.id;
+                    sfConn.terminalId = "out";
+                    sfConn.targetPinLabel = sf.inputNode;
+                    sfConn.instancePath = sf.instancePath;
+                    fixtureConnections.push_back(sfConn);
+                }
+
+                if (sf.outputNode.isNotEmpty())
+                {
+                    FixtureEquipment sfOut;
+                    sfOut.id = "audio_out_" + sf.instancePath;
+                    sfOut.type = "audio_output";
+                    sfOut.name = "Sub Sink (" + sf.instancePath + ")";
+                    sfOut.pos = { 760.0f, 220.0f };
+                    sfOut.instancePath = sf.instancePath;
+                    equipment.push_back(sfOut);
+
+                    FixtureConnection sfConn;
+                    sfConn.id = "conn_out_" + sf.instancePath;
+                    sfConn.equipmentId = sfOut.id;
+                    sfConn.terminalId = "in";
+                    sfConn.targetPinLabel = sf.outputNode;
+                    sfConn.instancePath = sf.instancePath;
+                    fixtureConnections.push_back(sfConn);
+                }
+
+                int sfPIdx = 1;
+                for (const auto& p : sf.probeNodes)
+                {
+                    FixtureEquipment sfPEq;
+                    sfPEq.id = "probe_" + sf.instancePath + "_" + juce::String(sfPIdx);
+                    sfPEq.type = "probe";
+                    sfPEq.name = "Probe: " + p;
+                    sfPEq.pos = { 320.0f + (sfPIdx - 1) * 140.0f, 80.0f };
+                    sfPEq.instancePath = sf.instancePath;
+                    equipment.push_back(sfPEq);
+
+                    FixtureConnection sfPConn;
+                    sfPConn.id = "conn_probe_" + sf.instancePath + "_" + juce::String(sfPIdx);
+                    sfPConn.equipmentId = sfPEq.id;
+                    sfPConn.terminalId = "in";
+                    sfPConn.targetPinLabel = p;
+                    sfPConn.instancePath = sf.instancePath;
+                    fixtureConnections.push_back(sfPConn);
+                    ++sfPIdx;
+                }
+            }
+        }
+        else if (hasResult)
+        {
+            for (auto& eq : equipment)
+            {
+                if (eq.type == "audio_output")
+                {
+                    eq.measuredPeak = lastOutputPeak;
+                    eq.measuredRms = lastOutputRms;
+                    eq.measuredDc = lastOutputDc;
+                    eq.gainDb = lastGainDb;
+                }
+                else if (eq.type == "audio_input" || eq.type == "signal_gen")
+                {
+                    eq.measuredPeak = lastInputPeak;
+                }
+            }
+        }
+    }
 
     SubFixture* getSubFixture(const juce::String& instancePath, bool createIfNotFound = true)
     {
@@ -255,6 +733,22 @@ struct TestSetup
             obj->setProperty("subFixtures", sfArr);
         }
 
+        if (!equipment.empty())
+        {
+            juce::Array<juce::var> eqArr;
+            for (const auto& eq : equipment)
+                eqArr.add(eq.toVar());
+            obj->setProperty("equipment", eqArr);
+        }
+
+        if (!fixtureConnections.empty())
+        {
+            juce::Array<juce::var> connArr;
+            for (const auto& c : fixtureConnections)
+                connArr.add(c.toVar());
+            obj->setProperty("fixtureConnections", connArr);
+        }
+
         if (hasResult)
         {
             auto* resObj = new juce::DynamicObject();
@@ -306,6 +800,18 @@ struct TestSetup
                 s.subFixtures.push_back(SubFixture::fromVar(item));
         }
 
+        if (const auto* arr = v.getProperty("equipment", {}).getArray())
+        {
+            for (const auto& item : *arr)
+                s.equipment.push_back(FixtureEquipment::fromVar(item));
+        }
+
+        if (const auto* arr = v.getProperty("fixtureConnections", {}).getArray())
+        {
+            for (const auto& item : *arr)
+                s.fixtureConnections.push_back(FixtureConnection::fromVar(item));
+        }
+
         if (const auto* res = v.getProperty("lastResult", {}).getDynamicObject())
         {
             s.hasResult = true;
@@ -325,7 +831,10 @@ struct TestSetup
 class TestModeManager
 {
 public:
-    TestModeManager() = default;
+    TestModeManager()
+    {
+        setups.reserve(64);
+    }
 
     bool isActive() const { return active; }
     void setActive(bool shouldBeActive)
@@ -373,11 +882,27 @@ public:
         return nullptr;
     }
 
+    TestSetup* getSetup(const juce::String& name)
+    {
+        for (auto& s : setups)
+            if (s.name.equalsIgnoreCase(name))
+                return &s;
+        return nullptr;
+    }
+
+    const TestSetup* getSetup(const juce::String& name) const
+    {
+        for (const auto& s : setups)
+            if (s.name.equalsIgnoreCase(name))
+                return &s;
+        return nullptr;
+    }
+
     bool selectSetup(const juce::String& name)
     {
         for (size_t i = 0; i < setups.size(); ++i)
         {
-            if (setups[i].name == name)
+            if (setups[i].name.equalsIgnoreCase(name))
             {
                 activeSetupIndex = (int)i;
                 return true;
@@ -392,29 +917,18 @@ public:
             return false;
 
         for (const auto& s : setups)
-            if (s.name == name)
+            if (s.name.equalsIgnoreCase(name))
                 return false;
 
         TestSetup s;
         s.name = name;
-        if (const auto* current = getActiveSetup())
-        {
-            // Duplicate current settings as convenient template
-            s = *current;
-            s.name = name;
-            s.hasResult = false;
-            s.lastRenderedOutput.clear();
-        }
-        else
-        {
-            s.inputMode = "replace";
-            s.inputRefdes = "VIN";
-            s.inputNode = "V1.G";
-            s.outputNode = "OUT";
-            s.probeNodes.add("V1.P");
-            s.probeNodes.add("V1.K");
-            s.inputPeakVolts = 0.10;
-        }
+        s.inputMode = "replace";
+        s.inputRefdes = "VIN";
+        s.inputNode = "V1.G";
+        s.outputNode = "OUT";
+        s.probeNodes.add("V1.P");
+        s.probeNodes.add("V1.K");
+        s.inputPeakVolts = 0.10;
         setups.push_back(std::move(s));
         activeSetupIndex = (int)setups.size() - 1;
         return true;
@@ -498,6 +1012,48 @@ public:
 
     const juce::String& getCurrentInstancePath() const { return currentInstancePath; }
     void setCurrentInstancePath(const juce::String& path) { currentInstancePath = path; }
+
+    bool saveFixtureToFile(const juce::String& setupName, const juce::File& file) const
+    {
+        for (const auto& s : setups)
+        {
+            if (s.name.equalsIgnoreCase(setupName))
+            {
+                auto v = s.toVar();
+                auto json = juce::JSON::toString(v, true);
+                return file.replaceWithText(json);
+            }
+        }
+        return false;
+    }
+
+    bool loadFixtureFromFile(const juce::File& file, juce::String* outName = nullptr)
+    {
+        if (!file.existsAsFile())
+            return false;
+        const auto text = file.loadFileAsString();
+        auto parsed = juce::JSON::parse(text);
+        if (!parsed.isObject())
+            return false;
+        auto s = TestSetup::fromVar(parsed);
+        if (s.name.isEmpty())
+            s.name = file.getFileNameWithoutExtension();
+        s.syncEquipmentFromSetup();
+        for (auto& existing : setups)
+        {
+            if (existing.name.equalsIgnoreCase(s.name))
+            {
+                existing = s;
+                if (outName != nullptr) *outName = s.name;
+                selectSetup(s.name);
+                return true;
+            }
+        }
+        setups.push_back(s);
+        activeSetupIndex = (int)setups.size() - 1;
+        if (outName != nullptr) *outName = s.name;
+        return true;
+    }
 
 private:
     bool active = false;

@@ -8,6 +8,7 @@
 #include "FrustEngine.h"
 #include "WorkspaceLayoutStore.h"
 #include "PredefinedLayoutCatalog.h"
+#include "TestFixturePanel.h"
 
 class AudioPipeline;
 
@@ -285,6 +286,11 @@ private:
     juce::Component::SafePointer<CreationDock::DockPanel> nodeDesignerDockPanel;
     juce::Component::SafePointer<CreationDock::DockPanel> helpDockPanel;
     djehuti_help::HelpPanel* helpPanel = nullptr;
+    std::map<juce::String, juce::Component::SafePointer<CreationDock::DockPanel>> openFixtureDockPanels;
+    void openTestFixturePanel(const juce::String& fixtureName);
+    void createTestFixturePrompt();
+    void closeTestFixturePanel(const juce::String& fixtureName);
+    TestFixturePanel* findTestFixturePanel(const juce::String& fixtureName) const;
     void autoLayoutDiagram();
     void applySchematicZoom(float zoom);
     void adjustSchematicZoom(float factor);

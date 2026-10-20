@@ -934,6 +934,61 @@ const std::vector<ToolSpecText>& testModeToolSpecs()
             "test_fixture_set_subfixture",
             "Configure a Sub-Test-Fixture for a specific subdiagram instance (e.g. 'A1', 'A2') with its own virtual stimulus, local output node, and internal probes.",
             R"({"type":"object","properties":{"instancePath":{"type":"string","description":"Target instance refdes or path (e.g. 'A1', 'A2')."},"stimulusEnabled":{"type":"boolean","description":"True to inject a virtual test stimulus into this sub-fixture."},"inputNode":{"type":"string","description":"Internal node or port to drive (e.g. 'IN', 'V1.G')."},"inputPeakVolts":{"type":"number","description":"Peak stimulus voltage in volts (e.g. 0.1)."},"stimulusType":{"type":"string","description":"Stimulus type: 'sine' or 'file'."},"sineFrequencyHz":{"type":"number","description":"Frequency of sine wave in Hz (e.g. 1000)."},"outputNode":{"type":"string","description":"Local output node to measure (e.g. 'OUT', 'V1.P')."},"probeNodes":{"type":"array","items":{"type":"string"},"description":"List of probe node labels inside this subdiagram instance."}},"required":["instancePath"],"additionalProperties":false})"
+        },
+        {
+            "test_fixture_create",
+            "Create a new named Test Fixture workspace and open it in a dedicated CreationDock tab.",
+            R"({"type":"object","properties":{"name":{"type":"string","description":"Name of the test fixture to create, e.g. 'Amplifier Test Fixture'."}},"required":["name"],"additionalProperties":false})"
+        },
+        {
+            "test_fixture_open",
+            "Open an existing named Test Fixture in its own CreationDock tab.",
+            R"({"type":"object","properties":{"name":{"type":"string","description":"Name of the test fixture to open."}},"additionalProperties":false})"
+        },
+        {
+            "test_fixture_close",
+            "Close a Test Fixture tab in CreationDock.",
+            R"({"type":"object","properties":{"name":{"type":"string","description":"Name of the test fixture to close."}},"required":["name"],"additionalProperties":false})"
+        },
+        {
+            "test_fixture_list",
+            "List all Test Fixtures saved for the current circuit diagram, including open tabs and equipment inventory.",
+            R"({"type":"object","properties":{},"additionalProperties":false})"
+        },
+        {
+            "test_fixture_place_equipment",
+            "Place interactive virtual test equipment (Audio Input, Audio Sink, Signal Generator, Probe) on the fixture canvas.",
+            R"({"type":"object","properties":{"fixture":{"type":"string","description":"Target test fixture name (optional, defaults to active)."},"type":{"type":"string","description":"Equipment type: 'audio_input', 'audio_output', 'signal_gen', or 'probe'."},"name":{"type":"string","description":"Display name of the equipment."},"x":{"type":"number","description":"X position on fixture canvas."},"y":{"type":"number","description":"Y position on fixture canvas."},"instancePath":{"type":"string","description":"Optional instance path for sub-fixtures (e.g. 'A1', 'A2')."}},"required":["type","x","y"],"additionalProperties":false})"
+        },
+        {
+            "test_fixture_move_equipment",
+            "Move placed test equipment to new canvas coordinates without triggering simulation solves or routing delays.",
+            R"({"type":"object","properties":{"fixture":{"type":"string","description":"Target test fixture name."},"id":{"type":"string","description":"Equipment ID to move."},"x":{"type":"number","description":"New X canvas coordinate."},"y":{"type":"number","description":"New Y canvas coordinate."}},"required":["id","x","y"],"additionalProperties":false})"
+        },
+        {
+            "test_fixture_remove_equipment",
+            "Remove test equipment and its connections from the fixture canvas.",
+            R"({"type":"object","properties":{"fixture":{"type":"string","description":"Target test fixture name."},"id":{"type":"string","description":"Equipment ID to remove."}},"required":["id"],"additionalProperties":false})"
+        },
+        {
+            "test_fixture_connect",
+            "Graphically wire a test equipment terminal to a schematic pin or wire without modifying the authoritative schematic.",
+            R"({"type":"object","properties":{"fixture":{"type":"string","description":"Target test fixture name."},"equipmentId":{"type":"string","description":"Source equipment ID."},"terminalId":{"type":"string","description":"Equipment terminal ID ('out' or 'in')."},"targetPin":{"type":"string","description":"Circuit pin/node label to connect (e.g. 'V1.G', 'OUT', 'C_IN.1')."},"targetRefdes":{"type":"string","description":"Source component refdes if overriding design source (e.g. 'VIN')."},"wireIndex":{"type":"integer","description":"Optional wire index."},"instancePath":{"type":"string","description":"Optional instance path for sub-fixtures."}},"required":["equipmentId"],"additionalProperties":false})"
+        },
+        {
+            "test_fixture_disconnect",
+            "Remove a fixture connection wire.",
+            R"({"type":"object","properties":{"fixture":{"type":"string","description":"Target test fixture name."},"id":{"type":"string","description":"Connection ID or equipment ID to disconnect."}},"required":["id"],"additionalProperties":false})"
+        },
+        {
+            "test_fixture_configure_equipment",
+            "Configure settings on a fixture equipment object (WAV file, peak volts, sine freq, override refdes).",
+            R"({"type":"object","properties":{"fixture":{"type":"string","description":"Target test fixture name."},"id":{"type":"string","description":"Equipment ID."},"audioFilePath":{"type":"string","description":"Path to audio WAV recording file."},"stimulusType":{"type":"string","description":"'file' or 'sine'."},"peakVolts":{"type":"number","description":"Peak stimulus voltage."},"sineFrequencyHz":{"type":"number","description":"Frequency in Hz."},"isOverride":{"type":"boolean","description":"True to override an existing schematic source."},"overrideRefdes":{"type":"string","description":"Refdes of the schematic source to override (e.g. 'VIN')."}},"required":["id"],"additionalProperties":false})"
+        },
+        {
+            "test_fixture_save",
+            "Save a Test Fixture and its equipment/wiring/breaks to an independent sidecar .fixture.json file without altering the authoritative schematic.",
+            R"({"type":"object","properties":{"name":{"type":"string","description":"Name of the test fixture to save (optional, defaults to active)."},"path":{"type":"string","description":"Optional destination file path."}},"additionalProperties":false})"
         }
     };
     return specs;
@@ -3280,6 +3335,62 @@ public:
     void setAudioPipeline(AudioPipeline* p) { audioPipeline = p; }
     std::unique_ptr<TestModeBarComponent> testModeBar;
     juce::TextButton enterTestModeButton { "Test Mode" };
+    juce::TextButton createFixtureButton { "⚡ Create Fixture" };
+    juce::TextButton openFixtureButton { "⚡ Open Fixture" };
+    std::function<void()> onRequestCreateFixture;
+    std::function<void()> onRequestOpenFixture;
+    std::function<bool(const juce::String& name)> openFixtureTab;
+    std::function<bool(const juce::String& name)> createFixtureTab;
+    std::function<bool(const juce::String& name)> closeFixtureTab;
+    std::function<TestFixturePanel*(const juce::String& name)> getFixturePanel;
+    std::function<juce::File()> getAuthoritativeDiagramFile;
+
+    test_fixture::FixtureCircuitData getFixtureCircuitData(const juce::String& sheet) const
+    {
+        test_fixture::FixtureCircuitData data;
+        data.sheet = sheet;
+        for (int i = 0; i < (int)instances.size(); ++i)
+        {
+            const auto& inst = instances[(size_t)i];
+            if (inst.sheet != sheet) continue;
+            test_fixture::CircuitComponent comp;
+            comp.refdes = inst.refdes;
+            comp.symbolId = inst.symbolId;
+            comp.value = inst.value;
+            comp.pos = inst.position;
+            comp.rotation = (float)inst.rotation;
+            comp.bounds = orientedBounds(inst, symbolForInstance(inst));
+            comp.isSubBlock = (inst.symbolId == "sub_block");
+            comp.childSheet = inst.childSheet;
+
+            const auto sym = symbolForInstance(inst);
+            for (size_t p = 0; p < sym.pins.size(); ++p)
+            {
+                test_fixture::CircuitPin pin;
+                pin.name = sym.pins[p].name;
+                pin.label = pinLabel({ i, (int)p });
+                pin.pos = pinPosition({ i, (int)p });
+                comp.pins.push_back(pin);
+            }
+            data.components.push_back(std::move(comp));
+        }
+
+        for (size_t w = 0; w < wires.size(); ++w)
+        {
+            const auto& wire = wires[w];
+            if (nodeOnSheet(wire.a) || nodeOnSheet(wire.b))
+            {
+                test_fixture::CircuitWire cw;
+                cw.wireIndex = (int)w;
+                cw.a = nodePosition(wire.a);
+                cw.b = nodePosition(wire.b);
+                cw.nodeA = nodeLabel(wire.a);
+                cw.nodeB = nodeLabel(wire.b);
+                data.wires.push_back(cw);
+            }
+        }
+        return data;
+    }
 
     void enterTestMode()
     {
@@ -3334,6 +3445,16 @@ public:
         enterTestModeButton.setColour(juce::TextButton::textColourOffId, juce::Colour(0xffe056fd));
         enterTestModeButton.onClick = [this] { enterTestMode(); };
         addAndMakeVisible(enterTestModeButton);
+
+        createFixtureButton.setColour(juce::TextButton::buttonColourId, juce::Colour(0xff1d2731));
+        createFixtureButton.setColour(juce::TextButton::textColourOffId, juce::Colour(0xff00d2d3));
+        createFixtureButton.onClick = [this] { if (onRequestCreateFixture) onRequestCreateFixture(); };
+        addAndMakeVisible(createFixtureButton);
+
+        openFixtureButton.setColour(juce::TextButton::buttonColourId, juce::Colour(0xff1d2731));
+        openFixtureButton.setColour(juce::TextButton::textColourOffId, juce::Colour(0xffe056fd));
+        openFixtureButton.onClick = [this] { if (onRequestOpenFixture) onRequestOpenFixture(); };
+        addAndMakeVisible(openFixtureButton);
 
         testModeBar = std::make_unique<TestModeBarComponent>(*this);
         addChildComponent(testModeBar.get());
@@ -5006,7 +5127,9 @@ public:
 
     void resized() override
     {
-        enterTestModeButton.setBounds(getWidth() - 130, 8, 118, 26);
+        enterTestModeButton.setBounds(getWidth() - 110, 8, 100, 26);
+        openFixtureButton.setBounds(getWidth() - 230, 8, 115, 26);
+        createFixtureButton.setBounds(getWidth() - 355, 8, 120, 26);
         if (testModeBar != nullptr)
             testModeBar->setBounds(0, 0, getWidth(), 86);
     }
@@ -12959,7 +13082,10 @@ public:
             juce::String json;
             json << "{\n  \"ok\": true,\n  \"active\": " << (testMode.isActive() ? "true" : "false");
             if (const auto* s = testMode.getActiveSetup())
+            {
                 json << ",\n  \"activeSetup\": " << quote(s->name);
+                json << ",\n  \"activeSetupDetails\": " << juce::JSON::toString(s->toVar(), false);
+            }
             json << ",\n  \"setups\": [";
             const auto& setups = testMode.getSetups();
             for (size_t i = 0; i < setups.size(); ++i)
@@ -13063,6 +13189,9 @@ public:
             }
 
             if (testModeBar != nullptr) testModeBar->updateFromManager();
+            s->syncEquipmentFromSetup();
+            if (auto* panel = getFixturePanel ? getFixturePanel(s->name) : nullptr)
+                panel->updateFromSetup();
             repaint();
             return "{ \"ok\": true, \"setup\": " + juce::JSON::toString(s->toVar(), false) + " }";
         }
@@ -13077,7 +13206,14 @@ public:
             }
             const bool audition = args.hasProperty("audition") ? (bool)args["audition"] : false;
             juce::String err;
-            return runTestSetup(s, audition, &err);
+            auto res = runTestSetup(s, audition, &err);
+            if (s != nullptr)
+            {
+                s->syncEquipmentFromSetup();
+                if (auto* panel = getFixturePanel ? getFixturePanel(s->name) : nullptr)
+                    panel->updateFromSetup();
+            }
+            return res;
         }
         if (name == "test_setup_export_audio")
         {
@@ -13259,6 +13395,285 @@ public:
             repaint();
             if (testModeBar != nullptr) testModeBar->updateFromManager();
             return "{ \"ok\": true, \"subFixture\": " + juce::JSON::toString(sf->toVar(), false) + " }";
+        }
+        if (name == "test_fixture_create")
+        {
+            const auto fixName = arg("name");
+            if (fixName.isEmpty()) return toolFailure(name, "Missing 'name' argument.");
+            if (!testMode.createSetup(fixName))
+            {
+                testMode.selectSetup(fixName);
+            }
+            testMode.setActive(true);
+            testMode.selectSetup(fixName);
+            auto* s = testMode.getActiveSetup();
+            if (s != nullptr) s->syncEquipmentFromSetup();
+            if (openFixtureTab) openFixtureTab(fixName);
+            return "{ \"ok\": true, \"fixture\": " + quote(fixName) + ", \"tabOpened\": true }";
+        }
+        if (name == "test_fixture_open")
+        {
+            auto fixName = arg("name");
+            if (fixName.isEmpty())
+            {
+                if (const auto* s = testMode.getActiveSetup()) fixName = s->name;
+                else if (!testMode.getSetups().empty()) fixName = testMode.getSetups().front().name;
+                else fixName = "Amplifier Test Fixture";
+            }
+            if (arg("path").isNotEmpty())
+            {
+                juce::File f(arg("path"));
+                if (f.existsAsFile()) testMode.loadFixtureFromFile(f);
+            }
+            else if (getAuthoritativeDiagramFile != nullptr)
+            {
+                const auto diagFile = getAuthoritativeDiagramFile();
+                if (diagFile.existsAsFile())
+                {
+                    const auto sidecar = diagFile.getSiblingFile(diagFile.getFileNameWithoutExtension() + "." + sanitizeId(fixName) + ".fixture.json");
+                    if (sidecar.existsAsFile())
+                        testMode.loadFixtureFromFile(sidecar);
+                }
+            }
+            testMode.setActive(true);
+            testMode.selectSetup(fixName);
+            if (openFixtureTab) openFixtureTab(fixName);
+            return "{ \"ok\": true, \"fixture\": " + quote(fixName) + ", \"tabOpened\": true }";
+        }
+        if (name == "test_fixture_close")
+        {
+            const auto fixName = arg("name");
+            if (closeFixtureTab) closeFixtureTab(fixName);
+            return "{ \"ok\": true, \"fixture\": " + quote(fixName) + ", \"tabClosed\": true }";
+        }
+        if (name == "test_fixture_list")
+        {
+            juce::String json;
+            json << "{\n  \"ok\": true,\n  \"activeFixture\": ";
+            if (const auto* s = testMode.getActiveSetup()) json << quote(s->name); else json << "null";
+            json << ",\n  \"fixtures\": [\n";
+            const auto& setups = testMode.getSetups();
+            for (size_t i = 0; i < setups.size(); ++i)
+            {
+                if (i != 0) json << ",\n";
+                json << "    {\n";
+                json << "      \"name\": " << quote(setups[i].name) << ",\n";
+                json << "      \"equipmentCount\": " << (int)setups[i].equipment.size() << ",\n";
+                json << "      \"connectionsCount\": " << (int)setups[i].fixtureConnections.size() << ",\n";
+                json << "      \"breaksCount\": " << (int)setups[i].connectionBreaks.size() << ",\n";
+                json << "      \"subFixturesCount\": " << (int)setups[i].subFixtures.size() << "\n";
+                json << "    }";
+            }
+            json << "\n  ]\n}";
+            return json;
+        }
+        if (name == "test_fixture_place_equipment")
+        {
+            const auto fixName = arg("fixture");
+            auto* s = fixName.isNotEmpty() ? nullptr : testMode.getActiveSetup();
+            if (fixName.isNotEmpty())
+            {
+                for (auto& cand : testMode.getSetups())
+                    if (cand.name.equalsIgnoreCase(fixName)) { s = &cand; break; }
+            }
+            if (s == nullptr) s = testMode.getActiveSetup();
+            if (s == nullptr) return toolFailure(name, "No active test fixture.");
+
+            test_mode::FixtureEquipment eq;
+            const auto type = arg("type");
+            eq.type = type.isNotEmpty() ? type : "audio_input";
+            eq.id = sanitizeId(eq.type) + "_" + juce::String(juce::Random::getSystemRandom().nextInt(89999) + 10000);
+            eq.name = args.hasProperty("name") ? args["name"].toString() : eq.type;
+            eq.pos.x = args.hasProperty("x") ? (float)(double)args["x"] : 100.0f;
+            eq.pos.y = args.hasProperty("y") ? (float)(double)args["y"] : 100.0f;
+            eq.instancePath = arg("instancePath");
+
+            if (eq.type == "audio_input")
+            {
+                eq.stimulusType = "file";
+                eq.peakVolts = 0.1;
+                eq.isOverride = true;
+                eq.overrideRefdes = "VIN";
+            }
+            else if (eq.type == "signal_gen")
+            {
+                eq.stimulusType = "sine";
+                eq.sineFrequencyHz = 1000.0;
+                eq.peakVolts = 0.1;
+                eq.isOverride = false;
+            }
+
+            s->addEquipment(eq);
+            if (auto* panel = getFixturePanel ? getFixturePanel(s->name) : nullptr)
+                panel->updateFromSetup();
+            repaint();
+            return "{ \"ok\": true, \"equipment\": " + juce::JSON::toString(eq.toVar(), false) + " }";
+        }
+        if (name == "test_fixture_move_equipment")
+        {
+            const auto fixName = arg("fixture");
+            auto* s = fixName.isNotEmpty() ? nullptr : testMode.getActiveSetup();
+            if (fixName.isNotEmpty())
+            {
+                for (auto& cand : testMode.getSetups())
+                    if (cand.name.equalsIgnoreCase(fixName)) { s = &cand; break; }
+            }
+            if (s == nullptr) s = testMode.getActiveSetup();
+            if (s == nullptr) return toolFailure(name, "No active test fixture.");
+
+            const auto eqId = arg("id");
+            auto* eq = s->getEquipment(eqId);
+            if (eq == nullptr) return toolFailure(name, "Equipment '" + eqId + "' not found.");
+
+            eq->pos.x = (float)(double)args["x"];
+            eq->pos.y = (float)(double)args["y"];
+            s->syncSetupFromEquipment();
+
+            if (auto* panel = getFixturePanel ? getFixturePanel(s->name) : nullptr)
+                panel->updateFromSetup();
+            repaint();
+            return "{ \"ok\": true, \"id\": " + quote(eqId) + ", \"x\": " + juce::String(eq->pos.x) + ", \"y\": " + juce::String(eq->pos.y) + " }";
+        }
+        if (name == "test_fixture_remove_equipment")
+        {
+            const auto fixName = arg("fixture");
+            auto* s = fixName.isNotEmpty() ? nullptr : testMode.getActiveSetup();
+            if (fixName.isNotEmpty())
+            {
+                for (auto& cand : testMode.getSetups())
+                    if (cand.name.equalsIgnoreCase(fixName)) { s = &cand; break; }
+            }
+            if (s == nullptr) s = testMode.getActiveSetup();
+            if (s == nullptr) return toolFailure(name, "No active test fixture.");
+
+            const auto eqId = arg("id");
+            if (!s->removeEquipment(eqId)) return toolFailure(name, "Equipment '" + eqId + "' not found.");
+
+            if (auto* panel = getFixturePanel ? getFixturePanel(s->name) : nullptr)
+                panel->updateFromSetup();
+            repaint();
+            return "{ \"ok\": true, \"removed\": " + quote(eqId) + " }";
+        }
+        if (name == "test_fixture_connect")
+        {
+            const auto fixName = arg("fixture");
+            auto* s = fixName.isNotEmpty() ? nullptr : testMode.getActiveSetup();
+            if (fixName.isNotEmpty())
+            {
+                for (auto& cand : testMode.getSetups())
+                    if (cand.name.equalsIgnoreCase(fixName)) { s = &cand; break; }
+            }
+            if (s == nullptr) s = testMode.getActiveSetup();
+            if (s == nullptr) return toolFailure(name, "No active test fixture.");
+
+            test_mode::FixtureConnection conn;
+            conn.id = "conn_" + juce::String(juce::Random::getSystemRandom().nextInt(899999) + 100000);
+            conn.equipmentId = arg("equipmentId");
+            conn.terminalId = args.hasProperty("terminalId") ? args["terminalId"].toString() : "out";
+            conn.targetPinLabel = arg("targetPin");
+            conn.targetRefdes = arg("targetRefdes");
+            conn.targetWireIndex = args.hasProperty("wireIndex") ? (int)args["wireIndex"] : -1;
+            conn.instancePath = arg("instancePath");
+
+            // Look up position if connecting to a pin
+            for (const auto& inst : instances)
+            {
+                if (conn.instancePath.isNotEmpty() && inst.sheet != conn.instancePath) continue;
+                for (size_t p = 0; p < symbolForInstance(inst).pins.size(); ++p)
+                {
+                    const auto lbl = pinLabel({ (int)(&inst - instances.data()), (int)p });
+                    if (lbl.equalsIgnoreCase(conn.targetPinLabel))
+                    {
+                        conn.targetPoint = pinPosition({ (int)(&inst - instances.data()), (int)p });
+                        break;
+                    }
+                }
+            }
+
+            s->addConnection(conn);
+            if (auto* panel = getFixturePanel ? getFixturePanel(s->name) : nullptr)
+                panel->updateFromSetup();
+            repaint();
+            return "{ \"ok\": true, \"connection\": " + juce::JSON::toString(conn.toVar(), false) + " }";
+        }
+        if (name == "test_fixture_disconnect")
+        {
+            const auto fixName = arg("fixture");
+            auto* s = fixName.isNotEmpty() ? nullptr : testMode.getActiveSetup();
+            if (fixName.isNotEmpty())
+            {
+                for (auto& cand : testMode.getSetups())
+                    if (cand.name.equalsIgnoreCase(fixName)) { s = &cand; break; }
+            }
+            if (s == nullptr) s = testMode.getActiveSetup();
+            if (s == nullptr) return toolFailure(name, "No active test fixture.");
+
+            const auto id = arg("id");
+            s->removeConnection(id);
+            if (auto* panel = getFixturePanel ? getFixturePanel(s->name) : nullptr)
+                panel->updateFromSetup();
+            repaint();
+            return "{ \"ok\": true, \"disconnected\": " + quote(id) + " }";
+        }
+        if (name == "test_fixture_configure_equipment")
+        {
+            const auto fixName = arg("fixture");
+            auto* s = fixName.isNotEmpty() ? nullptr : testMode.getActiveSetup();
+            if (fixName.isNotEmpty())
+            {
+                for (auto& cand : testMode.getSetups())
+                    if (cand.name.equalsIgnoreCase(fixName)) { s = &cand; break; }
+            }
+            if (s == nullptr) s = testMode.getActiveSetup();
+            if (s == nullptr) return toolFailure(name, "No active test fixture.");
+
+            const auto eqId = arg("id");
+            auto* eq = s->getEquipment(eqId);
+            if (eq == nullptr) return toolFailure(name, "Equipment '" + eqId + "' not found.");
+
+            if (args.hasProperty("audioFilePath")) eq->audioFilePath = args["audioFilePath"].toString();
+            if (args.hasProperty("stimulusType")) eq->stimulusType = args["stimulusType"].toString();
+            if (args.hasProperty("peakVolts")) eq->peakVolts = (double)args["peakVolts"];
+            if (args.hasProperty("sineFrequencyHz")) eq->sineFrequencyHz = (double)args["sineFrequencyHz"];
+            if (args.hasProperty("sineDurationSec")) eq->sineDurationSec = (double)args["sineDurationSec"];
+            if (args.hasProperty("isOverride")) eq->isOverride = (bool)args["isOverride"];
+            if (args.hasProperty("overrideRefdes")) eq->overrideRefdes = args["overrideRefdes"].toString();
+
+            s->syncSetupFromEquipment();
+            if (auto* panel = getFixturePanel ? getFixturePanel(s->name) : nullptr)
+                panel->updateFromSetup();
+            repaint();
+            return "{ \"ok\": true, \"equipment\": " + juce::JSON::toString(eq->toVar(), false) + " }";
+        }
+        if (name == "test_fixture_save")
+        {
+            const auto fixName = arg("name");
+            auto* s = fixName.isNotEmpty() ? nullptr : testMode.getActiveSetup();
+            if (fixName.isNotEmpty())
+            {
+                for (auto& cand : testMode.getSetups())
+                    if (cand.name.equalsIgnoreCase(fixName)) { s = &cand; break; }
+            }
+            if (s == nullptr) s = testMode.getActiveSetup();
+            if (s == nullptr) return toolFailure(name, "No active test fixture.");
+
+            juce::File targetFile;
+            if (arg("path").isNotEmpty())
+                targetFile = juce::File(arg("path"));
+            else if (getAuthoritativeDiagramFile != nullptr)
+            {
+                const auto diagFile = getAuthoritativeDiagramFile();
+                if (diagFile.existsAsFile())
+                    targetFile = diagFile.getSiblingFile(diagFile.getFileNameWithoutExtension() + "." + sanitizeId(s->name) + ".fixture.json");
+                else
+                    targetFile = juce::File::getSpecialLocation(juce::File::userHomeDirectory).getChildFile(sanitizeId(s->name) + ".fixture.json");
+            }
+            else
+                targetFile = juce::File::getSpecialLocation(juce::File::userHomeDirectory).getChildFile(sanitizeId(s->name) + ".fixture.json");
+
+            const bool saved = testMode.saveFixtureToFile(s->name, targetFile);
+            if (!saved) return toolFailure(name, "Failed to save fixture to " + targetFile.getFullPathName());
+            return "{ \"ok\": true, \"savedFile\": " + quote(targetFile.getFullPathName()) + " }";
         }
         if (name == "preferences_list")
         {
@@ -18051,6 +18466,26 @@ ElectronicsWorkbench::ElectronicsWorkbench()
     auto* schematicPanel = schematic.get();
     schematicView = schematicPanel;
     schematicPanel->setAudioPipeline(audioPipeline.get());
+    schematicPanel->onRequestCreateFixture = [this] { createTestFixturePrompt(); };
+    schematicPanel->onRequestOpenFixture = [this] { openTestFixturePanel({}); };
+    schematicPanel->openFixtureTab = [this](const juce::String& name) {
+        openTestFixturePanel(name);
+        return true;
+    };
+    schematicPanel->createFixtureTab = [this](const juce::String& name) {
+        openTestFixturePanel(name);
+        return true;
+    };
+    schematicPanel->closeFixtureTab = [this](const juce::String& name) {
+        closeTestFixturePanel(name);
+        return true;
+    };
+    schematicPanel->getFixturePanel = [this](const juce::String& name) {
+        return findTestFixturePanel(name);
+    };
+    schematicPanel->getAuthoritativeDiagramFile = [this]() {
+        return project_store::diagramFile(project, currentDiagram);
+    };
     setSnapEnabled = [schematicPanel](bool enabled) {
         schematicPanel->setSnapEnabled(enabled);
     };
@@ -21509,6 +21944,190 @@ void ElectronicsWorkbench::chooseAudioSourceFile()
                 appendLog("System", "0x00", "Audio input routed to looping file: " + result.getFullPathName());
             }
         });
+}
+
+void ElectronicsWorkbench::createTestFixturePrompt()
+{
+    auto* canvas = dynamic_cast<SchematicCanvasPanel*>(schematicView.getComponent());
+    if (canvas == nullptr) return;
+
+    juce::String defaultName = "Amplifier Test Fixture";
+    int count = 1;
+    while (true)
+    {
+        bool exists = false;
+        for (const auto& s : canvas->testMode.getSetups())
+        {
+            if (s.name.equalsIgnoreCase(defaultName)) { exists = true; break; }
+        }
+        if (!exists) break;
+        ++count;
+        defaultName = "Amplifier Test Fixture " + juce::String(count);
+    }
+
+    canvas->testMode.createSetup(defaultName);
+    openTestFixturePanel(defaultName);
+}
+
+void ElectronicsWorkbench::openTestFixturePanel(const juce::String& fixtureName)
+{
+    if (auto* mm = juce::MessageManager::getInstanceWithoutCreating())
+    {
+        if (!mm->isThisTheMessageThread())
+        {
+            struct CallData {
+                ElectronicsWorkbench* wb;
+                juce::String name;
+            } data { this, fixtureName };
+            mm->callFunctionOnMessageThread([](void* u) -> void* {
+                auto* d = static_cast<CallData*>(u);
+                d->wb->openTestFixturePanel(d->name);
+                return nullptr;
+            }, &data);
+            return;
+        }
+    }
+
+    auto* canvas = dynamic_cast<SchematicCanvasPanel*>(schematicView.getComponent());
+    if (canvas == nullptr || dockManager == nullptr) return;
+
+    juce::String name = fixtureName;
+    if (name.isEmpty())
+    {
+        if (const auto* active = canvas->testMode.getActiveSetup())
+            name = active->name;
+        else if (!canvas->testMode.getSetups().empty())
+            name = canvas->testMode.getSetups().front().name;
+        else
+        {
+            createTestFixturePrompt();
+            return;
+        }
+    }
+
+    canvas->testMode.selectSetup(name);
+    auto* setup = canvas->testMode.getActiveSetup();
+    if (setup == nullptr) return;
+
+    const juce::String panelId = "fixture_" + sanitizeId(name);
+
+    if (dockManager->isPanelOpen(panelId))
+    {
+        dockManager->activatePanel(panelId);
+        return;
+    }
+
+    TestFixturePanel::Callbacks cb;
+    cb.getCircuitData = [canvas](const juce::String& sheet) {
+        return canvas->getFixtureCircuitData(sheet);
+    };
+    cb.getHierarchySheets = [canvas]() {
+        return canvas->hierarchySheets();
+    };
+    cb.runSimulation = [canvas](test_mode::TestSetup* s, bool audition, juce::String* err) {
+        return canvas->runTestSetup(s, audition, err);
+    };
+    cb.stopSimulation = [this]() {
+        if (audioPipeline != nullptr)
+            audioPipeline->stopRenderedAudio();
+    };
+    cb.auditionBuffer = [this](const std::vector<float>& buf, double sr) {
+        if (audioPipeline != nullptr)
+            audioPipeline->playRenderedAudio(buf, sr);
+    };
+    cb.exportAudio = [canvas](test_mode::TestSetup* s, const juce::String& p, juce::String* err) {
+        return canvas->exportRenderedAudio(s, p, err);
+    };
+    cb.onStatusMessage = [this](const juce::String& msg) {
+        appendLog(msg);
+    };
+    cb.onClose = [this, name](TestFixturePanel*) {
+        openFixtureDockPanels.erase(name);
+    };
+    cb.onSaveFixture = [this, canvas](const juce::String& sName, const juce::File& f) {
+        juce::File fileToSave = f;
+        if (!fileToSave.existsAsFile())
+        {
+            const auto diagFile = project_store::diagramFile(project, currentDiagram);
+            if (diagFile.existsAsFile())
+                fileToSave = diagFile.getSiblingFile(diagFile.getFileNameWithoutExtension() + "." + sanitizeId(sName) + ".fixture.json");
+            else
+                fileToSave = juce::File::getSpecialLocation(juce::File::userHomeDirectory).getChildFile(sanitizeId(sName) + ".fixture.json");
+        }
+        const bool saved = canvas->testMode.saveFixtureToFile(sName, fileToSave);
+        if (saved) appendLog("Saved fixture '" + sName + "' to " + fileToSave.getFullPathName());
+        return saved;
+    };
+    cb.getAuthoritativeDiagramFile = [this]() {
+        return project_store::diagramFile(project, currentDiagram);
+    };
+    cb.getSetupByName = [canvas](const juce::String& sName) -> test_mode::TestSetup* {
+        return canvas->testMode.getSetup(sName);
+    };
+
+    auto panel = std::make_unique<TestFixturePanel>(name, setup, std::move(cb));
+    auto* dockPanel = dockManager->registerPanel(panelId, "Fixture: " + name, std::move(panel), CreationDock::DockTargetZone::CenterTab);
+    dockManager->activatePanel(panelId);
+    openFixtureDockPanels[name] = dockPanel;
+}
+
+void ElectronicsWorkbench::closeTestFixturePanel(const juce::String& fixtureName)
+{
+    if (auto* mm = juce::MessageManager::getInstanceWithoutCreating())
+    {
+        if (!mm->isThisTheMessageThread())
+        {
+            struct CallData {
+                ElectronicsWorkbench* wb;
+                juce::String name;
+            } data { this, fixtureName };
+            mm->callFunctionOnMessageThread([](void* u) -> void* {
+                auto* d = static_cast<CallData*>(u);
+                d->wb->closeTestFixturePanel(d->name);
+                return nullptr;
+            }, &data);
+            return;
+        }
+    }
+
+    if (dockManager == nullptr) return;
+    CreationDock::DockPanel* panelToRemove = nullptr;
+    for (auto it = openFixtureDockPanels.begin(); it != openFixtureDockPanels.end(); ++it)
+    {
+        if (it->first.equalsIgnoreCase(fixtureName) || fixtureName.isEmpty())
+        {
+            panelToRemove = it->second.getComponent();
+            openFixtureDockPanels.erase(it);
+            break;
+        }
+    }
+    if (panelToRemove == nullptr)
+    {
+        const juce::String panelId = "fixture_" + sanitizeId(fixtureName);
+        panelToRemove = dockManager->findPanelById(panelId);
+    }
+    if (panelToRemove != nullptr)
+    {
+        dockManager->removePanel(panelToRemove);
+    }
+}
+
+TestFixturePanel* ElectronicsWorkbench::findTestFixturePanel(const juce::String& fixtureName) const
+{
+    if (dockManager == nullptr) return nullptr;
+    for (const auto& [name, dockPanel] : openFixtureDockPanels)
+    {
+        if (name.equalsIgnoreCase(fixtureName) || fixtureName.isEmpty())
+        {
+            if (dockPanel != nullptr)
+                return dynamic_cast<TestFixturePanel*>(dockPanel->getContent());
+        }
+    }
+    const juce::String panelId = "fixture_" + sanitizeId(fixtureName);
+    auto* dp = dockManager->findPanelById(panelId);
+    if (dp != nullptr)
+        return dynamic_cast<TestFixturePanel*>(dp->getContent());
+    return nullptr;
 }
 
 // Analytics is a main window of its own: the dock panel floats out into a large

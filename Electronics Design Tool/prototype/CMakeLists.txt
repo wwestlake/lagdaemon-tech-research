@@ -152,6 +152,8 @@ target_sources(DjehutiElectronicsLab PRIVATE
     Source/AnalyticsPanel.cpp
     Source/CircuitHierarchy.cpp
     Source/CircuitHierarchyPanel.cpp
+    Source/TestFixturePanel.h
+    Source/TestFixturePanel.cpp
     Source/XyceBackend.h
     Source/XyceBackend.cpp
     Source/SchematicSymbols.h
