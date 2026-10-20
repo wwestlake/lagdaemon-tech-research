@@ -25,6 +25,10 @@
     {
       "name": "Vacuum Tube Guitar Amp",
       "file": "diagrams/Vacuum Tube Guitar Amp.diagram.json"
+    },
+    {
+      "name": "12AX7 Two Stage Preamp",
+      "file": "diagrams/12ax7_two_stage_preamp.diagram.json"
     }
   ]
 }

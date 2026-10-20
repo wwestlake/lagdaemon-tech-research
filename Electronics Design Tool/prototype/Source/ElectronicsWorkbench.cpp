@@ -909,6 +909,31 @@ const std::vector<ToolSpecText>& testModeToolSpecs()
             "test_setup_export_audio",
             "Export the last rendered test audio output of a test setup to a 16-bit PCM WAV file.",
             R"({"type":"object","properties":{"name":{"type":"string","description":"Name of the test setup (optional, defaults to active setup)."},"path":{"type":"string","description":"Destination file path for the exported WAV file."}},"required":["path"],"additionalProperties":false})"
+        },
+        {
+            "test_fixture_navigate",
+            "Navigate the Test Fixture view into a subdiagram instance or back up. In Test Mode, navigating into a subdiagram opens its Sub-Test-Fixture, allowing independent virtual stimulus injection, connection breaks, and probing.",
+            R"({"type":"object","properties":{"path":{"type":"string","description":"Instance refdes or hierarchical path (e.g. 'A1', 'A2', 'Main', 'up', or '') to navigate into."}},"required":["path"],"additionalProperties":false})"
+        },
+        {
+            "test_fixture_get_hierarchy",
+            "Get the full test fixture hierarchy of the current circuit, listing all subdiagram instances, their sheets, ports, and any active connection interruptions or sub-fixture overrides.",
+            R"({"type":"object","properties":{},"additionalProperties":false})"
+        },
+        {
+            "test_fixture_break_connection",
+            "Temporarily interrupt/break a circuit connection in the active test setup without modifying the schematic diagram. Supports breaking a wire by its endpoint nodes (e.g. 'A1.OUT', 'A2.IN'), isolating a specific pin/port (e.g. 'A2.IN'), or specifying a wireIndex.",
+            R"({"type":"object","properties":{"setup":{"type":"string","description":"Optional test setup name; defaults to active setup."},"instancePath":{"type":"string","description":"Optional instance path; defaults to current instance."},"nodeA":{"type":"string","description":"First node or pin label (e.g. 'A1.OUT' or 'IN')."},"nodeB":{"type":"string","description":"Second node or pin label (e.g. 'A2.IN' or 'R1.1')."},"pin":{"type":"string","description":"Single pin or port to isolate (e.g. 'A2.IN')."},"wireIndex":{"type":"integer","description":"Explicit wire index to break."}},"additionalProperties":false})"
+        },
+        {
+            "test_fixture_restore_connection",
+            "Restore one or all previously interrupted connections in a test setup.",
+            R"({"type":"object","properties":{"setup":{"type":"string","description":"Optional test setup name; defaults to active setup."},"instancePath":{"type":"string","description":"Optional instance path."},"nodeA":{"type":"string","description":"First node label."},"nodeB":{"type":"string","description":"Second node label."},"pin":{"type":"string","description":"Pin label."},"all":{"type":"boolean","description":"True to restore all interrupted connections."}},"additionalProperties":false})"
+        },
+        {
+            "test_fixture_set_subfixture",
+            "Configure a Sub-Test-Fixture for a specific subdiagram instance (e.g. 'A1', 'A2') with its own virtual stimulus, local output node, and internal probes.",
+            R"({"type":"object","properties":{"instancePath":{"type":"string","description":"Target instance refdes or path (e.g. 'A1', 'A2')."},"stimulusEnabled":{"type":"boolean","description":"True to inject a virtual test stimulus into this sub-fixture."},"inputNode":{"type":"string","description":"Internal node or port to drive (e.g. 'IN', 'V1.G')."},"inputPeakVolts":{"type":"number","description":"Peak stimulus voltage in volts (e.g. 0.1)."},"stimulusType":{"type":"string","description":"Stimulus type: 'sine' or 'file'."},"sineFrequencyHz":{"type":"number","description":"Frequency of sine wave in Hz (e.g. 1000)."},"outputNode":{"type":"string","description":"Local output node to measure (e.g. 'OUT', 'V1.P')."},"probeNodes":{"type":"array","items":{"type":"string"},"description":"List of probe node labels inside this subdiagram instance."}},"required":["instancePath"],"additionalProperties":false})"
         }
     };
     return specs;
@@ -2968,6 +2993,52 @@ public:
             };
             addAndMakeVisible(exportButton);
 
+            hierarchyBox.setColour(juce::ComboBox::backgroundColourId, juce::Colour(0xff18222c));
+            hierarchyBox.setColour(juce::ComboBox::textColourId, juce::Colour(0xff78dcca));
+            hierarchyBox.onChange = [this] {
+                if (updating) return;
+                const auto id = hierarchyBox.getSelectedId();
+                if (id == 1)
+                    canvas.openSheetForInstance({}, {});
+                else if (id > 1)
+                {
+                    int blockIdx = id - 2;
+                    int subBlockCount = 0;
+                    for (size_t i = 0; i < canvas.instances.size(); ++i)
+                    {
+                        if (canvas.instances[i].symbolId == "sub_block")
+                        {
+                            if (subBlockCount == blockIdx)
+                            {
+                                canvas.openSheetForInstance(canvas.instances[i].childSheet, canvas.instances[i].refdes);
+                                break;
+                            }
+                            ++subBlockCount;
+                        }
+                    }
+                }
+            };
+            addAndMakeVisible(hierarchyBox);
+
+            styleBtn(breaksButton, juce::Colour(0xff2d1b22), juce::Colour(0xffff7675));
+            breaksButton.onClick = [this] {
+                if (auto* s = canvas.testMode.getActiveSetup())
+                {
+                    if (!s->connectionBreaks.empty())
+                    {
+                        s->clearBreaks();
+                        if (canvas.onStatus) canvas.onStatus("Restored all interrupted connections.");
+                        updateFromManager();
+                        canvas.repaint();
+                    }
+                    else
+                    {
+                        if (canvas.onStatus) canvas.onStatus("No active breaks. Use test_fixture_break_connection to isolate sub-stages.");
+                    }
+                }
+            };
+            addAndMakeVisible(breaksButton);
+
             inputModeBox.addItem("Replace Source", 1);
             inputModeBox.addItem("Virtual Node", 2);
             inputModeBox.setColour(juce::ComboBox::backgroundColourId, juce::Colour(0xff18222c));
@@ -3091,9 +3162,29 @@ public:
             for (size_t i = 0; i < setups.size(); ++i)
                 setupBox.addItem(setups[i].name, (int)i + 1);
 
+            hierarchyBox.clear(juce::dontSendNotification);
+            hierarchyBox.addItem("Main (Top Level)", 1);
+            int subBlockCount = 0;
+            int selectedHierarchyId = 1;
+            for (size_t i = 0; i < canvas.instances.size(); ++i)
+            {
+                if (canvas.instances[i].symbolId == "sub_block")
+                {
+                    const int id = 2 + subBlockCount;
+                    hierarchyBox.addItem(canvas.instances[i].refdes + ": " + canvas.instances[i].value, id);
+                    if (canvas.currentInstancePath.equalsIgnoreCase(canvas.instances[i].refdes))
+                        selectedHierarchyId = id;
+                    ++subBlockCount;
+                }
+            }
+            hierarchyBox.setSelectedId(selectedHierarchyId, juce::dontSendNotification);
+
             const auto* s = canvas.testMode.getActiveSetup();
             if (s != nullptr)
             {
+                const int breakCount = (int)s->connectionBreaks.size();
+                breaksButton.setButtonText("✂ Breaks (" + juce::String(breakCount) + ")");
+
                 setupBox.setSelectedId(canvas.testMode.getActiveSetupIndex() + 1, juce::dontSendNotification);
                 inputModeBox.setSelectedId(s->inputMode == "virtual" ? 2 : 1, juce::dontSendNotification);
                 inputTargetEditor.setText(s->inputMode == "virtual" ? s->inputNode : s->inputRefdes, juce::dontSendNotification);
@@ -3106,6 +3197,7 @@ public:
             }
             else
             {
+                breaksButton.setButtonText("✂ Breaks (0)");
                 resultsLabel.setText("No active test setup.", juce::dontSendNotification);
             }
             updating = false;
@@ -3123,16 +3215,18 @@ public:
         void resized() override
         {
             // Row 1
-            badgeLabel.setBounds(8, 6, 160, 24);
-            exitButton.setBounds(174, 6, 120, 24);
-            setupLabel.setBounds(304, 6, 45, 24);
-            setupBox.setBounds(350, 6, 140, 24);
-            newSetupButton.setBounds(496, 6, 48, 24);
-            renameSetupButton.setBounds(548, 6, 58, 24);
-            deleteSetupButton.setBounds(610, 6, 52, 24);
-            runButton.setBounds(672, 6, 125, 24);
-            stopButton.setBounds(802, 6, 52, 24);
-            exportButton.setBounds(858, 6, 95, 24);
+            badgeLabel.setBounds(8, 6, 150, 24);
+            exitButton.setBounds(162, 6, 110, 24);
+            setupLabel.setBounds(278, 6, 45, 24);
+            setupBox.setBounds(324, 6, 130, 24);
+            newSetupButton.setBounds(458, 6, 44, 24);
+            renameSetupButton.setBounds(506, 6, 52, 24);
+            deleteSetupButton.setBounds(562, 6, 48, 24);
+            hierarchyBox.setBounds(614, 6, 130, 24);
+            breaksButton.setBounds(748, 6, 85, 24);
+            runButton.setBounds(837, 6, 115, 24);
+            stopButton.setBounds(956, 6, 48, 24);
+            exportButton.setBounds(1008, 6, 88, 24);
 
             // Row 2
             inputModeBox.setBounds(8, 34, 115, 24);
@@ -3162,6 +3256,8 @@ public:
         juce::TextButton newSetupButton { "+ New" };
         juce::TextButton renameSetupButton { "Rename" };
         juce::TextButton deleteSetupButton { "Delete" };
+        juce::ComboBox hierarchyBox;
+        juce::TextButton breaksButton { "✂ Breaks (0)" };
         juce::TextButton runButton { "▶ Run & Audition" };
         juce::TextButton stopButton { "⏹ Stop" };
         juce::TextButton exportButton { "💾 Export WAV" };
@@ -4499,29 +4595,116 @@ public:
 
         const float dashPattern[] = { 6.0f, 4.0f };
 
-        // 1. Virtual input stimulus lead & box
-        juce::Point<float> inPt;
-        bool hasIn = false;
-        if (s->inputMode == "replace")
+        // 1. Connection break visual indicators
+        for (const auto& b : s->connectionBreaks)
         {
-            for (const auto& inst : instances)
+            if (b.wireIndex >= 0 && b.wireIndex < (int)wires.size())
             {
-                if (inst.refdes == s->inputRefdes)
+                const auto& w = wires[(size_t)b.wireIndex];
+                if (nodeOnSheet(w.a) || nodeOnSheet(w.b))
                 {
-                    inPt = inst.position;
-                    hasIn = true;
-                    break;
+                    const auto ptA = nodePosition(w.a);
+                    const auto ptB = nodePosition(w.b);
+                    const auto mid = (ptA + ptB) * 0.5f;
+
+                    g.setColour(juce::Colour(0xffe74c3c));
+                    g.drawDashedLine(juce::Line<float>(ptA, ptB), dashPattern, 2, 3.0f);
+                    g.fillEllipse(mid.x - 10.0f, mid.y - 10.0f, 20.0f, 20.0f);
+                    g.setColour(juce::Colours::white);
+                    g.setFont(juce::Font(12.0f, juce::Font::bold));
+                    g.drawText("✕", juce::Rectangle<float>(mid.x - 10.0f, mid.y - 10.0f, 20.0f, 20.0f).toNearestInt(), juce::Justification::centred);
+                    g.setColour(juce::Colour(0xffff7675));
+                    g.setFont(juce::Font(10.0f, juce::Font::bold));
+                    g.drawText("INTERRUPTED", juce::Rectangle<float>(mid.x - 40.0f, mid.y - 24.0f, 80.0f, 14.0f).toNearestInt(), juce::Justification::centred);
+                }
+            }
+            else if (b.nodeA.isNotEmpty() && b.nodeB.isNotEmpty())
+            {
+                WireNode na, nb;
+                juce::String err;
+                const auto sheet = sheetForInstance(b.instancePath);
+                if (nodeFromLabel(b.nodeA, na, err, sheet) && nodeFromLabel(b.nodeB, nb, err, sheet))
+                {
+                    if (nodeOnSheet(na) || nodeOnSheet(nb))
+                    {
+                        const auto ptA = nodePosition(na);
+                        const auto ptB = nodePosition(nb);
+                        const auto mid = (ptA + ptB) * 0.5f;
+
+                        g.setColour(juce::Colour(0xffe74c3c));
+                        g.drawDashedLine(juce::Line<float>(ptA, ptB), dashPattern, 2, 3.0f);
+                        g.fillEllipse(mid.x - 10.0f, mid.y - 10.0f, 20.0f, 20.0f);
+                        g.setColour(juce::Colours::white);
+                        g.setFont(juce::Font(12.0f, juce::Font::bold));
+                        g.drawText("✕", juce::Rectangle<float>(mid.x - 10.0f, mid.y - 10.0f, 20.0f, 20.0f).toNearestInt(), juce::Justification::centred);
+                        g.setColour(juce::Colour(0xffff7675));
+                        g.setFont(juce::Font(10.0f, juce::Font::bold));
+                        g.drawText("INTERRUPTED", juce::Rectangle<float>(mid.x - 40.0f, mid.y - 24.0f, 80.0f, 14.0f).toNearestInt(), juce::Justification::centred);
+                    }
+                }
+            }
+            else if (b.pin.isNotEmpty())
+            {
+                WireNode pn;
+                juce::String err;
+                const auto sheet = sheetForInstance(b.instancePath);
+                if (nodeFromLabel(b.pin, pn, err, sheet) && nodeOnSheet(pn))
+                {
+                    const auto pt = nodePosition(pn);
+                    g.setColour(juce::Colour(0xffe74c3c));
+                    g.fillEllipse(pt.x - 8.0f, pt.y - 8.0f, 16.0f, 16.0f);
+                    g.setColour(juce::Colours::white);
+                    g.setFont(juce::Font(11.0f, juce::Font::bold));
+                    g.drawText("✕", juce::Rectangle<float>(pt.x - 8.0f, pt.y - 8.0f, 16.0f, 16.0f).toNearestInt(), juce::Justification::centred);
+                    g.setColour(juce::Colour(0xffff7675));
+                    g.setFont(juce::Font(9.0f, juce::Font::bold));
+                    g.drawText("ISOLATED", juce::Rectangle<float>(pt.x - 30.0f, pt.y - 20.0f, 60.0f, 12.0f).toNearestInt(), juce::Justification::centred);
                 }
             }
         }
-        else
+
+        // 2. Active sub-fixture (if viewing a subdiagram)
+        const auto* sf = s->getSubFixture(currentInstancePath);
+
+        // 3. Virtual input stimulus lead & box
+        juce::Point<float> inPt;
+        bool hasIn = false;
+        juce::String stimLabel = s->stimulusType == "sine" ? "1kHz Sine" : "WAV Riff";
+
+        if (sf != nullptr && sf->stimulusEnabled && sf->inputNode.isNotEmpty())
         {
             WireNode n;
             juce::String err;
-            if (nodeFromLabel(s->inputNode, n, err))
+            if (nodeFromLabel(sf->inputNode, n, err, currentSheet) && nodeOnSheet(n))
             {
                 inPt = nodePosition(n);
                 hasIn = true;
+                stimLabel = sf->stimulusType == "sine" ? (juce::String((int)sf->sineFrequencyHz) + "Hz Sine") : "WAV Riff";
+            }
+        }
+        else if (currentSheet.isEmpty())
+        {
+            if (s->inputMode == "replace")
+            {
+                for (const auto& inst : instances)
+                {
+                    if (inst.refdes == s->inputRefdes && inst.sheet == currentSheet)
+                    {
+                        inPt = inst.position;
+                        hasIn = true;
+                        break;
+                    }
+                }
+            }
+            else
+            {
+                WireNode n;
+                juce::String err;
+                if (nodeFromLabel(s->inputNode, n, err, currentSheet) && nodeOnSheet(n))
+                {
+                    inPt = nodePosition(n);
+                    hasIn = true;
+                }
             }
         }
 
@@ -4536,22 +4719,26 @@ public:
             g.drawText("⚡ STIMULUS", box.removeFromTop(18.0f), juce::Justification::centred);
             g.setFont(juce::Font(10.0f));
             g.setColour(juce::Colour(0xffe9bcf2));
-            g.drawText(s->stimulusType == "sine" ? "1kHz Sine" : "WAV Riff", box, juce::Justification::centred);
+            g.drawText(stimLabel, box, juce::Justification::centred);
 
             g.setColour(juce::Colour(0xffd066e2));
             g.drawDashedLine(juce::Line<float>(inPt.x - 35.0f, inPt.y, inPt.x - 4.0f, inPt.y), dashPattern, 2, 2.0f);
             g.fillEllipse(inPt.x - 4.0f, inPt.y - 4.0f, 8.0f, 8.0f);
         }
 
-        // 2. Virtual output probe lead & box
+        // 4. Virtual output probe lead & box
         juce::Point<float> outPt;
         bool hasOut = false;
-        WireNode outNode;
-        juce::String outErr;
-        if (nodeFromLabel(s->outputNode, outNode, outErr))
+        juce::String outNodeName = (sf != nullptr && sf->outputNode.isNotEmpty()) ? sf->outputNode : s->outputNode;
+        if (outNodeName.isNotEmpty())
         {
-            outPt = nodePosition(outNode);
-            hasOut = true;
+            WireNode outNode;
+            juce::String outErr;
+            if (nodeFromLabel(outNodeName, outNode, outErr, currentSheet) && nodeOnSheet(outNode))
+            {
+                outPt = nodePosition(outNode);
+                hasOut = true;
+            }
         }
 
         if (hasOut)
@@ -4572,12 +4759,18 @@ public:
             g.fillEllipse(outPt.x - 4.0f, outPt.y - 4.0f, 8.0f, 8.0f);
         }
 
-        // 3. Voltage probes
-        for (const auto& probeLabel : s->probeNodes)
+        // 5. Voltage probes (top-level and sub-fixture)
+        juce::StringArray activeProbes = s->probeNodes;
+        if (sf != nullptr)
+        {
+            for (const auto& p : sf->probeNodes)
+                if (!activeProbes.contains(p)) activeProbes.add(p);
+        }
+        for (const auto& probeLabel : activeProbes)
         {
             WireNode pn;
             juce::String pe;
-            if (nodeFromLabel(probeLabel, pn, pe))
+            if (nodeFromLabel(probeLabel, pn, pe, currentSheet) && nodeOnSheet(pn))
             {
                 auto pt = nodePosition(pn);
                 juce::Rectangle<float> pBox(pt.x - 30.0f, pt.y - 36.0f, 60.0f, 22.0f);
@@ -4596,6 +4789,20 @@ public:
     void mouseDown(const juce::MouseEvent& event) override
     {
         grabKeyboardFocus();
+        for (const auto& [area, sheet] : breadcrumbAreas)
+            if (area.contains(event.position))
+            {
+                if (sheet.isEmpty() || sheet == "Main")
+                    openSheetForInstance({}, {});
+                else
+                {
+                    const auto blk = blockForSheet(sheet);
+                    const auto refdes = blk >= 0 ? instances[(size_t)blk].refdes : juce::String();
+                    openSheetForInstance(sheet, refdes);
+                }
+                return;
+            }
+
         if (testMode.isActive())
         {
             if (event.mods.isMiddleButtonDown())
@@ -4779,7 +4986,8 @@ public:
             const auto& instance = instances[(size_t)instanceIndex];
             if (instance.symbolId == "sub_block")
             {
-                openSheet(instance.childSheet);
+                juce::String newPath = currentInstancePath.isEmpty() ? instance.refdes : (currentInstancePath + "/" + instance.refdes);
+                openSheetForInstance(instance.childSheet, newPath);
                 return;
             }
             if (instance.symbolId == "frust_component" && openComponentProgram != nullptr)
@@ -6926,7 +7134,8 @@ private:
         return -1;
     }
 
-    std::map<int, juce::String> computeNetNames() const
+    std::map<int, juce::String> computeNetNames(const std::set<int>& brokenWireIndices = {},
+                                                const std::set<int>& isolatedPinOrdinals = {}) const
     {
         const auto totalPins = pinCount();
         const auto totalNodes = totalPins + (int)junctions.size();
@@ -6936,11 +7145,15 @@ private:
             return result;
 
         DisjointSet sets(totalNodes);
-        for (const auto& wire : wires)
+        for (int w = 0; w < (int)wires.size(); ++w)
         {
-            const auto a = nodeOrdinal(wire.a);
-            const auto b = nodeOrdinal(wire.b);
+            if (brokenWireIndices.count(w) != 0)
+                continue;
+            const auto a = nodeOrdinal(wires[(size_t)w].a);
+            const auto b = nodeOrdinal(wires[(size_t)w].b);
             if (a < 0 || b < 0)
+                continue;
+            if (isolatedPinOrdinals.count(a) != 0 || isolatedPinOrdinals.count(b) != 0)
                 continue;
             sets.unite(a, b);
         }
@@ -6977,7 +7190,13 @@ private:
             int block = -1;
             const auto k = portIndexOfBubble(j, block);
             if (k >= 0)
-                sets.unite(pinOrdinal({ block, k }), pinOrdinal({ j, 0 }));
+            {
+                const auto blockPinOrd = pinOrdinal({ block, k });
+                const auto bubblePinOrd = pinOrdinal({ j, 0 });
+                if (isolatedPinOrdinals.count(blockPinOrd) != 0 || isolatedPinOrdinals.count(bubblePinOrd) != 0)
+                    continue;
+                sets.unite(blockPinOrd, bubblePinOrd);
+            }
         }
 
         // Net labels with the same name are one net (probe connections).
@@ -7090,9 +7309,15 @@ private:
         return instance.refdes + "." + symbol.pins[(size_t)pin.pinIndex].name;
     }
 
-    int instanceIndexForRefdes(const juce::String& refdes) const
+    int instanceIndexForRefdes(const juce::String& refdes, const juce::String& preferSheet = {}) const
     {
         const auto requested = refdes.trim();
+        if (preferSheet.isNotEmpty())
+        {
+            for (int index = 0; index < (int)instances.size(); ++index)
+                if (instances[(size_t)index].refdes.equalsIgnoreCase(requested) && instances[(size_t)index].sheet == preferSheet)
+                    return index;
+        }
         for (int index = 0; index < (int)instances.size(); ++index)
             if (instances[(size_t)index].refdes.equalsIgnoreCase(requested))
                 return index;
@@ -7113,9 +7338,9 @@ private:
         return labels.joinIntoString(", ");
     }
 
-    bool nodeFromLabel(const juce::String& suppliedLabel, WireNode& node, juce::String& error) const
+    bool nodeFromLabel(const juce::String& suppliedLabel, WireNode& node, juce::String& error, const juce::String& preferSheet = {}) const
     {
-        const auto label = suppliedLabel.trim();
+        auto label = suppliedLabel.trim();
         if (label.isEmpty())
         {
             error = "Node label is empty. Available labels: " + availableNodeSummary();
@@ -7132,10 +7357,45 @@ private:
             }
         }
 
+        // Support hierarchical paths e.g. "A1/V1.P" or "A1.V1.P"
+        label = label.replace("/", ".");
+        const auto firstDot = label.indexOfChar('.');
+        const auto lastDot = label.lastIndexOfChar('.');
+
+        if (firstDot > 0 && firstDot != lastDot)
+        {
+            const auto blockRefdes = label.substring(0, firstDot).trim();
+            const auto blockIdx = instanceIndexForRefdes(blockRefdes);
+            if (blockIdx >= 0 && instances[(size_t)blockIdx].symbolId == "sub_block")
+            {
+                const auto childSheet = instances[(size_t)blockIdx].childSheet;
+                const auto remainder = label.substring(firstDot + 1);
+                return nodeFromLabel(remainder, node, error, childSheet);
+            }
+        }
+
         const auto dot = label.lastIndexOfChar('.');
         const auto refdes = dot > 0 ? label.substring(0, dot).trim() : label;
         const auto pinName = dot > 0 ? label.substring(dot + 1).trim() : juce::String();
-        const auto instanceIndex = instanceIndexForRefdes(refdes);
+
+        // Check if label matches a port bubble or net label by busName (e.g. "IN", "OUT", "GND", "+VCC")
+        const auto targetSheet = preferSheet.isNotEmpty() ? preferSheet : currentSheet;
+        for (int i = 0; i < (int)instances.size(); ++i)
+        {
+            if (targetSheet.isNotEmpty() && instances[(size_t)i].sheet != targetSheet)
+                continue;
+            if ((instances[(size_t)i].symbolId == "block_port"
+                 || instances[(size_t)i].symbolId == "power_port"
+                 || instances[(size_t)i].symbolId == "net_label")
+                && (instances[(size_t)i].busName.equalsIgnoreCase(label)
+                    || (dot > 0 && instances[(size_t)i].busName.equalsIgnoreCase(refdes))))
+            {
+                node = WireNode::forPin({ i, 0 });
+                return true;
+            }
+        }
+
+        const auto instanceIndex = instanceIndexForRefdes(refdes, targetSheet);
         if (instanceIndex < 0)
         {
             error = "Unknown instance " + refdes + ". Available labels: " + availableNodeSummary();
@@ -7155,6 +7415,20 @@ private:
             {
                 node = WireNode::forPin({ instanceIndex, pin });
                 return true;
+            }
+        }
+
+        // Check block ports if it's a sub_block
+        if (instances[(size_t)instanceIndex].symbolId == "sub_block")
+        {
+            const auto& ports = instances[(size_t)instanceIndex].ports;
+            for (int pin = 0; pin < (int)ports.size(); ++pin)
+            {
+                if (ports[(size_t)pin].name.equalsIgnoreCase(pinName))
+                {
+                    node = WireNode::forPin({ instanceIndex, pin });
+                    return true;
+                }
             }
         }
 
@@ -8315,9 +8589,46 @@ private:
         });
     }
 
+    juce::String currentInstancePath;
+
+    juce::String sheetForInstance(const juce::String& instancePath) const
+    {
+        if (instancePath.isEmpty() || instancePath.equalsIgnoreCase("Main"))
+            return {};
+        const auto dot = instancePath.lastIndexOfChar('.');
+        const auto slash = instancePath.lastIndexOfChar('/');
+        const auto sep = std::max(dot, slash);
+        const auto ref = sep >= 0 ? instancePath.substring(sep + 1).trim() : instancePath.trim();
+        const auto idx = instanceIndexForRefdes(ref);
+        if (idx >= 0 && instances[(size_t)idx].symbolId == "sub_block")
+            return instances[(size_t)idx].childSheet;
+        return {};
+    }
+
+    void openSheetForInstance(const juce::String& sheet, const juce::String& instancePath)
+    {
+        currentInstancePath = instancePath;
+        if (testMode.isActive())
+            testMode.setCurrentInstancePath(currentInstancePath);
+        openSheet(sheet);
+        if (testModeBar != nullptr)
+            testModeBar->updateFromManager();
+    }
+
     void openSheet(const juce::String& sheet)
     {
         currentSheet = sheet;
+        if (sheet.isEmpty() || sheet == "Main")
+            currentInstancePath = {};
+        else if (currentInstancePath.isEmpty())
+        {
+            const auto blk = blockForSheet(sheet);
+            if (blk >= 0)
+                currentInstancePath = instances[(size_t)blk].refdes;
+        }
+        if (testMode.isActive())
+            testMode.setCurrentInstancePath(currentInstancePath);
+
         selectedInstance = -1;
         selectedInstances.clear();
         selectedGroup = -1;
@@ -9234,16 +9545,34 @@ private:
     void drawBreadcrumb(juce::Graphics& g)
     {
         breadcrumbAreas.clear();
-        if (currentSheet.isEmpty())
+        if (currentSheet.isEmpty() && !testMode.isActive())
             return;
         const juce::Font font(13.0f, juce::Font::bold);
         g.setFont(font);
         float x = 12.0f;
-        const float y = 10.0f;
+        const float y = testMode.isActive() ? 92.0f : 10.0f;
+        if (testMode.isActive())
+        {
+            const juce::Rectangle<float> badge { x, y, 115.0f, 22.0f };
+            g.setColour(juce::Colour(0xff3b1d4a));
+            g.fillRoundedRectangle(badge, 5.0f);
+            g.setColour(juce::Colour(0xffe056fd));
+            g.drawRoundedRectangle(badge, 5.0f, 1.2f);
+            g.setFont(juce::Font(10.0f, juce::Font::bold));
+            g.drawText("⚡ TEST FIXTURE", badge, juce::Justification::centred);
+            x = badge.getRight() + 8.0f;
+            g.setFont(font);
+        }
         const auto path = sheetPath();
         for (int i = 0; i < path.size(); ++i)
         {
-            const auto label = sheetName(path[i]);
+            auto label = sheetName(path[i]);
+            if (path[i].isNotEmpty())
+            {
+                const auto blk = blockForSheet(path[i]);
+                if (blk >= 0)
+                    label = instances[(size_t)blk].refdes + " (" + instances[(size_t)blk].value + ")";
+            }
             const auto w = font.getStringWidthFloat(label) + 16.0f;
             const juce::Rectangle<float> r { x, y, w, 22.0f };
             const auto last = i == path.size() - 1;
@@ -9391,10 +9720,12 @@ public:
 
     // `ohmmeter` >= 0 builds the resistance-measurement circuit for that
     // multimeter: independent sources off, a 1 mA test current into HI.
-    SimNetlist buildSimNetlist(int ohmmeter = -1) const
+    SimNetlist buildSimNetlist(int ohmmeter = -1,
+                               const std::set<int>& brokenWireIndices = {},
+                               const std::set<int>& isolatedPinOrdinals = {}) const
     {
         SimNetlist sim;
-        const auto netNames = computeNetNames();
+        const auto netNames = computeNetNames(brokenWireIndices, isolatedPinOrdinals);
         std::vector<std::pair<std::string, std::string>> paramDefs;
         for (const auto& p : circuitParameters)
             paramDefs.push_back({ p.name.toStdString(), p.expression.toStdString() });
@@ -10109,12 +10440,15 @@ public:
 
 private:
     // Pin label (R1.2, SCOPE1.CH1) -> solver node, or -1.
-    int simNodeForLabel(const SimNetlist& sim, const juce::String& label, juce::String& error) const
+    int simNodeForLabel(const SimNetlist& sim, const juce::String& label, juce::String& error,
+                        const std::set<int>& brokenWireIndices = {},
+                        const std::set<int>& isolatedPinOrdinals = {},
+                        const juce::String& preferSheet = {}) const
     {
         WireNode n;
-        if (!nodeFromLabel(label, n, error))
+        if (!nodeFromLabel(label, n, error, preferSheet))
             return -1;
-        const auto net = netForNode(n, computeNetNames());
+        const auto net = netForNode(n, computeNetNames(brokenWireIndices, isolatedPinOrdinals));
         if (net == "0")
             return 0;
         const auto found = sim.nodeOfNet.find(net);
@@ -12200,7 +12534,57 @@ public:
             return toolFailure("test_setup_run", err);
         }
 
-        auto sim = buildSimNetlist();
+        // 1. Collect connection breaks
+        std::set<int> brokenWireIndices;
+        std::set<int> isolatedPinOrdinals;
+
+        for (const auto& b : setup->connectionBreaks)
+        {
+            if (b.wireIndex >= 0 && b.wireIndex < (int)wires.size())
+                brokenWireIndices.insert(b.wireIndex);
+
+            const auto sheet = sheetForInstance(b.instancePath);
+
+            if (b.pin.isNotEmpty())
+            {
+                WireNode pn;
+                juce::String perr;
+                if (nodeFromLabel(b.pin, pn, perr, sheet))
+                {
+                    const auto ord = nodeOrdinal(pn);
+                    if (ord >= 0) isolatedPinOrdinals.insert(ord);
+                }
+            }
+
+            if (b.nodeA.isNotEmpty() && b.nodeB.isNotEmpty())
+            {
+                WireNode na, nb;
+                juce::String errA, errB;
+                if (nodeFromLabel(b.nodeA, na, errA, sheet) && nodeFromLabel(b.nodeB, nb, errB, sheet))
+                {
+                    bool foundWire = false;
+                    for (int w = 0; w < (int)wires.size(); ++w)
+                    {
+                        if ((sameNode(wires[(size_t)w].a, na) && sameNode(wires[(size_t)w].b, nb))
+                            || (sameNode(wires[(size_t)w].a, nb) && sameNode(wires[(size_t)w].b, na)))
+                        {
+                            brokenWireIndices.insert(w);
+                            foundWire = true;
+                            break;
+                        }
+                    }
+                    if (!foundWire)
+                    {
+                        const auto ordA = nodeOrdinal(na);
+                        const auto ordB = nodeOrdinal(nb);
+                        if (ordA >= 0) isolatedPinOrdinals.insert(ordA);
+                        if (ordB >= 0) isolatedPinOrdinals.insert(ordB);
+                    }
+                }
+            }
+        }
+
+        auto sim = buildSimNetlist(-1, brokenWireIndices, isolatedPinOrdinals);
         if (sim.error.isNotEmpty())
         {
             const juce::String err = "Circuit build error: " + sim.error;
@@ -12208,13 +12592,51 @@ public:
             return toolFailure("test_setup_run", err);
         }
 
+        // Check if an active sub-fixture has stimulus enabled
+        const test_mode::SubFixture* activeSf = nullptr;
+        for (const auto& sf : setup->subFixtures)
+        {
+            if (sf.stimulusEnabled && sf.inputNode.isNotEmpty())
+            {
+                activeSf = &sf;
+                break;
+            }
+        }
+
         audio_test::Request request;
         request.circuit = sim.circuit; // Private copy for test simulation
-        request.inputPeakVolts = setup->inputPeakVolts;
+        request.inputPeakVolts = activeSf != nullptr ? activeSf->inputPeakVolts : setup->inputPeakVolts;
         request.sampleRate = 48000.0;
 
         // Resolve input
-        if (setup->inputMode == "replace")
+        if (activeSf != nullptr)
+        {
+            juce::String resolveErr;
+            const auto sheet = sheetForInstance(activeSf->instancePath);
+            circuit_sim::Node inNode = simNodeForLabel(sim, activeSf->inputNode, resolveErr, brokenWireIndices, isolatedPinOrdinals, sheet);
+            if (inNode < 0)
+            {
+                const auto netIt = sim.nodeOfNet.find(activeSf->inputNode);
+                if (netIt != sim.nodeOfNet.end())
+                    inNode = netIt->second;
+                else
+                {
+                    const juce::String err = "Cannot resolve sub-fixture virtual input node '" + activeSf->inputNode + "': " + resolveErr;
+                    if (outError != nullptr) *outError = err;
+                    return toolFailure("test_setup_run", err);
+                }
+            }
+
+            const auto conflict = audio_test::checkVirtualInput(sim.circuit, inNode);
+            if (!conflict.empty())
+            {
+                const juce::String err = "Virtual input conflict: " + juce::String(conflict);
+                if (outError != nullptr) *outError = err;
+                return toolFailure("test_setup_run", err);
+            }
+            request.virtualInputNode = inNode;
+        }
+        else if (setup->inputMode == "replace")
         {
             const auto it = sim.elementOfPart.find(setup->inputRefdes);
             if (it == sim.elementOfPart.end())
@@ -12246,7 +12668,7 @@ public:
         else // virtual mode
         {
             juce::String resolveErr;
-            circuit_sim::Node inNode = simNodeForLabel(sim, setup->inputNode, resolveErr);
+            circuit_sim::Node inNode = simNodeForLabel(sim, setup->inputNode, resolveErr, brokenWireIndices, isolatedPinOrdinals);
             if (inNode < 0)
             {
                 const auto netIt = sim.nodeOfNet.find(setup->inputNode);
@@ -12274,12 +12696,15 @@ public:
         {
             juce::String outErr;
             circuit_sim::Node outNode = -1;
-            if (setup->outputNode.isNotEmpty())
+            const juce::String targetOut = (activeSf != nullptr && activeSf->outputNode.isNotEmpty()) ? activeSf->outputNode : setup->outputNode;
+            const auto targetSheet = activeSf != nullptr ? sheetForInstance(activeSf->instancePath) : juce::String();
+
+            if (targetOut.isNotEmpty())
             {
-                outNode = simNodeForLabel(sim, setup->outputNode, outErr);
+                outNode = simNodeForLabel(sim, targetOut, outErr, brokenWireIndices, isolatedPinOrdinals, targetSheet);
                 if (outNode < 0)
                 {
-                    const auto netIt = sim.nodeOfNet.find(setup->outputNode);
+                    const auto netIt = sim.nodeOfNet.find(targetOut);
                     if (netIt != sim.nodeOfNet.end())
                         outNode = netIt->second;
                 }
@@ -12290,7 +12715,7 @@ public:
                     outNode = sim.audioOutputNode;
                 else
                 {
-                    const juce::String err = "Cannot resolve output node '" + setup->outputNode + "': " + outErr;
+                    const juce::String err = "Cannot resolve output node '" + targetOut + "': " + outErr;
                     if (outError != nullptr) *outError = err;
                     return toolFailure("test_setup_run", err);
                 }
@@ -12298,28 +12723,53 @@ public:
             request.outputNode = outNode;
         }
 
-        // Resolve probes
+        // Resolve probes (top-level and sub-fixture probes)
+        std::set<juce::String> seenProbes;
         for (const auto& probeLabel : setup->probeNodes)
         {
-            juce::String pErr;
-            circuit_sim::Node pNode = simNodeForLabel(sim, probeLabel, pErr);
-            if (pNode < 0)
+            if (seenProbes.insert(probeLabel).second)
             {
-                const auto netIt = sim.nodeOfNet.find(probeLabel);
-                if (netIt != sim.nodeOfNet.end())
-                    pNode = netIt->second;
+                juce::String pErr;
+                circuit_sim::Node pNode = simNodeForLabel(sim, probeLabel, pErr, brokenWireIndices, isolatedPinOrdinals);
+                if (pNode < 0)
+                {
+                    const auto netIt = sim.nodeOfNet.find(probeLabel);
+                    if (netIt != sim.nodeOfNet.end())
+                        pNode = netIt->second;
+                }
+                if (pNode >= 0)
+                    request.probes.push_back({ probeLabel.toStdString(), pNode });
             }
-            if (pNode >= 0)
-                request.probes.push_back({ probeLabel.toStdString(), pNode });
         }
 
-        // Load or generate stimulus
-        if (setup->stimulusType == "file")
+        for (const auto& sf : setup->subFixtures)
         {
-            juce::File audioFile(setup->audioFilePath);
+            const auto sheet = sheetForInstance(sf.instancePath);
+            for (const auto& p : sf.probeNodes)
+            {
+                auto fullLabel = sf.instancePath.isNotEmpty() ? (sf.instancePath + "." + p) : p;
+                if (seenProbes.insert(fullLabel).second)
+                {
+                    juce::String pErr;
+                    circuit_sim::Node pNode = simNodeForLabel(sim, p, pErr, brokenWireIndices, isolatedPinOrdinals, sheet);
+                    if (pNode >= 0)
+                        request.probes.push_back({ fullLabel.toStdString(), pNode });
+                }
+            }
+        }
+
+        const juce::String stimType = activeSf != nullptr ? activeSf->stimulusType : setup->stimulusType;
+        const double sineFreq = activeSf != nullptr ? activeSf->sineFrequencyHz : setup->sineFrequencyHz;
+        const double sineDur = activeSf != nullptr ? activeSf->sineDurationSec : setup->sineDurationSec;
+        const juce::String audioPath = activeSf != nullptr ? activeSf->audioFilePath : setup->audioFilePath;
+
+        // Load or generate stimulus
+        if (stimType == "file")
+        {
+            juce::File audioFile(audioPath);
             if (!audioFile.existsAsFile())
             {
-                auto candidate = juce::File::getCurrentWorkingDirectory().getChildFile(setup->audioFilePath);
+                auto candidate = juce::File::getCurrentWorkingDirectory().getChildFile(audioPath);
                 if (candidate.existsAsFile())
                     audioFile = candidate;
                 else
@@ -12332,7 +12782,7 @@ public:
 
             if (!audioFile.existsAsFile())
             {
-                const juce::String err = "Audio test file not found: " + setup->audioFilePath;
+                const juce::String err = "Audio test file not found: " + audioPath;
                 if (outError != nullptr) *outError = err;
                 return toolFailure("test_setup_run", err);
             }
@@ -12367,9 +12817,9 @@ public:
         else // sine wave
         {
             request.sampleRate = 48000.0;
-            const int numSamples = std::max(480, (int)std::round(setup->sineDurationSec * 48000.0));
+            const int numSamples = std::max(480, (int)std::round(sineDur * 48000.0));
             request.samples.resize((size_t)numSamples);
-            const double freq = setup->sineFrequencyHz > 0.0 ? setup->sineFrequencyHz : 1000.0;
+            const double freq = sineFreq > 0.0 ? sineFreq : 1000.0;
             const double omega = 2.0 * juce::MathConstants<double>::pi * freq;
             for (int s = 0; s < numSamples; ++s)
             {
@@ -12643,6 +13093,172 @@ public:
                 return toolFailure(name, "Missing required parameter 'path'.");
             juce::String err;
             return exportRenderedAudio(s, destPath, &err);
+        }
+        if (name == "test_fixture_navigate")
+        {
+            const auto target = arg("path");
+            if (target.isEmpty() || target.equalsIgnoreCase("main") || target.equalsIgnoreCase("top") || target.equalsIgnoreCase("root"))
+            {
+                openSheetForInstance({}, {});
+            }
+            else if (target.equalsIgnoreCase("up"))
+            {
+                const auto block = blockForSheet(currentSheet);
+                openSheetForInstance(block >= 0 ? instances[(size_t)block].sheet : juce::String(), {});
+            }
+            else
+            {
+                const auto block = blockIndexFor(target);
+                if (block < 0)
+                    return toolFailure(name, "No sub-diagram instance '" + target + "'. Use an instance refdes (e.g. 'A1', 'A2'), 'up', or 'main'.");
+                openSheetForInstance(instances[(size_t)block].childSheet, instances[(size_t)block].refdes);
+            }
+
+            juce::StringArray names;
+            for (const auto& s : sheetPath())
+                names.add(quote(sheetName(s)));
+
+            juce::String json;
+            json << "{\n  \"ok\": true,\n  \"viewedInstance\": " << quote(currentInstancePath)
+                 << ",\n  \"viewedSheet\": " << quote(sheetName(currentSheet))
+                 << ",\n  \"path\": [" << names.joinIntoString(", ") << "]\n}";
+            return json;
+        }
+        if (name == "test_fixture_get_hierarchy")
+        {
+            juce::String json;
+            json << "{\n  \"ok\": true,\n  \"currentInstance\": " << quote(currentInstancePath)
+                 << ",\n  \"currentSheet\": " << quote(sheetName(currentSheet))
+                 << ",\n  \"subdiagramInstances\": [\n";
+            bool firstInst = true;
+            for (size_t i = 0; i < instances.size(); ++i)
+            {
+                if (instances[i].symbolId != "sub_block")
+                    continue;
+                if (!firstInst) json << ",\n";
+                firstInst = false;
+                json << "    {\n";
+                json << "      \"refdes\": " << quote(instances[i].refdes) << ",\n";
+                json << "      \"name\": " << quote(instances[i].value) << ",\n";
+                json << "      \"sheet\": " << quote(sheetName(instances[i].sheet)) << ",\n";
+                json << "      \"childSheet\": " << quote(sheetName(instances[i].childSheet)) << ",\n";
+                json << "      \"ports\": [";
+                for (size_t p = 0; p < instances[i].ports.size(); ++p)
+                {
+                    if (p != 0) json << ", ";
+                    json << quote(instances[i].ports[p].name);
+                }
+                json << "]\n    }";
+            }
+            json << "\n  ],\n  \"connectionBreaks\": [\n";
+            if (const auto* s = testMode.getActiveSetup())
+            {
+                for (size_t b = 0; b < s->connectionBreaks.size(); ++b)
+                {
+                    if (b != 0) json << ",\n";
+                    json << "    " << juce::JSON::toString(s->connectionBreaks[b].toVar(), false);
+                }
+            }
+            json << "\n  ]\n}";
+            return json;
+        }
+        if (name == "test_fixture_break_connection")
+        {
+            const auto setupName = arg("setup");
+            auto* s = setupName.isNotEmpty() ? nullptr : testMode.getActiveSetup();
+            if (setupName.isNotEmpty())
+            {
+                for (auto& candidate : testMode.getSetups())
+                    if (candidate.name == setupName) { s = &candidate; break; }
+            }
+            if (s == nullptr)
+                return toolFailure(name, "No active test setup.");
+
+            test_mode::HierarchicalBreak b;
+            b.instancePath = arg("instancePath");
+            if (b.instancePath.isEmpty())
+                b.instancePath = currentInstancePath;
+            b.nodeA = arg("nodeA");
+            b.nodeB = arg("nodeB");
+            b.pin = arg("pin");
+            b.wireIndex = args.hasProperty("wireIndex") ? (int)args["wireIndex"] : -1;
+
+            if (b.nodeA.isEmpty() && b.nodeB.isEmpty() && b.pin.isEmpty() && b.wireIndex < 0)
+                return toolFailure(name, "Must specify 'nodeA' and 'nodeB', or 'pin', or 'wireIndex' to break.");
+
+            s->addConnectionBreak(b);
+            repaint();
+            if (testModeBar != nullptr) testModeBar->updateFromManager();
+            return "{ \"ok\": true, \"break\": " + juce::JSON::toString(b.toVar(), false) + " }";
+        }
+        if (name == "test_fixture_restore_connection")
+        {
+            const auto setupName = arg("setup");
+            auto* s = setupName.isNotEmpty() ? nullptr : testMode.getActiveSetup();
+            if (setupName.isNotEmpty())
+            {
+                for (auto& candidate : testMode.getSetups())
+                    if (candidate.name == setupName) { s = &candidate; break; }
+            }
+            if (s == nullptr)
+                return toolFailure(name, "No active test setup.");
+
+            const bool restoreAll = args.hasProperty("all") ? (bool)args["all"] : false;
+            const auto instPath = arg("instancePath");
+            if (restoreAll)
+            {
+                s->clearBreaks(instPath);
+            }
+            else if (arg("pin").isNotEmpty())
+            {
+                s->removePinBreak(instPath, arg("pin"));
+            }
+            else if (arg("nodeA").isNotEmpty() && arg("nodeB").isNotEmpty())
+            {
+                s->removeConnectionBreak(instPath, arg("nodeA"), arg("nodeB"));
+            }
+            else
+            {
+                s->clearBreaks();
+            }
+
+            repaint();
+            if (testModeBar != nullptr) testModeBar->updateFromManager();
+            return "{ \"ok\": true, \"remainingBreaks\": " + juce::String((int)s->connectionBreaks.size()) + " }";
+        }
+        if (name == "test_fixture_set_subfixture")
+        {
+            const auto instPath = arg("instancePath");
+            if (instPath.isEmpty())
+                return toolFailure(name, "Missing required parameter 'instancePath'.");
+
+            const auto setupName = arg("setup");
+            auto* s = setupName.isNotEmpty() ? nullptr : testMode.getActiveSetup();
+            if (setupName.isNotEmpty())
+            {
+                for (auto& candidate : testMode.getSetups())
+                    if (candidate.name == setupName) { s = &candidate; break; }
+            }
+            if (s == nullptr)
+                return toolFailure(name, "No active test setup.");
+
+            auto* sf = s->getSubFixture(instPath, true);
+            if (args.hasProperty("stimulusEnabled")) sf->stimulusEnabled = (bool)args["stimulusEnabled"];
+            if (args.hasProperty("inputNode")) sf->inputNode = args["inputNode"].toString();
+            if (args.hasProperty("inputPeakVolts")) sf->inputPeakVolts = (double)args["inputPeakVolts"];
+            if (args.hasProperty("stimulusType")) sf->stimulusType = args["stimulusType"].toString();
+            if (args.hasProperty("sineFrequencyHz")) sf->sineFrequencyHz = (double)args["sineFrequencyHz"];
+            if (args.hasProperty("outputNode")) sf->outputNode = args["outputNode"].toString();
+            if (args.hasProperty("probeNodes"))
+            {
+                sf->probeNodes.clear();
+                if (const auto* arr = args["probeNodes"].getArray())
+                    for (const auto& item : *arr) sf->probeNodes.add(item.toString());
+            }
+
+            repaint();
+            if (testModeBar != nullptr) testModeBar->updateFromManager();
+            return "{ \"ok\": true, \"subFixture\": " + juce::JSON::toString(sf->toVar(), false) + " }";
         }
         if (name == "preferences_list")
         {

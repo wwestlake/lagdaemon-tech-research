@@ -9,6 +9,97 @@
 namespace test_mode
 {
 
+struct HierarchicalBreak
+{
+    juce::String instancePath; // e.g. "" for top-level, "A1", "A2", "A1/SUB"
+    juce::String nodeA;        // Node label A, e.g. "A1.OUT", or "IN"
+    juce::String nodeB;        // Node label B, e.g. "A2.IN", or "R1.1"
+    juce::String pin;          // Optional isolated pin label, e.g. "A2.IN"
+    int wireIndex = -1;        // Optional wire index if explicitly known
+
+    juce::var toVar() const
+    {
+        auto* obj = new juce::DynamicObject();
+        obj->setProperty("instancePath", instancePath);
+        if (nodeA.isNotEmpty()) obj->setProperty("nodeA", nodeA);
+        if (nodeB.isNotEmpty()) obj->setProperty("nodeB", nodeB);
+        if (pin.isNotEmpty())   obj->setProperty("pin", pin);
+        if (wireIndex >= 0)     obj->setProperty("wireIndex", wireIndex);
+        return juce::var(obj);
+    }
+
+    static HierarchicalBreak fromVar(const juce::var& v)
+    {
+        HierarchicalBreak b;
+        if (v.isObject())
+        {
+            b.instancePath = v.getProperty("instancePath", {}).toString();
+            b.nodeA = v.getProperty("nodeA", {}).toString();
+            b.nodeB = v.getProperty("nodeB", {}).toString();
+            b.pin = v.getProperty("pin", {}).toString();
+            b.wireIndex = (int)v.getProperty("wireIndex", -1);
+        }
+        return b;
+    }
+};
+
+struct SubFixture
+{
+    juce::String instancePath;          // e.g. "A1", "A2"
+    bool stimulusEnabled = false;       // If true, this sub-fixture injects its own stimulus
+    juce::String inputNode;             // Node inside this sub-fixture, e.g. "IN" or "V1.G"
+    double inputPeakVolts = 0.1;        // Peak volts for stimulus
+    juce::String stimulusType = "sine"; // "sine" or "file"
+    juce::String audioFilePath;
+    double sineFrequencyHz = 1000.0;
+    double sineDurationSec = 0.05;
+
+    juce::String outputNode;            // Local observation node, e.g. "OUT"
+    juce::StringArray probeNodes;       // Probes inside this sub-fixture (e.g. ["V1.P", "V1.K"])
+
+    juce::var toVar() const
+    {
+        auto* obj = new juce::DynamicObject();
+        obj->setProperty("instancePath", instancePath);
+        obj->setProperty("stimulusEnabled", stimulusEnabled);
+        obj->setProperty("inputNode", inputNode);
+        obj->setProperty("inputPeakVolts", inputPeakVolts);
+        obj->setProperty("stimulusType", stimulusType);
+        obj->setProperty("audioFilePath", audioFilePath);
+        obj->setProperty("sineFrequencyHz", sineFrequencyHz);
+        obj->setProperty("sineDurationSec", sineDurationSec);
+        obj->setProperty("outputNode", outputNode);
+
+        juce::Array<juce::var> pArr;
+        for (const auto& p : probeNodes)
+            pArr.add(p);
+        obj->setProperty("probeNodes", pArr);
+        return juce::var(obj);
+    }
+
+    static SubFixture fromVar(const juce::var& v)
+    {
+        SubFixture sf;
+        if (!v.isObject()) return sf;
+        sf.instancePath = v.getProperty("instancePath", {}).toString();
+        sf.stimulusEnabled = (bool)v.getProperty("stimulusEnabled", false);
+        sf.inputNode = v.getProperty("inputNode", {}).toString();
+        sf.inputPeakVolts = (double)v.getProperty("inputPeakVolts", 0.1);
+        sf.stimulusType = v.getProperty("stimulusType", "sine").toString();
+        sf.audioFilePath = v.getProperty("audioFilePath", {}).toString();
+        sf.sineFrequencyHz = (double)v.getProperty("sineFrequencyHz", 1000.0);
+        sf.sineDurationSec = (double)v.getProperty("sineDurationSec", 0.05);
+        sf.outputNode = v.getProperty("outputNode", {}).toString();
+
+        if (const auto* arr = v.getProperty("probeNodes", {}).getArray())
+        {
+            for (const auto& item : *arr)
+                sf.probeNodes.add(item.toString());
+        }
+        return sf;
+    }
+};
+
 struct TestSetup
 {
     juce::String name;
@@ -23,6 +114,10 @@ struct TestSetup
     juce::String outputNode = "OUT";         // Node or pin to measure output
     juce::StringArray probeNodes;            // Extra voltage probes (e.g. ["V1.P", "V1.K"])
 
+    // Hierarchical test extensions
+    std::vector<HierarchicalBreak> connectionBreaks; // Virtual connection cuts
+    std::vector<SubFixture> subFixtures;             // Per-instance sub-fixtures
+
     // Last test result cache
     bool hasResult = false;
     double lastInputPeak = 0.0;
@@ -34,6 +129,96 @@ struct TestSetup
     juce::String lastSummary;
     std::vector<float> lastRenderedOutput;
     double lastSampleRate = 48000.0;
+
+    SubFixture* getSubFixture(const juce::String& instancePath, bool createIfNotFound = true)
+    {
+        for (auto& sf : subFixtures)
+            if (sf.instancePath.equalsIgnoreCase(instancePath))
+                return &sf;
+
+        if (createIfNotFound && instancePath.isNotEmpty())
+        {
+            SubFixture sf;
+            sf.instancePath = instancePath;
+            subFixtures.push_back(std::move(sf));
+            return &subFixtures.back();
+        }
+        return nullptr;
+    }
+
+    const SubFixture* getSubFixture(const juce::String& instancePath) const
+    {
+        for (const auto& sf : subFixtures)
+            if (sf.instancePath.equalsIgnoreCase(instancePath))
+                return &sf;
+        return nullptr;
+    }
+
+    bool addConnectionBreak(const HierarchicalBreak& b)
+    {
+        for (const auto& existing : connectionBreaks)
+        {
+            if (existing.instancePath == b.instancePath)
+            {
+                if (b.wireIndex >= 0 && existing.wireIndex == b.wireIndex)
+                    return false;
+                if (b.pin.isNotEmpty() && existing.pin.equalsIgnoreCase(b.pin))
+                    return false;
+                if (b.nodeA.isNotEmpty() && b.nodeB.isNotEmpty()
+                    && ((existing.nodeA.equalsIgnoreCase(b.nodeA) && existing.nodeB.equalsIgnoreCase(b.nodeB))
+                        || (existing.nodeA.equalsIgnoreCase(b.nodeB) && existing.nodeB.equalsIgnoreCase(b.nodeA))))
+                    return false;
+            }
+        }
+        connectionBreaks.push_back(b);
+        return true;
+    }
+
+    bool removeConnectionBreak(const juce::String& instancePath, const juce::String& nodeA, const juce::String& nodeB)
+    {
+        for (auto it = connectionBreaks.begin(); it != connectionBreaks.end(); ++it)
+        {
+            if (instancePath.isEmpty() || it->instancePath.equalsIgnoreCase(instancePath))
+            {
+                if ((it->nodeA.equalsIgnoreCase(nodeA) && it->nodeB.equalsIgnoreCase(nodeB))
+                    || (it->nodeA.equalsIgnoreCase(nodeB) && it->nodeB.equalsIgnoreCase(nodeA)))
+                {
+                    connectionBreaks.erase(it);
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    bool removePinBreak(const juce::String& instancePath, const juce::String& pin)
+    {
+        for (auto it = connectionBreaks.begin(); it != connectionBreaks.end(); ++it)
+        {
+            if ((instancePath.isEmpty() || it->instancePath.equalsIgnoreCase(instancePath))
+                && it->pin.equalsIgnoreCase(pin))
+            {
+                connectionBreaks.erase(it);
+                return true;
+            }
+        }
+        return false;
+    }
+
+    void clearBreaks(const juce::String& instancePath = {})
+    {
+        if (instancePath.isEmpty())
+        {
+            connectionBreaks.clear();
+        }
+        else
+        {
+            connectionBreaks.erase(
+                std::remove_if(connectionBreaks.begin(), connectionBreaks.end(),
+                               [&](const HierarchicalBreak& b) { return b.instancePath.equalsIgnoreCase(instancePath); }),
+                connectionBreaks.end());
+        }
+    }
 
     juce::var toVar() const
     {
@@ -53,6 +238,22 @@ struct TestSetup
         for (const auto& p : probeNodes)
             probesArr.add(p);
         obj->setProperty("probeNodes", probesArr);
+
+        if (!connectionBreaks.empty())
+        {
+            juce::Array<juce::var> breaksArr;
+            for (const auto& b : connectionBreaks)
+                breaksArr.add(b.toVar());
+            obj->setProperty("connectionBreaks", breaksArr);
+        }
+
+        if (!subFixtures.empty())
+        {
+            juce::Array<juce::var> sfArr;
+            for (const auto& sf : subFixtures)
+                sfArr.add(sf.toVar());
+            obj->setProperty("subFixtures", sfArr);
+        }
 
         if (hasResult)
         {
@@ -91,6 +292,18 @@ struct TestSetup
         {
             for (const auto& item : *arr)
                 s.probeNodes.add(item.toString());
+        }
+
+        if (const auto* arr = v.getProperty("connectionBreaks", {}).getArray())
+        {
+            for (const auto& item : *arr)
+                s.connectionBreaks.push_back(HierarchicalBreak::fromVar(item));
+        }
+
+        if (const auto* arr = v.getProperty("subFixtures", {}).getArray())
+        {
+            for (const auto& item : *arr)
+                s.subFixtures.push_back(SubFixture::fromVar(item));
         }
 
         if (const auto* res = v.getProperty("lastResult", {}).getDynamicObject())
@@ -283,10 +496,14 @@ public:
             activeSetupIndex = 0;
     }
 
+    const juce::String& getCurrentInstancePath() const { return currentInstancePath; }
+    void setCurrentInstancePath(const juce::String& path) { currentInstancePath = path; }
+
 private:
     bool active = false;
     std::vector<TestSetup> setups;
     int activeSetupIndex = -1;
+    juce::String currentInstancePath; // "" for top level, "A1", "A2", etc.
 };
 
 } // namespace test_mode

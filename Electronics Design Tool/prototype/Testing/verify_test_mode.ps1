@@ -51,6 +51,14 @@ try {
     if (-not $status.ok) { throw "test_mode_status failed: $($status.error)" }
     Write-Host "Initial state: active=$($status.active)" -ForegroundColor Green
 
+    # Ensure single-stage Vacuum Tube Guitar Amp diagram is open
+    $open = Call-Tool "diagram_open" @{ name = "Vacuum Tube Guitar Amp" }
+    if (-not $open.ok) {
+        $projDir = (Resolve-Path "prototype\examples\tube_amplifiers").Path
+        Call-Tool "project_open" @{ project = $projDir } | Out-Null
+        Call-Tool "diagram_open" @{ name = "Vacuum Tube Guitar Amp" } | Out-Null
+    }
+
     # 4. Enter Test Mode
     Write-Host "`n[3/7] Entering Test Mode..." -ForegroundColor Yellow
     $enter = Call-Tool "test_mode_toggle" @{ active = $true }

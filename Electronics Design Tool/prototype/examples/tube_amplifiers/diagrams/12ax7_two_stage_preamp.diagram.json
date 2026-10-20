@@ -1,0 +1,308 @@
+{
+  "schemaVersion": 2,
+  "kind": "electronics_circuit",
+  "components": [
+    {
+      "id": "VIN",
+      "symbol": "voltage_source",
+      "component": { "archetype": "source.ac_voltage", "family": null, "manufacturerPart": null, "datasheetStatus": "generic" },
+      "x": 96, "y": 288, "rotation": 0, "value": "0.1", "frequency": "1000", "busName": "", "parameters": { "acMagnitude": { "value": "0.1", "unit": "V" } },
+      "pins": { "+": "n1", "-": "0" }
+    },
+    {
+      "id": "VCC",
+      "symbol": "voltage_source",
+      "component": { "archetype": "source.dc_voltage", "family": null, "manufacturerPart": null, "datasheetStatus": "generic" },
+      "x": 96, "y": 144, "rotation": 0, "value": "250", "frequency": "", "busName": "", "parameters": { "dcVoltage": { "value": "250", "unit": "V" } },
+      "pins": { "+": "n_vcc", "-": "0" }
+    },
+    {
+      "id": "GND1",
+      "symbol": "ground",
+      "component": { "archetype": "net.ground", "family": null, "manufacturerPart": null, "datasheetStatus": "generic" },
+      "x": 96, "y": 384, "rotation": 0, "value": "0", "frequency": "", "busName": "", "parameters": {},
+      "pins": { "0": "0" }
+    },
+    {
+      "id": "A1",
+      "symbol": "sub_block",
+      "component": { "archetype": "assembly.sub_block", "family": null, "manufacturerPart": null, "datasheetStatus": "generic" },
+      "x": 288, "y": 288, "rotation": 0, "value": "12AX7 Gain Stage", "frequency": "", "busName": "",
+      "childSheet": "S1",
+      "ports": [
+        { "name": "IN", "side": "left", "id": "P1" },
+        { "name": "OUT", "side": "right", "id": "P2" },
+        { "name": "VCC", "side": "top", "id": "P3" },
+        { "name": "GND", "side": "bottom", "id": "P4" }
+      ],
+      "parameters": {},
+      "pins": { "IN": "n1", "OUT": "n_mid", "VCC": "n_vcc", "GND": "0" }
+    },
+    {
+      "id": "A2",
+      "symbol": "sub_block",
+      "component": { "archetype": "assembly.sub_block", "family": null, "manufacturerPart": null, "datasheetStatus": "generic" },
+      "x": 576, "y": 288, "rotation": 0, "value": "12AX7 Gain Stage", "frequency": "", "busName": "",
+      "childSheet": "S2",
+      "ports": [
+        { "name": "IN", "side": "left", "id": "P1" },
+        { "name": "OUT", "side": "right", "id": "P2" },
+        { "name": "VCC", "side": "top", "id": "P3" },
+        { "name": "GND", "side": "bottom", "id": "P4" }
+      ],
+      "parameters": {},
+      "pins": { "IN": "n_mid", "OUT": "n_out", "VCC": "n_vcc", "GND": "0" }
+    },
+    {
+      "id": "R_LOAD",
+      "symbol": "resistor",
+      "component": { "archetype": "passive.resistor", "family": null, "manufacturerPart": null, "datasheetStatus": "generic" },
+      "x": 768, "y": 336, "rotation": 90, "value": "1M", "frequency": "", "busName": "", "parameters": { "resistance": { "value": "1M", "unit": "ohm" } },
+      "pins": { "1": "n_out", "2": "0" }
+    },
+    {
+      "id": "GND2",
+      "symbol": "ground",
+      "component": { "archetype": "net.ground", "family": null, "manufacturerPart": null, "datasheetStatus": "generic" },
+      "x": 768, "y": 432, "rotation": 0, "value": "0", "frequency": "", "busName": "", "parameters": {},
+      "pins": { "0": "0" }
+    },
+
+    {
+      "id": "P1_S1",
+      "symbol": "block_port",
+      "sheet": "S1",
+      "component": { "archetype": "assembly.port", "family": null, "manufacturerPart": null, "datasheetStatus": "generic" },
+      "x": 96, "y": 288, "rotation": 0, "value": "", "frequency": "", "busName": "IN", "parameters": {},
+      "pins": { "1": "n1" }
+    },
+    {
+      "id": "P2_S1",
+      "symbol": "block_port",
+      "sheet": "S1",
+      "component": { "archetype": "assembly.port", "family": null, "manufacturerPart": null, "datasheetStatus": "generic" },
+      "x": 720, "y": 288, "rotation": 0, "value": "", "frequency": "", "busName": "OUT", "parameters": {},
+      "pins": { "1": "n_mid" }
+    },
+    {
+      "id": "P3_S1",
+      "symbol": "block_port",
+      "sheet": "S1",
+      "component": { "archetype": "assembly.port", "family": null, "manufacturerPart": null, "datasheetStatus": "generic" },
+      "x": 480, "y": 96, "rotation": 0, "value": "", "frequency": "", "busName": "VCC", "parameters": {},
+      "pins": { "1": "n_vcc" }
+    },
+    {
+      "id": "P4_S1",
+      "symbol": "block_port",
+      "sheet": "S1",
+      "component": { "archetype": "assembly.port", "family": null, "manufacturerPart": null, "datasheetStatus": "generic" },
+      "x": 480, "y": 576, "rotation": 0, "value": "", "frequency": "", "busName": "GND", "parameters": {},
+      "pins": { "1": "0" }
+    },
+    {
+      "id": "C_IN_S1",
+      "symbol": "capacitor",
+      "sheet": "S1",
+      "component": { "archetype": "passive.capacitor", "family": null, "manufacturerPart": null, "datasheetStatus": "generic" },
+      "x": 192, "y": 288, "rotation": 0, "value": "22n", "frequency": "", "busName": "", "parameters": { "capacitance": { "value": "22n", "unit": "F" } },
+      "pins": { "1": "n1", "2": "s1_grid_node" }
+    },
+    {
+      "id": "R_LEAK_S1",
+      "symbol": "resistor",
+      "sheet": "S1",
+      "component": { "archetype": "passive.resistor", "family": null, "manufacturerPart": null, "datasheetStatus": "generic" },
+      "x": 264, "y": 384, "rotation": 90, "value": "1M", "frequency": "", "busName": "", "parameters": { "resistance": { "value": "1M", "unit": "ohm" } },
+      "pins": { "1": "s1_grid_node", "2": "0" }
+    },
+    {
+      "id": "R_GRID_S1",
+      "symbol": "resistor",
+      "sheet": "S1",
+      "component": { "archetype": "passive.resistor", "family": null, "manufacturerPart": null, "datasheetStatus": "generic" },
+      "x": 360, "y": 288, "rotation": 0, "value": "68k", "frequency": "", "busName": "", "parameters": { "resistance": { "value": "68k", "unit": "ohm" } },
+      "pins": { "1": "s1_grid_node", "2": "s1_g" }
+    },
+    {
+      "id": "V1_S1",
+      "symbol": "tube_12ax7",
+      "sheet": "S1",
+      "component": { "archetype": "active.tube.triode", "family": "12AX7", "manufacturerPart": null, "datasheetStatus": "generic" },
+      "x": 480, "y": 288, "rotation": 0, "value": "12AX7", "frequency": "", "busName": "", "parameters": {},
+      "pins": { "G": "s1_g", "P": "s1_p", "K": "s1_k" }
+    },
+    {
+      "id": "R_ANODE_S1",
+      "symbol": "resistor",
+      "sheet": "S1",
+      "component": { "archetype": "passive.resistor", "family": null, "manufacturerPart": null, "datasheetStatus": "generic" },
+      "x": 480, "y": 192, "rotation": 90, "value": "100k", "frequency": "", "busName": "", "parameters": { "resistance": { "value": "100k", "unit": "ohm" } },
+      "pins": { "1": "n_vcc", "2": "s1_p" }
+    },
+    {
+      "id": "C_OUT_S1",
+      "symbol": "capacitor",
+      "sheet": "S1",
+      "component": { "archetype": "passive.capacitor", "family": null, "manufacturerPart": null, "datasheetStatus": "generic" },
+      "x": 600, "y": 288, "rotation": 0, "value": "22n", "frequency": "", "busName": "", "parameters": { "capacitance": { "value": "22n", "unit": "F" } },
+      "pins": { "1": "s1_p", "2": "n_mid" }
+    },
+    {
+      "id": "R_K_S1",
+      "symbol": "resistor",
+      "sheet": "S1",
+      "component": { "archetype": "passive.resistor", "family": null, "manufacturerPart": null, "datasheetStatus": "generic" },
+      "x": 444, "y": 432, "rotation": 90, "value": "1.5k", "frequency": "", "busName": "", "parameters": { "resistance": { "value": "1.5k", "unit": "ohm" } },
+      "pins": { "1": "s1_k", "2": "0" }
+    },
+    {
+      "id": "C_K_S1",
+      "symbol": "capacitor",
+      "sheet": "S1",
+      "component": { "archetype": "passive.capacitor", "family": null, "manufacturerPart": null, "datasheetStatus": "generic" },
+      "x": 516, "y": 432, "rotation": 90, "value": "22u", "frequency": "", "busName": "", "parameters": { "capacitance": { "value": "22u", "unit": "F" } },
+      "pins": { "1": "s1_k", "2": "0" }
+    },
+
+    {
+      "id": "P1_S2",
+      "symbol": "block_port",
+      "sheet": "S2",
+      "component": { "archetype": "assembly.port", "family": null, "manufacturerPart": null, "datasheetStatus": "generic" },
+      "x": 96, "y": 288, "rotation": 0, "value": "", "frequency": "", "busName": "IN", "parameters": {},
+      "pins": { "1": "n_mid" }
+    },
+    {
+      "id": "P2_S2",
+      "symbol": "block_port",
+      "sheet": "S2",
+      "component": { "archetype": "assembly.port", "family": null, "manufacturerPart": null, "datasheetStatus": "generic" },
+      "x": 720, "y": 288, "rotation": 0, "value": "", "frequency": "", "busName": "OUT", "parameters": {},
+      "pins": { "1": "n_out" }
+    },
+    {
+      "id": "P3_S2",
+      "symbol": "block_port",
+      "sheet": "S2",
+      "component": { "archetype": "assembly.port", "family": null, "manufacturerPart": null, "datasheetStatus": "generic" },
+      "x": 480, "y": 96, "rotation": 0, "value": "", "frequency": "", "busName": "VCC", "parameters": {},
+      "pins": { "1": "n_vcc" }
+    },
+    {
+      "id": "P4_S2",
+      "symbol": "block_port",
+      "sheet": "S2",
+      "component": { "archetype": "assembly.port", "family": null, "manufacturerPart": null, "datasheetStatus": "generic" },
+      "x": 480, "y": 576, "rotation": 0, "value": "", "frequency": "", "busName": "GND", "parameters": {},
+      "pins": { "1": "0" }
+    },
+    {
+      "id": "C_IN_S2",
+      "symbol": "capacitor",
+      "sheet": "S2",
+      "component": { "archetype": "passive.capacitor", "family": null, "manufacturerPart": null, "datasheetStatus": "generic" },
+      "x": 192, "y": 288, "rotation": 0, "value": "22n", "frequency": "", "busName": "", "parameters": { "capacitance": { "value": "22n", "unit": "F" } },
+      "pins": { "1": "n_mid", "2": "s2_grid_node" }
+    },
+    {
+      "id": "R_LEAK_S2",
+      "symbol": "resistor",
+      "sheet": "S2",
+      "component": { "archetype": "passive.resistor", "family": null, "manufacturerPart": null, "datasheetStatus": "generic" },
+      "x": 264, "y": 384, "rotation": 90, "value": "1M", "frequency": "", "busName": "", "parameters": { "resistance": { "value": "1M", "unit": "ohm" } },
+      "pins": { "1": "s2_grid_node", "2": "0" }
+    },
+    {
+      "id": "R_GRID_S2",
+      "symbol": "resistor",
+      "sheet": "S2",
+      "component": { "archetype": "passive.resistor", "family": null, "manufacturerPart": null, "datasheetStatus": "generic" },
+      "x": 360, "y": 288, "rotation": 0, "value": "68k", "frequency": "", "busName": "", "parameters": { "resistance": { "value": "68k", "unit": "ohm" } },
+      "pins": { "1": "s2_grid_node", "2": "s2_g" }
+    },
+    {
+      "id": "V1_S2",
+      "symbol": "tube_12ax7",
+      "sheet": "S2",
+      "component": { "archetype": "active.tube.triode", "family": "12AX7", "manufacturerPart": null, "datasheetStatus": "generic" },
+      "x": 480, "y": 288, "rotation": 0, "value": "12AX7", "frequency": "", "busName": "", "parameters": {},
+      "pins": { "G": "s2_g", "P": "s2_p", "K": "s2_k" }
+    },
+    {
+      "id": "R_ANODE_S2",
+      "symbol": "resistor",
+      "sheet": "S2",
+      "component": { "archetype": "passive.resistor", "family": null, "manufacturerPart": null, "datasheetStatus": "generic" },
+      "x": 480, "y": 192, "rotation": 90, "value": "100k", "frequency": "", "busName": "", "parameters": { "resistance": { "value": "100k", "unit": "ohm" } },
+      "pins": { "1": "n_vcc", "2": "s2_p" }
+    },
+    {
+      "id": "C_OUT_S2",
+      "symbol": "capacitor",
+      "sheet": "S2",
+      "component": { "archetype": "passive.capacitor", "family": null, "manufacturerPart": null, "datasheetStatus": "generic" },
+      "x": 600, "y": 288, "rotation": 0, "value": "22n", "frequency": "", "busName": "", "parameters": { "capacitance": { "value": "22n", "unit": "F" } },
+      "pins": { "1": "s2_p", "2": "n_out" }
+    },
+    {
+      "id": "R_K_S2",
+      "symbol": "resistor",
+      "sheet": "S2",
+      "component": { "archetype": "passive.resistor", "family": null, "manufacturerPart": null, "datasheetStatus": "generic" },
+      "x": 444, "y": 432, "rotation": 90, "value": "1.5k", "frequency": "", "busName": "", "parameters": { "resistance": { "value": "1.5k", "unit": "ohm" } },
+      "pins": { "1": "s2_k", "2": "0" }
+    },
+    {
+      "id": "C_K_S2",
+      "symbol": "capacitor",
+      "sheet": "S2",
+      "component": { "archetype": "passive.capacitor", "family": null, "manufacturerPart": null, "datasheetStatus": "generic" },
+      "x": 516, "y": 432, "rotation": 90, "value": "22u", "frequency": "", "busName": "", "parameters": { "capacitance": { "value": "22u", "unit": "F" } },
+      "pins": { "1": "s2_k", "2": "0" }
+    }
+  ],
+  "wires": [
+    { "a": "VIN.+", "b": "A1.IN" },
+    { "a": "VIN.-", "b": "GND1.0" },
+    { "a": "VCC.+", "b": "A1.VCC" },
+    { "a": "VCC.+", "b": "A2.VCC" },
+    { "a": "VCC.-", "b": "GND1.0" },
+    { "a": "A1.GND", "b": "GND1.0" },
+    { "a": "A1.OUT", "b": "A2.IN" },
+    { "a": "A2.GND", "b": "GND1.0" },
+    { "a": "A2.OUT", "b": "R_LOAD.1" },
+    { "a": "R_LOAD.2", "b": "GND2.0" },
+
+    { "a": "P1_S1.1", "b": "C_IN_S1.1" },
+    { "a": "C_IN_S1.2", "b": "R_LEAK_S1.1" },
+    { "a": "C_IN_S1.2", "b": "R_GRID_S1.1" },
+    { "a": "R_LEAK_S1.2", "b": "P4_S1.1" },
+    { "a": "R_GRID_S1.2", "b": "V1_S1.G" },
+    { "a": "P3_S1.1", "b": "R_ANODE_S1.1" },
+    { "a": "R_ANODE_S1.2", "b": "V1_S1.P" },
+    { "a": "V1_S1.P", "b": "C_OUT_S1.1" },
+    { "a": "C_OUT_S1.2", "b": "P2_S1.1" },
+    { "a": "V1_S1.K", "b": "R_K_S1.1" },
+    { "a": "V1_S1.K", "b": "C_K_S1.1" },
+    { "a": "R_K_S1.2", "b": "P4_S1.1" },
+    { "a": "C_K_S1.2", "b": "P4_S1.1" },
+
+    { "a": "P1_S2.1", "b": "C_IN_S2.1" },
+    { "a": "C_IN_S2.2", "b": "R_LEAK_S2.1" },
+    { "a": "C_IN_S2.2", "b": "R_GRID_S2.1" },
+    { "a": "R_LEAK_S2.2", "b": "P4_S2.1" },
+    { "a": "R_GRID_S2.2", "b": "V1_S2.G" },
+    { "a": "P3_S2.1", "b": "R_ANODE_S2.1" },
+    { "a": "R_ANODE_S2.2", "b": "V1_S2.P" },
+    { "a": "V1_S2.P", "b": "C_OUT_S2.1" },
+    { "a": "C_OUT_S2.2", "b": "P2_S2.1" },
+    { "a": "V1_S2.K", "b": "R_K_S2.1" },
+    { "a": "V1_S2.K", "b": "C_K_S2.1" },
+    { "a": "R_K_S2.2", "b": "P4_S2.1" },
+    { "a": "C_K_S2.2", "b": "P4_S2.1" }
+  ],
+  "junctions": [],
+  "groups": [],
+  "probes": []
+}
