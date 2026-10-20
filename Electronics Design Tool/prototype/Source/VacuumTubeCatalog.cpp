@@ -357,6 +357,36 @@ const std::vector<VacuumTubeSpec>& getCatalog()
             "Internal Forward Voltage Drop: ~44 V @ 225 mA per plate",
             "RCA Receiving Tube Manual RC-30 (1975), GE 5U4GB Engineering Data",
             false
+        },
+        {
+            "tube_5y3gt",
+            "5Y3GT Full-Wave Vacuum Rectifier",
+            "Rectifier Tubes",
+            "Directly-heated full-wave rectifier (classic low-to-medium power audio amplifiers and vintage radio)",
+            "Glass octal envelope (T-9), Octal 8-pin base (B8-21)",
+            "Pin 2=Filament, Pin 4=Plate 1 (Anode 1), Pin 6=Plate 2 (Anode 2), Pin 8=Filament; Pins 1,3,5,7=NC",
+            "5.0 V @ 2.0 A; directly heated oxide-coated filament",
+            "PIV(max): 1400 V (Peak Inverse Voltage); Io(max): 125 mA DC (capacitor input), 140 mA (choke input); Peak plate current: 440 mA; Input capacitor max: 20 uF (20-32 uF typical)",
+            "AC Plate Voltage = 2 x 350 V RMS -> DC Output Voltage ~360 V @ 125 mA (Capacitor input filter, C=10uF, Rs=50 Ohm per plate)\n"
+            "AC Plate Voltage = 2 x 350 V RMS -> DC Output Voltage ~290 V @ 125 mA (Choke input filter)\n"
+            "Internal Forward Voltage Drop: ~50 V @ 125 mA per plate (effective tube resistance ~400 Ohm)",
+            "RCA Receiving Tube Manual RC-30 (1975), GE 5Y3GT Technical Data Sheet",
+            false
+        },
+        {
+            "tube_ez81",
+            "EZ81 / 6CA4 Full-Wave Power Rectifier",
+            "Rectifier Tubes",
+            "High-efficiency indirectly-heated miniature full-wave rectifier (noval 9-pin, high current, low drop)",
+            "Miniature glass envelope (T-6.5), Noval 9-pin base (B9A)",
+            "Pin 1=Anode 1 (Plate 1), Pin 3=Cathode, Pin 4=Heater, Pin 5=Heater, Pin 7=Anode 2 (Plate 2); Pins 2,6,8,9=NC",
+            "6.3 V @ 1.0 A; indirectly heated cathode (separate cathode sleeve, high heater-cathode insulation: Vhk max 500 V)",
+            "PIV(max): 1300 V (Peak Inverse Voltage); Io(max): 150 mA DC (capacitor input); Peak plate current: 450 mA; Input capacitor max: 50 uF; Min effective plate-supply resistance: 150 Ohm per plate @ 2 x 350 V",
+            "AC Plate Voltage = 2 x 250 V RMS -> DC Output Voltage ~280 V @ 150 mA (Capacitor input filter, C=50uF, Rs=100 Ohm)\n"
+            "AC Plate Voltage = 2 x 350 V RMS -> DC Output Voltage ~395 V @ 150 mA (Capacitor input filter, C=50uF, Rs=175 Ohm)\n"
+            "Internal Forward Voltage Drop: ~18.6 V @ 150 mA per plate",
+            "Mullard Technical Handbook EZ81/6CA4 (1969), Philips Data Sheet EZ81",
+            false
         }
     };
     return catalog;

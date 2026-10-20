@@ -113,7 +113,7 @@ def main():
             "tube_ef86", "tube_6au6a",
             "tube_el84", "tube_el34",
             "tube_6l6gc", "tube_6v6gt", "tube_kt88", "tube_6550",
-            "tube_5ar4", "tube_5u4gb"
+            "tube_5ar4", "tube_5u4gb", "tube_5y3gt", "tube_ez81"
         ]
         for rid in required_ids:
             assert rid in tube_ids, f"Missing required tube in library: {rid}"
@@ -198,6 +198,34 @@ def main():
         assert meta_5ar4.get("subcategory") == "Rectifier Tubes"
         assert "Mullard" in meta_5ar4.get("provenance") or "Philips" in meta_5ar4.get("provenance")
         print("PASS: 5AR4 metadata verified (Specifications only).")
+
+        # Test unmodeled 5Y3GT rectifier
+        call_tool("library_select", {"symbolId": "tube_5y3gt"})
+        info_5y3 = call_tool("library_get_selected")
+        meta_5y3 = info_5y3.get("tubeSpecification", {})
+        print("\n5Y3GT Metadata Summary:")
+        print("   Name:", meta_5y3.get("name"))
+        print("   Subcategory:", meta_5y3.get("subcategory"))
+        print("   Heater:", meta_5y3.get("heater"))
+        print("   Provenance:", meta_5y3.get("provenance"))
+        assert meta_5y3.get("simulated") is False
+        assert meta_5y3.get("subcategory") == "Rectifier Tubes"
+        assert "RCA" in meta_5y3.get("provenance") or "GE" in meta_5y3.get("provenance")
+        print("PASS: 5Y3GT metadata verified (Specifications only).")
+
+        # Test unmodeled EZ81 rectifier
+        call_tool("library_select", {"symbolId": "tube_ez81"})
+        info_ez81 = call_tool("library_get_selected")
+        meta_ez81 = info_ez81.get("tubeSpecification", {})
+        print("\nEZ81 Metadata Summary:")
+        print("   Name:", meta_ez81.get("name"))
+        print("   Subcategory:", meta_ez81.get("subcategory"))
+        print("   Heater:", meta_ez81.get("heater"))
+        print("   Provenance:", meta_ez81.get("provenance"))
+        assert meta_ez81.get("simulated") is False
+        assert meta_ez81.get("subcategory") == "Rectifier Tubes"
+        assert "Mullard" in meta_ez81.get("provenance") or "Philips" in meta_ez81.get("provenance")
+        print("PASS: EZ81/6CA4 metadata verified (Specifications only).")
 
         # 7. Unmodeled tube placement & Graceful Simulation Notice
         print("\n--- 7. Simulation Notice on Unmodeled Tube Placement ---")

@@ -415,6 +415,18 @@
       "name": "5U4GB Full-Wave Rectifier",
       "category": "Vacuum Tubes",
       "subcategory": "Rectifier Tubes"
+    },
+    {
+      "id": "tube_5y3gt",
+      "name": "5Y3GT Full-Wave Vacuum Rectifier",
+      "category": "Vacuum Tubes",
+      "subcategory": "Rectifier Tubes"
+    },
+    {
+      "id": "tube_ez81",
+      "name": "EZ81 / 6CA4 Full-Wave Power Rectifier",
+      "category": "Vacuum Tubes",
+      "subcategory": "Rectifier Tubes"
     }
   ],
   "archetypes": [
