@@ -1911,6 +1911,10 @@ DeviceInfo deviceInfo(const Circuit& circuit, const OperatingPoint& op, int elem
             else if (i[0] < 1e-6) info.region = "cutoff";
             else if (vgk > 0.0) info.region = "grid conduction";
             else info.region = "active";
+            if (e.triode.maxPlateVoltage > 0.0 && vpk > e.triode.maxPlateVoltage)
+                info.region += " (Vp max exceeded)";
+            if (e.triode.maxPlateDissipation > 0.0 && vpk * i[0] > e.triode.maxPlateDissipation)
+                info.region += " (Pd max exceeded)";
             break;
         }
         default:

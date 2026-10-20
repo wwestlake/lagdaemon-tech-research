@@ -2,55 +2,59 @@
   "schemaVersion": 2,
   "kind": "electronics_circuit",
   "name": "12AX7 Common-Cathode Voltage Amplifier",
-  "description": "Standard Class-A audio preamplifier stage using 12AX7 / ECC83 dual triode (Section 1). Features cathode self-bias, 100k anode load, and 68k grid-stopper.",
+  "description": "Standard Class-A audio preamplifier stage using 12AX7 / ECC83 dual triode (Section 1). Features cathode self-bias (1.5k || 22uF), 100k anode load, 68k grid-stopper, and 22nF output coupling.",
   "components": [
-    {
-      "id": "VCC_PORT",
-      "symbol": "power_port",
-      "x": 400, "y": 100, "rotation": 0,
-      "parameters": { "busName": "+250V" },
-      "pins": { "1": "VCC" }
-    },
     {
       "id": "VCC_SRC",
       "symbol": "voltage_source",
-      "x": 100, "y": 200, "rotation": 0,
-      "parameters": { "waveform": "Dc", "offset": "250" },
-      "pins": { "+": "VCC", "-": "0" }
+      "x": 120,
+      "y": 168,
+      "rotation": 0,
+      "value": "250",
+      "params": { "waveform": "Dc", "offset": "250" }
     },
     {
       "id": "VIN_SRC",
       "symbol": "signal_source",
-      "x": 100, "y": 350, "rotation": 0,
-      "parameters": { "waveform": "Sine", "amplitude": "0.1", "frequency": "1k" },
-      "pins": { "OUT": "IN_SIG", "REF": "0" }
+      "x": 120,
+      "y": 360,
+      "rotation": 0,
+      "value": "0.1",
+      "frequency": "1k",
+      "params": { "waveform": "Sine", "amplitude": "0.1", "frequency": "1k" }
     },
     {
       "id": "R_GRID",
       "symbol": "resistor",
-      "x": 200, "y": 350, "rotation": 90,
-      "value": "68k",
-      "pins": { "1": "IN_SIG", "2": "GRID_NET" }
+      "x": 240,
+      "y": 360,
+      "rotation": 0,
+      "value": "68k"
     },
     {
       "id": "R_LEAK",
       "symbol": "resistor",
-      "x": 280, "y": 420, "rotation": 0,
-      "value": "1Meg",
-      "pins": { "1": "GRID_NET", "2": "0" }
+      "x": 336,
+      "y": 456,
+      "rotation": 90,
+      "value": "1Meg"
     },
     {
       "id": "R_ANODE",
       "symbol": "resistor",
-      "x": 400, "y": 200, "rotation": 0,
-      "value": "100k",
-      "pins": { "1": "VCC", "2": "PLATE_NET" }
+      "x": 456,
+      "y": 216,
+      "rotation": 90,
+      "value": "100k"
     },
     {
       "id": "V1",
       "symbol": "tube_12ax7",
-      "x": 400, "y": 350, "rotation": 0,
-      "parameters": {
+      "x": 456,
+      "y": 360,
+      "rotation": 0,
+      "value": "12AX7",
+      "params": {
         "section": "Unit 1",
         "mu": "100",
         "ex": "1.4",
@@ -61,54 +65,121 @@
         "cgp": "1.7p",
         "cgk": "1.6p",
         "cpk": "0.46p"
-      },
-      "pins": { "P": "PLATE_NET", "G": "GRID_NET", "K": "CATHODE_NET" }
+      }
     },
     {
       "id": "R_K",
       "symbol": "resistor",
-      "x": 370, "y": 470, "rotation": 0,
-      "value": "1.5k",
-      "pins": { "1": "CATHODE_NET", "2": "0" }
+      "x": 408,
+      "y": 528,
+      "rotation": 90,
+      "value": "1.5k"
     },
     {
       "id": "C_K",
       "symbol": "capacitor",
-      "x": 430, "y": 470, "rotation": 0,
-      "value": "22u",
-      "pins": { "1": "CATHODE_NET", "2": "0" }
+      "x": 504,
+      "y": 528,
+      "rotation": 90,
+      "value": "22u"
     },
     {
       "id": "C_OUT",
       "symbol": "capacitor",
-      "x": 520, "y": 280, "rotation": 90,
-      "value": "22n",
-      "pins": { "1": "PLATE_NET", "2": "OUT_NET" }
+      "x": 576,
+      "y": 288,
+      "rotation": 0,
+      "value": "22n"
     },
     {
       "id": "R_LOAD",
       "symbol": "resistor",
-      "x": 600, "y": 380, "rotation": 0,
-      "value": "1Meg",
-      "pins": { "1": "OUT_NET", "2": "0" }
+      "x": 672,
+      "y": 384,
+      "rotation": 90,
+      "value": "1Meg"
     },
     {
       "id": "GND1",
       "symbol": "ground",
-      "x": 100, "y": 450, "rotation": 0,
-      "pins": { "0": "0" }
+      "x": 120,
+      "y": 240,
+      "rotation": 0,
+      "value": "0"
     },
     {
       "id": "GND2",
       "symbol": "ground",
-      "x": 400, "y": 550, "rotation": 0,
-      "pins": { "0": "0" }
+      "x": 72,
+      "y": 432,
+      "rotation": 0,
+      "value": "0"
     },
     {
       "id": "GND3",
       "symbol": "ground",
-      "x": 600, "y": 470, "rotation": 0,
-      "pins": { "0": "0" }
+      "x": 336,
+      "y": 552,
+      "rotation": 0,
+      "value": "0"
+    },
+    {
+      "id": "GND4",
+      "symbol": "ground",
+      "x": 456,
+      "y": 624,
+      "rotation": 0,
+      "value": "0"
+    },
+    {
+      "id": "GND5",
+      "symbol": "ground",
+      "x": 672,
+      "y": 480,
+      "rotation": 0,
+      "value": "0"
+    }
+  ],
+  "junctions": [
+    { "id": "N1", "x": 336, "y": 360 },
+    { "id": "N2", "x": 456, "y": 288 },
+    { "id": "N3", "x": 456, "y": 456 },
+    { "id": "N4", "x": 672, "y": 288 },
+    { "id": "N5", "x": 456, "y": 600 }
+  ],
+  "wires": [
+    { "a": "GND1.0", "b": "VCC_SRC.-" },
+    { "a": "VCC_SRC.+", "b": "R_ANODE.1" },
+    { "a": "GND2.0", "b": "VIN_SRC.REF" },
+    { "a": "VIN_SRC.OUT", "b": "R_GRID.1" },
+    { "a": "R_GRID.2", "b": "N1" },
+    { "a": "N1", "b": "V1.G" },
+    { "a": "N1", "b": "R_LEAK.1" },
+    { "a": "R_LEAK.2", "b": "GND3.0" },
+    { "a": "R_ANODE.2", "b": "N2" },
+    { "a": "N2", "b": "V1.P" },
+    { "a": "N2", "b": "C_OUT.1" },
+    { "a": "V1.K", "b": "N3" },
+    { "a": "N3", "b": "R_K.1" },
+    { "a": "N3", "b": "C_K.1" },
+    { "a": "R_K.2", "b": "N5" },
+    { "a": "C_K.2", "b": "N5" },
+    { "a": "N5", "b": "GND4.0" },
+    { "a": "C_OUT.2", "b": "N4" },
+    { "a": "N4", "b": "R_LOAD.1" },
+    { "a": "R_LOAD.2", "b": "GND5.0" }
+  ],
+  "probes": [
+    { "id": "A", "label": "VIN", "target": "VIN_SRC.OUT", "color": "0xff5090ff" },
+    { "id": "B", "label": "VOUT", "target": "N4", "color": "0xffff9020" }
+  ],
+  "groups": [
+    {
+      "id": "G1",
+      "name": "12AX7 Class-A Gain Stage",
+      "category": "amplifier_stage",
+      "members": [ "V1", "R_ANODE", "R_K", "C_K", "R_GRID", "R_LEAK" ],
+      "notes": "Self-biased common-cathode amplifier with cathode AC bypass."
     }
   ]
 }

@@ -133,7 +133,7 @@ inline TriodeModel model12AX7(int section = 1)
     m.cgk = 1.6e-12;
     m.cpk = (section == 2) ? 0.34e-12 : 0.46e-12;
     m.section = section;
-    m.maxPlateVoltage = 300.0;
+    m.maxPlateVoltage = 330.0;
     m.maxPlateDissipation = 1.0;
     m.maxCathodeCurrent = 8e-3;
     return m;
@@ -142,18 +142,18 @@ inline TriodeModel model12AX7(int section = 1)
 inline TriodeModel model12AU7(int section = 1)
 {
     TriodeModel m;
-    m.mu = 21.5;
+    m.mu = 20.0;
     m.ex = 1.3;
-    m.kg1 = 1180.0;
-    m.kp = 300.0;
-    m.kvb = 84.0;
+    m.kg1 = 1250.0;
+    m.kp = 220.0;
+    m.kvb = 240.0;
     m.rgi = 2000.0;
     m.vgamma = 0.0;
     m.cgp = 1.5e-12;
     m.cgk = 1.6e-12;
     m.cpk = (section == 2) ? 0.32e-12 : 0.40e-12;
     m.section = section;
-    m.maxPlateVoltage = 300.0;
+    m.maxPlateVoltage = 330.0;
     m.maxPlateDissipation = 2.75;
     m.maxCathodeCurrent = 20e-3;
     return m;

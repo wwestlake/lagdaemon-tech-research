@@ -865,8 +865,8 @@ int main()
         const auto op = solveOperatingPoint(c);
         checkTrue("12AU7 DC OP solves", op.ok, op.error);
         const auto ip = -op.sourceCurrents[(size_t)c.find("Vp")];
-        // At Vp=250V, Vg=-8.5V: Koren model predicts Ip = 7.54 mA (published RCA nominal 10.5 mA)
-        check("12AU7 Ip at Vp=250V, Vg=-8.5V (mA)", ip * 1000.0, 7.54, 0.05);
+        // At Vp=250V, Vg=-8.5V: Calibrated Koren model predicts Ip = 9.86 mA (published RCA nominal 10.5 mA)
+        check("12AU7 Ip at Vp=250V, Vg=-8.5V (mA)", ip * 1000.0, 9.86, 0.05);
 
         const auto detail = deviceInfo(c, op, c.find("V1"));
         double gm = 0.0, rp = 0.0, mu = 0.0;
@@ -876,9 +876,9 @@ int main()
             if (detail.values[i].first == "rp") rp = detail.values[i].second;
             if (detail.values[i].first == "mu") mu = detail.values[i].second;
         }
-        check("12AU7 gm at operating point (mA/V)", gm * 1000.0, 3.04, 0.1);
-        check("12AU7 rp at operating point (kOhm)", rp / 1000.0, 7.03, 0.5);
-        check("12AU7 mu at operating point", mu, 21.3, 1.0);
+        check("12AU7 gm at operating point (mA/V)", gm * 1000.0, 3.07, 0.1);
+        check("12AU7 rp at operating point (kOhm)", rp / 1000.0, 6.44, 0.5);
+        check("12AU7 mu at operating point", mu, 19.8, 0.5);
     }
 
     // 12AX7 Common-Cathode Voltage Amplifier (DC bias, AC gain, Miller effect, transient clipping)

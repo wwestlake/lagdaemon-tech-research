@@ -1,0 +1,91 @@
+{
+  "schemaVersion": 2,
+  "kind": "electronics_circuit",
+  "name": "Triode Characteristic Curve Tracer",
+  "description": "DC sweep test setup for tracing vacuum tube plate current curves (Ip vs Vp) across stepped control-grid voltages (Vg = 0V, -1V, -2V, -3V, -4V). Supports 12AX7 and 12AU7.",
+  "components": [
+    {
+      "id": "VP_SRC",
+      "symbol": "voltage_source",
+      "x": 200,
+      "y": 200,
+      "rotation": 0,
+      "value": "250",
+      "params": { "waveform": "Dc", "offset": "250" }
+    },
+    {
+      "id": "VG_SRC",
+      "symbol": "voltage_source",
+      "x": 200,
+      "y": 380,
+      "rotation": 0,
+      "value": "-2",
+      "params": { "waveform": "Dc", "offset": "-2" }
+    },
+    {
+      "id": "V1",
+      "symbol": "tube_12ax7",
+      "x": 380,
+      "y": 290,
+      "rotation": 0,
+      "value": "12AX7",
+      "params": {
+        "section": "Unit 1",
+        "mu": "100",
+        "ex": "1.4",
+        "kg1": "1060",
+        "kp": "600",
+        "kvb": "300",
+        "rgi": "2k",
+        "cgp": "1.7p",
+        "cgk": "1.6p",
+        "cpk": "0.46p"
+      }
+    },
+    {
+      "id": "GND1",
+      "symbol": "ground",
+      "x": 200,
+      "y": 280,
+      "rotation": 0,
+      "value": "0"
+    },
+    {
+      "id": "GND2",
+      "symbol": "ground",
+      "x": 200,
+      "y": 460,
+      "rotation": 0,
+      "value": "0"
+    },
+    {
+      "id": "GND3",
+      "symbol": "ground",
+      "x": 380,
+      "y": 420,
+      "rotation": 0,
+      "value": "0"
+    }
+  ],
+  "junctions": [],
+  "wires": [
+    { "a": "VP_SRC.-", "b": "GND1.0" },
+    { "a": "VP_SRC.+", "b": "V1.P" },
+    { "a": "VG_SRC.-", "b": "GND2.0" },
+    { "a": "VG_SRC.+", "b": "V1.G" },
+    { "a": "V1.K", "b": "GND3.0" }
+  ],
+  "probes": [
+    { "id": "A", "label": "VP", "target": "VP_SRC.+", "color": "0xff5090ff" },
+    { "id": "B", "label": "VG", "target": "VG_SRC.+", "color": "0xffff9020" }
+  ],
+  "groups": [
+    {
+      "id": "G1",
+      "name": "Curve Tracer Test Fixture",
+      "category": "test_fixture",
+      "members": [ "V1", "VP_SRC", "VG_SRC" ],
+      "notes": "Direct electrode voltage control for DC family curve generation."
+    }
+  ]
+}

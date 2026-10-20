@@ -238,11 +238,11 @@ std::map<juce::String, std::vector<ParamSpec>> buildCatalog()
     };
     c["tube_12au7"] = {
         choice("section", "Section (Unit)", { "Unit 1", "Unit 2" }, "Unit 1", Storage::Param, "Dual-triode section (pins 6,7,8 or pins 1,2,3)"),
-        quantity("mu", "Amplification factor (mu)", "", "21.5"),
+        quantity("mu", "Amplification factor (mu)", "", "20"),
         quantity("ex", "Space-charge exponent (EX)", "", "1.3"),
-        quantity("kg1", "Transconductance scale (KG1)", "", "1180"),
-        quantity("kp", "Knee cutoff curvature (KP)", "", "300"),
-        quantity("kvb", "Knee voltage (KVB)", "V", "84"),
+        quantity("kg1", "Transconductance scale (KG1)", "", "1250"),
+        quantity("kp", "Knee cutoff curvature (KP)", "", "220"),
+        quantity("kvb", "Knee voltage (KVB)", "V", "240"),
         quantity("rgi", "Grid conduction resistance (RGI)", "ohm", "2k"),
         quantity("cgp", "Grid-to-plate capacitance (Cgp)", "F", "1.5p"),
         quantity("cgk", "Grid-to-cathode capacitance (Cgk)", "F", "1.6p"),

@@ -119,6 +119,20 @@ std::vector<Circuit> referenceCircuits()
         { "led", "D1", "red", { "a", "0" } },
     } });
 
+    circuits.push_back({ "tube_12ax7_preamp", {
+        { "ac_voltage_source", "VIN", "0.1 @ 1k", { "vin", "0" } },
+        { "resistor", "R_GRID", "68k", { "vin", "grid" } },
+        { "resistor", "R_LEAK", "1M", { "grid", "0" } },
+        { "tube_12ax7", "V1", "12AX7", { "grid", "plate", "cathode" } },
+        { "resistor", "R_ANODE", "100k", { "+250V", "plate" } },
+        { "resistor", "R_K", "1.5k", { "cathode", "0" } },
+        { "capacitor", "C_K", "22u", { "cathode", "0" } },
+        { "capacitor", "C_OUT", "22n", { "plate", "out" } },
+        { "resistor", "R_LOAD", "1M", { "out", "0" } },
+        { "voltage_source", "VCC", "250", { "+250V", "0" } },
+        { "oscilloscope_2ch", "SCOPE1", "", { "vin", "out", "0" } },
+    } });
+
     return circuits;
 }
 

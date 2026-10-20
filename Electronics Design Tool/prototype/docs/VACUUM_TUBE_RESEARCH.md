@@ -169,35 +169,49 @@ $$I_k = -(I_p + I_g)$$
 
 ### 4.1 Parameter Provenance Table
 
-| Parameter | 12AX7 / ECC83 | 12AU7 / ECC82 | Provenance & Source |
+| Parameter | 12AX7 / ECC83 | 12AU7 / ECC82 (Calibrated) | Provenance & Source |
 | :--- | :--- | :--- | :--- |
-| **$\mu$ (Amplification Factor)** | 100.0 | 21.5 | Published manufacturer nominal ($\mu=100$ RCA/Mullard; $\mu=17\text{--}20$ RCA/Mullard, Koren nominal fit 21.5) |
-| **$E_x$ (Space-Charge Exponent)** | 1.4 | 1.3 | Fitted parameter (Koren 1996, Glass Audio), matches space-charge expansion |
-| **$K_{g1}$ (Current Scale Parameter)** | 1060.0 | 1180.0 | Fitted parameter (Koren 1996, Glass Audio) |
-| **$K_p$ (Cutoff Curvature)** | 600.0 | 300.0 | Fitted parameter governing sharpness of cutoff transition |
-| **$K_{vb}$ (Knee Voltage Factor)** | 300.0 | 84.0 | Fitted parameter shaping low-plate-voltage inflection |
+| **$\mu$ (Amplification Factor)** | 100.0 | 20.0 | Published manufacturer nominal ($\mu=100$ RCA/Mullard; $\mu=17\text{--}20$ RCA RC-30, calibrated fit 20.0) |
+| **$E_x$ (Space-Charge Exponent)** | 1.4 | 1.3 | Space-charge expansion exponent |
+| **$K_{g1}$ (Current Scale Parameter)** | 1060.0 | 1250.0 | Calibrated against RCA RC-30 plate family curves |
+| **$K_p$ (Cutoff Curvature)** | 600.0 | 220.0 | Fitted parameter governing sharpness of cutoff transition |
+| **$K_{vb}$ (Knee Voltage Factor)** | 300.0 | 240.0 | Fitted parameter shaping low-plate-voltage inflection |
 | **$R_{gi}$ (Grid Conduction Resistance)** | $2000\ \Omega$ | $2000\ \Omega$ | Typical small-signal triode grid forward resistance |
 | **$V_\gamma$ (Grid Conduction Threshold)** | $0.0\text{ V}$ | $0.0\text{ V}$ | Documented grid turn-on threshold |
 | **$C_{gp}$ (Grid-to-Plate Cap)** | $1.7\text{ pF}$ | $1.5\text{ pF}$ | Direct published rating (RCA RC-30 & GE ETR-1025D) |
 | **$C_{gk}$ (Grid-to-Cathode Cap)** | $1.6\text{ pF}$ | $1.6\text{ pF}$ | Direct published rating (RCA RC-30 & GE ETR-1025D) |
 | **$C_{pk}$ (Plate-to-Cathode Cap, Unit 1)** | $0.46\text{ pF}$ | $0.40\text{ pF}$ | Direct published rating (RCA RC-30 & GE ETR-1025D) |
 | **$C_{pk}$ (Plate-to-Cathode Cap, Unit 2)** | $0.34\text{ pF}$ | $0.32\text{ pF}$ | Direct published rating (RCA RC-30 & GE ETR-1025D) |
+| **$V_{p(\max)}$ (Max Plate Voltage)** | $330.0\text{ V}$ | $330.0\text{ V}$ | Absolute maximum design-maximum rating (RCA RC-30) |
+| **$P_{d(\max)}$ (Max Plate Dissipation)**| $1.0\text{ W}$ | $2.75\text{ W}$ | Absolute maximum rating per unit (RCA RC-30) |
 
 ---
 
-## 5. Model Verification Against Published Operating Points
+## 5. Model Verification and Calibration
 
 ### 5.1 12AX7 / ECC83 Verification ($V_p = 250\text{ V}, V_g = -2.0\text{ V}$)
 - **Plate Current ($I_p$):** Model $= 0.952\text{ mA}$ vs. Datasheet Nominal $= 1.20\text{ mA}$ (within normal $\pm 20\%$ tube manufacturing spread; typical measured NOS tubes span $0.8\text{--}1.4\text{ mA}$).
+  - *Calibration investigation:* Attempting to force $I_p$ up to $1.20\text{ mA}$ in the compact Koren formulation elevates transconductance $g_m$ beyond $2.6\text{ mA/V}$ (+60% error), distorting small-signal audio stage gain. The parameters `mu=100, ex=1.4, kg1=1060, kp=600, kvb=300` preserve overall curve curvature and $g_m$ accuracy across the standard preamplifier load line.
 - **Transconductance ($g_m$):** Model $= 1.670\text{ mA/V}$ vs. Datasheet Nominal $= 1.60\text{ mA/V}$ (**4.4% agreement**).
 - **Plate Resistance ($r_p$):** Model $= 53.7\text{ k}\Omega$ vs. Datasheet Nominal $= 62.5\text{ k}\Omega$ (**14% agreement**).
 - **Amplification Factor ($\mu$):** Model $= 89.7$ vs. Datasheet Nominal $= 100$ (**10.3% agreement**).
 
 ### 5.2 12AU7 / ECC82 Verification ($V_p = 250\text{ V}, V_g = -8.5\text{ V}$)
-- **Plate Current ($I_p$):** Model $= 7.54\text{ mA}$ vs. Datasheet Nominal $= 10.5\text{ mA}$ (within expected tube variation).
-- **Transconductance ($g_m$):** Model $= 3.04\text{ mA/V}$ vs. Datasheet Nominal $= 2.2\text{ mA/V}$ ($3.1\text{ mA/V}$ at $100\text{ V}/0\text{ V}$).
-- **Plate Resistance ($r_p$):** Model $= 7.03\text{ k}\Omega$ vs. Datasheet Nominal $= 7.70\text{ k}\Omega$ (**8.7% agreement**).
-- **Amplification Factor ($\mu$):** Model $= 21.3$ vs. Datasheet Nominal $= 17\text{--}20$ (**6.5% agreement** with nominal $\mu=20$).
+- **Original Phase 1 Model:** $I_p = 7.54\text{ mA}$ (-28.2%), $g_m = 3.04\text{ mA/V}$, $r_p = 7.03\text{ k}\Omega$, $\mu = 21.3$.
+- **Revised Calibrated Model (`mu=20, kg1=1250, kp=220, kvb=240`):**
+  - **Plate Current ($I_p$):** $9.86\text{ mA}$ vs. Datasheet Nominal $10.5\text{ mA}$ (**-6.1% discrepancy**, improved from -28.2%).
+  - **Transconductance ($g_m$):** $3.07\text{ mA/V}$ vs. Datasheet Nominal $2.20\text{ mA/V}$ ($3.10\text{ mA/V}$ at $100\text{ V} / 0\text{ V}$).
+  - **Plate Resistance ($r_p$):** $6.44\text{ k}\Omega$ vs. Datasheet Nominal $7.70\text{ k}\Omega$ (**-16.3% agreement**).
+  - **Amplification Factor ($\mu$):** $19.8$ vs. Datasheet Nominal $17\text{--}20$ (**within 1%** of $\mu=20$).
+- **Secondary Reference Condition ($V_p = 100\text{ V}, V_g = 0\text{ V}$):**
+  - **Plate Current ($I_p$):** $12.96\text{ mA}$ vs. Datasheet Nominal $11.8\text{ mA}$ (**+9.8% agreement**).
+  - **Transconductance ($g_m$):** $3.33\text{ mA/V}$ vs. Datasheet Nominal $3.10\text{ mA/V}$ (**+7.4% agreement**).
+  - **Plate Resistance ($r_p$):** $5.93\text{ k}\Omega$ vs. Datasheet Nominal $6.50\text{ k}\Omega$ (**-8.8% agreement**).
+
+### 5.3 Maximum Ratings Handling
+In DEWB, absolute maximum ratings ($V_{p(\max)}$, $P_{d(\max)}$, $I_{k(\max)}$) are stored as model metadata. They are deliberately **not** implemented as artificial hard limiters in the Newton-Raphson system matrix, which would introduce nonphysical numerical discontinuities or cause solver divergence. Instead:
+1. `absorbedPower()` and `deviceInfo()` compute instantaneous and operating-point plate dissipation ($P_p = V_{pk} \cdot I_p$).
+2. `deviceInfo.region` reports an explicit warning annotation when either plate voltage or dissipation limits are exceeded (e.g. `active (Pd max exceeded)`).
 
 ---
 
