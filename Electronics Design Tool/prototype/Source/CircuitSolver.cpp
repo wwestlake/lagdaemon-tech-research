@@ -277,6 +277,44 @@ double nmosDrainCurrent(const MosModel& m, double vgs, double vds)
     return 0.5 * m.transconductance * vov * vov * (1.0 + m.lambda * vds);
 }
 
+void triodeCurrents(const TriodeModel& m, double vpk, double vgk, double& ip, double& ig)
+{
+    ip = 0.0;
+    ig = 0.0;
+
+    // Grid conduction: thermionic emission begins striking the grid when Vgk > vgamma.
+    // Smooth formulation using vt = 0.05 V ensures C^1 continuous derivatives for Newton-Raphson.
+    const auto vdrive = vgk - m.vgamma;
+    if (m.rgi > 0.0)
+    {
+        constexpr double vt = 0.05;
+        if (vdrive > 4.0)
+            ig = vdrive / m.rgi;
+        else if (vdrive > -1.0)
+            ig = (vt / m.rgi) * std::log(1.0 + safeExp(vdrive / vt));
+        else
+            ig = 0.0;
+    }
+
+    // Plate current: Norman Koren phenomenological model
+    if (vpk <= 0.0)
+        return;
+
+    const auto denom = std::sqrt(m.kvb + vpk * vpk);
+    const auto arg = m.kp * (1.0 / m.mu + vgk / denom);
+
+    double e1 = 0.0;
+    if (arg > 80.0)
+        e1 = (vpk / m.kp) * arg;
+    else if (arg < -80.0)
+        e1 = 0.0;
+    else
+        e1 = (vpk / m.kp) * std::log(1.0 + safeExp(arg));
+
+    if (e1 > 0.0 && m.kg1 > 0.0)
+        ip = (2.0 * std::pow(e1, m.ex)) / m.kg1;
+}
+
 // Terminal currents (into the device) for a nonlinear element.
 std::vector<double> deviceCurrents(const Element& e, const std::vector<double>& v)
 {
@@ -335,6 +373,13 @@ std::vector<double> deviceCurrents(const Element& e, const std::vector<double>& 
             
             return { sign * id, sign * ig, sign * is };
         }
+        case Element::Type::Triode:
+        {
+            // nodes: plate (0), grid (1), cathode (2)
+            double ip = 0.0, ig = 0.0;
+            triodeCurrents(e.triode, v[0] - v[2], v[1] - v[2], ip, ig);
+            return { ip, ig, -(ip + ig) };
+        }
         default:
             return {};
     }
@@ -361,7 +406,7 @@ bool isNonlinear(Element::Type t)
 {
     return t == Element::Type::Diode || t == Element::Type::Npn || t == Element::Type::Pnp
         || t == Element::Type::Nmos || t == Element::Type::Pmos || t == Element::Type::Njfet || t == Element::Type::Pjfet
-        || t == Element::Type::OpAmp || t == Element::Type::VoltageControlledSwitch || t == Element::Type::CurrentControlledSwitch
+        || t == Element::Type::OpAmp || t == Element::Type::Triode || t == Element::Type::VoltageControlledSwitch || t == Element::Type::CurrentControlledSwitch
         || t == Element::Type::Programmable;
 }
 
@@ -1187,6 +1232,15 @@ bool linearize(const Circuit& circuit, const Options& o, SmallSignal& ss, std::s
                     capacitance(e.nodes[1], e.nodes[2], e.bjt.transitTime * std::abs(j[0][1]));
                 }
                 break;
+            case Element::Type::Triode:
+                // Grid-to-plate (Miller cap), grid-to-cathode, plate-to-cathode
+                if (e.triode.cgp > 0.0 && circuit.find(e.name + ".cgp") < 0)
+                    capacitance(e.nodes[1], e.nodes[0], e.triode.cgp);
+                if (e.triode.cgk > 0.0 && circuit.find(e.name + ".cgk") < 0)
+                    capacitance(e.nodes[1], e.nodes[2], e.triode.cgk);
+                if (e.triode.cpk > 0.0 && circuit.find(e.name + ".cpk") < 0)
+                    capacitance(e.nodes[0], e.nodes[2], e.triode.cpk);
+                break;
             default:
                 break;
         }
@@ -1429,6 +1483,7 @@ int Circuit::addProgrammable(const std::string& n, std::vector<Node> pins, std::
 int Circuit::addMosfet(const std::string& n, bool nc, Node d, Node g, Node s, MosModel m) { Element e; e.type = nc ? Element::Type::Nmos : Element::Type::Pmos; e.name = n; e.nodes = { d, g, s }; e.mos = m; return add(e); }
 int Circuit::addJfet(const std::string& n, bool nc, Node d, Node g, Node s, JfetModel m) { Element e; e.type = nc ? Element::Type::Njfet : Element::Type::Pjfet; e.name = n; e.nodes = { d, g, s }; e.jfet = m; return add(e); }
 int Circuit::addOpAmp(const std::string& n, Node ip, Node im, Node out, Node rp, Node rm, OpAmpModel m) { Element e; e.type = Element::Type::OpAmp; e.name = n; e.nodes = { ip, im, out, rp, rm }; e.opamp = m; return add(e); }
+int Circuit::addTriode(const std::string& n, Node p, Node g, Node k, TriodeModel m) { Element e; e.type = Element::Type::Triode; e.name = n; e.nodes = { p, g, k }; e.triode = m; return add(e); }
 
 // ---- element parameters ---------------------------------------------------------
 
@@ -1449,6 +1504,7 @@ std::vector<std::string> parameterNames(Element::Type type)
         case T::Nmos: case T::Pmos: return { "vth", "k", "lambda" };
         case T::Njfet: case T::Pjfet: return { "vp", "idss", "lambda" };
         case T::OpAmp: return { "gain" };
+        case T::Triode: return { "mu", "ex", "kg1", "kp", "kvb", "rgi" };
     }
     return {};
 }
@@ -1504,6 +1560,14 @@ bool getParameter(const Element& e, const std::string& name, double& out)
             return false;
         case T::OpAmp:
             if (name == "gain") { out = e.opamp.gain; return true; }
+            return false;
+        case T::Triode:
+            if (name == "mu") { out = e.triode.mu; return true; }
+            if (name == "ex") { out = e.triode.ex; return true; }
+            if (name == "kg1") { out = e.triode.kg1; return true; }
+            if (name == "kp") { out = e.triode.kp; return true; }
+            if (name == "kvb") { out = e.triode.kvb; return true; }
+            if (name == "rgi") { out = e.triode.rgi; return true; }
             return false;
     }
     return false;
@@ -1579,6 +1643,14 @@ bool setParameter(Element& e, const std::string& name, double value)
             return true;
         case T::OpAmp:
             e.opamp.gain = value;
+            return true;
+        case T::Triode:
+            if (name == "mu") e.triode.mu = value;
+            if (name == "ex") e.triode.ex = value;
+            if (name == "kg1") e.triode.kg1 = value;
+            if (name == "kp") e.triode.kp = value;
+            if (name == "kvb") e.triode.kvb = value;
+            if (name == "rgi") e.triode.rgi = value;
             return true;
     }
     return false;
@@ -1815,6 +1887,30 @@ DeviceInfo deviceInfo(const Circuit& circuit, const OperatingPoint& op, int elem
             add("Iout", op.sourceCurrents[(size_t)element], "A");
             add("incremental gain", tf.slope, "V/V");
             info.region = !e.opamp.limited ? "gain stage" : tf.slope > 0.01 * e.opamp.gain ? "linear" : "saturated";
+            break;
+        }
+        case T::Triode:
+        {
+            const auto i = deviceCurrents(e, volts);
+            const auto j = deviceJacobian(e, volts);
+            const auto vpk = volts[0] - volts[2], vgk = volts[1] - volts[2];
+            const auto gm = std::abs(j[0][1]);
+            const auto gp = std::abs(j[0][0]);
+            const auto rp = gp > 1e-15 ? 1.0 / gp : INFINITY;
+            const auto mu = gm * rp;
+            add("Vpk", vpk, "V");
+            add("Vgk", vgk, "V");
+            add("Ip", i[0], "A");
+            add("Ig", i[1], "A");
+            add("Ik", -i[2], "A");
+            add("gm", gm, "S");
+            add("rp", rp, "ohm");
+            add("mu", mu, "");
+            add("Pp", vpk * i[0], "W");
+            if (vpk <= 0.0) info.region = "off / reversed";
+            else if (i[0] < 1e-6) info.region = "cutoff";
+            else if (vgk > 0.0) info.region = "grid conduction";
+            else info.region = "active";
             break;
         }
         default:
@@ -3410,6 +3506,12 @@ NoiseResult solveNoise(const Circuit& circuit, Node outPlus, Node outMinus, int 
             {
                 const auto gm = std::abs(deviceJacobian(e, volts)[0][1]);
                 sources.push_back({ (int)ei, "channel", e.nodes[0], e.nodes[2], 8.0 / 3.0 * kt * gm });
+                break;
+            }
+            case Element::Type::Triode:
+            {
+                const auto gm = std::abs(deviceJacobian(e, volts)[0][1]);
+                sources.push_back({ (int)ei, "shot Ip", e.nodes[0], e.nodes[2], 4.0 * kt * 2.5 * gm });
                 break;
             }
             case Element::Type::OpAmp:

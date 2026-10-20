@@ -2320,6 +2320,9 @@ private:
         add({ "pmos", "P-Channel MOSFET - generic", "Discrete" });
         add({ "njfet", "N-Channel JFET - generic", "Discrete" });
         add({ "pjfet", "P-Channel JFET - generic", "Discrete" });
+        add({ "tube_12ax7", "12AX7 / ECC83 Dual Triode", "Vacuum Tube" });
+        add({ "tube_12au7", "12AU7 / ECC82 Dual Triode", "Vacuum Tube" });
+        add({ "tube_triode", "Generic Triode Vacuum Tube", "Vacuum Tube" });
         add({ "switch_spst", "SPST Switch", "Switch" });
         add({ "switch_spdt", "SPDT Switch", "Switch" });
         add({ "voltage_controlled_switch", "Voltage-Controlled Switch", "Switch" });
@@ -3102,6 +3105,11 @@ public:
             {
                 juce::String name = def ? def->name : instance.value;
                 netlist << "X" << instance.refdes << " " << pinNet("IN+") << " " << pinNet("IN-") << " " << pinNet("V+") << " " << pinNet("V-") << " " << pinNet("OUT") << " " << name << "\n";
+            }
+            else if (instance.symbolId == "tube_12ax7" || instance.symbolId == "tube_12au7" || instance.symbolId == "tube_triode")
+            {
+                juce::String model = (instance.symbolId == "tube_12au7" || instance.value == "12AU7") ? "12AU7" : "12AX7";
+                netlist << "X" << instance.refdes << " " << pinNet("P") << " " << pinNet("G") << " " << pinNet("K") << " " << model << "\n";
             }
             else if (instance.symbolId == "voltage_controlled_switch")
             {
@@ -5641,6 +5649,9 @@ private:
         if (symbolId == "pmos") return "generic_pmos";
         if (symbolId == "njfet") return "generic_njfet";
         if (symbolId == "pjfet") return "generic_pjfet";
+        if (symbolId == "tube_12ax7") return "12AX7";
+        if (symbolId == "tube_12au7") return "12AU7";
+        if (symbolId == "tube_triode") return "12AX7";
         if (symbolId == "fuse") return "1A";
         if (symbolId == "oscilloscope_2ch") return "2ch";
         if (symbolId == "digital_multimeter") return "DC V";
@@ -5685,6 +5696,7 @@ private:
         if (symbolId == "pmos") return "discrete.fet.pmos";
         if (symbolId == "njfet") return "discrete.fet.njfet";
         if (symbolId == "pjfet") return "discrete.fet.pjfet";
+        if (symbolId == "tube_12ax7" || symbolId == "tube_12au7" || symbolId == "tube_triode") return "active.tube.triode";
         if (symbolId == "switch_spst") return "switch.spst";
         if (symbolId == "switch_spdt") return "switch.spdt";
         if (symbolId == "relay_spst") return "switch.relay.spst";
@@ -5726,6 +5738,9 @@ private:
         if (symbolId == "pmos") return "generic_pmos";
         if (symbolId == "njfet") return "generic_njfet";
         if (symbolId == "pjfet") return "generic_pjfet";
+        if (symbolId == "tube_12ax7") return "12AX7";
+        if (symbolId == "tube_12au7") return "12AU7";
+        if (symbolId == "tube_triode") return "generic_triode";
         return "";
     }
 
@@ -8687,6 +8702,35 @@ public:
                 element = c.addJfet(name, id == "njfet", node(i, "D"), node(i, "G"), node(i, "S"), m);
                 if (element >= 0)
                     c.elements()[(size_t)element].modelName = partValue(inst, "value").toStdString();
+            }
+            else if (id == "tube_12ax7" || id == "tube_12au7" || id == "tube_triode")
+            {
+                const auto sectionStr = partValue(inst, "section");
+                const int section = (sectionStr == "Unit 2") ? 2 : 1;
+                const auto val = partValue(inst, "value");
+                circuit_sim::TriodeModel m;
+                if (id == "tube_12au7" || val == "12AU7")
+                    m = circuit_sim::model12AU7(section);
+                else
+                    m = circuit_sim::model12AX7(section);
+
+                m.mu = number(inst, "mu", m.mu);
+                m.ex = number(inst, "ex", m.ex);
+                m.kg1 = number(inst, "kg1", m.kg1);
+                m.kp = number(inst, "kp", m.kp);
+                m.kvb = number(inst, "kvb", m.kvb);
+                m.rgi = number(inst, "rgi", m.rgi);
+
+                element = c.addTriode(name, node(i, "P"), node(i, "G"), node(i, "K"), m);
+                if (element >= 0)
+                    c.elements()[(size_t)element].modelName = (id == "tube_12au7" || val == "12AU7") ? "12AU7" : "12AX7";
+
+                const auto cgp = number(inst, "cgp", m.cgp);
+                const auto cgk = number(inst, "cgk", m.cgk);
+                const auto cpk = number(inst, "cpk", m.cpk);
+                if (cgp > 0.0) c.addCapacitor(name + ".cgp", node(i, "G"), node(i, "P"), cgp);
+                if (cgk > 0.0) c.addCapacitor(name + ".cgk", node(i, "G"), node(i, "K"), cgk);
+                if (cpk > 0.0) c.addCapacitor(name + ".cpk", node(i, "P"), node(i, "K"), cpk);
             }
             else if (id == "switch_spst")
             {

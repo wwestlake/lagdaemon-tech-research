@@ -224,6 +224,43 @@ std::map<juce::String, std::vector<ParamSpec>> buildCatalog()
         c[id] = { text("value", "Model", juce::String(id) == "njfet" ? "generic_njfet" : "generic_pjfet", Storage::Value),
                   quantity("idss", "Idss", "A", "10m"),
                   quantity("pinchoff", "Pinch-off |Vp|", "V", "2") };
+    c["tube_12ax7"] = {
+        choice("section", "Section (Unit)", { "Unit 1", "Unit 2" }, "Unit 1", Storage::Param, "Dual-triode section (pins 6,7,8 or pins 1,2,3)"),
+        quantity("mu", "Amplification factor (mu)", "", "100"),
+        quantity("ex", "Space-charge exponent (EX)", "", "1.4"),
+        quantity("kg1", "Transconductance scale (KG1)", "", "1060"),
+        quantity("kp", "Knee cutoff curvature (KP)", "", "600"),
+        quantity("kvb", "Knee voltage (KVB)", "V", "300"),
+        quantity("rgi", "Grid conduction resistance (RGI)", "ohm", "2k"),
+        quantity("cgp", "Grid-to-plate capacitance (Cgp)", "F", "1.7p"),
+        quantity("cgk", "Grid-to-cathode capacitance (Cgk)", "F", "1.6p"),
+        quantity("cpk", "Plate-to-cathode capacitance (Cpk)", "F", "0.46p")
+    };
+    c["tube_12au7"] = {
+        choice("section", "Section (Unit)", { "Unit 1", "Unit 2" }, "Unit 1", Storage::Param, "Dual-triode section (pins 6,7,8 or pins 1,2,3)"),
+        quantity("mu", "Amplification factor (mu)", "", "21.5"),
+        quantity("ex", "Space-charge exponent (EX)", "", "1.3"),
+        quantity("kg1", "Transconductance scale (KG1)", "", "1180"),
+        quantity("kp", "Knee cutoff curvature (KP)", "", "300"),
+        quantity("kvb", "Knee voltage (KVB)", "V", "84"),
+        quantity("rgi", "Grid conduction resistance (RGI)", "ohm", "2k"),
+        quantity("cgp", "Grid-to-plate capacitance (Cgp)", "F", "1.5p"),
+        quantity("cgk", "Grid-to-cathode capacitance (Cgk)", "F", "1.6p"),
+        quantity("cpk", "Plate-to-cathode capacitance (Cpk)", "F", "0.4p")
+    };
+    c["tube_triode"] = {
+        choice("value", "Tube Type", { "12AX7", "12AU7", "generic" }, "12AX7", Storage::Value),
+        choice("section", "Section (Unit)", { "Unit 1", "Unit 2" }, "Unit 1", Storage::Param),
+        quantity("mu", "Amplification factor (mu)", "", "100"),
+        quantity("ex", "Space-charge exponent (EX)", "", "1.4"),
+        quantity("kg1", "Transconductance scale (KG1)", "", "1060"),
+        quantity("kp", "Knee cutoff curvature (KP)", "", "600"),
+        quantity("kvb", "Knee voltage (KVB)", "V", "300"),
+        quantity("rgi", "Grid conduction resistance (RGI)", "ohm", "2k"),
+        quantity("cgp", "Grid-to-plate capacitance (Cgp)", "F", "1.7p"),
+        quantity("cgk", "Grid-to-cathode capacitance (Cgk)", "F", "1.6p"),
+        quantity("cpk", "Plate-to-cathode capacitance (Cpk)", "F", "0.46p")
+    };
     c["switch_spst"] = { toggle("state", "Contacts", "Open", "Closed", "Open") };
     c["switch_spdt"] = { choice("state", "Common connects to", { "A", "B" }, "A") };
     c["voltage_controlled_switch"] = { quantity("ron", "On resistance", "ohm", "1"),
@@ -325,6 +362,7 @@ juce::String displayName(const juce::String& id)
         { "regulator_lm317", "LM317 Regulator" },
         { "npn", "NPN Transistor" }, { "pnp", "PNP Transistor" },
         { "nmos", "N-Channel MOSFET" }, { "pmos", "P-Channel MOSFET" }, { "njfet", "N-Channel JFET" }, { "pjfet", "P-Channel JFET" },
+        { "tube_12ax7", "12AX7 / ECC83 Dual Triode" }, { "tube_12au7", "12AU7 / ECC82 Dual Triode" }, { "tube_triode", "Triode Vacuum Tube" },
         { "switch_spst", "SPST Switch" }, { "switch_spdt", "SPDT Switch" },
         { "voltage_controlled_switch", "Voltage-Controlled Switch" }, { "current_controlled_switch", "Current-Controlled Switch" },
         { "relay_spst", "SPST Relay" }, { "fuse", "Fuse" },
@@ -353,7 +391,8 @@ juce::String simulationFidelity(const juce::String& id)
     if (id == "voltage_controlled_switch" || id == "current_controlled_switch")
         return "generic_model";
     if (id == "diode" || id == "zener_diode" || id == "schottky_diode" || id == "led"
-        || id == "npn" || id == "pnp" || id == "nmos" || id == "pmos" || id == "njfet" || id == "pjfet")
+        || id == "npn" || id == "pnp" || id == "nmos" || id == "pmos" || id == "njfet" || id == "pjfet"
+        || id == "tube_12ax7" || id == "tube_12au7" || id == "tube_triode")
         return "generic_model";
     // Logic gates: levels, thresholds, drive and delay (internal solver).
     if (id.startsWith("logic_"))

@@ -101,6 +101,64 @@ struct OpAmpModel
     bool limited = true;           // false: a linear gain stage (the rails are applied by a later stage)
 };
 
+struct TriodeModel
+{
+    double mu = 100.0;             // Amplification factor
+    double ex = 1.4;               // Space charge exponent (Koren EX)
+    double kg1 = 1060.0;           // Transconductance scaling parameter (Koren KG1)
+    double kp = 600.0;             // Knee / cutoff curvature parameter (Koren KP)
+    double kvb = 300.0;            // Knee voltage parameter (Koren KVB)
+    double rgi = 2000.0;           // Grid conduction resistance (ohms)
+    double vgamma = 0.0;           // Grid conduction threshold voltage (volts)
+    double cgp = 1.7e-12;          // Grid-to-plate capacitance (farads)
+    double cgk = 1.6e-12;          // Grid-to-cathode capacitance (farads)
+    double cpk = 0.46e-12;         // Plate-to-cathode capacitance (farads)
+    int section = 1;               // Section 1 or 2 for dual triodes
+    double maxPlateVoltage = 300.0;    // Absolute maximum plate voltage (V)
+    double maxPlateDissipation = 1.0;  // Absolute maximum plate dissipation (W)
+    double maxCathodeCurrent = 8e-3;   // Absolute maximum cathode current (A)
+};
+
+inline TriodeModel model12AX7(int section = 1)
+{
+    TriodeModel m;
+    m.mu = 100.0;
+    m.ex = 1.4;
+    m.kg1 = 1060.0;
+    m.kp = 600.0;
+    m.kvb = 300.0;
+    m.rgi = 2000.0;
+    m.vgamma = 0.0;
+    m.cgp = 1.7e-12;
+    m.cgk = 1.6e-12;
+    m.cpk = (section == 2) ? 0.34e-12 : 0.46e-12;
+    m.section = section;
+    m.maxPlateVoltage = 300.0;
+    m.maxPlateDissipation = 1.0;
+    m.maxCathodeCurrent = 8e-3;
+    return m;
+}
+
+inline TriodeModel model12AU7(int section = 1)
+{
+    TriodeModel m;
+    m.mu = 21.5;
+    m.ex = 1.3;
+    m.kg1 = 1180.0;
+    m.kp = 300.0;
+    m.kvb = 84.0;
+    m.rgi = 2000.0;
+    m.vgamma = 0.0;
+    m.cgp = 1.5e-12;
+    m.cgk = 1.6e-12;
+    m.cpk = (section == 2) ? 0.32e-12 : 0.40e-12;
+    m.section = section;
+    m.maxPlateVoltage = 300.0;
+    m.maxPlateDissipation = 2.75;
+    m.maxCathodeCurrent = 20e-3;
+    return m;
+}
+
 // A device whose behaviour is a program (the Workbench's FRust programmable
 // components). Its pins are the element's nodes, in order. At every Newton
 // iteration the solver asks it for the current each pin drives INTO the
@@ -161,7 +219,7 @@ struct Element
         VoltageSource, CurrentSource,
         BehavioralVoltageSource, BehavioralCurrentSource,
         Vcvs, Vccs, Ccvs, Cccs,
-        Diode, Npn, Pnp, Nmos, Pmos, Njfet, Pjfet, OpAmp,
+        Diode, Npn, Pnp, Nmos, Pmos, Njfet, Pjfet, OpAmp, Triode,
         VariableResistor, Switch, VoltageControlledSwitch, CurrentControlledSwitch,
         Programmable
     };
@@ -194,6 +252,7 @@ struct Element
     MosModel mos;
     JfetModel jfet;
     OpAmpModel opamp;
+    TriodeModel triode;
     int control = -1;        // Ccvs/Cccs: index of the controlling voltage source; Coupling: first inductor
     int control2 = -1;       // Coupling: second inductor
     std::string paramId;     // For live parameters
@@ -239,6 +298,7 @@ public:
     int addMosfet(const std::string& name, bool nChannel, Node drain, Node gate, Node source, MosModel model = {});
     int addJfet(const std::string& name, bool nChannel, Node drain, Node gate, Node source, JfetModel model = {});
     int addOpAmp(const std::string& name, Node inPlus, Node inMinus, Node out, Node railPlus, Node railMinus, OpAmpModel model = {});
+    int addTriode(const std::string& name, Node plate, Node grid, Node cathode, TriodeModel model = {});
     // Pins in the device's pin order; each instance has its own device (state).
     int addProgrammable(const std::string& name, std::vector<Node> pins, std::shared_ptr<ProgrammableDevice> device);
 

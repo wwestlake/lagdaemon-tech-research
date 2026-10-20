@@ -796,6 +796,160 @@ int main()
                   describe(rows) == "Main:0 A:1 B:2 C:1 D:1! X:1! Y:2 ", describe(rows));
     }
 
+    std::printf("\n-- vacuum tube triode models (12AX7 and 12AU7) --\n");
+    // 12AX7 DC characteristics against published curves / Koren model
+    {
+        Circuit c;
+        const auto p = c.addNode(), g = c.addNode();
+        c.addVoltageSource("Vp", p, 0, dc(250.0));
+        c.addVoltageSource("Vg", g, 0, dc(-2.0));
+        c.addTriode("V1", p, g, 0, model12AX7(1));
+
+        const auto op = solveOperatingPoint(c);
+        checkTrue("12AX7 DC OP solves", op.ok, op.error);
+        // At Vp=250V, Vg=-2V: Koren model predicts Ip = 0.952 mA (published RCA nominal 1.2 mA)
+        const auto ip = -op.sourceCurrents[(size_t)c.find("Vp")];
+        check("12AX7 Ip at Vp=250V, Vg=-2V (mA)", ip * 1000.0, 0.952, 0.01);
+
+        const auto detail = deviceInfo(c, op, c.find("V1"));
+        double gm = 0.0, rp = 0.0, mu = 0.0;
+        for (size_t i = 0; i < detail.values.size(); ++i)
+        {
+            if (detail.values[i].first == "gm") gm = detail.values[i].second;
+            if (detail.values[i].first == "rp") rp = detail.values[i].second;
+            if (detail.values[i].first == "mu") mu = detail.values[i].second;
+        }
+        check("12AX7 gm at operating point (mA/V)", gm * 1000.0, 1.670, 0.05);
+        check("12AX7 rp at operating point (kOhm)", rp / 1000.0, 53.7, 2.0);
+        check("12AX7 mu at operating point", mu, 89.7, 3.0);
+        checkTrue("12AX7 region is active", detail.region == "active", detail.region);
+    }
+
+    // 12AX7 Grid-bias sensitivity and cutoff limiting condition
+    {
+        Circuit c;
+        const auto p = c.addNode(), g = c.addNode();
+        c.addVoltageSource("Vp", p, 0, dc(250.0));
+        c.addVoltageSource("Vg", g, 0, dc(-4.0)); // Deep cutoff
+        c.addTriode("V1", p, g, 0, model12AX7(1));
+
+        const auto op = solveOperatingPoint(c);
+        checkTrue("12AX7 cutoff OP solves cleanly", op.ok, op.error);
+        const auto ip = -op.sourceCurrents[(size_t)c.find("Vp")];
+        checkTrue("12AX7 Ip in cutoff < 10 uA", ip < 10e-6, std::to_string(ip));
+    }
+
+    // 12AX7 Positive grid conduction
+    {
+        Circuit c;
+        const auto p = c.addNode(), g = c.addNode();
+        c.addVoltageSource("Vp", p, 0, dc(250.0));
+        c.addVoltageSource("Vg", g, 0, dc(1.0)); // Positive grid
+        c.addTriode("V1", p, g, 0, model12AX7(1));
+
+        const auto op = solveOperatingPoint(c);
+        checkTrue("12AX7 positive grid OP solves", op.ok, op.error);
+        const auto ig = -op.sourceCurrents[(size_t)c.find("Vg")];
+        // Conduction through Rgi = 2k gives ~0.5 mA
+        check("12AX7 positive grid Ig (mA)", ig * 1000.0, 0.50, 0.05);
+    }
+
+    // 12AU7 DC characteristics
+    {
+        Circuit c;
+        const auto p = c.addNode(), g = c.addNode();
+        c.addVoltageSource("Vp", p, 0, dc(250.0));
+        c.addVoltageSource("Vg", g, 0, dc(-8.5));
+        c.addTriode("V1", p, g, 0, model12AU7(1));
+
+        const auto op = solveOperatingPoint(c);
+        checkTrue("12AU7 DC OP solves", op.ok, op.error);
+        const auto ip = -op.sourceCurrents[(size_t)c.find("Vp")];
+        // At Vp=250V, Vg=-8.5V: Koren model predicts Ip = 7.54 mA (published RCA nominal 10.5 mA)
+        check("12AU7 Ip at Vp=250V, Vg=-8.5V (mA)", ip * 1000.0, 7.54, 0.05);
+
+        const auto detail = deviceInfo(c, op, c.find("V1"));
+        double gm = 0.0, rp = 0.0, mu = 0.0;
+        for (size_t i = 0; i < detail.values.size(); ++i)
+        {
+            if (detail.values[i].first == "gm") gm = detail.values[i].second;
+            if (detail.values[i].first == "rp") rp = detail.values[i].second;
+            if (detail.values[i].first == "mu") mu = detail.values[i].second;
+        }
+        check("12AU7 gm at operating point (mA/V)", gm * 1000.0, 3.04, 0.1);
+        check("12AU7 rp at operating point (kOhm)", rp / 1000.0, 7.03, 0.5);
+        check("12AU7 mu at operating point", mu, 21.3, 1.0);
+    }
+
+    // 12AX7 Common-Cathode Voltage Amplifier (DC bias, AC gain, Miller effect, transient clipping)
+    {
+        Circuit c;
+        const auto vcc = c.addNode();
+        const auto plate = c.addNode();
+        const auto grid = c.addNode();
+        const auto cathode = c.addNode();
+        const auto in = c.addNode();
+
+        // 250V B+ supply
+        c.addVoltageSource("Vcc", vcc, 0, dc(250.0));
+        // Input source (AC magnitude 1.0 V for AC analysis, 1 kHz sine for transient)
+        c.addVoltageSource("Vin", in, 0, sine(0.1, 1000.0));
+        // Grid stopper resistor (68k)
+        c.addResistor("Rgrid", in, grid, 68e3);
+        // Grid leak resistor (1M)
+        c.addResistor("Rleak", grid, 0, 1e6);
+        // Anode load resistor (100k)
+        c.addResistor("Ra", vcc, plate, 100e3);
+        // Cathode bias resistor (1.5k) and bypass capacitor (22 uF)
+        c.addResistor("Rk", cathode, 0, 1.5e3);
+        c.addCapacitor("Ck", cathode, 0, 22e-6);
+
+        // 12AX7 Section 1 with interelectrode capacitances
+        c.addTriode("V1", plate, grid, cathode, model12AX7(1));
+
+        // 1. DC Operating Point (Self-bias convergence)
+        const auto op = solveOperatingPoint(c);
+        checkTrue("12AX7 common-cathode amplifier OP solves", op.ok, op.error);
+        const auto vp_dc = op.voltages[(size_t)plate];
+        const auto vk_dc = op.voltages[(size_t)cathode];
+        // At self-bias equilibrium: Ip ~ 0.80 mA -> Vk = 0.80m * 1.5k ~ 1.20 V, Vp = 250 - 0.80m * 100k ~ 170 V
+        check("12AX7 amplifier DC plate voltage (V)", vp_dc, 170.1, 2.0);
+        check("12AX7 amplifier DC cathode voltage (V)", vk_dc, 1.20, 0.05);
+
+        // 2. AC Small-Signal Gain at midband (1 kHz)
+        const auto ac_mid = solveAc(c, 1000.0, 1001.0, 1);
+        checkTrue("12AX7 AC analysis solves", ac_mid.ok, ac_mid.error);
+        const auto gain_mid = std::abs(ac_mid.voltages[0][(size_t)plate]);
+        // Midband gain Av ~ gm * (rp || Ra) ~ 1.45m * (62k || 100k) ~ 55 V/V
+        check("12AX7 midband voltage gain (V/V)", gain_mid, 50.0, 10.0);
+
+        // 3. High Frequency Miller Effect:
+        // With Cgp = 1.7 pF, Cin_miller ~ 1.7 pF * (1 + Av) ~ 90 pF.
+        // Along with 68k grid stopper, rolloff should attenuate 100 kHz heavily relative to midband.
+        const auto ac_hf = solveAc(c, 100e3, 100.1e3, 1);
+        checkTrue("12AX7 HF AC solves", ac_hf.ok, ac_hf.error);
+        const auto gain_hf = std::abs(ac_hf.voltages[0][(size_t)plate]);
+        checkTrue("12AX7 Miller effect attenuates at 100 kHz", gain_hf < 0.35 * gain_mid,
+                  "gain at 100kHz: " + std::to_string(gain_hf) + " vs midband: " + std::to_string(gain_mid));
+
+        // 4. Large-signal transient: overdrive clipping test
+        // Overdriving with 3.0 V peak input creates asymmetric soft clipping
+        Circuit c_overdrive = c;
+        c_overdrive.elements()[(size_t)c_overdrive.find("Vin")].wave = sine(3.0, 1000.0);
+        const auto tr = solveTransient(c_overdrive, 0.005, 5e-6);
+        checkTrue("12AX7 large-signal transient solves", tr.ok, tr.error);
+        double max_vp = -1e9, min_vp = 1e9;
+        for (const auto& step_v : tr.voltages)
+        {
+            const auto v = step_v[(size_t)plate];
+            if (v > max_vp) max_vp = v;
+            if (v < min_vp) min_vp = v;
+        }
+        // Wave top clips toward Vcc (250V) when tube cuts off; wave bottom rounds smoothly above cathode
+        checkTrue("12AX7 transient positive peak approaches cutoff Vcc", max_vp > 240.0 && max_vp <= 250.0, std::to_string(max_vp));
+        checkTrue("12AX7 transient negative peak shows soft bottom saturation", min_vp > 40.0 && min_vp < 100.0, std::to_string(min_vp));
+    }
+
     std::printf("\n-- behavioral sources are refused, not mis-solved (Debug crash regression) --\n");
     {
         circuit_sim::Circuit c;

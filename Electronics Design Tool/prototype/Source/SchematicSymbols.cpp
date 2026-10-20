@@ -195,6 +195,29 @@ void jfetBody(juce::Graphics& g, bool nChannel)
     line(g, { 24, 12 }, { 24, 48 });
 }
 
+void triodeBody(juce::Graphics& g)
+{
+    // Glass envelope circle
+    g.drawEllipse(-24.0f, -24.0f, 48.0f, 48.0f, 1.4f);
+
+    // Plate (Anode) on top
+    line(g, { 0, -48 }, { 0, -14 });
+    line(g, { -14, -14 }, { 14, -14 }, 2.4f);
+
+    // Grid (dashed line) in middle
+    line(g, { -48, 0 }, { -16, 0 });
+    line(g, { -14, 0 }, { -10, 0 }, 1.8f);
+    line(g, { -6, 0 }, { -2, 0 }, 1.8f);
+    line(g, { 2, 0 }, { 6, 0 }, 1.8f);
+    line(g, { 10, 0 }, { 14, 0 }, 1.8f);
+
+    // Cathode (curved / inverted-U channel) at bottom
+    line(g, { 0, 16 }, { 0, 48 });
+    line(g, { -12, 20 }, { -12, 16 });
+    line(g, { -12, 16 }, { 12, 16 });
+    line(g, { 12, 16 }, { 12, 20 });
+}
+
 void circleSource(juce::Graphics& g)
 {
     line(g, { 0, -48 }, { 0, -24 });
@@ -353,7 +376,7 @@ const juce::StringArray& supportedSymbolIds()
         "ccvs", "cccs", "signal_source", "ground", "opamp_generic", "opamp_741",
         "comparator_generic", "comparator_lm311", "regulator_fixed_generic",
         "regulator_adjustable_generic", "regulator_lm317", "npn", "pnp",
-        "nmos", "pmos", "njfet", "pjfet", "switch_spst", "switch_spdt",
+        "nmos", "pmos", "njfet", "pjfet", "tube_12ax7", "tube_12au7", "tube_triode", "switch_spst", "switch_spdt",
         "voltage_controlled_switch", "current_controlled_switch", "relay_spst",
         "fuse", "connector_2", "connector_3", "test_point", "logic_not", "logic_buffer", "logic_and",
         "logic_or", "logic_nand", "logic_nor", "logic_xor", "logic_xnor", "dc_motor", "dc_motor_tach", "dc_motor_servo", "position_sensor", "oscilloscope_2ch",
@@ -422,6 +445,9 @@ SymbolDef symbolFor(const juce::String& id)
     if (id == "pmos")                return make(id, "PMOS", { -24, -24, 54, 48 }, { { "G", { -48, 0 } }, { "S", { 24, -48 } }, { "D", { 24, 48 } } });
     if (id == "njfet")               return make(id, "NJFET", { -24, -24, 54, 48 }, { { "G", { -48, 0 } }, { "D", { 24, -48 } }, { "S", { 24, 48 } } });
     if (id == "pjfet")               return make(id, "PJFET", { -24, -24, 54, 48 }, { { "G", { -48, 0 } }, { "S", { 24, -48 } }, { "D", { 24, 48 } } });
+    if (id == "tube_12ax7")          return make(id, "12AX7", { -28, -30, 56, 60 }, { { "G", { -48, 0 } }, { "P", { 0, -48 } }, { "K", { 0, 48 } } });
+    if (id == "tube_12au7")          return make(id, "12AU7", { -28, -30, 56, 60 }, { { "G", { -48, 0 } }, { "P", { 0, -48 } }, { "K", { 0, 48 } } });
+    if (id == "tube_triode")         return make(id, "TRIODE", { -28, -30, 56, 60 }, { { "G", { -48, 0 } }, { "P", { 0, -48 } }, { "K", { 0, 48 } } });
     if (id == "switch_spst")         return make(id, "SW", { -30, -24, 60, 30 }, { { "1", { -48, 0 } }, { "2", { 48, 0 } } });
     if (id == "switch_spdt")         return make(id, "SWDT", { -30, -30, 60, 60 }, { { "C", { -48, 0 } }, { "A", { 48, -24 } }, { "B", { 48, 24 } } }, true);
     if (id == "voltage_controlled_switch")
@@ -472,6 +498,7 @@ juce::String refdesPrefixFor(const juce::String& id)
     if (id == "opamp_generic" || id == "opamp_741" || id == "comparator_generic" || id == "comparator_lm311"
         || id == "regulator_fixed_generic" || id == "regulator_adjustable_generic" || id == "regulator_lm317" || id.startsWith("logic_")) return "U";
     if (id == "npn" || id == "pnp" || id == "nmos" || id == "pmos" || id == "njfet" || id == "pjfet") return "Q";
+    if (id == "tube_12ax7" || id == "tube_12au7" || id == "tube_triode") return "V";
     if (id.startsWith("switch_")) return "SW";
     if (id.startsWith("relay_")) return "K";
     if (id == "dc_motor" || id == "dc_motor_tach" || id == "dc_motor_servo") return "M";
@@ -1040,6 +1067,10 @@ void drawSymbolArt(juce::Graphics& g, const SymbolDef& symbol, const juce::Strin
     else if (id == "njfet" || id == "pjfet")
     {
         jfetBody(g, id == "njfet");
+    }
+    else if (id == "tube_12ax7" || id == "tube_12au7" || id == "tube_triode")
+    {
+        triodeBody(g);
     }
     else if (id == "switch_spst")
     {
