@@ -4,6 +4,10 @@
 #include "../../Source/CircuitSolver.h"
 #include "../../Source/SignalMeasure.h"
 #include "../../Source/CircuitHierarchy.h"
+#include "../../Source/AudioTestRender.h"
+
+#include <atomic>
+#include <algorithm>
 
 #include <cmath>
 #include <crtdbg.h>
@@ -1062,6 +1066,148 @@ int main()
         // Wave top clips toward Vcc (250V) when tube cuts off; wave bottom rounds smoothly above cathode
         checkTrue("12AX7 transient positive peak approaches cutoff Vcc", max_vp > 240.0 && max_vp <= 250.0, std::to_string(max_vp));
         checkTrue("12AX7 transient negative peak shows soft bottom saturation", min_vp > 40.0 && min_vp < 100.0, std::to_string(min_vp));
+    }
+
+    std::printf("\n-- Test Mode audio render (existing solver, private circuit copy) --\n");
+    {
+        // The guitar preamp as drawn in the schematic (VIN -> C_IN -> R_GRID -> grid ...).
+        auto buildPreamp = [](bool withVin, Node& plate, Node& cathode, Node& in, Node& out) {
+            Circuit c;
+            const auto vcc = c.addNode();
+            plate = c.addNode();
+            const auto grid = c.addNode();
+            cathode = c.addNode();
+            in = c.addNode();
+            const auto gin = c.addNode();
+            out = c.addNode();
+            c.addVoltageSource("VCC", vcc, 0, dc(250.0));
+            if (withVin)
+                c.addVoltageSource("VIN", in, 0, sine(0.1, 1000.0));
+            c.addCapacitor("C_IN", in, gin, 22e-9);
+            c.addResistor("R_GRID", gin, grid, 68e3);
+            c.addResistor("R_LEAK", grid, 0, 1e6);
+            c.addResistor("R_ANODE", vcc, plate, 100e3);
+            c.addResistor("R_K", cathode, 0, 1.5e3);
+            c.addCapacitor("C_K", cathode, 0, 22e-6);
+            c.addCapacitor("C_OUT", plate, out, 22e-9);
+            c.addResistor("R_LOAD", out, 0, 1e6);
+            c.addTriode("V1", plate, grid, cathode, model12AX7(1));
+            return c;
+        };
+        const double fs = 48000.0;
+        const size_t count = 12000; // 0.25 s
+        std::vector<float> tone(count);
+        for (size_t i = 0; i < count; ++i)
+            tone[i] = (float)(0.8 * std::sin(2.0 * 3.14159265358979323846 * 1000.0 * (double)i / fs));
+        // Peak-to-peak and signed correlation of the last 5 periods (steady state).
+        auto steady = [&](const std::vector<float>& v, const std::vector<float>& ref, double& amp, double& corr) {
+            const size_t from = count - 240;
+            double lo = 1e9, hi = -1e9, sxy = 0.0;
+            double mean = 0.0, rmean = 0.0;
+            for (size_t i = from; i < count; ++i) { mean += v[i]; rmean += ref[i]; }
+            mean /= (double)(count - from); rmean /= (double)(count - from);
+            for (size_t i = from; i < count; ++i)
+            {
+                lo = std::min(lo, (double)v[i]); hi = std::max(hi, (double)v[i]);
+                sxy += ((double)v[i] - mean) * ((double)ref[i] - rmean);
+            }
+            amp = 0.5 * (hi - lo);
+            corr = sxy;
+        };
+
+        Node plate = 0, cathode = 0, in = 0, out = 0;
+        const auto c = buildPreamp(true, plate, cathode, in, out);
+        const auto elementsBefore = c.elements().size();
+
+        audio_test::Request req;
+        req.circuit = c;
+        req.inputElement = c.find("VIN");
+        req.outputNode = out;
+        req.probes = { { "plate", plate }, { "cathode", cathode } };
+        req.samples = tone;
+        req.sampleRate = fs;
+        req.inputPeakVolts = 0.1;
+        const auto r = audio_test::render(req);
+        checkTrue("audio render (replace VIN) solves", r.ok, r.error);
+
+        if (r.ok)
+        {
+            check("render input scaled to the requested peak (V)", r.inputPeak, 0.1, 1e-6);
+            double amp = 0.0, corr = 0.0;
+            steady(r.output.volts, r.input, amp, corr);
+            const auto ac = solveAc(c, 1000.0, 1001.0, 1);
+            checkTrue("audio render AC reference solves", ac.ok, ac.error);
+            const auto acGain = std::abs(ac.voltages[0][(size_t)out]);
+            check("render gain at 1 kHz agrees with AC analysis (V/V)", amp / 0.1, acGain, 0.04 * acGain);
+            checkTrue("render output is phase-inverted (common cathode)", corr < 0.0);
+
+            // Same solver, same step: the render reproduces the Transient analysis of the unmodified circuit.
+            const auto tr = solveTransient(c, (double)(count - 1) / fs, 1.0 / fs, {}, 1000000);
+            checkTrue("reference transient solves", tr.ok, tr.error);
+            if (tr.ok)
+            {
+                std::vector<float> ref;
+                for (const auto& sample : tr.voltages)
+                    ref.push_back((float)sample[(size_t)out]);
+                double refAmp = 0.0, refCorr = 0.0;
+                if (ref.size() >= count - 1)
+                {
+                    ref.resize(count, ref.back());
+                    steady(ref, r.input, refAmp, refCorr);
+                    check("render amplitude equals Transient analysis (V)", amp, refAmp, 0.01 * refAmp);
+                }
+                else
+                    checkTrue("reference transient length", false, std::to_string(ref.size()));
+            }
+
+            // Virtual voltage probes: quiescent values match the operating point.
+            const auto op = solveOperatingPoint(c);
+            check("probe plate quiescent equals operating point (V)", r.probes[0].quiescent, op.voltages[(size_t)plate], 1e-6);
+            check("probe cathode quiescent equals operating point (V)", r.probes[1].quiescent, op.voltages[(size_t)cathode], 1e-6);
+            check("probe plate quiescent (V)", r.probes[0].quiescent, 170.1, 2.0);
+            check("coupled output has no DC (V)", r.output.quiescent, 0.0, 0.01);
+        }
+        checkTrue("render leaves the circuit it was given unchanged",
+                  c.elements().size() == elementsBefore && c.elements()[(size_t)c.find("VIN")].wave.kind == Waveform::Kind::Sine
+                  && c.elements()[(size_t)c.find("VIN")].wave.amplitude == 0.1);
+
+        // A virtual source at the input terminal of a circuit that has no source there.
+        Node p2 = 0, k2 = 0, in2 = 0, out2 = 0;
+        const auto bare = buildPreamp(false, p2, k2, in2, out2);
+        checkTrue("virtual input is allowed at an undriven terminal", audio_test::checkVirtualInput(bare, in2).empty());
+        checkTrue("virtual input is refused at ground", !audio_test::checkVirtualInput(bare, 0).empty());
+        const auto conflict = audio_test::checkVirtualInput(c, in);
+        checkTrue("virtual input is refused where a source already drives (and names it)",
+                  !conflict.empty() && conflict.find("VIN") != std::string::npos, conflict);
+        audio_test::Request vreq;
+        vreq.circuit = bare;
+        vreq.inputElement = -1;
+        vreq.virtualInputNode = in2;
+        vreq.outputNode = out2;
+        vreq.samples = tone;
+        vreq.sampleRate = fs;
+        vreq.inputPeakVolts = 0.1;
+        const auto vr = audio_test::render(vreq);
+        checkTrue("audio render (virtual source) solves", vr.ok, vr.error);
+        if (vr.ok && r.ok)
+        {
+            double a1 = 0.0, a2 = 0.0, c1 = 0.0, c2 = 0.0;
+            steady(r.output.volts, r.input, a1, c1);
+            steady(vr.output.volts, vr.input, a2, c2);
+            check("virtual source gives the same result as replacing VIN (V)", a2, a1, 0.005 * a1);
+        }
+        checkTrue("virtual render adds its source to a copy only", bare.elements().size() == 10);
+
+        // Refusals and cancellation.
+        audio_test::Request bad = req;
+        bad.outputNode = 0;
+        checkTrue("render refuses ground as the output", !audio_test::render(bad).ok);
+        audio_test::Request empty = req;
+        empty.samples.clear();
+        checkTrue("render refuses an empty recording", !audio_test::render(empty).ok);
+        std::atomic<bool> stop { true };
+        const auto cancelled = audio_test::render(req, &stop);
+        checkTrue("render honours cancellation", !cancelled.ok && cancelled.error.find("cancel") != std::string::npos, cancelled.error);
     }
 
     std::printf("\n-- behavioral sources are refused, not mis-solved (Debug crash regression) --\n");

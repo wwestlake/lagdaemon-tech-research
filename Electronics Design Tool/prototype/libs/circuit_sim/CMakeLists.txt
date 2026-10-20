@@ -29,6 +29,8 @@ set(CIRCUIT_SIM_SOURCES
     "${CIRCUIT_SIM_SOURCE_DIR}/LogicGates.cpp"
     "${CIRCUIT_SIM_SOURCE_DIR}/Mechanical.h"
     "${CIRCUIT_SIM_SOURCE_DIR}/Mechanical.cpp"
+    "${CIRCUIT_SIM_SOURCE_DIR}/AudioTestRender.h"
+    "${CIRCUIT_SIM_SOURCE_DIR}/AudioTestRender.cpp"
 )
 
 function(circuit_sim_flags target optimise)
