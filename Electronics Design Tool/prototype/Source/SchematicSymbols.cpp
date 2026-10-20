@@ -1,4 +1,5 @@
 #include "SchematicSymbols.h"
+#include "VacuumTubeCatalog.h"
 
 #include <climits>
 
@@ -367,22 +368,28 @@ SymbolDef logicGateSymbol(const juce::String& id, int inputs)
 
 const juce::StringArray& supportedSymbolIds()
 {
-    static const juce::StringArray ids {
-        "resistor", "potentiometer", "capacitor", "capacitor_polarized", "variable_capacitor",
-        "inductor", "coupled_inductor", "transformer", "diode", "zener_diode", "led",
-        "schottky_diode", "power_bus", "ground_bus", "power_port", "net_label", "sub_block", "frust_component", "block_port", "battery", "voltage_source", "audio_in", "audio_out",
-        "ac_voltage_source", "current_source", "ac_current_source", "behavioral_voltage_source",
-        "behavioral_current_source", "vcvs", "vccs",
-        "ccvs", "cccs", "signal_source", "ground", "opamp_generic", "opamp_741",
-        "comparator_generic", "comparator_lm311", "regulator_fixed_generic",
-        "regulator_adjustable_generic", "regulator_lm317", "npn", "pnp",
-        "nmos", "pmos", "njfet", "pjfet", "tube_12ax7", "tube_12au7", "tube_triode", "switch_spst", "switch_spdt",
-        "voltage_controlled_switch", "current_controlled_switch", "relay_spst",
-        "fuse", "connector_2", "connector_3", "test_point", "logic_not", "logic_buffer", "logic_and",
-        "logic_or", "logic_nand", "logic_nor", "logic_xor", "logic_xnor", "dc_motor", "dc_motor_tach", "dc_motor_servo", "position_sensor", "oscilloscope_2ch",
-        "digital_multimeter", "bode_analyzer", "xyz_plotter", "annotation_text"
-    };
-    return ids;
+    static const juce::StringArray allIds = [] {
+        juce::StringArray ids {
+            "resistor", "potentiometer", "capacitor", "capacitor_polarized", "variable_capacitor",
+            "inductor", "coupled_inductor", "transformer", "diode", "zener_diode", "led",
+            "schottky_diode", "power_bus", "ground_bus", "power_port", "net_label", "sub_block", "frust_component", "block_port", "battery", "voltage_source", "audio_in", "audio_out",
+            "ac_voltage_source", "current_source", "ac_current_source", "behavioral_voltage_source",
+            "behavioral_current_source", "vcvs", "vccs",
+            "ccvs", "cccs", "signal_source", "ground", "opamp_generic", "opamp_741",
+            "comparator_generic", "comparator_lm311", "regulator_fixed_generic",
+            "regulator_adjustable_generic", "regulator_lm317", "npn", "pnp",
+            "nmos", "pmos", "njfet", "pjfet", "tube_12ax7", "tube_12au7", "tube_triode", "switch_spst", "switch_spdt",
+            "voltage_controlled_switch", "current_controlled_switch", "relay_spst",
+            "fuse", "connector_2", "connector_3", "test_point", "logic_not", "logic_buffer", "logic_and",
+            "logic_or", "logic_nand", "logic_nor", "logic_xor", "logic_xnor", "dc_motor", "dc_motor_tach", "dc_motor_servo", "position_sensor", "oscilloscope_2ch",
+            "digital_multimeter", "bode_analyzer", "xyz_plotter", "annotation_text"
+        };
+        for (const auto& tube : parts::getAllVacuumTubeSpecs())
+            if (!ids.contains(tube.id))
+                ids.add(tube.id);
+        return ids;
+    }();
+    return allIds;
 }
 
 bool isSupportedSymbol(const juce::String& symbolId)
@@ -448,6 +455,17 @@ SymbolDef symbolFor(const juce::String& id)
     if (id == "tube_12ax7")          return make(id, "12AX7", { -28, -30, 56, 60 }, { { "G", { -48, 0 } }, { "P", { 0, -48 } }, { "K", { 0, 48 } } });
     if (id == "tube_12au7")          return make(id, "12AU7", { -28, -30, 56, 60 }, { { "G", { -48, 0 } }, { "P", { 0, -48 } }, { "K", { 0, 48 } } });
     if (id == "tube_triode")         return make(id, "TRIODE", { -28, -30, 56, 60 }, { { "G", { -48, 0 } }, { "P", { 0, -48 } }, { "K", { 0, 48 } } });
+    if (parts::isVacuumTube(id))
+    {
+        const auto* spec = parts::findVacuumTubeSpec(id);
+        const auto sub = spec != nullptr ? spec->subcategory : juce::String();
+        const auto label = spec != nullptr ? spec->name.upToFirstOccurrenceOf(" ", false, false) : id;
+        if (sub == "Output Pentodes" || sub == "Small-Signal Pentodes" || sub == "Beam Power Tubes")
+            return make(id, label, { -30, -36, 60, 72 }, { { "G", { -48, -12 } }, { "G2", { -48, 12 } }, { "P", { 0, -48 } }, { "K", { 0, 48 } } }, true);
+        if (sub == "Rectifier Tubes")
+            return make(id, label, { -30, -36, 60, 72 }, { { "P1", { -24, -48 } }, { "P2", { 24, -48 } }, { "K", { 0, 48 } } }, true);
+        return make(id, label, { -28, -30, 56, 60 }, { { "G", { -48, 0 } }, { "P", { 0, -48 } }, { "K", { 0, 48 } } });
+    }
     if (id == "switch_spst")         return make(id, "SW", { -30, -24, 60, 30 }, { { "1", { -48, 0 } }, { "2", { 48, 0 } } });
     if (id == "switch_spdt")         return make(id, "SWDT", { -30, -30, 60, 60 }, { { "C", { -48, 0 } }, { "A", { 48, -24 } }, { "B", { 48, 24 } } }, true);
     if (id == "voltage_controlled_switch")
@@ -498,7 +516,7 @@ juce::String refdesPrefixFor(const juce::String& id)
     if (id == "opamp_generic" || id == "opamp_741" || id == "comparator_generic" || id == "comparator_lm311"
         || id == "regulator_fixed_generic" || id == "regulator_adjustable_generic" || id == "regulator_lm317" || id.startsWith("logic_")) return "U";
     if (id == "npn" || id == "pnp" || id == "nmos" || id == "pmos" || id == "njfet" || id == "pjfet") return "Q";
-    if (id == "tube_12ax7" || id == "tube_12au7" || id == "tube_triode") return "V";
+    if (parts::isVacuumTube(id)) return "V";
     if (id.startsWith("switch_")) return "SW";
     if (id.startsWith("relay_")) return "K";
     if (id == "dc_motor" || id == "dc_motor_tach" || id == "dc_motor_servo") return "M";
@@ -1068,7 +1086,7 @@ void drawSymbolArt(juce::Graphics& g, const SymbolDef& symbol, const juce::Strin
     {
         jfetBody(g, id == "njfet");
     }
-    else if (id == "tube_12ax7" || id == "tube_12au7" || id == "tube_triode")
+    else if (parts::isVacuumTube(id))
     {
         triodeBody(g);
     }

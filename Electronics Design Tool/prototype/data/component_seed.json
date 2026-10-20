@@ -2,98 +2,582 @@
   "schemaVersion": 1,
   "kind": "djehuti_electronics_component_seed",
   "librarySymbols": [
-    { "id": "resistor", "name": "Resistor", "category": "Passive" },
-    { "id": "potentiometer", "name": "Potentiometer", "category": "Passive" },
-    { "id": "capacitor", "name": "Capacitor", "category": "Passive" },
-    { "id": "capacitor_polarized", "name": "Polarized Capacitor", "category": "Passive" },
-    { "id": "variable_capacitor", "name": "Variable Capacitor", "category": "Passive" },
-    { "id": "inductor", "name": "Inductor", "category": "Passive" },
-    { "id": "coupled_inductor", "name": "Coupled Inductor", "category": "Magnetics" },
-    { "id": "transformer", "name": "Transformer", "category": "Magnetics" },
-    { "id": "diode", "name": "Diode", "category": "Discrete" },
-    { "id": "zener_diode", "name": "Zener Diode", "category": "Discrete" },
-    { "id": "led", "name": "LED", "category": "Discrete" },
-    { "id": "schottky_diode", "name": "Schottky Diode", "category": "Discrete" },
-    { "id": "power_bus", "name": "Power Bus", "category": "Bus" },
-    { "id": "ground_bus", "name": "Ground Bus", "category": "Bus" },
-    { "id": "battery", "name": "Battery", "category": "Source" },
-    { "id": "voltage_source", "name": "DC Voltage Source", "category": "Source" },
-    { "id": "audio_in", "name": "Audio Input", "category": "Source" },
-    { "id": "audio_out", "name": "Audio Output", "category": "Source" },
-    { "id": "ac_voltage_source", "name": "AC Voltage Source", "category": "Source" },
-    { "id": "current_source", "name": "DC Current Source", "category": "Source" },
-    { "id": "ac_current_source", "name": "AC Current Source", "category": "Source" },
-    { "id": "vcvs", "name": "Voltage-Controlled Voltage Source", "category": "Controlled Source" },
-    { "id": "vccs", "name": "Voltage-Controlled Current Source", "category": "Controlled Source" },
-    { "id": "ccvs", "name": "Current-Controlled Voltage Source", "category": "Controlled Source" },
-    { "id": "cccs", "name": "Current-Controlled Current Source", "category": "Controlled Source" },
-    { "id": "signal_source", "name": "Signal Source", "category": "Source" },
-    { "id": "ground", "name": "Ground", "category": "Reference" },
-    { "id": "opamp_741", "name": "741 Op Amp - provisional", "category": "Analog IC" },
-    { "id": "npn", "name": "NPN Transistor - generic", "category": "Discrete" },
-    { "id": "pnp", "name": "PNP Transistor - generic", "category": "Discrete" },
-    { "id": "nmos", "name": "N-Channel MOSFET - generic", "category": "Discrete" },
-    { "id": "pmos", "name": "P-Channel MOSFET - generic", "category": "Discrete" },
-    { "id": "njfet", "name": "N-Channel JFET - generic", "category": "Discrete" },
-    { "id": "pjfet", "name": "P-Channel JFET - generic", "category": "Discrete" },
-    { "id": "switch_spst", "name": "SPST Switch", "category": "Switch" },
-    { "id": "switch_spdt", "name": "SPDT Switch", "category": "Switch" },
-    { "id": "relay_spst", "name": "SPST Relay", "category": "Switch" },
-    { "id": "fuse", "name": "Fuse", "category": "Protection" },
-    { "id": "connector_2", "name": "2-Pin Connector", "category": "Connector" },
-    { "id": "connector_3", "name": "3-Pin Connector", "category": "Connector" },
-    { "id": "test_point", "name": "Test Point", "category": "Connector" },
-    { "id": "logic_not", "name": "NOT Gate (Inverter)", "category": "Digital" },
-    { "id": "logic_buffer", "name": "Buffer", "category": "Digital" },
-    { "id": "logic_and", "name": "AND Gate", "category": "Digital" },
-    { "id": "logic_or", "name": "OR Gate", "category": "Digital" },
-    { "id": "logic_nand", "name": "NAND Gate", "category": "Digital" },
-    { "id": "logic_nor", "name": "NOR Gate", "category": "Digital" },
-    { "id": "logic_xor", "name": "XOR Gate", "category": "Digital" },
-    { "id": "logic_xnor", "name": "XNOR Gate", "category": "Digital" },
-    { "id": "dc_motor", "name": "DC Motor (brushed)", "category": "Electromechanical" },
-    { "id": "dc_motor_tach", "name": "DC Motor with Tachometer", "category": "Electromechanical" },
-    { "id": "oscilloscope_2ch", "name": "2-Channel Oscilloscope", "category": "Instrument" },
-    { "id": "digital_multimeter", "name": "Digital Multimeter", "category": "Instrument" },
-    { "id": "annotation_text", "name": "Text Note", "category": "Annotation" }
+    {
+      "id": "resistor",
+      "name": "Resistor",
+      "category": "Passive"
+    },
+    {
+      "id": "potentiometer",
+      "name": "Potentiometer",
+      "category": "Passive"
+    },
+    {
+      "id": "capacitor",
+      "name": "Capacitor",
+      "category": "Passive"
+    },
+    {
+      "id": "capacitor_polarized",
+      "name": "Polarized Capacitor",
+      "category": "Passive"
+    },
+    {
+      "id": "variable_capacitor",
+      "name": "Variable Capacitor",
+      "category": "Passive"
+    },
+    {
+      "id": "inductor",
+      "name": "Inductor",
+      "category": "Passive"
+    },
+    {
+      "id": "coupled_inductor",
+      "name": "Coupled Inductor",
+      "category": "Magnetics"
+    },
+    {
+      "id": "transformer",
+      "name": "Transformer",
+      "category": "Magnetics"
+    },
+    {
+      "id": "diode",
+      "name": "Diode",
+      "category": "Discrete"
+    },
+    {
+      "id": "zener_diode",
+      "name": "Zener Diode",
+      "category": "Discrete"
+    },
+    {
+      "id": "led",
+      "name": "LED",
+      "category": "Discrete"
+    },
+    {
+      "id": "schottky_diode",
+      "name": "Schottky Diode",
+      "category": "Discrete"
+    },
+    {
+      "id": "power_bus",
+      "name": "Power Bus",
+      "category": "Bus"
+    },
+    {
+      "id": "ground_bus",
+      "name": "Ground Bus",
+      "category": "Bus"
+    },
+    {
+      "id": "battery",
+      "name": "Battery",
+      "category": "Source"
+    },
+    {
+      "id": "voltage_source",
+      "name": "DC Voltage Source",
+      "category": "Source"
+    },
+    {
+      "id": "audio_in",
+      "name": "Audio Input",
+      "category": "Source"
+    },
+    {
+      "id": "audio_out",
+      "name": "Audio Output",
+      "category": "Source"
+    },
+    {
+      "id": "ac_voltage_source",
+      "name": "AC Voltage Source",
+      "category": "Source"
+    },
+    {
+      "id": "current_source",
+      "name": "DC Current Source",
+      "category": "Source"
+    },
+    {
+      "id": "ac_current_source",
+      "name": "AC Current Source",
+      "category": "Source"
+    },
+    {
+      "id": "vcvs",
+      "name": "Voltage-Controlled Voltage Source",
+      "category": "Controlled Source"
+    },
+    {
+      "id": "vccs",
+      "name": "Voltage-Controlled Current Source",
+      "category": "Controlled Source"
+    },
+    {
+      "id": "ccvs",
+      "name": "Current-Controlled Voltage Source",
+      "category": "Controlled Source"
+    },
+    {
+      "id": "cccs",
+      "name": "Current-Controlled Current Source",
+      "category": "Controlled Source"
+    },
+    {
+      "id": "signal_source",
+      "name": "Signal Source",
+      "category": "Source"
+    },
+    {
+      "id": "ground",
+      "name": "Ground",
+      "category": "Reference"
+    },
+    {
+      "id": "opamp_741",
+      "name": "741 Op Amp - provisional",
+      "category": "Analog IC"
+    },
+    {
+      "id": "npn",
+      "name": "NPN Transistor - generic",
+      "category": "Discrete"
+    },
+    {
+      "id": "pnp",
+      "name": "PNP Transistor - generic",
+      "category": "Discrete"
+    },
+    {
+      "id": "nmos",
+      "name": "N-Channel MOSFET - generic",
+      "category": "Discrete"
+    },
+    {
+      "id": "pmos",
+      "name": "P-Channel MOSFET - generic",
+      "category": "Discrete"
+    },
+    {
+      "id": "njfet",
+      "name": "N-Channel JFET - generic",
+      "category": "Discrete"
+    },
+    {
+      "id": "pjfet",
+      "name": "P-Channel JFET - generic",
+      "category": "Discrete"
+    },
+    {
+      "id": "switch_spst",
+      "name": "SPST Switch",
+      "category": "Switch"
+    },
+    {
+      "id": "switch_spdt",
+      "name": "SPDT Switch",
+      "category": "Switch"
+    },
+    {
+      "id": "relay_spst",
+      "name": "SPST Relay",
+      "category": "Switch"
+    },
+    {
+      "id": "fuse",
+      "name": "Fuse",
+      "category": "Protection"
+    },
+    {
+      "id": "connector_2",
+      "name": "2-Pin Connector",
+      "category": "Connector"
+    },
+    {
+      "id": "connector_3",
+      "name": "3-Pin Connector",
+      "category": "Connector"
+    },
+    {
+      "id": "test_point",
+      "name": "Test Point",
+      "category": "Connector"
+    },
+    {
+      "id": "logic_not",
+      "name": "NOT Gate (Inverter)",
+      "category": "Digital"
+    },
+    {
+      "id": "logic_buffer",
+      "name": "Buffer",
+      "category": "Digital"
+    },
+    {
+      "id": "logic_and",
+      "name": "AND Gate",
+      "category": "Digital"
+    },
+    {
+      "id": "logic_or",
+      "name": "OR Gate",
+      "category": "Digital"
+    },
+    {
+      "id": "logic_nand",
+      "name": "NAND Gate",
+      "category": "Digital"
+    },
+    {
+      "id": "logic_nor",
+      "name": "NOR Gate",
+      "category": "Digital"
+    },
+    {
+      "id": "logic_xor",
+      "name": "XOR Gate",
+      "category": "Digital"
+    },
+    {
+      "id": "logic_xnor",
+      "name": "XNOR Gate",
+      "category": "Digital"
+    },
+    {
+      "id": "dc_motor",
+      "name": "DC Motor (brushed)",
+      "category": "Electromechanical"
+    },
+    {
+      "id": "dc_motor_tach",
+      "name": "DC Motor with Tachometer",
+      "category": "Electromechanical"
+    },
+    {
+      "id": "oscilloscope_2ch",
+      "name": "2-Channel Oscilloscope",
+      "category": "Instrument"
+    },
+    {
+      "id": "digital_multimeter",
+      "name": "Digital Multimeter",
+      "category": "Instrument"
+    },
+    {
+      "id": "annotation_text",
+      "name": "Text Note",
+      "category": "Annotation"
+    },
+    {
+      "id": "tube_12ax7",
+      "name": "12AX7 / ECC83 Dual Triode",
+      "category": "Vacuum Tubes",
+      "subcategory": "Small-Signal Triodes"
+    },
+    {
+      "id": "tube_12au7",
+      "name": "12AU7 / ECC82 Dual Triode",
+      "category": "Vacuum Tubes",
+      "subcategory": "Small-Signal Triodes"
+    },
+    {
+      "id": "tube_12at7",
+      "name": "12AT7 / ECC81 Dual Triode",
+      "category": "Vacuum Tubes",
+      "subcategory": "Small-Signal Triodes"
+    },
+    {
+      "id": "tube_12ay7",
+      "name": "12AY7 / 6072 Dual Triode",
+      "category": "Vacuum Tubes",
+      "subcategory": "Small-Signal Triodes"
+    },
+    {
+      "id": "tube_5751",
+      "name": "5751 High-Reliability Dual Triode",
+      "category": "Vacuum Tubes",
+      "subcategory": "Small-Signal Triodes"
+    },
+    {
+      "id": "tube_6sl7gt",
+      "name": "6SL7GT / ECC35 Dual Triode",
+      "category": "Vacuum Tubes",
+      "subcategory": "Small-Signal Triodes"
+    },
+    {
+      "id": "tube_6dj8",
+      "name": "6DJ8 / ECC88 Dual Triode",
+      "category": "Vacuum Tubes",
+      "subcategory": "Small-Signal Triodes"
+    },
+    {
+      "id": "tube_6922",
+      "name": "6922 / E88CC Premium Dual Triode",
+      "category": "Vacuum Tubes",
+      "subcategory": "Small-Signal Triodes"
+    },
+    {
+      "id": "tube_triode",
+      "name": "Generic Triode Vacuum Tube",
+      "category": "Vacuum Tubes",
+      "subcategory": "Small-Signal Triodes"
+    },
+    {
+      "id": "tube_12bh7a",
+      "name": "12BH7A Medium-Mu Driver Triode",
+      "category": "Vacuum Tubes",
+      "subcategory": "Driver Triodes"
+    },
+    {
+      "id": "tube_6sn7gt",
+      "name": "6SN7GT / ECC32 Dual Triode",
+      "category": "Vacuum Tubes",
+      "subcategory": "Driver Triodes"
+    },
+    {
+      "id": "tube_12dw7",
+      "name": "12DW7 / ECC832 Dissimilar Dual Triode",
+      "category": "Vacuum Tubes",
+      "subcategory": "Driver Triodes"
+    },
+    {
+      "id": "tube_300b",
+      "name": "300B Directly-Heated Power Triode",
+      "category": "Vacuum Tubes",
+      "subcategory": "Power Triodes"
+    },
+    {
+      "id": "tube_2a3",
+      "name": "2A3 Directly-Heated Power Triode",
+      "category": "Vacuum Tubes",
+      "subcategory": "Power Triodes"
+    },
+    {
+      "id": "tube_ef86",
+      "name": "EF86 / 6267 Audio Pentode",
+      "category": "Vacuum Tubes",
+      "subcategory": "Small-Signal Pentodes"
+    },
+    {
+      "id": "tube_6au6a",
+      "name": "6AU6A / EF94 Miniature Pentode",
+      "category": "Vacuum Tubes",
+      "subcategory": "Small-Signal Pentodes"
+    },
+    {
+      "id": "tube_el84",
+      "name": "EL84 / 6BQ5 Power Pentode",
+      "category": "Vacuum Tubes",
+      "subcategory": "Output Pentodes"
+    },
+    {
+      "id": "tube_el34",
+      "name": "EL34 / 6CA7 Power Pentode",
+      "category": "Vacuum Tubes",
+      "subcategory": "Output Pentodes"
+    },
+    {
+      "id": "tube_6l6gc",
+      "name": "6L6GC Beam Power Tube",
+      "category": "Vacuum Tubes",
+      "subcategory": "Beam Power Tubes"
+    },
+    {
+      "id": "tube_6v6gt",
+      "name": "6V6GT Beam Power Tube",
+      "category": "Vacuum Tubes",
+      "subcategory": "Beam Power Tubes"
+    },
+    {
+      "id": "tube_kt88",
+      "name": "KT88 Kinkless Beam Tetrode",
+      "category": "Vacuum Tubes",
+      "subcategory": "Beam Power Tubes"
+    },
+    {
+      "id": "tube_6550",
+      "name": "6550 Beam Power Pentode",
+      "category": "Vacuum Tubes",
+      "subcategory": "Beam Power Tubes"
+    },
+    {
+      "id": "tube_5ar4",
+      "name": "5AR4 / GZ34 Full-Wave Rectifier",
+      "category": "Vacuum Tubes",
+      "subcategory": "Rectifier Tubes"
+    },
+    {
+      "id": "tube_5u4gb",
+      "name": "5U4GB Full-Wave Rectifier",
+      "category": "Vacuum Tubes",
+      "subcategory": "Rectifier Tubes"
+    }
   ],
   "archetypes": [
-    { "id": "passive.resistor", "defaultSymbol": "resistor", "defaultValue": "10k" },
-    { "id": "passive.capacitor", "defaultSymbol": "capacitor", "defaultValue": "1u" },
-    { "id": "passive.inductor", "defaultSymbol": "inductor", "defaultValue": "10m" },
-    { "id": "discrete.diode", "defaultSymbol": "diode", "defaultValue": "1N4148" },
-    { "id": "source.battery", "defaultSymbol": "battery", "defaultValue": "9" },
-    { "id": "source.dc_voltage", "defaultSymbol": "voltage_source", "defaultValue": "10" },
-    { "id": "source.ac_voltage", "defaultSymbol": "ac_voltage_source", "defaultValue": "1", "defaultFrequency": "1k" },
-    { "id": "source.signal", "defaultSymbol": "signal_source", "defaultValue": "1", "defaultFrequency": "1k" },
-    { "id": "net.power_bus", "defaultSymbol": "power_bus", "defaultBusName": "+V" },
-    { "id": "net.ground_reference", "defaultSymbol": "ground", "defaultBusName": "0" },
-    { "id": "analog.op_amp", "defaultSymbol": "opamp_741" },
-    { "id": "discrete.bjt.npn", "defaultSymbol": "npn" },
-    { "id": "digital.logic.not", "defaultSymbol": "logic_not" },
-    { "id": "instrument.oscilloscope", "defaultSymbol": "oscilloscope_2ch" },
-    { "id": "instrument.multimeter", "defaultSymbol": "digital_multimeter" },
-    { "id": "documentation.annotation", "defaultSymbol": "annotation_text", "defaultValue": "Note" }
+    {
+      "id": "passive.resistor",
+      "defaultSymbol": "resistor",
+      "defaultValue": "10k"
+    },
+    {
+      "id": "passive.capacitor",
+      "defaultSymbol": "capacitor",
+      "defaultValue": "1u"
+    },
+    {
+      "id": "passive.inductor",
+      "defaultSymbol": "inductor",
+      "defaultValue": "10m"
+    },
+    {
+      "id": "discrete.diode",
+      "defaultSymbol": "diode",
+      "defaultValue": "1N4148"
+    },
+    {
+      "id": "source.battery",
+      "defaultSymbol": "battery",
+      "defaultValue": "9"
+    },
+    {
+      "id": "source.dc_voltage",
+      "defaultSymbol": "voltage_source",
+      "defaultValue": "10"
+    },
+    {
+      "id": "source.ac_voltage",
+      "defaultSymbol": "ac_voltage_source",
+      "defaultValue": "1",
+      "defaultFrequency": "1k"
+    },
+    {
+      "id": "source.signal",
+      "defaultSymbol": "signal_source",
+      "defaultValue": "1",
+      "defaultFrequency": "1k"
+    },
+    {
+      "id": "net.power_bus",
+      "defaultSymbol": "power_bus",
+      "defaultBusName": "+V"
+    },
+    {
+      "id": "net.ground_reference",
+      "defaultSymbol": "ground",
+      "defaultBusName": "0"
+    },
+    {
+      "id": "analog.op_amp",
+      "defaultSymbol": "opamp_741"
+    },
+    {
+      "id": "discrete.bjt.npn",
+      "defaultSymbol": "npn"
+    },
+    {
+      "id": "digital.logic.not",
+      "defaultSymbol": "logic_not"
+    },
+    {
+      "id": "instrument.oscilloscope",
+      "defaultSymbol": "oscilloscope_2ch"
+    },
+    {
+      "id": "instrument.multimeter",
+      "defaultSymbol": "digital_multimeter"
+    },
+    {
+      "id": "documentation.annotation",
+      "defaultSymbol": "annotation_text",
+      "defaultValue": "Note"
+    }
   ],
   "partFamilies": [
-    { "family": "2N2222", "archetype": "discrete.bjt.npn", "notes": "Common hobby NPN transistor family." },
-    { "family": "2N3904", "archetype": "discrete.bjt.npn", "notes": "Common small-signal NPN transistor family." },
-    { "family": "1N4148", "archetype": "discrete.diode.signal", "notes": "Common signal diode family." },
-    { "family": "1N400x", "archetype": "discrete.diode.rectifier", "notes": "Common rectifier diode family." },
-    { "family": "LM741", "archetype": "analog.op_amp", "notes": "Classic op amp family; useful for education, not modern default." },
-    { "family": "LM358", "archetype": "analog.op_amp", "notes": "Common dual op amp family." },
-    { "family": "TL072", "archetype": "analog.op_amp", "notes": "Common JFET-input dual op amp family." },
-    { "family": "NE555", "archetype": "analog.timer", "notes": "Common timer IC family." }
+    {
+      "family": "2N2222",
+      "archetype": "discrete.bjt.npn",
+      "notes": "Common hobby NPN transistor family."
+    },
+    {
+      "family": "2N3904",
+      "archetype": "discrete.bjt.npn",
+      "notes": "Common small-signal NPN transistor family."
+    },
+    {
+      "family": "1N4148",
+      "archetype": "discrete.diode.signal",
+      "notes": "Common signal diode family."
+    },
+    {
+      "family": "1N400x",
+      "archetype": "discrete.diode.rectifier",
+      "notes": "Common rectifier diode family."
+    },
+    {
+      "family": "LM741",
+      "archetype": "analog.op_amp",
+      "notes": "Classic op amp family; useful for education, not modern default."
+    },
+    {
+      "family": "LM358",
+      "archetype": "analog.op_amp",
+      "notes": "Common dual op amp family."
+    },
+    {
+      "family": "TL072",
+      "archetype": "analog.op_amp",
+      "notes": "Common JFET-input dual op amp family."
+    },
+    {
+      "family": "NE555",
+      "archetype": "analog.timer",
+      "notes": "Common timer IC family."
+    }
   ],
   "sourcingProviders": [
-    { "id": "digikey", "kind": "distributor", "confidenceBias": "high" },
-    { "id": "mouser", "kind": "distributor", "confidenceBias": "high" },
-    { "id": "newark", "kind": "distributor", "confidenceBias": "high" },
-    { "id": "adafruit", "kind": "hobby_supplier", "confidenceBias": "medium" },
-    { "id": "sparkfun", "kind": "hobby_supplier", "confidenceBias": "medium" },
-    { "id": "amazon", "kind": "consumer_marketplace", "confidenceBias": "low" },
-    { "id": "ebay", "kind": "consumer_marketplace", "confidenceBias": "low" },
-    { "id": "aliexpress", "kind": "consumer_marketplace", "confidenceBias": "low" }
+    {
+      "id": "digikey",
+      "kind": "distributor",
+      "confidenceBias": "high"
+    },
+    {
+      "id": "mouser",
+      "kind": "distributor",
+      "confidenceBias": "high"
+    },
+    {
+      "id": "newark",
+      "kind": "distributor",
+      "confidenceBias": "high"
+    },
+    {
+      "id": "adafruit",
+      "kind": "hobby_supplier",
+      "confidenceBias": "medium"
+    },
+    {
+      "id": "sparkfun",
+      "kind": "hobby_supplier",
+      "confidenceBias": "medium"
+    },
+    {
+      "id": "amazon",
+      "kind": "consumer_marketplace",
+      "confidenceBias": "low"
+    },
+    {
+      "id": "ebay",
+      "kind": "consumer_marketplace",
+      "confidenceBias": "low"
+    },
+    {
+      "id": "aliexpress",
+      "kind": "consumer_marketplace",
+      "confidenceBias": "low"
+    }
   ]
 }
-

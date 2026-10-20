@@ -1,6 +1,7 @@
 #pragma once
 
 #include <JuceHeader.h>
+#include "VacuumTubeCatalog.h"
 
 #include <functional>
 #include <vector>

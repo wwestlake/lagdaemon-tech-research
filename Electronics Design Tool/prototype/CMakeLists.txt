@@ -122,6 +122,8 @@ target_sources(DjehutiElectronicsLab PRIVATE
     Source/SpiceLibrary.cpp
     Source/PartCatalog.h
     Source/PartCatalog.cpp
+    Source/VacuumTubeCatalog.h
+    Source/VacuumTubeCatalog.cpp
     Source/Preferences.h
     Source/Preferences.cpp
     Source/CircuitSolver.h
@@ -992,6 +994,8 @@ target_sources(KnowledgeTests PRIVATE
     Source/SpiceLibrary.cpp
     Source/CapabilityCatalog.cpp
     Source/PartCatalog.cpp
+    Source/VacuumTubeCatalog.h
+    Source/VacuumTubeCatalog.cpp
     Source/SchematicSymbols.cpp
     Source/ErcAdvice.cpp
 )

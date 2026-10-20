@@ -6,6 +6,7 @@
 #include "SchematicRouter.h"
 #include "RouteEditing.h"
 #include "PartCatalog.h"
+#include "VacuumTubeCatalog.h"
 #include "CircuitSolver.h"
 #include "LogicGates.h"
 #include "Mechanical.h"
@@ -244,6 +245,11 @@ const SchematicToolSpec schematicToolSpecs[] = {
         "library_select",
         "Select a component in the Component Library by symbolId, activating it for placement and displaying its specifications in the Properties panel.",
         R"({"type":"object","properties":{"symbolId":{"type":"string","description":"Symbol ID to select, such as tube_12ax7, resistor, etc."}},"required":["symbolId"],"additionalProperties":false})"
+    },
+    {
+        "library_get_selected",
+        "Get the currently selected library symbol ID and its full specifications and metadata from the Properties panel.",
+        R"({"type":"object","properties":{},"additionalProperties":false})"
     },
     {
         "schematic_group_create",
@@ -932,6 +938,16 @@ const std::vector<ToolSpecText>& analyticsToolSpecs()
             settings->setProperty("additionalProperties", juce::var(new juce::DynamicObject()));
             props->setProperty("settings", juce::var(settings));
             list.push_back({ "analytics_open", "Show the Analytics window with an analysis selected and, optionally, its settings filled in, without running it.", schemaOf(props, { "analysis" }) });
+        }
+        {
+            auto* props = new juce::DynamicObject();
+            props->setProperty("analysis", stringProperty("Analysis key: operating_point, dc_sweep, ac, transient, fourier, noise, transfer_function, sensitivity, pole_zero, temperature, monte_carlo."));
+            auto* settings = new juce::DynamicObject();
+            settings->setProperty("type", "object");
+            settings->setProperty("description", "Optional settings to fill in, same keys as the analytics_<analysis> tool.");
+            settings->setProperty("additionalProperties", juce::var(new juce::DynamicObject()));
+            props->setProperty("settings", juce::var(settings));
+            list.push_back({ "analytics_run_analysis", "Run an analysis on the open diagram and return results.", schemaOf(props, { "analysis" }) });
         }
         return list;
     }();
@@ -2182,6 +2198,7 @@ public:
     // The mouse came into the library: the Workbench rescans the project's
     // definitions (so files added, renamed or deleted elsewhere show up).
     std::function<void()> onRescanRequested;
+    std::function<void(juce::String)> onSymbolSelected;
 
     explicit ComponentLibraryPanel(std::function<void(juce::String)> onSelection)
         : onSymbolSelected(std::move(onSelection))
@@ -2225,6 +2242,15 @@ public:
             add({ "sub_block", "Sub Diagram (empty)", "Sub Diagrams", "Blocks & Ports", {}, {} });
         if (std::none_of(allSymbols.begin(), allSymbols.end(), [](const SymbolInfo& s) { return s.id == "block_port"; }))
             add({ "block_port", "Sub Diagram Port (inside a block)", "Sub Diagrams", "Blocks & Ports", {}, {} });
+
+        // Complete Vacuum Tube Catalog (all 23 types across 7 subcategories)
+        for (const auto& tube : parts::getAllVacuumTubeSpecs())
+        {
+            if (std::none_of(allSymbols.begin(), allSymbols.end(), [&](const SymbolInfo& s) { return s.id == tube.id; }))
+                add({ tube.id, tube.name, "Vacuum Tubes", tube.subcategory, tube.name + " " + tube.classification, tube.name });
+        }
+        if (std::none_of(allSymbols.begin(), allSymbols.end(), [](const SymbolInfo& s) { return s.id == "tube_triode"; }))
+            add({ "tube_triode", "Generic Triode Vacuum Tube", "Vacuum Tubes", "Small-Signal Triodes", {}, {} });
         // The seed's generic entry cannot be placed (an instance needs a
         // definition); the Programmable Components group replaces it.
         allSymbols.erase(std::remove_if(allSymbols.begin(), allSymbols.end(), [](const SymbolInfo& s) { return s.id == "frust_component"; }),
@@ -2646,7 +2672,6 @@ private:
     juce::Viewport viewport;
     ListContent content { *this };
     std::vector<SymbolInfo> allSymbols;
-    std::function<void(juce::String)> onSymbolSelected;
     juce::String selectedId { "resistor" };
 
     void add(SymbolInfo item) { allSymbols.push_back(std::move(item)); }
@@ -2741,9 +2766,9 @@ private:
         add({ "pmos", "P-Channel MOSFET - generic", "Discrete" });
         add({ "njfet", "N-Channel JFET - generic", "Discrete" });
         add({ "pjfet", "P-Channel JFET - generic", "Discrete" });
-        add({ "tube_12ax7", "12AX7 / ECC83 Dual Triode", "Vacuum Tube" });
-        add({ "tube_12au7", "12AU7 / ECC82 Dual Triode", "Vacuum Tube" });
-        add({ "tube_triode", "Generic Triode Vacuum Tube", "Vacuum Tube" });
+        for (const auto& tube : parts::getAllVacuumTubeSpecs())
+            add({ tube.id, tube.name, "Vacuum Tubes", tube.subcategory, tube.name + " " + tube.classification, tube.name });
+        add({ "tube_triode", "Generic Triode Vacuum Tube", "Vacuum Tubes", "Small-Signal Triodes" });
         add({ "switch_spst", "SPST Switch", "Switch" });
         add({ "switch_spdt", "SPDT Switch", "Switch" });
         add({ "voltage_controlled_switch", "Voltage-Controlled Switch", "Switch" });
@@ -9124,7 +9149,7 @@ public:
                 if (element >= 0)
                     c.elements()[(size_t)element].modelName = partValue(inst, "value").toStdString();
             }
-            else if (id == "tube_12ax7" || id == "tube_12au7" || id == "tube_triode")
+            else if (id == "tube_12ax7" || id == "tube_12au7" || id == "tube_12at7" || id == "tube_12ay7" || id == "tube_triode")
             {
                 const auto sectionStr = partValue(inst, "section");
                 const int section = (sectionStr == "Unit 2") ? 2 : 1;
@@ -9132,6 +9157,10 @@ public:
                 circuit_sim::TriodeModel m;
                 if (id == "tube_12au7" || val == "12AU7")
                     m = circuit_sim::model12AU7(section);
+                else if (id == "tube_12at7" || val == "12AT7")
+                    m = circuit_sim::model12AT7(section);
+                else if (id == "tube_12ay7" || val == "12AY7")
+                    m = circuit_sim::model12AY7(section);
                 else
                     m = circuit_sim::model12AX7(section);
 
@@ -9144,7 +9173,12 @@ public:
 
                 element = c.addTriode(name, node(i, "P"), node(i, "G"), node(i, "K"), m);
                 if (element >= 0)
-                    c.elements()[(size_t)element].modelName = (id == "tube_12au7" || val == "12AU7") ? "12AU7" : "12AX7";
+                {
+                    if (id == "tube_12au7" || val == "12AU7") c.elements()[(size_t)element].modelName = "12AU7";
+                    else if (id == "tube_12at7" || val == "12AT7") c.elements()[(size_t)element].modelName = "12AT7";
+                    else if (id == "tube_12ay7" || val == "12AY7") c.elements()[(size_t)element].modelName = "12AY7";
+                    else c.elements()[(size_t)element].modelName = "12AX7";
+                }
 
                 const auto cgp = number(inst, "cgp", m.cgp);
                 const auto cgk = number(inst, "cgk", m.cgk);
@@ -9152,6 +9186,13 @@ public:
                 if (cgp > 0.0) c.addCapacitor(name + ".cgp", node(i, "G"), node(i, "P"), cgp);
                 if (cgk > 0.0) c.addCapacitor(name + ".cgk", node(i, "G"), node(i, "K"), cgk);
                 if (cpk > 0.0) c.addCapacitor(name + ".cpk", node(i, "P"), node(i, "K"), cpk);
+            }
+            else if (parts::isVacuumTube(id))
+            {
+                const auto tubeName = parts::displayName(id);
+                const auto message = "Model not yet available for " + tubeName + " — specifications only.";
+                sim.valueErrors.add(message);
+                if (sim.error.isEmpty()) sim.error = message;
             }
             else if (id == "switch_spst")
             {
@@ -14221,12 +14262,20 @@ public:
 
     void showPart(const juce::String& refdes)
     {
+        selectedLibrarySymbol = {};
         if (refdes == current && !rows.empty())
         {
             refreshValues();
             return;
         }
         current = refdes;
+        rebuild();
+    }
+
+    void showLibrarySymbol(const juce::String& symbolId)
+    {
+        current = {};
+        selectedLibrarySymbol = symbolId;
         rebuild();
     }
 
@@ -14370,6 +14419,65 @@ private:
         content.addAndMakeVisible(*row.hint);
         rows.push_back(std::move(row));
     }
+
+    void addMultiLineSpecRow(const juce::String& label, const juce::String& value, const juce::String& hint)
+    {
+        Row row;
+        row.key = "#spec:" + label;
+        row.label.reset(makeLabel(label, 12.0f, juce::Colour(0xff93a7b0), true));
+
+        auto* editor = new juce::TextEditor();
+        editor->setMultiLine(true);
+        editor->setReadOnly(true);
+        editor->setCaretVisible(false);
+        editor->setScrollbarsShown(true);
+        editor->setFont(juce::Font("Consolas", 12.0f, juce::Font::plain));
+        editor->setColour(juce::TextEditor::backgroundColourId, juce::Colour(0xff141c24));
+        editor->setColour(juce::TextEditor::textColourId, juce::Colour(0xffdce9ee));
+        editor->setColour(juce::TextEditor::outlineColourId, juce::Colour(0xff2d3d4d));
+        editor->setText(value, false);
+        row.control.reset(editor);
+
+        if (hint.isNotEmpty())
+            row.hint.reset(makeLabel(hint, 10.5f, juce::Colour(0xff71808c)));
+
+        const int numLines = std::max(2, juce::StringArray::fromLines(value).size());
+        row.height = 22 + std::min(140, numLines * 18 + 10) + (hint.isNotEmpty() ? 18 : 6);
+        content.addAndMakeVisible(*row.label);
+        content.addAndMakeVisible(*row.control);
+        if (row.hint != nullptr)
+            content.addAndMakeVisible(*row.hint);
+        rows.push_back(std::move(row));
+    }
+
+    void addTubeSpecifications(const parts::VacuumTubeSpec& spec)
+    {
+        addHeading("Tube Identification");
+        addReadOnlyRow("Designation", spec.name, "Primary type & European / US equivalents");
+        addReadOnlyRow("Classification", spec.classification, "Functional tube family");
+        addMultiLineSpecRow("Construction", spec.construction, "Envelope & socket / base");
+        addMultiLineSpecRow("Pinout mapping", spec.pinout, "Electrode pin numbers & sections");
+
+        addHeading("Heater / Filament");
+        addMultiLineSpecRow("Ratings", spec.heater, "Voltage, current & cathode type");
+
+        addHeading("Maximum Ratings");
+        addMultiLineSpecRow("Maximum limits", spec.maxRatings, "Absolute/design-maximum limits");
+
+        addHeading("Typical Operating Characteristics");
+        addMultiLineSpecRow("Nominal characteristics", spec.typicalOperation, "Documented nominal operating points");
+
+        addHeading("Provenance");
+        addMultiLineSpecRow("Datasheet source", spec.provenance, "Authentic manufacturer documentation");
+
+        addHeading("Simulation Fidelity");
+        addReadOnlyRow("Status", spec.simulated ? "Simulated (calibrated nonlinear model)"
+                                               : "Specifications only (not yet simulated)",
+                       spec.simulated ? "Active in DC, AC, and Transient simulation"
+                                      : "Model not yet available — specifications only");
+    }
+
+
 
     void setHint(Row& row, const juce::String& text, bool error)
     {
@@ -14589,7 +14697,20 @@ private:
         view = canvas != nullptr && current.isNotEmpty() ? canvas->partView(current) : SchematicCanvasPanel::PartView {};
         if (!view.ok)
         {
-            subtitle.reset(makeLabel("Select one part on the schematic to edit it.", 13.0f, juce::Colour(0xff71808c)));
+            if (selectedLibrarySymbol.isNotEmpty())
+            {
+                if (const auto* tube = parts::findVacuumTubeSpec(selectedLibrarySymbol))
+                {
+                    title.reset(makeLabel("Properties", 16.0f, juce::Colour(0xff78dcca), true));
+                    content.addAndMakeVisible(*title);
+                    subtitle.reset(makeLabel(tube->name + "  (Library Selection)", 13.0f, juce::Colour(0xffdce9ee)));
+                    content.addAndMakeVisible(*subtitle);
+                    addTubeSpecifications(*tube);
+                    layout();
+                    return;
+                }
+            }
+            subtitle.reset(makeLabel("Select a component in the library or schematic to edit it.", 13.0f, juce::Colour(0xff71808c)));
             content.addAndMakeVisible(*subtitle);
             layout();
             return;
@@ -14751,6 +14872,12 @@ private:
             content.addAndMakeVisible(*pinLabel);
             updatePinText();
         }
+
+        if (const auto* tube = parts::findVacuumTubeSpec(view.symbolId))
+        {
+            addTubeSpecifications(*tube);
+        }
+
         layout();
     }
 
@@ -14839,6 +14966,15 @@ private:
                 y += row.height;
                 continue;
             }
+            if (row.key.startsWith("#spec:"))
+            {
+                row.label->setBounds(x, y, w, 18);
+                const int controlH = row.height - 22 - (row.hint != nullptr ? 18 : 6);
+                if (row.control != nullptr) row.control->setBounds(x, y + 19, w, controlH);
+                if (row.hint != nullptr) row.hint->setBounds(x, y + 20 + controlH, w, 15);
+                y += row.height;
+                continue;
+            }
             row.label->setBounds(x, y, w, 18);
             if (row.control != nullptr) row.control->setBounds(x, y + 19, w, 28);
             if (row.hint != nullptr) row.hint->setBounds(x, y + 48, w, 15);
@@ -14865,6 +15001,7 @@ private:
         content.setSize(width, y + 12);
     }
 
+    juce::String selectedLibrarySymbol;
     juce::Component::SafePointer<SchematicCanvasPanel> canvas;
     juce::Viewport viewport;
     juce::Component content;
@@ -16279,6 +16416,14 @@ ElectronicsWorkbench::ElectronicsWorkbench()
     };
     auto properties = std::make_unique<PropertiesPanel>(schematicPanel);
     auto* propertiesPanel = properties.get();
+    if (safeLibrary != nullptr)
+    {
+        safeLibrary->onSymbolSelected = [propertiesPanel, this](juce::String id) {
+            selectedSymbolId = id;
+            if (propertiesPanel != nullptr)
+                propertiesPanel->showLibrarySymbol(id);
+        };
+    }
     schematicPanel->setSelectionListener([propertiesPanel](int, juce::String refdes, juce::String, juce::String,
                                                            juce::String, juce::String, juce::String, juce::String) {
         propertiesPanel->showPart(refdes);
@@ -16505,7 +16650,8 @@ ElectronicsWorkbench::ElectronicsWorkbench()
         });
         return true;
     };
-    agentTools.schematicTool = [this, schematicPanel, safeLibrary](const juce::String& name, const juce::var& args) {
+    juce::Component::SafePointer<PropertiesPanel> safeProperties(propertiesPanel);
+    agentTools.schematicTool = [this, schematicPanel, safeLibrary, safeProperties](const juce::String& name, const juce::var& args) {
         if (name.startsWith("library_"))
         {
             if (safeLibrary == nullptr)
@@ -16548,7 +16694,34 @@ ElectronicsWorkbench::ElectronicsWorkbench()
             {
                 const auto id = args.getProperty("symbolId", {}).toString();
                 safeLibrary->selectSymbol(id);
+                if (safeProperties != nullptr)
+                    safeProperties->showLibrarySymbol(id);
                 return juce::String(R"({"ok": true, "symbolId": ")") + id + R"("})";
+            }
+            if (name == "library_get_selected")
+            {
+                auto* res = new juce::DynamicObject();
+                res->setProperty("ok", true);
+                const juce::String selId = selectedSymbolId;
+                res->setProperty("symbolId", selId);
+                const auto* tube = parts::findVacuumTubeSpec(selId);
+                if (tube != nullptr)
+                {
+                    auto* tObj = new juce::DynamicObject();
+                    tObj->setProperty("id", tube->id);
+                    tObj->setProperty("name", tube->name);
+                    tObj->setProperty("subcategory", tube->subcategory);
+                    tObj->setProperty("classification", tube->classification);
+                    tObj->setProperty("construction", tube->construction);
+                    tObj->setProperty("pinout", tube->pinout);
+                    tObj->setProperty("heater", tube->heater);
+                    tObj->setProperty("maxRatings", tube->maxRatings);
+                    tObj->setProperty("typicalOperation", tube->typicalOperation);
+                    tObj->setProperty("provenance", tube->provenance);
+                    tObj->setProperty("simulated", tube->simulated);
+                    res->setProperty("tubeSpecification", juce::var(tObj));
+                }
+                return juce::JSON::toString(juce::var(res));
             }
         }
         if (name.startsWith("project_") || name.startsWith("diagram_"))
@@ -21319,6 +21492,14 @@ juce::String ElectronicsWorkbench::analyticsTool(const juce::String& name, const
         if (!r.ok) return fail(juce::String(r.error));
         return "{ \"ok\": true, \"tool\": " + quoteJson(name) + ", \"value\": " + juce::String(r.value, 12)
              + ", \"text\": " + quoteJson(label) + " }";
+    }
+    if (name == "analytics_run_analysis")
+    {
+        const auto target = args.getProperty("analysis", "operating_point").toString();
+        const auto* info = analytics::findAnalysis(target);
+        if (info == nullptr) return fail("Unknown analysis. Use one of the keys from analytics_list.");
+        const auto& run = analyticsPanel->runNow(info->id, translateCanonicalParameters(settingsFrom(args.getProperty("settings", {}))));
+        return analytics::toJson(run.result, run.files);
     }
     const auto* info = analytics::findAnalysis(name.fromFirstOccurrenceOf("analytics_", false, false));
     if (info == nullptr)

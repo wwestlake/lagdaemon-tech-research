@@ -1471,6 +1471,12 @@ analytics::Result run(analytics::Analysis analysis, const analytics::Settings& s
     failed.settings = settings;
     failed.when = juce::Time::getCurrentTime();
 
+    if (netlist.error.isNotEmpty())
+    {
+        failed.error = netlist.error;
+        return failed;
+    }
+
     if (netlist.circuit.elements().empty())
     {
         failed.error = "The diagram has nothing to simulate.";

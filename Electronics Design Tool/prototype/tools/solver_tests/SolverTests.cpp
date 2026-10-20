@@ -881,6 +881,120 @@ int main()
         check("12AU7 mu at operating point", mu, 19.8, 0.5);
     }
 
+    // 12AT7 DC and small-signal characteristics against published RCA / Mullard curves
+    {
+        Circuit c;
+        const auto p = c.addNode(), g = c.addNode();
+        c.addVoltageSource("Vp", p, 0, dc(250.0));
+        c.addVoltageSource("Vg", g, 0, dc(-2.0));
+        const auto m12at7 = model12AT7(1);
+        c.addTriode("V1", p, g, 0, m12at7);
+
+        // Capacitance check
+        check("12AT7 Cgp (pF)", m12at7.cgp * 1e12, 1.5, 0.01);
+        check("12AT7 Cgk (pF)", m12at7.cgk * 1e12, 2.2, 0.01);
+        check("12AT7 Cpk Sec 1 (pF)", m12at7.cpk * 1e12, 0.45, 0.01);
+
+        // Operating point 1: Nominal 250V plate, -2.0V grid
+        const auto op = solveOperatingPoint(c);
+        checkTrue("12AT7 DC OP solves", op.ok, op.error);
+        const auto ip = -op.sourceCurrents[(size_t)c.find("Vp")];
+        // Published RCA nominal 10.0 mA; target within 15%
+        check("12AT7 Ip at Vp=250V, Vg=-2V (mA)", ip * 1000.0, 10.14, 1.5);
+
+        const auto detail = deviceInfo(c, op, c.find("V1"));
+        double gm = 0.0, rp = 0.0, mu = 0.0;
+        for (size_t i = 0; i < detail.values.size(); ++i)
+        {
+            if (detail.values[i].first == "gm") gm = detail.values[i].second;
+            if (detail.values[i].first == "rp") rp = detail.values[i].second;
+            if (detail.values[i].first == "mu") mu = detail.values[i].second;
+        }
+        // Published: gm = 5.5 mA/V, rp = 10.9 kOhm, mu = 60
+        check("12AT7 gm at operating point (mA/V)", gm * 1000.0, 5.49, 0.8);
+        check("12AT7 rp at operating point (kOhm)", rp / 1000.0, 10.37, 1.5);
+        check("12AT7 mu at operating point", mu, 56.9, 8.0);
+
+        // Operating point 2: 200V plate, -2.0V grid (published ~5.5 mA)
+        Circuit c2;
+        const auto p2 = c2.addNode(), g2 = c2.addNode();
+        c2.addVoltageSource("Vp", p2, 0, dc(200.0));
+        c2.addVoltageSource("Vg", g2, 0, dc(-2.0));
+        c2.addTriode("V1", p2, g2, 0, model12AT7(1));
+        const auto op2 = solveOperatingPoint(c2);
+        checkTrue("12AT7 OP 2 solves", op2.ok, op2.error);
+        const auto ip2 = -op2.sourceCurrents[(size_t)c2.find("Vp")];
+        check("12AT7 Ip at Vp=200V, Vg=-2V (mA)", ip2 * 1000.0, 5.66, 0.8);
+
+        // Operating point 3: 150V plate, -1.0V grid (published ~6.0 mA)
+        Circuit c3;
+        const auto p3 = c3.addNode(), g3 = c3.addNode();
+        c3.addVoltageSource("Vp", p3, 0, dc(150.0));
+        c3.addVoltageSource("Vg", g3, 0, dc(-1.0));
+        c3.addTriode("V1", p3, g3, 0, model12AT7(1));
+        const auto op3 = solveOperatingPoint(c3);
+        checkTrue("12AT7 OP 3 solves", op3.ok, op3.error);
+        const auto ip3 = -op3.sourceCurrents[(size_t)c3.find("Vp")];
+        check("12AT7 Ip at Vp=150V, Vg=-1V (mA)", ip3 * 1000.0, 6.21, 0.9);
+    }
+
+    // 12AY7 DC and small-signal characteristics against published GE / Tung-Sol curves
+    {
+        Circuit c;
+        const auto p = c.addNode(), g = c.addNode();
+        c.addVoltageSource("Vp", p, 0, dc(250.0));
+        c.addVoltageSource("Vg", g, 0, dc(-4.0));
+        const auto m12ay7 = model12AY7(1);
+        c.addTriode("V1", p, g, 0, m12ay7);
+
+        // Capacitance check
+        check("12AY7 Cgp (pF)", m12ay7.cgp * 1e12, 1.5, 0.01);
+        check("12AY7 Cgk (pF)", m12ay7.cgk * 1e12, 1.3, 0.01);
+        check("12AY7 Cpk Sec 1 (pF)", m12ay7.cpk * 1e12, 0.50, 0.01);
+
+        // Operating point 1: Nominal 250V plate, -4.0V grid
+        const auto op = solveOperatingPoint(c);
+        checkTrue("12AY7 DC OP solves", op.ok, op.error);
+        const auto ip = -op.sourceCurrents[(size_t)c.find("Vp")];
+        // Published nominal 3.0 mA; target within 15%
+        check("12AY7 Ip at Vp=250V, Vg=-4V (mA)", ip * 1000.0, 3.32, 0.5);
+
+        const auto detail = deviceInfo(c, op, c.find("V1"));
+        double gm = 0.0, rp = 0.0, mu = 0.0;
+        for (size_t i = 0; i < detail.values.size(); ++i)
+        {
+            if (detail.values[i].first == "gm") gm = detail.values[i].second;
+            if (detail.values[i].first == "rp") rp = detail.values[i].second;
+            if (detail.values[i].first == "mu") mu = detail.values[i].second;
+        }
+        // Published: gm = 1.75 mA/V, rp = 25.0 kOhm, mu = 44
+        check("12AY7 gm at operating point (mA/V)", gm * 1000.0, 1.76, 0.25);
+        check("12AY7 rp at operating point (kOhm)", rp / 1000.0, 22.51, 3.5);
+        check("12AY7 mu at operating point", mu, 39.5, 6.0);
+
+        // Operating point 2: 150V plate, -2.0V grid (published ~2.5 mA)
+        Circuit c2;
+        const auto p2 = c2.addNode(), g2 = c2.addNode();
+        c2.addVoltageSource("Vp", p2, 0, dc(150.0));
+        c2.addVoltageSource("Vg", g2, 0, dc(-2.0));
+        c2.addTriode("V1", p2, g2, 0, model12AY7(1));
+        const auto op2 = solveOperatingPoint(c2);
+        checkTrue("12AY7 OP 2 solves", op2.ok, op2.error);
+        const auto ip2 = -op2.sourceCurrents[(size_t)c2.find("Vp")];
+        check("12AY7 Ip at Vp=150V, Vg=-2V (mA)", ip2 * 1000.0, 2.46, 0.35);
+
+        // Operating point 3: 200V plate, -2.0V grid (published ~5.5 mA)
+        Circuit c3;
+        const auto p3 = c3.addNode(), g3 = c3.addNode();
+        c3.addVoltageSource("Vp", p3, 0, dc(200.0));
+        c3.addVoltageSource("Vg", g3, 0, dc(-2.0));
+        c3.addTriode("V1", p3, g3, 0, model12AY7(1));
+        const auto op3 = solveOperatingPoint(c3);
+        checkTrue("12AY7 OP 3 solves", op3.ok, op3.error);
+        const auto ip3 = -op3.sourceCurrents[(size_t)c3.find("Vp")];
+        check("12AY7 Ip at Vp=200V, Vg=-2V (mA)", ip3 * 1000.0, 4.91, 0.7);
+    }
+
     // 12AX7 Common-Cathode Voltage Amplifier (DC bias, AC gain, Miller effect, transient clipping)
     {
         Circuit c;

@@ -248,8 +248,32 @@ std::map<juce::String, std::vector<ParamSpec>> buildCatalog()
         quantity("cgk", "Grid-to-cathode capacitance (Cgk)", "F", "1.6p"),
         quantity("cpk", "Plate-to-cathode capacitance (Cpk)", "F", "0.4p")
     };
+    c["tube_12at7"] = {
+        choice("section", "Section (Unit)", { "Unit 1", "Unit 2" }, "Unit 1", Storage::Param, "Dual-triode section (pins 6,7,8 or pins 1,2,3)"),
+        quantity("mu", "Amplification factor (mu)", "", "60"),
+        quantity("ex", "Space-charge exponent (EX)", "", "1.3"),
+        quantity("kg1", "Transconductance scale (KG1)", "", "560"),
+        quantity("kp", "Knee cutoff curvature (KP)", "", "300"),
+        quantity("kvb", "Knee voltage (KVB)", "V", "300"),
+        quantity("rgi", "Grid conduction resistance (RGI)", "ohm", "2k"),
+        quantity("cgp", "Grid-to-plate capacitance (Cgp)", "F", "1.5p"),
+        quantity("cgk", "Grid-to-cathode capacitance (Cgk)", "F", "2.2p"),
+        quantity("cpk", "Plate-to-cathode capacitance (Cpk)", "F", "0.45p")
+    };
+    c["tube_12ay7"] = {
+        choice("section", "Section (Unit)", { "Unit 1", "Unit 2" }, "Unit 1", Storage::Param, "Dual-triode section (pins 6,7,8 or pins 1,2,3)"),
+        quantity("mu", "Amplification factor (mu)", "", "46"),
+        quantity("ex", "Space-charge exponent (EX)", "", "1.25"),
+        quantity("kg1", "Transconductance scale (KG1)", "", "1250"),
+        quantity("kp", "Knee cutoff curvature (KP)", "", "200"),
+        quantity("kvb", "Knee voltage (KVB)", "V", "600"),
+        quantity("rgi", "Grid conduction resistance (RGI)", "ohm", "2k"),
+        quantity("cgp", "Grid-to-plate capacitance (Cgp)", "F", "1.5p"),
+        quantity("cgk", "Grid-to-cathode capacitance (Cgk)", "F", "1.3p"),
+        quantity("cpk", "Plate-to-cathode capacitance (Cpk)", "F", "0.5p")
+    };
     c["tube_triode"] = {
-        choice("value", "Tube Type", { "12AX7", "12AU7", "generic" }, "12AX7", Storage::Value),
+        choice("value", "Tube Type", { "12AX7", "12AU7", "12AT7", "12AY7", "generic" }, "12AX7", Storage::Value),
         choice("section", "Section (Unit)", { "Unit 1", "Unit 2" }, "Unit 1", Storage::Param),
         quantity("mu", "Amplification factor (mu)", "", "100"),
         quantity("ex", "Space-charge exponent (EX)", "", "1.4"),
@@ -377,6 +401,8 @@ juce::String displayName(const juce::String& id)
         { "logic_nand", "NAND Gate" }, { "logic_nor", "NOR Gate" }, { "logic_xor", "XOR Gate" }, { "logic_xnor", "XNOR Gate" },
         { "dc_motor", "DC Motor" }, { "dc_motor_tach", "DC Motor with Tachometer" },
         { "dc_motor_servo", "DC Servomotor" }, { "position_sensor", "Rotary Position Sensor" } };
+    if (const auto* tube = findVacuumTubeSpec(id))
+        return tube->name;
     const auto found = names.find(id);
     return found != names.end() ? found->second : id;
 }
@@ -390,9 +416,11 @@ juce::String simulationFidelity(const juce::String& id)
         return "generic_model";
     if (id == "voltage_controlled_switch" || id == "current_controlled_switch")
         return "generic_model";
+    if (const auto* tube = findVacuumTubeSpec(id))
+        return tube->simulated ? "generic_model" : "unsupported";
     if (id == "diode" || id == "zener_diode" || id == "schottky_diode" || id == "led"
         || id == "npn" || id == "pnp" || id == "nmos" || id == "pmos" || id == "njfet" || id == "pjfet"
-        || id == "tube_12ax7" || id == "tube_12au7" || id == "tube_triode")
+        || id == "tube_12ax7" || id == "tube_12au7" || id == "tube_12at7" || id == "tube_12ay7" || id == "tube_triode")
         return "generic_model";
     // Logic gates: levels, thresholds, drive and delay (internal solver).
     if (id.startsWith("logic_"))

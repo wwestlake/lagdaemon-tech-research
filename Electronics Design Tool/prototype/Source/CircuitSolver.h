@@ -159,6 +159,46 @@ inline TriodeModel model12AU7(int section = 1)
     return m;
 }
 
+inline TriodeModel model12AT7(int section = 1)
+{
+    TriodeModel m;
+    m.mu = 60.0;
+    m.ex = 1.3;
+    m.kg1 = 560.0;
+    m.kp = 300.0;
+    m.kvb = 300.0;
+    m.rgi = 2000.0;
+    m.vgamma = 0.0;
+    m.cgp = 1.5e-12;
+    m.cgk = 2.2e-12;
+    m.cpk = (section == 2) ? 0.35e-12 : 0.45e-12;
+    m.section = section;
+    m.maxPlateVoltage = 300.0;
+    m.maxPlateDissipation = 2.5;
+    m.maxCathodeCurrent = 20e-3;
+    return m;
+}
+
+inline TriodeModel model12AY7(int section = 1)
+{
+    TriodeModel m;
+    m.mu = 46.0;
+    m.ex = 1.25;
+    m.kg1 = 1250.0;
+    m.kp = 200.0;
+    m.kvb = 600.0;
+    m.rgi = 2000.0;
+    m.vgamma = 0.0;
+    m.cgp = 1.5e-12;
+    m.cgk = 1.3e-12;
+    m.cpk = (section == 2) ? 0.35e-12 : 0.50e-12;
+    m.section = section;
+    m.maxPlateVoltage = 300.0;
+    m.maxPlateDissipation = 1.5;
+    m.maxCathodeCurrent = 10e-3;
+    return m;
+}
+
 // A device whose behaviour is a program (the Workbench's FRust programmable
 // components). Its pins are the element's nodes, in order. At every Newton
 // iteration the solver asks it for the current each pin drives INTO the
