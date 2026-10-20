@@ -216,6 +216,36 @@ struct SchematicToolSpec
 
 const SchematicToolSpec schematicToolSpecs[] = {
     {
+        "library_get_hierarchy",
+        "Inspect the Component Library hierarchy, categories, subcategories, expanded/collapsed states, item counts, and currently visible rows.",
+        R"({"type":"object","properties":{},"additionalProperties":false})"
+    },
+    {
+        "library_expand_all",
+        "Expand all categories and subcategories in the Component Library hierarchy.",
+        R"({"type":"object","properties":{},"additionalProperties":false})"
+    },
+    {
+        "library_collapse_all",
+        "Collapse all categories and subcategories in the Component Library hierarchy.",
+        R"({"type":"object","properties":{},"additionalProperties":false})"
+    },
+    {
+        "library_set_expanded",
+        "Expand or collapse a specific category or subcategory in the Component Library.",
+        R"({"type":"object","properties":{"category":{"type":"string","description":"Category name such as 'Vacuum Tubes' or 'Passives'."},"subcategory":{"type":"string","description":"Optional subcategory name such as 'Small-Signal Triodes' or 'Resistors'."},"expanded":{"type":"boolean","description":"True to expand, false to collapse."}},"required":["category","expanded"],"additionalProperties":false})"
+    },
+    {
+        "library_search",
+        "Filter the Component Library by a search query string. An empty string clears the search and restores normal browsing.",
+        R"({"type":"object","properties":{"query":{"type":"string","description":"Search term, MPN, or alias. Empty to clear search."}},"required":["query"],"additionalProperties":false})"
+    },
+    {
+        "library_select",
+        "Select a component in the Component Library by symbolId, activating it for placement and displaying its specifications in the Properties panel.",
+        R"({"type":"object","properties":{"symbolId":{"type":"string","description":"Symbol ID to select, such as tube_12ax7, resistor, etc."}},"required":["symbolId"],"additionalProperties":false})"
+    },
+    {
         "schematic_group_create",
         "Draw a named group box around existing components. Group boxes only label a region of the diagram; wiring and the circuit are unchanged. The name is shown in the box's top-left corner.",
         R"({"type":"object","properties":{"name":{"type":"string","description":"Group name shown in the box corner, such as Output Stage."},"members":{"type":"array","items":{"type":"string"},"description":"Reference designators of the components to enclose, such as [\"Q1\", \"Q2\", \"R3\"]."},"category":{"type":"string","description":"Optional category such as amplifier_stage or bias_network."},"notes":{"type":"string","description":"Optional notes."}},"required":["name","members"],"additionalProperties":false})"
@@ -1929,10 +1959,211 @@ public:
         juce::String id;
         juce::String name;
         juce::String category;
+        juce::String subcategory;
         juce::String detail; // the row's second line; the symbol id when empty
+        juce::String aliases;
+    };
+
+    struct Grouping
+    {
+        juce::String category;
+        juce::String subcategory;
     };
 
     static constexpr const char* programmableGroup = "Programmable Components";
+
+    static Grouping categoryAndSubcategoryFor(const SymbolInfo& symbol)
+    {
+        if (symbol.category.isNotEmpty() && symbol.subcategory.isNotEmpty())
+            return { symbol.category, symbol.subcategory };
+
+        const auto& id = symbol.id;
+        const auto& c = symbol.category;
+
+        if (id.startsWith("tube_") || c == "Vacuum Tube" || c == "Vacuum Tubes")
+        {
+            juce::String sub = symbol.subcategory;
+            if (sub.isEmpty())
+            {
+                if (id == "tube_12ax7" || id == "tube_12au7" || id == "tube_12at7" || id == "tube_12ay7"
+                    || id == "tube_5751" || id == "tube_6sl7gt" || id == "tube_6dj8" || id == "tube_6922"
+                    || id == "tube_triode")
+                    sub = "Small-Signal Triodes";
+                else if (id == "tube_12bh7a" || id == "tube_6sn7gt" || id == "tube_12dw7")
+                    sub = "Driver Triodes";
+                else if (id == "tube_300b" || id == "tube_2a3")
+                    sub = "Power Triodes";
+                else if (id == "tube_ef86")
+                    sub = "Small-Signal Pentodes";
+                else if (id == "tube_el84" || id == "tube_el34")
+                    sub = "Output Pentodes";
+                else if (id == "tube_6v6gt" || id == "tube_6l6gc" || id == "tube_kt88")
+                    sub = "Beam Power Tubes";
+                else if (id == "tube_5y3gt" || id == "tube_5u4gb" || id == "tube_5ar4" || id == "tube_ez81")
+                    sub = "Rectifier Tubes";
+                else
+                    sub = "Small-Signal Triodes";
+            }
+            return { "Vacuum Tubes", sub };
+        }
+
+        if (c == "Passive")
+        {
+            if (id.contains("resistor") || id == "potentiometer")
+                return { "Passives", "Resistors" };
+            if (id.contains("capacitor"))
+                return { "Passives", "Capacitors" };
+            if (id.contains("inductor"))
+                return { "Passives", "Inductors" };
+            return { "Passives", "General Passives" };
+        }
+        if (c == "Magnetics")
+            return { "Magnetics", "Transformers & Chokes" };
+        if (id.contains("diode") || id == "led")
+        {
+            if (id == "zener_diode" || id == "led")
+                return { "Diodes", "Specialty Diodes" };
+            return { "Diodes", "Standard & Rectifier" };
+        }
+        if (c == "Discrete")
+        {
+            if (id == "npn" || id == "pnp")
+                return { "Transistors", "Bipolar (BJT)" };
+            if (id == "nmos" || id == "pmos")
+                return { "Transistors", "MOSFET" };
+            if (id == "njfet" || id == "pjfet")
+                return { "Transistors", "JFET" };
+            return { "Transistors", "General Transistors" };
+        }
+        if (c == "Source")
+        {
+            if (id == "battery" || id == "voltage_source" || id == "current_source")
+                return { "Sources", "DC Sources" };
+            return { "Sources", "AC & Signal Sources" };
+        }
+        if (c == "Controlled Source")
+            return { "Sources", "Controlled Sources" };
+        if (c == "Bus" || c == "Reference" || c == "Power & Ground")
+        {
+            if (id == "ground" || id == "ground_bus")
+                return { "Power & Ground", "Reference" };
+            return { "Power & Ground", "Supplies & Ports" };
+        }
+        if (c == "Analog IC")
+        {
+            if (id.contains("opamp"))
+                return { "Analog ICs", "Operational Amplifiers" };
+            if (id.contains("comparator"))
+                return { "Analog ICs", "Comparators" };
+            if (id.contains("regulator"))
+                return { "Analog ICs", "Voltage Regulators" };
+            return { "Analog ICs", "General Analog ICs" };
+        }
+        if (c == "Digital")
+        {
+            if (id == "logic_not" || id == "logic_buffer")
+                return { "Digital Logic", "Inverters & Buffers" };
+            return { "Digital Logic", "Logic Gates" };
+        }
+        if (c == "Switch")
+        {
+            if (id == "relay_spst")
+                return { "Switches & Relays", "Relays" };
+            if (id.contains("controlled"))
+                return { "Switches & Relays", "Controlled Switches" };
+            return { "Switches & Relays", "Mechanical Switches" };
+        }
+        if (c == "Protection")
+            return { "Protection", "Protection" };
+        if (c == "Connector")
+        {
+            if (id == "test_point")
+                return { "Connectors & Test Points", "Test Points" };
+            return { "Connectors & Test Points", "Connectors" };
+        }
+        if (c == "Instrument")
+        {
+            if (id.contains("scope") || id.contains("meter"))
+                return { "Instruments", "Meters & Scopes" };
+            return { "Instruments", "Analyzers & Plotters" };
+        }
+        if (c == "Electromechanical")
+        {
+            if (id == "position_sensor")
+                return { "Electromechanical", "Sensors" };
+            return { "Electromechanical", "Motors" };
+        }
+        if (c == "Sub Diagrams")
+            return { "Sub Diagrams", "Blocks & Ports" };
+        if (c == programmableGroup)
+            return { programmableGroup, "FRust Definitions" };
+
+        return { c.isNotEmpty() ? c : juce::String("Other"), "General" };
+    }
+
+    static const juce::StringArray& categoryOrder()
+    {
+        static const juce::StringArray order {
+            "Passives",
+            "Magnetics",
+            "Diodes",
+            "Transistors",
+            "Vacuum Tubes",
+            "Sources",
+            "Power & Ground",
+            "Analog ICs",
+            "Digital Logic",
+            "Switches & Relays",
+            "Protection",
+            "Connectors & Test Points",
+            "Instruments",
+            "Electromechanical",
+            "Sub Diagrams",
+            programmableGroup
+        };
+        return order;
+    }
+
+    static juce::StringArray subcategoryOrder(const juce::String& category)
+    {
+        if (category == "Vacuum Tubes")
+        {
+            return {
+                "Small-Signal Triodes",
+                "Driver Triodes",
+                "Power Triodes",
+                "Small-Signal Pentodes",
+                "Output Pentodes",
+                "Beam Power Tubes",
+                "Rectifier Tubes"
+            };
+        }
+        if (category == "Passives") return { "Resistors", "Capacitors", "Inductors" };
+        if (category == "Diodes") return { "Standard & Rectifier", "Specialty Diodes" };
+        if (category == "Transistors") return { "Bipolar (BJT)", "MOSFET", "JFET" };
+        if (category == "Sources") return { "DC Sources", "AC & Signal Sources", "Controlled Sources" };
+        if (category == "Power & Ground") return { "Reference", "Supplies & Ports" };
+        if (category == "Analog ICs") return { "Operational Amplifiers", "Comparators", "Voltage Regulators" };
+        if (category == "Digital Logic") return { "Inverters & Buffers", "Logic Gates" };
+        if (category == "Switches & Relays") return { "Mechanical Switches", "Controlled Switches", "Relays" };
+        if (category == "Connectors & Test Points") return { "Connectors", "Test Points" };
+        if (category == "Instruments") return { "Meters & Scopes", "Analyzers & Plotters" };
+        if (category == "Electromechanical") return { "Motors", "Sensors" };
+        return {};
+    }
+
+    static juce::Colour swatchFor(const juce::String& category)
+    {
+        if (category == "Sources") return juce::Colour(0xfff4d35e);
+        if (category == "Power & Ground") return juce::Colour(0xff78dcca);
+        if (category == "Analog ICs" || category == "Digital Logic") return juce::Colour(0xffffc857);
+        if (category == "Instruments") return juce::Colour(0xffff6b6b);
+        if (category == "Vacuum Tubes") return juce::Colour(0xffff9f43);
+        if (category == "Transistors" || category == "Diodes") return juce::Colour(0xff54a0ff);
+        if (category == "Electromechanical") return juce::Colour(0xff1dd1a1);
+        if (category == programmableGroup) return juce::Colour(0xff7fffd4);
+        return juce::Colour(0xff5aa7c8);
+    }
 
     // The open project's programmable component definitions (name and pin
     // count), in their own group after New Programmable Component...
@@ -1941,10 +2172,10 @@ public:
         allSymbols.erase(std::remove_if(allSymbols.begin(), allSymbols.end(),
                                         [](const SymbolInfo& s) { return s.category == programmableGroup; }),
                          allSymbols.end());
-        add({ "frust_component:*new", "New Programmable Component...", programmableGroup, "blank: design it in the Node Designer" });
+        add({ "frust_component:*new", "New Programmable Component...", programmableGroup, "FRust Definitions", "blank: design it in the Node Designer", {} });
         for (const auto& [name, pins] : definitions)
-            add({ "frust_component:" + name, name, programmableGroup,
-                  "programmable, " + juce::String(pins) + (pins == 1 ? " pin" : " pins") });
+            add({ "frust_component:" + name, name, programmableGroup, "FRust Definitions",
+                  "programmable, " + juce::String(pins) + (pins == 1 ? " pin" : " pins"), {} });
         content.rebuild();
     }
 
@@ -1959,6 +2190,20 @@ public:
         filter.onTextChange = [this] { content.rebuild(); };
         addAndMakeVisible(filter);
 
+        expandAllButton.setColour(juce::TextButton::buttonColourId, juce::Colour(0xff1d2731));
+        expandAllButton.setColour(juce::TextButton::buttonOnColourId, juce::Colour(0xff2a3947));
+        expandAllButton.setColour(juce::TextButton::textColourOffId, juce::Colour(0xffa8bac4));
+        expandAllButton.setColour(juce::TextButton::textColourOnId, juce::Colours::white);
+        expandAllButton.onClick = [this] { content.expandAll(); };
+        addAndMakeVisible(expandAllButton);
+
+        collapseAllButton.setColour(juce::TextButton::buttonColourId, juce::Colour(0xff1d2731));
+        collapseAllButton.setColour(juce::TextButton::buttonOnColourId, juce::Colour(0xff2a3947));
+        collapseAllButton.setColour(juce::TextButton::textColourOffId, juce::Colour(0xffa8bac4));
+        collapseAllButton.setColour(juce::TextButton::textColourOnId, juce::Colours::white);
+        collapseAllButton.onClick = [this] { content.collapseAll(); };
+        addAndMakeVisible(collapseAllButton);
+
         viewport.setViewedComponent(&content, false);
         viewport.setScrollBarsShown(true, false);
         viewport.setScrollBarThickness(10);
@@ -1968,26 +2213,55 @@ public:
             addFallbackLibrary();
         // Placeable net markers that the seed list does not carry.
         if (std::none_of(allSymbols.begin(), allSymbols.end(), [](const SymbolInfo& s) { return s.id == "power_port"; }))
-            add({ "power_port", "Supply Port (+V / -V)", "Power & Ground" });
+            add({ "power_port", "Supply Port (+V / -V)", "Power & Ground", "Supplies & Ports", {}, {} });
         if (std::none_of(allSymbols.begin(), allSymbols.end(), [](const SymbolInfo& s) { return s.id == "net_label"; }))
-            add({ "net_label", "Net Label", "Power & Ground" });
+            add({ "net_label", "Net Label", "Power & Ground", "Supplies & Ports", {}, {} });
         if (std::none_of(allSymbols.begin(), allSymbols.end(), [](const SymbolInfo& s) { return s.id == "bode_analyzer"; }))
-            add({ "bode_analyzer", "Frequency Analyzer (Bode)", "Instrument" });
+            add({ "bode_analyzer", "Frequency Analyzer (Bode)", "Instrument", "Analyzers & Plotters", {}, {} });
         if (std::none_of(allSymbols.begin(), allSymbols.end(), [](const SymbolInfo& s) { return s.id == "xyz_plotter"; }))
-            add({ "xyz_plotter", "2D/3D Plotter (Time / XY / XYZ)", "Instrument" });
+            add({ "xyz_plotter", "2D/3D Plotter (Time / XY / XYZ)", "Instrument", "Analyzers & Plotters", {}, {} });
         // Top-down Sub Diagrams: an empty block, and a port placed inside one.
         if (std::none_of(allSymbols.begin(), allSymbols.end(), [](const SymbolInfo& s) { return s.id == "sub_block"; }))
-            add({ "sub_block", "Sub Diagram (empty)", "Sub Diagrams" });
+            add({ "sub_block", "Sub Diagram (empty)", "Sub Diagrams", "Blocks & Ports", {}, {} });
         if (std::none_of(allSymbols.begin(), allSymbols.end(), [](const SymbolInfo& s) { return s.id == "block_port"; }))
-            add({ "block_port", "Sub Diagram Port (inside a block)", "Sub Diagrams" });
+            add({ "block_port", "Sub Diagram Port (inside a block)", "Sub Diagrams", "Blocks & Ports", {}, {} });
         // The seed's generic entry cannot be placed (an instance needs a
         // definition); the Programmable Components group replaces it.
         allSymbols.erase(std::remove_if(allSymbols.begin(), allSymbols.end(), [](const SymbolInfo& s) { return s.id == "frust_component"; }),
                          allSymbols.end());
         setProgrammableComponents({});
 
+        // Initial state: all categories and subcategories are collapsed on startup.
+        content.collapseAll();
+
         if (onSymbolSelected != nullptr)
             onSymbolSelected("resistor");
+    }
+
+    void expandAll() { content.expandAll(); }
+    void collapseAll() { content.collapseAll(); }
+    void setCategoryExpanded(const juce::String& category, bool expanded)
+    {
+        content.setCategoryExpanded(category, expanded);
+    }
+    void setSubcategoryExpanded(const juce::String& category, const juce::String& subcategory, bool expanded)
+    {
+        content.setSubcategoryExpanded(category, subcategory, expanded);
+    }
+    void setSearchQuery(const juce::String& query)
+    {
+        filter.setText(query);
+    }
+    void selectSymbol(const juce::String& symbolId)
+    {
+        selectedId = symbolId;
+        if (onSymbolSelected != nullptr)
+            onSymbolSelected(symbolId);
+        content.repaint();
+    }
+    juce::var getHierarchyState() const
+    {
+        return content.getState();
     }
 
     void paint(juce::Graphics& g) override
@@ -2003,54 +2277,19 @@ public:
         auto area = getLocalBounds().reduced(8);
         area.removeFromTop(24);
         filter.setBounds(area.removeFromTop(28));
-        area.removeFromTop(8);
+        area.removeFromTop(6);
+        auto btnArea = area.removeFromTop(24);
+        int half = (btnArea.getWidth() - 6) / 2;
+        expandAllButton.setBounds(btnArea.removeFromLeft(half));
+        btnArea.removeFromLeft(6);
+        collapseAllButton.setBounds(btnArea.removeFromLeft(half));
+        area.removeFromTop(6);
         viewport.setBounds(area);
         content.layoutToWidth(area.getWidth() - viewport.getScrollBarThickness());
     }
 
 private:
-    // Display groups, in order. Seed categories map onto these; "Discrete"
-    // splits into diodes and transistors.
-    static juce::String groupFor(const SymbolInfo& symbol)
-    {
-        const auto& id = symbol.id;
-        const auto& c = symbol.category;
-        if (c == "Passive") return "Passives";
-        if (c == "Magnetics") return "Magnetics";
-        if (id.contains("diode") || id == "led") return "Diodes";
-        if (c == "Discrete") return "Transistors";
-        if (c == "Source") return "Sources";
-        if (c == "Controlled Source") return "Controlled Sources";
-        if (c == "Bus" || c == "Reference" || c == "Power & Ground") return "Power & Ground";
-        if (c == "Analog IC") return "Analog ICs";
-        if (c == "Digital") return "Digital Logic";
-        if (c == "Switch") return "Switches & Relays";
-        if (c == "Protection") return "Protection";
-        if (c == "Connector") return "Connectors & Test Points";
-        if (c == "Instrument") return "Instruments";
-        return c.isNotEmpty() ? c : juce::String("Other");
-    }
-
-    static const juce::StringArray& groupOrder()
-    {
-        static const juce::StringArray order { "Passives", "Magnetics", "Diodes", "Transistors", "Sources",
-                                               "Controlled Sources", "Power & Ground", "Analog ICs", "Digital Logic",
-                                               "Switches & Relays", "Protection", "Connectors & Test Points", "Instruments", "Sub Diagrams",
-                                               programmableGroup };
-        return order;
-    }
-
-    static juce::Colour swatchFor(const juce::String& group)
-    {
-        if (group == "Sources" || group == "Controlled Sources") return juce::Colour(0xfff4d35e);
-        if (group == "Power & Ground") return juce::Colour(0xff78dcca);
-        if (group == "Analog ICs" || group == "Digital Logic") return juce::Colour(0xffffc857);
-        if (group == "Instruments") return juce::Colour(0xffff6b6b);
-        if (group == programmableGroup) return juce::Colour(0xff7fffd4);
-        return juce::Colour(0xff5aa7c8);
-    }
-
-    // The scrolling list: group headers (click to collapse/expand) and rows.
+    // The scrolling list: category headers (level 0), subcategory headers (level 1), and component rows (level 2).
     class ListContent final : public juce::Component
     {
     public:
@@ -2058,41 +2297,158 @@ private:
 
         struct Entry
         {
-            bool header = false;
-            juce::String group;
+            int level = 0; // 0 = category, 1 = subcategory, 2 = component
+            juce::String category;
+            juce::String subcategory;
             int symbol = -1; // index into allSymbols
-            int count = 0;   // header: rows in the group
+            int count = 0;   // for headers: total leaf items under this header
             juce::Rectangle<int> bounds;
         };
+
+        void expandAll()
+        {
+            expandedCategories.clear();
+            expandedSubcategories.clear();
+            for (const auto& symbol : owner.allSymbols)
+            {
+                const auto g = categoryAndSubcategoryFor(symbol);
+                expandedCategories.insert(g.category);
+                expandedSubcategories.insert(g.category + "/" + g.subcategory);
+            }
+            rebuild();
+        }
+
+        void collapseAll()
+        {
+            expandedCategories.clear();
+            expandedSubcategories.clear();
+            rebuild();
+        }
+
+        void setCategoryExpanded(const juce::String& category, bool expanded)
+        {
+            if (expanded) expandedCategories.insert(category);
+            else expandedCategories.erase(category);
+            rebuild();
+        }
+
+        void setSubcategoryExpanded(const juce::String& category, const juce::String& subcategory, bool expanded)
+        {
+            const auto key = category + "/" + subcategory;
+            if (expanded) expandedSubcategories.insert(key);
+            else expandedSubcategories.erase(key);
+            rebuild();
+        }
+
+        juce::var getState() const
+        {
+            auto* obj = new juce::DynamicObject();
+            obj->setProperty("searchQuery", owner.filter.getText());
+
+            juce::Array<juce::var> expCats;
+            for (const auto& c : expandedCategories)
+                expCats.add(c);
+            obj->setProperty("expandedCategories", expCats);
+
+            juce::Array<juce::var> expSubs;
+            for (const auto& s : expandedSubcategories)
+                expSubs.add(s);
+            obj->setProperty("expandedSubcategories", expSubs);
+
+            juce::Array<juce::var> visEntries;
+            for (const auto& e : entries)
+            {
+                auto* entryObj = new juce::DynamicObject();
+                entryObj->setProperty("level", e.level);
+                entryObj->setProperty("category", e.category);
+                entryObj->setProperty("subcategory", e.subcategory);
+                entryObj->setProperty("count", e.count);
+                if (e.level == 2 && e.symbol >= 0 && e.symbol < (int)owner.allSymbols.size())
+                {
+                    const auto& s = owner.allSymbols[(size_t)e.symbol];
+                    entryObj->setProperty("id", s.id);
+                    entryObj->setProperty("name", s.name);
+                }
+                visEntries.add(juce::var(entryObj));
+            }
+            obj->setProperty("visibleEntries", visEntries);
+            return juce::var(obj);
+        }
 
         void rebuild()
         {
             const auto needle = owner.filter.getText().trim().toLowerCase();
-            std::map<juce::String, std::vector<int>> byGroup;
+            const bool isSearching = needle.isNotEmpty();
+
+            // Map: category -> (subcategory -> vector of symbol indices)
+            std::map<juce::String, std::map<juce::String, std::vector<int>>> hierarchy;
+            std::map<juce::String, int> catTotal;
+            std::map<juce::String, int> subTotal;
+
             for (int i = 0; i < (int)owner.allSymbols.size(); ++i)
             {
                 const auto& symbol = owner.allSymbols[(size_t)i];
-                const auto haystack = (symbol.name + " " + symbol.id + " " + symbol.category + " " + groupFor(symbol)).toLowerCase();
-                if (needle.isEmpty() || haystack.contains(needle))
-                    byGroup[groupFor(symbol)].push_back(i);
+                const auto g = categoryAndSubcategoryFor(symbol);
+                const auto haystack = (symbol.name + " " + symbol.id + " " + symbol.category + " "
+                                     + symbol.subcategory + " " + symbol.detail + " " + symbol.aliases + " "
+                                     + g.category + " " + g.subcategory).toLowerCase();
+                if (!isSearching || haystack.contains(needle))
+                {
+                    hierarchy[g.category][g.subcategory].push_back(i);
+                    catTotal[g.category]++;
+                    subTotal[g.category + "/" + g.subcategory]++;
+                }
             }
 
-            juce::StringArray groups = groupOrder();
-            for (const auto& [group, rows] : byGroup)
-                groups.addIfNotAlreadyThere(group);
-
             entries.clear();
-            for (const auto& group : groups)
+
+            juce::StringArray categories = categoryOrder();
+            for (const auto& [cat, subs] : hierarchy)
+                categories.addIfNotAlreadyThere(cat);
+
+            for (const auto& cat : categories)
             {
-                const auto found = byGroup.find(group);
-                if (found == byGroup.end())
+                auto catIt = hierarchy.find(cat);
+                if (catIt == hierarchy.end() || catIt->second.empty())
                     continue;
-                entries.push_back({ true, group, -1, (int)found->second.size(), {} });
-                // Searching shows every match; otherwise collapsed groups hide their rows.
-                if (needle.isEmpty() && collapsed.contains(group))
+
+                const int countInCat = catTotal[cat];
+                // Level 0: Category header
+                entries.push_back({ 0, cat, {}, -1, countInCat, {} });
+
+                // If searching, always expand matching categories.
+                // Otherwise, check expandedCategories (collapsed by default).
+                const bool catOpen = isSearching || (expandedCategories.find(cat) != expandedCategories.end());
+                if (!catOpen)
                     continue;
-                for (int index : found->second)
-                    entries.push_back({ false, group, index, 0, {} });
+
+                juce::StringArray subcats = subcategoryOrder(cat);
+                for (const auto& [sub, rows] : catIt->second)
+                    subcats.addIfNotAlreadyThere(sub);
+
+                for (const auto& sub : subcats)
+                {
+                    auto subIt = catIt->second.find(sub);
+                    if (subIt == catIt->second.end() || subIt->second.empty())
+                        continue;
+
+                    const auto subKey = cat + "/" + sub;
+                    const int countInSub = subTotal[subKey];
+                    // Level 1: Subcategory header
+                    entries.push_back({ 1, cat, sub, -1, countInSub, {} });
+
+                    // If searching, always expand matching subcategories.
+                    // Otherwise, check expandedSubcategories (collapsed by default).
+                    const bool subOpen = isSearching || (expandedSubcategories.find(subKey) != expandedSubcategories.end());
+                    if (!subOpen)
+                        continue;
+
+                    // Level 2: Component items
+                    for (int symIdx : subIt->second)
+                    {
+                        entries.push_back({ 2, cat, sub, symIdx, 0, {} });
+                    }
+                }
             }
             layoutToWidth(getWidth() > 0 ? getWidth() : 200);
         }
@@ -2102,9 +2458,12 @@ private:
             int y = 2;
             for (auto& entry : entries)
             {
-                const auto height = entry.header ? 26 : 36;
+                int height = 36;
+                if (entry.level == 0) height = 26;
+                else if (entry.level == 1) height = 24;
+
                 entry.bounds = { 2, y, std::max(40, width - 4), height };
-                y += height + (entry.header ? 2 : 1);
+                y += height + (entry.level == 0 ? 2 : 1);
             }
             setSize(std::max(40, width), y + 4);
             repaint();
@@ -2113,15 +2472,19 @@ private:
         void paint(juce::Graphics& g) override
         {
             g.fillAll(juce::Colour(0xff10161d));
+            const bool isSearching = owner.filter.getText().trim().isNotEmpty();
+
             for (int i = 0; i < (int)entries.size(); ++i)
             {
                 const auto& entry = entries[(size_t)i];
                 auto area = entry.bounds;
-                if (entry.header)
+
+                if (entry.level == 0) // Category Header
                 {
-                    g.setColour(juce::Colour(0xff1d2731));
+                    g.setColour(i == hover ? juce::Colour(0xff253340) : juce::Colour(0xff1d2731));
                     g.fillRoundedRectangle(area.toFloat(), 4.0f);
-                    const auto open = owner.filter.getText().trim().isNotEmpty() || !collapsed.contains(entry.group);
+
+                    const bool open = isSearching || (expandedCategories.find(entry.category) != expandedCategories.end());
                     juce::Path arrow;
                     const auto c = juce::Point<float>((float)area.getX() + 12.0f, (float)area.getCentreY());
                     if (open)
@@ -2130,35 +2493,70 @@ private:
                         arrow.addTriangle(c.x - 2.0f, c.y - 4.0f, c.x - 2.0f, c.y + 4.0f, c.x + 3.0f, c.y);
                     g.setColour(juce::Colour(0xff93a7b0));
                     g.fillPath(arrow);
+
                     g.setColour(juce::Colour(0xffdce9ee));
                     g.setFont(juce::Font(13.0f, juce::Font::bold));
-                    g.drawText(entry.group, area.withTrimmedLeft(24), juce::Justification::centredLeft, true);
+                    g.drawText(entry.category, area.withTrimmedLeft(26).withTrimmedRight(40), juce::Justification::centredLeft, true);
+
                     g.setColour(juce::Colour(0xff71808c));
                     g.setFont(juce::Font(12.0f));
                     g.drawText(juce::String(entry.count), area.withTrimmedRight(8), juce::Justification::centredRight);
                     continue;
                 }
 
+                if (entry.level == 1) // Subcategory Header
+                {
+                    g.setColour(i == hover ? juce::Colour(0xff1f2a35) : juce::Colour(0xff161e26));
+                    auto subArea = area.withTrimmedLeft(12);
+                    g.fillRoundedRectangle(subArea.toFloat(), 3.0f);
+
+                    const auto subKey = entry.category + "/" + entry.subcategory;
+                    const bool open = isSearching || (expandedSubcategories.find(subKey) != expandedSubcategories.end());
+                    juce::Path arrow;
+                    const auto c = juce::Point<float>((float)area.getX() + 24.0f, (float)area.getCentreY());
+                    if (open)
+                        arrow.addTriangle(c.x - 3.5f, c.y - 2.0f, c.x + 3.5f, c.y - 2.0f, c.x, c.y + 2.5f);
+                    else
+                        arrow.addTriangle(c.x - 2.0f, c.y - 3.5f, c.x - 2.0f, c.y + 3.5f, c.x + 2.5f, c.y);
+                    g.setColour(juce::Colour(0xff78dcca));
+                    g.fillPath(arrow);
+
+                    g.setColour(juce::Colour(0xffa8bac4));
+                    g.setFont(juce::Font(12.0f, juce::Font::bold));
+                    g.drawText(entry.subcategory, area.withTrimmedLeft(36).withTrimmedRight(36), juce::Justification::centredLeft, true);
+
+                    g.setColour(juce::Colour(0xff71808c));
+                    g.setFont(juce::Font(11.0f));
+                    g.drawText(juce::String(entry.count), area.withTrimmedRight(8), juce::Justification::centredRight);
+                    continue;
+                }
+
+                // Level 2: Component Row
                 const auto& symbol = owner.allSymbols[(size_t)entry.symbol];
+                auto itemArea = area.withTrimmedLeft(18);
                 if (symbol.id == owner.selectedId)
                 {
                     g.setColour(juce::Colour(0xff23394a));
-                    g.fillRoundedRectangle(area.toFloat(), 4.0f);
+                    g.fillRoundedRectangle(itemArea.toFloat(), 4.0f);
                 }
                 else if (i == hover)
                 {
                     g.setColour(juce::Colour(0xff202b35));
-                    g.fillRoundedRectangle(area.toFloat(), 4.0f);
+                    g.fillRoundedRectangle(itemArea.toFloat(), 4.0f);
                 }
-                const auto swatch = juce::Rectangle<int>(10, 10).withCentre({ area.getX() + 22, area.getCentreY() });
-                g.setColour(swatchFor(entry.group));
-                g.fillRoundedRectangle(swatch.toFloat(), 3.0f);
+
+                const auto swatch = juce::Rectangle<int>(9, 9).withCentre({ area.getX() + 30, area.getCentreY() });
+                g.setColour(swatchFor(entry.category));
+                g.fillRoundedRectangle(swatch.toFloat(), 2.5f);
+
                 g.setColour(juce::Colour(0xffdce9ee));
-                g.setFont(juce::Font(13.5f, juce::Font::bold));
-                g.drawText(symbol.name, area.withTrimmedLeft(34).withTrimmedBottom(16), juce::Justification::centredLeft, true);
+                g.setFont(juce::Font(13.0f, juce::Font::bold));
+                g.drawText(symbol.name, area.withTrimmedLeft(42).withTrimmedBottom(16), juce::Justification::centredLeft, true);
+
                 g.setColour(juce::Colour(0xff93a7b0));
-                g.setFont(juce::Font(11.5f));
-                g.drawText(symbol.detail.isNotEmpty() ? symbol.detail : symbol.id, area.withTrimmedLeft(34).withTrimmedTop(18),
+                g.setFont(juce::Font(11.0f));
+                g.drawText(symbol.detail.isNotEmpty() ? symbol.detail : symbol.id,
+                           area.withTrimmedLeft(42).withTrimmedTop(18),
                            juce::Justification::centredLeft, true);
             }
         }
@@ -2195,16 +2593,32 @@ private:
             if (i < 0)
                 return;
             const auto entry = entries[(size_t)i];
-            if (entry.header)
+            if (entry.level == 0) // Category Header
             {
                 if (owner.filter.getText().trim().isNotEmpty())
                     return;
-                if (collapsed.contains(entry.group)) collapsed.removeString(entry.group);
-                else collapsed.add(entry.group);
+                if (expandedCategories.find(entry.category) != expandedCategories.end())
+                    expandedCategories.erase(entry.category);
+                else
+                    expandedCategories.insert(entry.category);
                 rebuild();
                 return;
             }
 
+            if (entry.level == 1) // Subcategory Header
+            {
+                if (owner.filter.getText().trim().isNotEmpty())
+                    return;
+                const auto key = entry.category + "/" + entry.subcategory;
+                if (expandedSubcategories.find(key) != expandedSubcategories.end())
+                    expandedSubcategories.erase(key);
+                else
+                    expandedSubcategories.insert(key);
+                rebuild();
+                return;
+            }
+
+            // Level 2: Component Row
             const auto& symbol = owner.allSymbols[(size_t)entry.symbol];
             owner.selectedId = symbol.id;
             if (owner.onSymbolSelected != nullptr)
@@ -2218,13 +2632,17 @@ private:
         }
 
     private:
+        friend class ComponentLibraryPanel;
         ComponentLibraryPanel& owner;
         std::vector<Entry> entries;
-        juce::StringArray collapsed;
+        std::set<juce::String> expandedCategories;
+        std::set<juce::String> expandedSubcategories;
         int hover = -1;
     };
 
     SearchFilterComponent filter;
+    juce::TextButton expandAllButton { "Expand All" };
+    juce::TextButton collapseAllButton { "Collapse All" };
     juce::Viewport viewport;
     ListContent content { *this };
     std::vector<SymbolInfo> allSymbols;
@@ -2270,8 +2688,11 @@ private:
             const auto id = object->getProperty("id").toString();
             const auto name = object->getProperty("name").toString();
             const auto category = object->getProperty("category").toString();
+            const auto subcategory = object->getProperty("subcategory").toString();
+            const auto detail = object->getProperty("detail").toString();
+            const auto aliases = object->getProperty("aliases").toString();
             if (id.isNotEmpty() && name.isNotEmpty())
-                add({ id, name, category });
+                add({ id, name, category, subcategory, detail, aliases });
         }
         return !allSymbols.empty();
     }
@@ -16084,7 +16505,52 @@ ElectronicsWorkbench::ElectronicsWorkbench()
         });
         return true;
     };
-    agentTools.schematicTool = [this, schematicPanel](const juce::String& name, const juce::var& args) {
+    agentTools.schematicTool = [this, schematicPanel, safeLibrary](const juce::String& name, const juce::var& args) {
+        if (name.startsWith("library_"))
+        {
+            if (safeLibrary == nullptr)
+                return juce::String(R"({"ok": false, "error": "Library panel unavailable."})");
+            if (name == "library_get_hierarchy")
+            {
+                auto* res = new juce::DynamicObject();
+                res->setProperty("ok", true);
+                res->setProperty("state", safeLibrary->getHierarchyState());
+                return juce::JSON::toString(juce::var(res));
+            }
+            if (name == "library_expand_all")
+            {
+                safeLibrary->expandAll();
+                return juce::String(R"({"ok": true})");
+            }
+            if (name == "library_collapse_all")
+            {
+                safeLibrary->collapseAll();
+                return juce::String(R"({"ok": true})");
+            }
+            if (name == "library_set_expanded")
+            {
+                const auto cat = args.getProperty("category", {}).toString();
+                const auto sub = args.getProperty("subcategory", {}).toString();
+                const bool exp = (bool)args.getProperty("expanded", true);
+                if (sub.isNotEmpty())
+                    safeLibrary->setSubcategoryExpanded(cat, sub, exp);
+                else
+                    safeLibrary->setCategoryExpanded(cat, exp);
+                return juce::String(R"({"ok": true})");
+            }
+            if (name == "library_search")
+            {
+                const auto q = args.getProperty("query", {}).toString();
+                safeLibrary->setSearchQuery(q);
+                return juce::String(R"({"ok": true, "query": ")") + q + R"("})";
+            }
+            if (name == "library_select")
+            {
+                const auto id = args.getProperty("symbolId", {}).toString();
+                safeLibrary->selectSymbol(id);
+                return juce::String(R"({"ok": true, "symbolId": ")") + id + R"("})";
+            }
+        }
         if (name.startsWith("project_") || name.startsWith("diagram_"))
             return projectTool(name, args);
         if (name.startsWith("analytics_"))

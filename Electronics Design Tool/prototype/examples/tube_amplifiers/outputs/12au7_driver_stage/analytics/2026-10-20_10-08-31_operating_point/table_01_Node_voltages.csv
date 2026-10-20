@@ -1,0 +1,7 @@
+"Net","Voltage","Pins"
+"n1","250 V","VCC_SRC.+ R_ANODE.1"
+"n2","0 V","VIN_SRC.OUT C_IN.1"
+"n3","-1.30497 fV","C_IN.2 R_LEAK.1 V1.G"
+"n4","136.87 V","R_ANODE.2 V1.P C_OUT.1"
+"n5","4.21666 V","V1.K R_K.1 C_K.1"
+"n6","0 V","C_OUT.2 R_LOAD.1"

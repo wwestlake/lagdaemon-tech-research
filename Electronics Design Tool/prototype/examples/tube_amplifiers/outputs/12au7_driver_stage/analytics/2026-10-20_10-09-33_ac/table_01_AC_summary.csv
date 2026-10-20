@@ -1,0 +1,3 @@
+"Output","Peak","At","Lower -3 dB","Upper -3 dB","0 dB crossing","PM (if a loop gain)"
+"V(n2)","-418.6 dB","5.042 MHz","5.038 MHz","5.097 MHz","—","—"
+"V(n6)","-12.39 dB","22.32 kHz","28.05 Hz","15.86 MHz","—","—"

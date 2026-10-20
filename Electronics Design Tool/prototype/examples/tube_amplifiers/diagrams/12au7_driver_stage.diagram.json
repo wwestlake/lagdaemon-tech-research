@@ -1,151 +1,321 @@
 {
   "schemaVersion": 2,
   "kind": "electronics_circuit",
-  "name": "12AU7 Medium-Mu Driver Stage",
-  "description": "Class-A audio driver/buffer stage using 12AU7 / ECC82 dual triode (Section 1). Features cathode self-bias (820 ohm || 47uF), 22k anode load, and 100k line loading.",
   "components": [
     {
       "id": "VCC_SRC",
       "symbol": "voltage_source",
+      "component": {
+        "archetype": "source.dc_voltage",
+        "family": null,
+        "manufacturerPart": null,
+        "datasheetStatus": "generic"
+      },
       "x": 120,
       "y": 168,
       "rotation": 0,
       "value": "250",
-      "params": { "waveform": "Dc", "offset": "250" }
+      "frequency": "",
+      "busName": "",
+      "params": { "offset": "250", "waveform": "Dc" },
+      "parameters": { "dcVoltage": { "value": "250", "unit": "V" } },
+      "pins": {
+        "+": "n1",
+        "-": "0"
+      }
     },
     {
       "id": "VIN_SRC",
       "symbol": "signal_source",
+      "component": {
+        "archetype": "source.signal",
+        "family": null,
+        "manufacturerPart": null,
+        "datasheetStatus": "generic"
+      },
       "x": 120,
       "y": 360,
       "rotation": 0,
       "value": "0.5",
       "frequency": "1k",
-      "params": { "waveform": "Sine", "amplitude": "0.5", "frequency": "1k" }
+      "busName": "",
+      "params": { "amplitude": "0.5", "frequency": "1k", "waveform": "Sine" },
+      "parameters": { "waveform": "sine", "amplitude": { "value": "0.5", "unit": "V" }, "frequency": { "value": "1k", "unit": "Hz" } },
+      "pins": {
+        "OUT": "n2",
+        "REF": "0"
+      }
     },
     {
       "id": "C_IN",
       "symbol": "capacitor",
+      "component": {
+        "archetype": "passive.capacitor",
+        "family": null,
+        "manufacturerPart": null,
+        "datasheetStatus": "generic"
+      },
       "x": 240,
       "y": 360,
       "rotation": 0,
-      "value": "47n"
+      "value": "47n",
+      "frequency": "",
+      "busName": "",
+      "parameters": { "capacitance": { "value": "47n", "unit": "F" } },
+      "pins": {
+        "1": "n2",
+        "2": "n3"
+      }
     },
     {
       "id": "R_LEAK",
       "symbol": "resistor",
+      "component": {
+        "archetype": "passive.resistor",
+        "family": null,
+        "manufacturerPart": null,
+        "datasheetStatus": "generic"
+      },
       "x": 336,
       "y": 456,
       "rotation": 90,
-      "value": "470k"
+      "value": "470k",
+      "frequency": "",
+      "busName": "",
+      "parameters": { "resistance": { "value": "470k", "unit": "ohm" } },
+      "pins": {
+        "1": "n3",
+        "2": "0"
+      }
     },
     {
       "id": "R_ANODE",
       "symbol": "resistor",
+      "component": {
+        "archetype": "passive.resistor",
+        "family": null,
+        "manufacturerPart": null,
+        "datasheetStatus": "generic"
+      },
       "x": 456,
       "y": 216,
       "rotation": 90,
-      "value": "22k"
+      "value": "22k",
+      "frequency": "",
+      "busName": "",
+      "parameters": { "resistance": { "value": "22k", "unit": "ohm" } },
+      "pins": {
+        "1": "n1",
+        "2": "n4"
+      }
     },
     {
       "id": "V1",
       "symbol": "tube_12au7",
+      "component": {
+        "archetype": "active.tube.triode",
+        "family": "12AU7",
+        "manufacturerPart": null,
+        "datasheetStatus": "generic"
+      },
       "x": 456,
       "y": 360,
       "rotation": 0,
       "value": "12AU7",
-      "params": {
-        "section": "Unit 1",
-        "mu": "20",
-        "ex": "1.3",
-        "kg1": "1250",
-        "kp": "220",
-        "kvb": "240",
-        "rgi": "2k",
-        "cgp": "1.5p",
-        "cgk": "1.6p",
-        "cpk": "0.4p"
+      "frequency": "",
+      "busName": "",
+      "params": { "cgk": "1.6p", "cgp": "1.5p", "cpk": "0.4p", "ex": "1.3", "kg1": "1250", "kp": "220", "kvb": "240", "mu": "20", "rgi": "2k", "section": "Unit 1" },
+      "parameters": {},
+      "pins": {
+        "G": "n3",
+        "P": "n4",
+        "K": "n5"
       }
     },
     {
       "id": "R_K",
       "symbol": "resistor",
+      "component": {
+        "archetype": "passive.resistor",
+        "family": null,
+        "manufacturerPart": null,
+        "datasheetStatus": "generic"
+      },
       "x": 408,
       "y": 528,
       "rotation": 90,
-      "value": "820"
+      "value": "820",
+      "frequency": "",
+      "busName": "",
+      "parameters": { "resistance": { "value": "820", "unit": "ohm" } },
+      "pins": {
+        "1": "n5",
+        "2": "0"
+      }
     },
     {
       "id": "C_K",
       "symbol": "capacitor",
+      "component": {
+        "archetype": "passive.capacitor",
+        "family": null,
+        "manufacturerPart": null,
+        "datasheetStatus": "generic"
+      },
       "x": 504,
       "y": 528,
       "rotation": 90,
-      "value": "47u"
+      "value": "47u",
+      "frequency": "",
+      "busName": "",
+      "parameters": { "capacitance": { "value": "47u", "unit": "F" } },
+      "pins": {
+        "1": "n5",
+        "2": "0"
+      }
     },
     {
       "id": "C_OUT",
       "symbol": "capacitor",
+      "component": {
+        "archetype": "passive.capacitor",
+        "family": null,
+        "manufacturerPart": null,
+        "datasheetStatus": "generic"
+      },
       "x": 576,
       "y": 288,
       "rotation": 0,
-      "value": "47n"
+      "value": "47n",
+      "frequency": "",
+      "busName": "",
+      "parameters": { "capacitance": { "value": "47n", "unit": "F" } },
+      "pins": {
+        "1": "n4",
+        "2": "n6"
+      }
     },
     {
       "id": "R_LOAD",
       "symbol": "resistor",
+      "component": {
+        "archetype": "passive.resistor",
+        "family": null,
+        "manufacturerPart": null,
+        "datasheetStatus": "generic"
+      },
       "x": 672,
       "y": 384,
       "rotation": 90,
-      "value": "100k"
+      "value": "100k",
+      "frequency": "",
+      "busName": "",
+      "parameters": { "resistance": { "value": "100k", "unit": "ohm" } },
+      "pins": {
+        "1": "n6",
+        "2": "0"
+      }
     },
     {
       "id": "GND1",
       "symbol": "ground",
+      "component": {
+        "archetype": "net.ground_reference",
+        "family": null,
+        "manufacturerPart": null,
+        "datasheetStatus": "generic"
+      },
       "x": 120,
       "y": 240,
       "rotation": 0,
-      "value": "0"
+      "value": "0",
+      "frequency": "",
+      "busName": "0",
+      "parameters": { "name": "0", "voltageHint": "0V" },
+      "pins": {
+        "0": "0"
+      }
     },
     {
       "id": "GND2",
       "symbol": "ground",
+      "component": {
+        "archetype": "net.ground_reference",
+        "family": null,
+        "manufacturerPart": null,
+        "datasheetStatus": "generic"
+      },
       "x": 72,
       "y": 432,
       "rotation": 0,
-      "value": "0"
+      "value": "0",
+      "frequency": "",
+      "busName": "0",
+      "parameters": { "name": "0", "voltageHint": "0V" },
+      "pins": {
+        "0": "0"
+      }
     },
     {
       "id": "GND3",
       "symbol": "ground",
+      "component": {
+        "archetype": "net.ground_reference",
+        "family": null,
+        "manufacturerPart": null,
+        "datasheetStatus": "generic"
+      },
       "x": 336,
       "y": 552,
       "rotation": 0,
-      "value": "0"
+      "value": "0",
+      "frequency": "",
+      "busName": "0",
+      "parameters": { "name": "0", "voltageHint": "0V" },
+      "pins": {
+        "0": "0"
+      }
     },
     {
       "id": "GND4",
       "symbol": "ground",
+      "component": {
+        "archetype": "net.ground_reference",
+        "family": null,
+        "manufacturerPart": null,
+        "datasheetStatus": "generic"
+      },
       "x": 456,
       "y": 624,
       "rotation": 0,
-      "value": "0"
+      "value": "0",
+      "frequency": "",
+      "busName": "0",
+      "parameters": { "name": "0", "voltageHint": "0V" },
+      "pins": {
+        "0": "0"
+      }
     },
     {
       "id": "GND5",
       "symbol": "ground",
+      "component": {
+        "archetype": "net.ground_reference",
+        "family": null,
+        "manufacturerPart": null,
+        "datasheetStatus": "generic"
+      },
       "x": 672,
       "y": 480,
       "rotation": 0,
-      "value": "0"
+      "value": "0",
+      "frequency": "",
+      "busName": "0",
+      "parameters": { "name": "0", "voltageHint": "0V" },
+      "pins": {
+        "0": "0"
+      }
     }
-  ],
-  "junctions": [
-    { "id": "N1", "x": 336, "y": 360 },
-    { "id": "N2", "x": 456, "y": 288 },
-    { "id": "N3", "x": 456, "y": 456 },
-    { "id": "N4", "x": 672, "y": 288 },
-    { "id": "N5", "x": 456, "y": 600 }
   ],
   "wires": [
     { "a": "GND1.0", "b": "VCC_SRC.-" },
@@ -169,17 +339,38 @@
     { "a": "N4", "b": "R_LOAD.1" },
     { "a": "R_LOAD.2", "b": "GND5.0" }
   ],
-  "probes": [
-    { "id": "A", "label": "VIN", "target": "VIN_SRC.OUT", "color": "0xff5090ff" },
-    { "id": "B", "label": "VOUT", "target": "N4", "color": "0xffff9020" }
+  "junctions": [
+    { "id": "N1", "x": 336, "y": 360, "sheet": "" },
+    { "id": "N2", "x": 456, "y": 288, "sheet": "" },
+    { "id": "N3", "x": 456, "y": 456, "sheet": "" },
+    { "id": "N4", "x": 672, "y": 288, "sheet": "" },
+    { "id": "N5", "x": 456, "y": 600, "sheet": "" }
   ],
   "groups": [
     {
       "id": "G1",
       "name": "12AU7 Line Driver Stage",
       "category": "driver_stage",
-      "members": [ "V1", "R_ANODE", "R_K", "C_K", "C_IN", "R_LEAK" ],
-      "notes": "Medium-gain, low output impedance driver stage."
+      "notes": "Medium-gain, low output impedance driver stage.",
+      "members": ["V1", "R_ANODE", "R_K", "C_K", "C_IN", "R_LEAK"]
     }
-  ]
+  ],
+  "circuitParameters": [
+
+  ],
+  "simulationParameters": [
+
+  ],
+  "measurements": [
+
+  ],
+  "parameterSweeps": [
+
+  ],
+  "probes": [
+
+  ],
+  "pcb": {"schemaVersion": 1, "source": "standard", "standard": "fab-100", "outline": [[0.0, 0.0], [100.0, 0.0], [100.0, 100.0], [0.0, 100.0]], "holes": [], "cutouts": [], "layers": 2, "thickness": 1.6, "edgeClearance": 0.3},
+  "pcb_layout": {"parts": [], "rules": {"track_width": 0.25, "clearance": 0.2, "via_diameter": 0.6, "via_drill": 0.3}, "texts": [], "graphics": [], "fab": {"mask_expansion": 0.05, "paste_reduction": 0.0, "silk_line_width": 0.15, "label_height": 0.8, "tent_vias": true, "part_labels": true}},
+  "analyticsSetup": {"schemaVersion": 1, "activeAnalysis": "ac", "analyses": {"operating_point": {"temperature": "27"}, "dc_sweep": {"outputs": "", "step_count": "5", "step_list": "", "step_spacing": "List", "step_start": "", "step_stop": "", "step_target": "None", "sweep_count": "101", "sweep_list": "", "sweep_spacing": "Linear", "sweep_start": "0", "sweep_stop": "10", "sweep_target": "VCC_SRC.dc", "temperature": "27"}, "ac": {"input": "VIN_SRC", "magnitude": "dB", "outputs": "n2,n6", "points": "100", "spacing": "Decade", "start": "1", "step_count": "5", "step_list": "", "step_spacing": "List", "step_start": "", "step_stop": "", "step_target": "None", "stop": "20meg", "temperature": "27"}, "transient": {"compare_abs_tol": "1m", "compare_rel_tol": "0.01", "max_points": "4000", "outputs": "", "start": "0", "step": "auto", "step_count": "5", "step_list": "", "step_spacing": "List", "step_start": "", "step_stop": "", "step_target": "None", "stop": "auto", "temperature": "27"}, "fourier": {}, "noise": {}, "transfer_function": {}, "sensitivity": {}, "pole_zero": {}, "temperature": {}, "monte_carlo": {}}}
 }
