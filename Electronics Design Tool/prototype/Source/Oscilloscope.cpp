@@ -53,7 +53,9 @@ Measurements measure(const std::vector<double>& time, const std::vector<double>&
     using K = signal_measure::Kind;
     m.minimum = get(K::Minimum); m.maximum = get(K::Maximum); m.mean = get(K::Average);
     m.peakToPeak = get(K::PeakToPeak); m.rms = get(K::Rms);
-    m.frequency = get(K::Frequency); m.period = get(K::Period);
+    // Reuse the edge list below rather than repeatedly scanning a dense
+    // capture for its nth crossing. Measurement cost is linear in samples.
+    m.frequency = m.period = unavailable("Fewer than two rising crossings in the visible record.");
     m.riseTime = m.fallTime = m.pulseWidth = m.dutyPercent = unavailable("Insufficient waveform excursion or complete edges.");
     if (time.size() != volts.size() || !m.peakToPeak.ok || m.peakToPeak.value < 1e-12) return m;
     std::vector<double> t, v;
@@ -65,6 +67,11 @@ Measurements measure(const std::vector<double>& time, const std::vector<double>&
     m.fallTime = edge(t, v, minimum + 0.1 * span, minimum + 0.9 * span, false);
     const auto up = crossings(t, v, minimum + 0.5 * span, true);
     const auto down = crossings(t, v, minimum + 0.5 * span, false);
+    if (up.size() >= 2)
+    {
+        const auto period = (up.back() - up.front()) / (double)(up.size() - 1);
+        m.period = valid(period); m.frequency = valid(1.0 / period);
+    }
     if (!up.empty())
     {
         const auto falling = std::upper_bound(down.begin(), down.end(), up.front());
@@ -97,7 +104,8 @@ Frame prepare(const Record& r, const Settings& s)
     {
         if (!r.connected[ch]) continue;
         const auto& c = s.channel[ch];
-        if (r.channel[ch].size() != r.time.size() || !(c.voltsPerDiv > 0.0) || !(c.scale > 0.0))
+        if (r.channel[ch].size() != r.time.size() || !(c.voltsPerDiv > 0.0) || !(c.scale > 0.0)
+            || !std::isfinite(c.voltsPerDiv) || !std::isfinite(c.scale) || !std::isfinite(c.offset) || !std::isfinite(c.position))
         { f.error = "Invalid channel samples or scale."; return f; }
         for (double v : r.channel[ch]) if (!std::isfinite(v))
         { f.error = "A capture contains nonfinite voltage samples."; return f; }

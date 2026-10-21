@@ -70,6 +70,12 @@ int main()
     check(indices.size()<=202,"Display point count is bounded by pixel budget");
     auto bad=r; bad.time[20]=bad.time[19]; check(!oscilloscope::prepare(bad,{}).ok,"Repeated timestamps rejected");
     bad=r; bad.channel[0][20]=std::numeric_limits<double>::quiet_NaN(); check(!oscilloscope::prepare(bad,{}).ok,"Nonfinite samples rejected");
+    auto invalidSettings = s; invalidSettings.channel[0].scale = std::numeric_limits<double>::infinity();
+    check(!oscilloscope::prepare(r,invalidSettings).ok,"Nonfinite input scaling rejected");
+    std::vector<double> denseTime, denseVolts;
+    for (int i=0;i<=100000;++i) { denseTime.push_back(i*1e-6); denseVolts.push_back(std::sin(2*pi*100000*i*1e-6)); }
+    m=oscilloscope::measure(denseTime,denseVolts,0,.1);
+    near(m.frequency.value,100000,0.01,"Dense record frequency uses all crossings in one pass");
     std::cout << checks << " checks, " << failures << " failures\n";
     return failures ? 1 : 0;
 }

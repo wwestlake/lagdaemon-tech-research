@@ -143,6 +143,7 @@ void OscilloscopeView::refresh()
     {
         text << "CH" << (int)(ch + 1) << (display.settings.channel[ch].enabled ? "  " : " [hidden]  ");
         if (!display.record || !display.record->connected[ch]) { text << "Not connected\n"; continue; }
+        if (display.frame.waiting) { text << "Waiting for trigger; no accepted visible measurement.\n"; continue; }
         const auto& m = display.frame.measurements[ch];
         text << "Min " << measured(m.minimum, "V") << "  Max " << measured(m.maximum, "V")
              << "  Mean " << measured(m.mean, "V") << "  Vpp " << measured(m.peakToPeak, "V") << "  RMS " << measured(m.rms, "V")
@@ -192,7 +193,7 @@ void OscilloscopeView::resized()
     measurements.setBounds(12, getHeight() - 180, getWidth() - right - 24, 168);
 }
 juce::Rectangle<float> OscilloscopeView::plotArea() const
-{ return { 70.0f, 75.0f, (float)(getWidth() - controls.getWidth() - 140), (float)(getHeight() - 290) }; }
+{ return { 70.0f, 75.0f, (float)(getWidth() - controls.getWidth() - 140), (float)(getHeight() - 310) }; }
 float OscilloscopeView::timeX(double t) const
 { const auto r = plotArea(); return r.getX() + (float)((t - display.frame.start) / (display.settings.timePerDiv * 10.0) * r.getWidth()); }
 float OscilloscopeView::voltsY(double v, int ch) const
