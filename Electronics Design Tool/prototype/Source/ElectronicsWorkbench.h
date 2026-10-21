@@ -34,6 +34,9 @@ class ElectronicsWorkbench final : public juce::Component,
 public:
     ElectronicsWorkbench();
     ~ElectronicsWorkbench() override;
+#if JUCE_DEBUG
+    static int runTestFixtureUiChecks(const juce::File& output, const juce::File& diagram);
+#endif
 
     void paint(juce::Graphics& g) override;
     void resized() override;

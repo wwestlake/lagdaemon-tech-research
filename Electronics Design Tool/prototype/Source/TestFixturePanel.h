@@ -66,6 +66,9 @@ public:
     void exportWav();
     void toggleBreakTool();
     bool isBreakToolActive() const;
+    void setDiagnostic(const juce::String& message);
+    juce::String diagnosticAction(const juce::String& action);
+    juce::String instrumentAction(const juce::String& eqId, const juce::String& action, const juce::var& settings);
 
     juce::Component* getCanvas() { return schematicCanvas.get(); }
 
@@ -77,6 +80,9 @@ private:
     // Status display
     juce::Label titleLabel;
     juce::Label resultsLabel;
+    juce::TextButton diagnosticsButton { "Diagnostics" }, clearDiagnosticButton { "Clear" };
+    juce::TextEditor diagnostics;
+    bool diagnosticsExpanded = false;
 
     std::unique_ptr<juce::Component> schematicCanvas;
     std::unique_ptr<juce::FileChooser> fileChooser;

@@ -46,11 +46,21 @@ public:
     // One copy at a time: starting the app again brings the running one forward.
     bool moreThanOneInstanceAllowed() override { return false; }
 
-    void initialise(const juce::String&) override
+    void initialise(const juce::String& commandLine) override
     {
        #if JUCE_DEBUG && JUCE_WINDOWS
         _CrtSetReportHook2(_CRT_RPTHOOK_INSTALL, reportHook);
         _CrtSetReportHookW2(_CRT_RPTHOOK_INSTALL, reportHookW);
+       #endif
+       #if JUCE_DEBUG
+        const auto args = juce::StringArray::fromTokens(commandLine, true);
+        if (args.size() == 3 && args[0] == "--fixture-ui-checks")
+        {
+            setApplicationReturnValue(ElectronicsWorkbench::runTestFixtureUiChecks(
+                juce::File(args[1].unquoted()), juce::File(args[2].unquoted())));
+            quit();
+            return;
+        }
        #endif
         mainWindow = std::make_unique<MainWindow>(getApplicationName());
     }

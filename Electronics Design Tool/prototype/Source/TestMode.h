@@ -3,6 +3,7 @@
 #include <juce_core/juce_core.h>
 #include <juce_gui_basics/juce_gui_basics.h>
 #include <vector>
+#include <map>
 #include <string>
 #include "AudioTestRender.h"
 
@@ -123,6 +124,7 @@ struct FixtureEquipment
     double peakVolts = 0.1;
     bool isOverride = false;
     juce::String overrideRefdes;
+    std::map<juce::String, juce::String> instrumentSettings;
 
     double measuredPeak = 0.0;
     double measuredRms = 0.0;
@@ -195,6 +197,9 @@ struct FixtureEquipment
         obj->setProperty("peakVolts", peakVolts);
         obj->setProperty("isOverride", isOverride);
         obj->setProperty("overrideRefdes", overrideRefdes);
+        auto* settings = new juce::DynamicObject();
+        for (const auto& [key, value] : instrumentSettings) settings->setProperty(key, value);
+        obj->setProperty("instrumentSettings", juce::var(settings));
         obj->setProperty("measuredPeak", measuredPeak);
         obj->setProperty("measuredRms", measuredRms);
         obj->setProperty("measuredDc", measuredDc);
@@ -219,6 +224,8 @@ struct FixtureEquipment
         eq.peakVolts = (double)v.getProperty("peakVolts", 0.1);
         eq.isOverride = (bool)v.getProperty("isOverride", false);
         eq.overrideRefdes = v.getProperty("overrideRefdes", {}).toString();
+        if (const auto* settings = v.getProperty("instrumentSettings", {}).getDynamicObject())
+            for (const auto& p : settings->getProperties()) eq.instrumentSettings[p.name.toString()] = p.value.toString();
         eq.measuredPeak = (double)v.getProperty("measuredPeak", 0.0);
         eq.measuredRms = (double)v.getProperty("measuredRms", 0.0);
         eq.measuredDc = (double)v.getProperty("measuredDc", 0.0);
@@ -306,6 +313,25 @@ struct TestSetup
     juce::String lastSummary;
     std::vector<float> lastRenderedOutput;
     double lastSampleRate = 48000.0;
+    std::vector<audio_test::Trace> lastProbeTraces; // Runtime samples, never sidecar/schematic data.
+    juce::String lastError;
+    juce::int64 captureRevision = 0;
+    juce::String acquisitionSignature;
+
+    void invalidateResult()
+    {
+        hasResult = false;
+        lastRenderedOutput.clear();
+        lastProbeTraces.clear();
+        ++captureRevision;
+    }
+
+    const FixtureConnection* terminalConnection(const juce::String& equipmentId, const juce::String& terminal) const
+    {
+        for (const auto& c : fixtureConnections)
+            if (c.equipmentId == equipmentId && c.terminalId.equalsIgnoreCase(terminal)) return &c;
+        return nullptr;
+    }
 
     FixtureEquipment* getEquipment(const juce::String& eqId)
     {
@@ -400,12 +426,25 @@ struct TestSetup
 
     void syncSetupFromEquipment()
     {
+        // Moving a body or changing display scales must not discard acquired waveforms.
+        juce::String signature;
+        for (const auto& eq : equipment)
+            signature << eq.id << ":" << eq.type << ":" << eq.instancePath << ":" << eq.audioFilePath << ":"
+                      << eq.stimulusType << ":" << eq.peakVolts << ":" << eq.sineFrequencyHz << ":"
+                      << eq.sineDurationSec << ":" << (int)eq.isOverride << ":" << eq.overrideRefdes << ";";
+        for (const auto& c : fixtureConnections) signature << juce::JSON::toString(c.toVar(), true);
+        for (const auto& b : connectionBreaks) signature << juce::JSON::toString(b.toVar(), true);
+        if (signature != acquisitionSignature) { invalidateResult(); acquisitionSignature = signature; }
+        if (!equipment.empty()) probeNodes.clear();
         for (const auto& eq : equipment)
         {
             if (eq.type == "audio_input" || eq.type == "signal_gen" || eq.type == "signal_source")
             {
                 if (eq.instancePath.isEmpty())
                 {
+                    inputNode.clear();
+                    inputRefdes.clear();
+                    inputMode = "virtual";
                     stimulusType = eq.stimulusType;
                     audioFilePath = eq.audioFilePath;
                     sineFrequencyHz = eq.sineFrequencyHz;
@@ -420,7 +459,7 @@ struct TestSetup
                     {
                         for (const auto& c : fixtureConnections)
                         {
-                            if (c.equipmentId.equalsIgnoreCase(eq.id))
+                            if (c.equipmentId.equalsIgnoreCase(eq.id) && c.terminalId.equalsIgnoreCase("out"))
                             {
                                 inputMode = "virtual";
                                 inputNode = c.targetPinLabel;
@@ -436,12 +475,13 @@ struct TestSetup
                     {
                         sf->stimulusEnabled = true;
                         sf->stimulusType = eq.stimulusType;
+                        sf->audioFilePath = eq.audioFilePath;
                         sf->sineFrequencyHz = eq.sineFrequencyHz;
                         sf->sineDurationSec = eq.sineDurationSec;
                         sf->inputPeakVolts = eq.peakVolts;
                         for (const auto& c : fixtureConnections)
                         {
-                            if (c.equipmentId.equalsIgnoreCase(eq.id))
+                            if (c.equipmentId.equalsIgnoreCase(eq.id) && c.terminalId.equalsIgnoreCase("out"))
                             {
                                 sf->inputNode = c.targetPinLabel;
                                 break;
@@ -452,9 +492,10 @@ struct TestSetup
             }
             else if (eq.type == "audio_output" || eq.type == "audio_out")
             {
+                if (eq.instancePath.isEmpty()) outputNode.clear();
                 for (const auto& c : fixtureConnections)
                 {
-                    if (c.equipmentId.equalsIgnoreCase(eq.id))
+                    if (c.equipmentId.equalsIgnoreCase(eq.id) && c.terminalId.equalsIgnoreCase("in"))
                     {
                         if (eq.instancePath.isEmpty())
                             outputNode = c.targetPinLabel;

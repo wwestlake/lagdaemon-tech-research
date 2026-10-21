@@ -33,6 +33,7 @@
 #include "AudioPipeline.h"
 #include "AudioTestRender.h"
 #include "TestMode.h"
+#include "FixtureAudioInputDialog.h"
 #include "AudioDsp.h"
 #include "SpiceLibrary.h"
 #include "CircuitHierarchyPanel.h"
@@ -982,8 +983,23 @@ const std::vector<ToolSpecText>& testModeToolSpecs()
         },
         {
             "test_fixture_configure_equipment",
-            "Configure settings on a fixture equipment object (WAV file, peak volts, sine freq, override refdes).",
+            "Configure fixture equipment with a readable WAV, positive peak volts, and a signal source refdes from test_fixture_sources. Replacement must match OUT/GND wiring; DC supplies and conflicting wiring are rejected without changing the schematic.",
             R"({"type":"object","properties":{"fixture":{"type":"string","description":"Target test fixture name."},"id":{"type":"string","description":"Equipment ID."},"audioFilePath":{"type":"string","description":"Path to audio WAV recording file."},"stimulusType":{"type":"string","description":"'file' or 'sine'."},"peakVolts":{"type":"number","description":"Peak stimulus voltage."},"sineFrequencyHz":{"type":"number","description":"Frequency in Hz."},"isOverride":{"type":"boolean","description":"True to override an existing schematic source."},"overrideRefdes":{"type":"string","description":"Refdes of the schematic source to override (e.g. 'VIN')."}},"required":["id"],"additionalProperties":false})"
+        },
+        {
+            "test_fixture_sources",
+            "List actual schematic voltage sources with identifiers, voltage, frequency, and audio eligibility. DC supplies are identified but cannot replace a signal input.",
+            R"({"type":"object","properties":{},"additionalProperties":false})"
+        },
+        {
+            "test_fixture_instrument",
+            "Open, read, or configure an existing fixture oscilloscope by equipment ID. Reuses the native scope window and the latest successful fixture simulation traces. Settings are time_per_div, ch1_volts_per_div, ch2_volts_per_div, ch1_position, ch2_position, trigger_source, trigger_level, trigger_slope.",
+            R"({"type":"object","properties":{"fixture":{"type":"string"},"id":{"type":"string"},"action":{"type":"string","enum":["open","read","configure"]},"settings":{"type":"object","additionalProperties":{"type":"string"}}},"required":["id","action"],"additionalProperties":false})"
+        },
+        {
+            "test_fixture_diagnostics",
+            "Read, show, hide, or clear complete fixture diagnostic text in the nonmodal scrollable panel. Hiding retains the error; clearing dismisses stale text.",
+            R"({"type":"object","properties":{"fixture":{"type":"string"},"action":{"type":"string","enum":["read","show","hide","clear"]}},"required":["action"],"additionalProperties":false})"
         },
         {
             "test_fixture_save",
@@ -2954,6 +2970,7 @@ class SchematicCanvasPanel final : public juce::Component,
                                    public juce::DragAndDropTarget
 {
 public:
+    struct SimNetlist;
     friend class ::TestFixturePanel;
 
     class TestModeBarComponent : public juce::Component
@@ -3370,12 +3387,15 @@ public:
     juce::Point<float> wiringStartPoint;
     juce::Point<float> pendingLeadPoint;
     std::unique_ptr<juce::FileChooser> fixtureFileChooser;
+    juce::OwnedArray<juce::DocumentWindow> fixtureInstrumentWindows;
+    std::function<test_mode::TestSetup*()> resolveFixtureSetup;
 
     juce::String getCurrentSheet() const { return currentSheet; }
     juce::String getCurrentInstancePath() const { return currentInstancePath; }
 
     test_mode::TestSetup* getFixtureSetup()
     {
+        if (resolveFixtureSetup) return resolveFixtureSetup();
         if (fixtureSetup != nullptr) return fixtureSetup;
         if (fixtureName.isNotEmpty())
             return testMode.getSetup(fixtureName);
@@ -3384,6 +3404,7 @@ public:
 
     const test_mode::TestSetup* getFixtureSetup() const
     {
+        if (resolveFixtureSetup) return resolveFixtureSetup();
         if (fixtureSetup != nullptr) return fixtureSetup;
         if (fixtureName.isNotEmpty())
             return testMode.getSetup(fixtureName);
@@ -5169,6 +5190,25 @@ public:
         auto* s = getFixtureSetup();
         if (s == nullptr) return;
 
+        // A popup gesture must never start a drag, a cut, or a terminal lead.
+        if (event.mods.isPopupMenu())
+        {
+            for (auto it = s->equipment.rbegin(); it != s->equipment.rend(); ++it)
+                if (it->instancePath == currentInstancePath && it->getBounds().contains(modelPosition))
+                {
+                    selectedEquipmentId = it->id;
+                    juce::PopupMenu menu;
+                    menu.addItem(1, (it->type == "scope" || it->type == "oscilloscope_2ch") ? "Open Oscilloscope" : "Configure...");
+                    menu.showMenuAsync(juce::PopupMenu::Options().withTargetComponent(this),
+                        [safe = juce::Component::SafePointer<SchematicCanvasPanel>(this), id = it->id](int item) {
+                            if (safe != nullptr && item == 1) safe->showEquipmentDialog(id);
+                        });
+                    repaint();
+                    return;
+                }
+            return;
+        }
+
         if (breakToolActive)
         {
             auto wireHit = hitTestWire(modelPosition);
@@ -5380,8 +5420,9 @@ public:
         auto* s = getFixtureSetup();
         if (s == nullptr) return;
 
-        for (const auto& eq : s->equipment)
+        for (auto it = s->equipment.rbegin(); it != s->equipment.rend(); ++it)
         {
+            const auto& eq = *it;
             if (!eq.instancePath.equalsIgnoreCase(currentInstancePath)) continue;
             if (eq.getBounds().contains(modelPosition))
             {
@@ -5477,6 +5518,116 @@ public:
         s->syncSetupFromEquipment();
     }
 
+    std::vector<FixtureAudioInputDialog::Source> fixtureAudioSources() const
+    {
+        std::vector<FixtureAudioInputDialog::Source> sources;
+        const auto sim = buildSimNetlist();
+        for (const auto& inst : instances)
+        {
+            const auto found = sim.elementOfPart.find(inst.refdes);
+            if (found == sim.elementOfPart.end()) continue;
+            const auto& e = sim.circuit.elements()[(size_t)found->second];
+            if (e.type != circuit_sim::Element::Type::VoltageSource) continue;
+            // Legacy voltage_source parts can carry a frequency (VIN in the tube example).
+            const bool signal = inst.symbolId == "audio_in" || inst.symbolId == "signal_source"
+                || inst.symbolId == "ac_voltage_source" || parseQuantity(inst.frequency, 0.0) > 0.0
+                || (inst.symbolId != "battery" && std::abs(e.wave.offset) < 1e-12);
+            const auto label = inst.refdes + " - " + (signal ? "signal, " : "DC supply, ")
+                + inst.value + " V" + (inst.frequency.isNotEmpty() ? ", " + inst.frequency + " Hz" : "")
+                + (inst.sheet.isNotEmpty() ? " [" + inst.sheet + "]" : " [Main]");
+            sources.push_back({ inst.refdes, label, signal });
+        }
+        return sources;
+    }
+
+    juce::String validateFixtureInput(const test_mode::TestSetup& s, const test_mode::FixtureEquipment& eq,
+                                     const SimNetlist& sim, bool requireConnection,
+                                     const std::set<int>& broken = {}, const std::set<int>& isolated = {}) const
+    {
+        const auto* lead = s.terminalConnection(eq.id, "out");
+        const auto* ground = s.terminalConnection(eq.id, "gnd");
+        auto resolve = [&](const test_mode::FixtureConnection* c) -> circuit_sim::Node {
+            if (c == nullptr) return 0;
+            juce::String error;
+            return simNodeForLabel(sim, c->targetPinLabel, error, broken, isolated, sheetForInstance(c->instancePath));
+        };
+        int element = -1;
+        if (eq.isOverride)
+        {
+            const auto found = sim.elementOfPart.find(eq.overrideRefdes);
+            if (found == sim.elementOfPart.end()) return "Select an existing voltage signal source in Configure Audio Input.";
+            element = found->second;
+            bool eligible = false;
+            for (const auto& choice : fixtureAudioSources())
+                if (choice.refdes == eq.overrideRefdes) eligible = choice.eligible;
+            if (!eligible) return eq.overrideRefdes + " is a DC supply, not an audio signal source. Select the signal source (for example VIN) and reconnect OUT to its positive net.";
+        }
+        if (lead == nullptr)
+            return requireConnection ? "Audio input " + eq.name + " has no OUT lead. Wire OUT to the selected signal source's positive net before running." : juce::String();
+        const auto node = resolve(lead), ref = resolve(ground);
+        if (node < 0 || ref < 0) return "Cannot resolve the audio input wiring. Reconnect OUT and GND to valid schematic pins or nets.";
+        if (element >= 0)
+        {
+            const auto& source = sim.circuit.elements()[(size_t)element];
+            if (source.type != circuit_sim::Element::Type::VoltageSource || source.nodes.size() < 2)
+                return "Audio stimulus in volts requires an independent voltage source.";
+            if (node != source.nodes[0] || ref != source.nodes[1])
+            {
+                juce::String driver;
+                for (const auto& e : sim.circuit.elements())
+                    if (e.type == circuit_sim::Element::Type::VoltageSource && e.nodes.size() >= 2
+                        && (e.nodes[0] == node || e.nodes[1] == node) && node != 0)
+                        driver << (driver.isEmpty() ? " Driven by " : ", ") << e.name;
+                return "Audio input OUT is wired to " + lead->targetPinLabel + "." + driver
+                    + "; selected source is " + eq.overrideRefdes + ". Reconnect OUT to " + eq.overrideRefdes
+                    + ".+ (or the same net) and GND to its negative net. The schematic has not been changed.";
+            }
+        }
+        else
+        {
+            if (ref != 0) return "A virtual audio input uses circuit ground. Reconnect GND to ground or select an existing signal source.";
+            const auto conflict = audio_test::checkVirtualInput(sim.circuit, node);
+            if (!conflict.empty()) return juce::String(conflict) + " In Configure Audio Input select the signal source (for example VIN), then wire OUT to that source's positive net. Keep the DC supply connected as designed.";
+        }
+        return {};
+    }
+
+    juce::String configureFixtureEquipment(test_mode::TestSetup& s, const juce::String& eqId, const juce::var& config)
+    {
+        auto* eq = s.getEquipment(eqId);
+        if (eq == nullptr) return "Equipment not found: " + eqId;
+        auto candidate = *eq;
+        if (config.hasProperty("audioFilePath")) candidate.audioFilePath = config["audioFilePath"].toString().trim();
+        if (config.hasProperty("stimulusType")) candidate.stimulusType = config["stimulusType"].toString();
+        if (config.hasProperty("peakVolts")) candidate.peakVolts = (double)config["peakVolts"];
+        if (config.hasProperty("sineFrequencyHz")) candidate.sineFrequencyHz = (double)config["sineFrequencyHz"];
+        if (config.hasProperty("sineDurationSec")) candidate.sineDurationSec = (double)config["sineDurationSec"];
+        if (config.hasProperty("isOverride")) candidate.isOverride = (bool)config["isOverride"];
+        if (config.hasProperty("overrideRefdes")) candidate.overrideRefdes = config["overrideRefdes"].toString();
+        if (candidate.type == "audio_input")
+        {
+            if (!std::isfinite(candidate.peakVolts) || candidate.peakVolts <= 0.0) return "Enter a peak voltage greater than zero (for example 0.1 V).";
+            if (candidate.stimulusType == "file")
+            {
+                const auto file = juce::File::getCurrentWorkingDirectory().getChildFile(candidate.audioFilePath);
+                if (candidate.audioFilePath.isEmpty() || !file.existsAsFile()) return "WAV file not found. Use Browse to select an existing recording: " + candidate.audioFilePath;
+                juce::AudioFormatManager formats;
+                formats.registerBasicFormats();
+                std::unique_ptr<juce::AudioFormatReader> reader(formats.createReaderFor(file));
+                if (!file.hasFileExtension("wav") || reader == nullptr || reader->lengthInSamples < 2 || reader->numChannels == 0)
+                    return "Cannot read this WAV recording. Select a valid WAV file containing audio samples.";
+                candidate.audioFilePath = file.getFullPathName();
+            }
+            const auto sim = buildSimNetlist();
+            if (sim.error.isNotEmpty()) return sim.error;
+            if (auto error = validateFixtureInput(s, candidate, sim, false); error.isNotEmpty()) return error;
+        }
+        *eq = std::move(candidate);
+        s.syncSetupFromEquipment();
+        repaint();
+        return {};
+    }
+
     void showEquipmentDialog(const juce::String& eqId)
     {
         auto* s = getFixtureSetup();
@@ -5484,31 +5635,25 @@ public:
         auto* eq = s->getEquipment(eqId);
         if (eq == nullptr) return;
 
-        if (eq->type == "audio_input")
+        if (eq->type == "scope" || eq->type == "oscilloscope_2ch")
         {
-            auto* dialog = new juce::AlertWindow("Configure Audio Input", "Set Audio WAV stimulus and override options:", juce::AlertWindow::NoIcon);
-            dialog->addTextEditor("file", eq->audioFilePath, "WAV File Path:");
-            dialog->addTextEditor("peak", juce::String(eq->peakVolts, 3), "Peak Volts (V):");
-            dialog->addTextEditor("override", eq->overrideRefdes, "Override Refdes (e.g. VIN):");
-            dialog->addButton("OK", 1, juce::KeyPress(juce::KeyPress::returnKey));
-            dialog->addButton("Cancel", 0, juce::KeyPress(juce::KeyPress::escapeKey));
-            dialog->enterModalState(true, juce::ModalCallbackFunction::create([this, dialog, eqId](int result) {
-                std::unique_ptr<juce::AlertWindow> owner(dialog);
-                if (result != 1) return;
-                if (auto* cur = getFixtureSetup())
-                {
-                    if (auto* e = cur->getEquipment(eqId))
-                    {
-                        e->audioFilePath = dialog->getTextEditorContents("file").trim();
-                        e->peakVolts = std::max(0.001, dialog->getTextEditorContents("peak").trim().getDoubleValue());
-                        auto ov = dialog->getTextEditorContents("override").trim();
-                        e->isOverride = ov.isNotEmpty();
-                        e->overrideRefdes = ov;
-                        cur->syncSetupFromEquipment();
-                        repaint();
-                    }
-                }
-            }));
+            if (onInstrumentOpen) onInstrumentOpen(eqId, "oscilloscope_2ch");
+        }
+        else if (eq->type == "audio_input")
+        {
+            juce::DialogWindow::LaunchOptions options;
+            options.dialogTitle = "Configure Audio Input";
+            options.dialogBackgroundColour = juce::Colour(0xff171b20);
+            options.useNativeTitleBar = true;
+            options.resizable = false;
+            options.content.setOwned(new FixtureAudioInputDialog(eq->audioFilePath, eq->peakVolts,
+                eq->isOverride ? eq->overrideRefdes : juce::String(), fixtureAudioSources(),
+                [safe = juce::Component::SafePointer<SchematicCanvasPanel>(this), eqId](const juce::var& config) -> juce::String {
+                    if (safe == nullptr) return "The fixture has been closed.";
+                    auto* current = safe->getFixtureSetup();
+                    return current != nullptr ? safe->configureFixtureEquipment(*current, eqId, config) : "The fixture no longer exists.";
+                }));
+            options.launchAsync();
         }
         else if (eq->type == "signal_gen")
         {
@@ -12800,17 +12945,38 @@ public:
     // Changes whenever anything that affects a measurement changes.
     juce::int64 modelRevision() const
     {
+        if (isFixtureView)
+            if (const auto* s = getFixtureSetup())
+                return buildCircuitJson().hashCode64() ^ juce::JSON::toString(s->toVar(), true).hashCode64() ^ s->captureRevision;
         return buildCircuitJson().hashCode64();
     }
 
     juce::String instrumentSetting(const juce::String& refdes, const juce::String& key) const
     {
+        if (isFixtureView)
+            if (const auto* s = getFixtureSetup())
+                if (const auto* eq = s->getEquipment(refdes))
+                {
+                    const auto found = eq->instrumentSettings.find(key);
+                    if (found != eq->instrumentSettings.end()) return found->second;
+                    if (const auto* spec = parts::findParam("oscilloscope_2ch", key)) return spec->defaultValue;
+                    return {};
+                }
         const auto index = instanceIndexForRefdesAnySheet(refdes);
         return index >= 0 ? partValue(instances[(size_t)index], key) : juce::String();
     }
 
     void setInstrumentSetting(const juce::String& refdes, const juce::String& key, const juce::String& value)
     {
+        if (isFixtureView)
+            if (auto* s = getFixtureSetup())
+                if (auto* eq = s->getEquipment(refdes))
+                {
+                    eq->instrumentSettings[key] = value;
+                    ++s->captureRevision;
+                    repaint();
+                    return;
+                }
         const auto index = instanceIndexForRefdesAnySheet(refdes);
         if (index < 0)
             return;
@@ -12860,6 +13026,58 @@ public:
     ScopeCapture captureScope(const juce::String& refdes) const
     {
         ScopeCapture cap;
+        if (isFixtureView)
+        {
+            const auto* s = getFixtureSetup();
+            const auto* eq = s != nullptr ? s->getEquipment(refdes) : nullptr;
+            if (eq == nullptr) { cap.error = "This fixture oscilloscope no longer exists."; return cap; }
+            cap.timePerDiv = std::max(1e-7, parseQuantity(instrumentSetting(refdes, "time_per_div"), 200e-6));
+            if (!s->hasResult || s->lastProbeTraces.empty())
+            {
+                cap.error = s->lastError.isNotEmpty() ? "Fixture simulation failed. Open Diagnostics for details."
+                    : "Wire CH1 or CH2 and run the Test Fixture to acquire waveforms.";
+                return cap;
+            }
+            auto traceFor = [&](const juce::String& terminal) -> const std::vector<float>* {
+                const auto* c = s->terminalConnection(refdes, terminal);
+                if (c == nullptr) return nullptr;
+                const auto label = c->instancePath.isEmpty() ? c->targetPinLabel : c->instancePath + "." + c->targetPinLabel;
+                for (const auto& trace : s->lastProbeTraces)
+                    if (trace.label == label.toStdString()) return &trace.volts;
+                return nullptr;
+            };
+            const auto* ref = traceFor("ref");
+            if (s->terminalConnection(refdes, "ref") != nullptr && ref == nullptr)
+            { cap.error = "The scope reference lead has no acquired data. Check its wiring and run again."; return cap; }
+            const std::array<const std::vector<float>*, 2> traces { traceFor("in"), traceFor("ch2") };
+            size_t count = s->lastRenderedOutput.size();
+            for (int ch = 0; ch < 2; ++ch)
+                if (traces[(size_t)ch] != nullptr)
+                { cap.connected[(size_t)ch] = true; count = std::min(count, traces[(size_t)ch]->size()); }
+            if (ref != nullptr) count = std::min(count, ref->size());
+            if (count < 2 || (!cap.connected[0] && !cap.connected[1]))
+            { cap.error = "No acquired scope channels. Wire CH1 or CH2 and run the fixture again."; return cap; }
+            auto value = [&](size_t sample, int ch) {
+                return traces[(size_t)ch] != nullptr ? (double)(*traces[(size_t)ch])[sample]
+                    - (ref != nullptr ? (double)(*ref)[sample] : 0.0) : 0.0;
+            };
+            const auto triggerChannel = instrumentSetting(refdes, "trigger_source") == "CH2" ? 1 : 0;
+            const auto level = parseQuantity(instrumentSetting(refdes, "trigger_level"), 0.0);
+            const bool rising = instrumentSetting(refdes, "trigger_slope") != "Falling";
+            const auto screen = std::max<size_t>(2, (size_t)std::ceil(10.0 * cap.timePerDiv * s->lastSampleRate) + 1);
+            size_t start = 0;
+            for (size_t i = 1; i + std::min(screen, count) <= count; ++i)
+                if (rising ? (value(i - 1, triggerChannel) < level && value(i, triggerChannel) >= level)
+                           : (value(i - 1, triggerChannel) > level && value(i, triggerChannel) <= level))
+                { start = i; cap.triggered = true; break; }
+            for (size_t i = start; i < std::min(count, start + screen); ++i)
+            {
+                cap.time.push_back((double)(i - start) / s->lastSampleRate);
+                for (int ch = 0; ch < 2; ++ch) cap.channel[(size_t)ch].push_back(value(i, ch));
+            }
+            cap.ok = true;
+            return cap;
+        }
         const auto index = instanceIndexForRefdesAnySheet(refdes);
         if (index < 0 || instances[(size_t)index].symbolId != "oscilloscope_2ch")
         {
@@ -13468,6 +13686,16 @@ public:
             return toolFailure("test_setup_run", err);
         }
 
+        setup->syncSetupFromEquipment();
+        setup->invalidateResult();
+        setup->lastError.clear();
+        auto fail = [&](const juce::String& message) {
+            setup->lastError = message;
+            if (outError != nullptr) *outError = message;
+            if (auto* panel = getFixturePanel ? getFixturePanel(setup->name) : nullptr) panel->setDiagnostic(message);
+            return toolFailure("test_setup_run", message);
+        };
+
         // 1. Collect connection breaks
         std::set<int> brokenWireIndices;
         std::set<int> isolatedPinOrdinals;
@@ -13522,8 +13750,7 @@ public:
         if (sim.error.isNotEmpty())
         {
             const juce::String err = "Circuit build error: " + sim.error;
-            if (outError != nullptr) *outError = err;
-            return toolFailure("test_setup_run", err);
+            return fail(err);
         }
 
         // Check if an active sub-fixture has stimulus enabled
@@ -13542,8 +13769,23 @@ public:
         request.inputPeakVolts = activeSf != nullptr ? activeSf->inputPeakVolts : setup->inputPeakVolts;
         request.sampleRate = 48000.0;
 
+        const test_mode::FixtureEquipment* selectedInput = nullptr;
+        for (const auto& eq : setup->equipment)
+            if ((eq.type == "audio_input" || eq.type == "signal_gen" || eq.type == "signal_source")
+                && eq.instancePath == (activeSf != nullptr ? activeSf->instancePath : juce::String()))
+            {
+                if (selectedInput != nullptr) return fail("More than one audio stimulus is active on this fixture. Remove the extra input before running.");
+                selectedInput = &eq;
+                if (const auto error = validateFixtureInput(*setup, eq, sim, true, brokenWireIndices, isolatedPinOrdinals); error.isNotEmpty())
+                    return fail(error);
+            }
+
         // Resolve input
-        if (activeSf != nullptr)
+        if (selectedInput != nullptr && selectedInput->isOverride)
+        {
+            request.inputElement = sim.elementOfPart.at(selectedInput->overrideRefdes);
+        }
+        else if (activeSf != nullptr)
         {
             juce::String resolveErr;
             const auto sheet = sheetForInstance(activeSf->instancePath);
@@ -13556,8 +13798,7 @@ public:
                 else
                 {
                     const juce::String err = "Cannot resolve sub-fixture virtual input node '" + activeSf->inputNode + "': " + resolveErr;
-                    if (outError != nullptr) *outError = err;
-                    return toolFailure("test_setup_run", err);
+                    return fail(err);
                 }
             }
 
@@ -13565,8 +13806,7 @@ public:
             if (!conflict.empty())
             {
                 const juce::String err = "Virtual input conflict: " + juce::String(conflict);
-                if (outError != nullptr) *outError = err;
-                return toolFailure("test_setup_run", err);
+                return fail(err);
             }
             request.virtualInputNode = inNode;
         }
@@ -13589,8 +13829,7 @@ public:
                 if (foundElem < 0)
                 {
                     const juce::String err = "Cannot find source '" + setup->inputRefdes + "' to replace in circuit.";
-                    if (outError != nullptr) *outError = err;
-                    return toolFailure("test_setup_run", err);
+                    return fail(err);
                 }
                 request.inputElement = foundElem;
             }
@@ -13611,8 +13850,7 @@ public:
                 else
                 {
                     const juce::String err = "Cannot resolve virtual input node '" + setup->inputNode + "': " + resolveErr;
-                    if (outError != nullptr) *outError = err;
-                    return toolFailure("test_setup_run", err);
+                    return fail(err);
                 }
             }
 
@@ -13620,8 +13858,7 @@ public:
             if (!conflict.empty())
             {
                 const juce::String err = "Virtual input conflict: " + juce::String(conflict);
-                if (outError != nullptr) *outError = err;
-                return toolFailure("test_setup_run", err);
+                return fail(err);
             }
             request.virtualInputNode = inNode;
         }
@@ -13650,8 +13887,7 @@ public:
                 else
                 {
                     const juce::String err = "Cannot resolve output node '" + targetOut + "': " + outErr;
-                    if (outError != nullptr) *outError = err;
-                    return toolFailure("test_setup_run", err);
+                    return fail(err);
                 }
             }
             request.outputNode = outNode;
@@ -13700,35 +13936,21 @@ public:
         // Load or generate stimulus
         if (stimType == "file")
         {
-            juce::File audioFile(audioPath);
-            if (!audioFile.existsAsFile())
-            {
-                auto candidate = juce::File::getCurrentWorkingDirectory().getChildFile(audioPath);
-                if (candidate.existsAsFile())
-                    audioFile = candidate;
-                else
-                {
-                    candidate = juce::File("prototype/examples/tube_amplifiers/guitar_riff.wav");
-                    if (candidate.existsAsFile())
-                        audioFile = candidate;
-                }
-            }
+            const auto audioFile = juce::File::getCurrentWorkingDirectory().getChildFile(audioPath);
 
             if (!audioFile.existsAsFile())
             {
-                const juce::String err = "Audio test file not found: " + audioPath;
-                if (outError != nullptr) *outError = err;
-                return toolFailure("test_setup_run", err);
+                const juce::String err = "Audio test file not found: " + audioPath + ". Open Configure Audio Input and use Browse to select an existing WAV recording.";
+                return fail(err);
             }
 
             juce::AudioFormatManager formatMgr;
             formatMgr.registerBasicFormats();
             std::unique_ptr<juce::AudioFormatReader> reader(formatMgr.createReaderFor(audioFile));
-            if (reader == nullptr)
+            if (reader == nullptr || reader->lengthInSamples < 2 || reader->numChannels == 0)
             {
                 const juce::String err = "Failed to decode audio file: " + audioFile.getFullPathName();
-                if (outError != nullptr) *outError = err;
-                return toolFailure("test_setup_run", err);
+                return fail(err);
             }
 
             request.sampleRate = reader->sampleRate;
@@ -13767,8 +13989,7 @@ public:
         if (!result.ok)
         {
             const juce::String err = "Audio test simulation failed: " + juce::String(result.error);
-            if (outError != nullptr) *outError = err;
-            return toolFailure("test_setup_run", err);
+            return fail(err);
         }
 
         // Cache results on setup
@@ -13781,6 +14002,10 @@ public:
         setup->lastGainDb = setup->lastGainLinear > 1e-6 ? (20.0 * std::log10(setup->lastGainLinear)) : -100.0;
         setup->lastRenderedOutput = result.output.volts;
         setup->lastSampleRate = result.sampleRate;
+        setup->lastProbeTraces = result.probes;
+        ++setup->captureRevision;
+        setup->syncEquipmentFromSetup();
+        if (auto* panel = getFixturePanel ? getFixturePanel(setup->name) : nullptr) panel->setDiagnostic({});
 
         juce::String summary;
         summary << "Gain: " << (setup->lastGainDb >= 0.0 ? "+" : "") << juce::String(setup->lastGainDb, 1) << " dB ("
@@ -14257,6 +14482,33 @@ public:
             if (closeFixtureTab) closeFixtureTab(fixName);
             return "{ \"ok\": true, \"fixture\": " + quote(fixName) + ", \"tabClosed\": true }";
         }
+        if (name == "test_fixture_sources")
+        {
+            juce::Array<juce::var> sources;
+            for (const auto& choice : fixtureAudioSources())
+            {
+                auto* item = new juce::DynamicObject();
+                item->setProperty("refdes", choice.refdes);
+                item->setProperty("label", choice.label);
+                item->setProperty("eligible", choice.eligible);
+                sources.add(juce::var(item));
+            }
+            auto* result = new juce::DynamicObject();
+            result->setProperty("ok", true);
+            result->setProperty("sources", sources);
+            return juce::JSON::toString(juce::var(result));
+        }
+        if (name == "test_fixture_instrument" || name == "test_fixture_diagnostics")
+        {
+            const auto fixture = arg("fixture");
+            auto* s = fixture.isNotEmpty() ? testMode.getSetup(fixture) : testMode.getActiveSetup();
+            auto* panel = s != nullptr && getFixturePanel ? getFixturePanel(s->name) : nullptr;
+            if (panel == nullptr) return toolFailure(name, "Open the target Test Fixture tab first.");
+            if (name == "test_fixture_instrument") return panel->instrumentAction(arg("id"), arg("action"), args["settings"]);
+            const auto action = arg("action");
+            if (action != "read" && action != "show" && action != "hide" && action != "clear") return toolFailure(name, "Use read, show, hide, or clear.");
+            return panel->diagnosticAction(action);
+        }
         if (name == "test_fixture_list")
         {
             juce::String json;
@@ -14443,15 +14695,8 @@ public:
             auto* eq = s->getEquipment(eqId);
             if (eq == nullptr) return toolFailure(name, "Equipment '" + eqId + "' not found.");
 
-            if (args.hasProperty("audioFilePath")) eq->audioFilePath = args["audioFilePath"].toString();
-            if (args.hasProperty("stimulusType")) eq->stimulusType = args["stimulusType"].toString();
-            if (args.hasProperty("peakVolts")) eq->peakVolts = (double)args["peakVolts"];
-            if (args.hasProperty("sineFrequencyHz")) eq->sineFrequencyHz = (double)args["sineFrequencyHz"];
-            if (args.hasProperty("sineDurationSec")) eq->sineDurationSec = (double)args["sineDurationSec"];
-            if (args.hasProperty("isOverride")) eq->isOverride = (bool)args["isOverride"];
-            if (args.hasProperty("overrideRefdes")) eq->overrideRefdes = args["overrideRefdes"].toString();
-
-            s->syncSetupFromEquipment();
+            const auto error = configureFixtureEquipment(*s, eqId, args);
+            if (error.isNotEmpty()) return toolFailure(name, error);
             if (auto* panel = getFixturePanel ? getFixturePanel(s->name) : nullptr)
                 panel->updateFromSetup();
             repaint();
@@ -19297,6 +19542,18 @@ TestFixturePanel::TestFixturePanel(const juce::String& name, test_mode::TestSetu
     resultsLabel.setText("Ready. Drag instruments from Toolbox onto canvas. Use 'Test Fixture' menu to run or audition.", juce::dontSendNotification);
     addAndMakeVisible(resultsLabel);
 
+    diagnostics.setMultiLine(true);
+    diagnostics.setReadOnly(true);
+    diagnostics.setScrollbarsShown(true);
+    diagnostics.setColour(juce::TextEditor::textColourId, juce::Colour(0xffffb199));
+    diagnostics.setColour(juce::TextEditor::backgroundColourId, juce::Colour(0xff171b20));
+    addChildComponent(diagnostics);
+    addChildComponent(clearDiagnosticButton);
+    addAndMakeVisible(diagnosticsButton);
+    diagnosticsButton.setEnabled(false);
+    diagnosticsButton.onClick = [this] { diagnosticAction(diagnosticsExpanded ? "hide" : "show"); };
+    clearDiagnosticButton.onClick = [this] { diagnosticAction("clear"); };
+
     auto c = std::make_unique<SchematicCanvasPanel>(
         []() -> juce::String { return {}; },
         []() -> bool { return false; },
@@ -19307,6 +19564,19 @@ TestFixturePanel::TestFixturePanel(const juce::String& name, test_mode::TestSetu
     c->isFixtureView = true;
     c->fixtureName = fixtureName;
     c->fixtureSetup = setup;
+    c->resolveFixtureSetup = [this] { return getSetup(); };
+    c->onInstrumentOpen = [safe = juce::Component::SafePointer<SchematicCanvasPanel>(c.get())](juce::String id, juce::String symbol) {
+        if (safe == nullptr || symbol != "oscilloscope_2ch") return;
+        for (auto* window : safe->fixtureInstrumentWindows)
+            if (window->getComponentID() == id)
+            { window->setVisible(true); window->toFront(true); return; }
+        auto* window = new FloatingInstrumentWindow(safe->fixtureName + " - " + id + " Oscilloscope");
+        window->setComponentID(id);
+        window->setContentOwned(new ScopeView(safe.getComponent(), id), true);
+        window->centreWithSize(900, 560);
+        window->setVisible(true);
+        safe->fixtureInstrumentWindows.add(window);
+    };
 
     if (callbacks.getAuthoritativeDiagramFile != nullptr)
     {
@@ -19339,10 +19609,107 @@ void TestFixturePanel::paint(juce::Graphics& g)
 void TestFixturePanel::resized()
 {
     titleLabel.setBounds(10, 3, 220, 24);
-    resultsLabel.setBounds(235, 3, getWidth() - 245, 24);
+    resultsLabel.setBounds(235, 3, std::max(0, getWidth() - 375), 24);
+    diagnosticsButton.setBounds(getWidth() - 130, 3, 120, 24);
+
+    const auto diagnosticHeight = diagnosticsExpanded ? std::min(160, getHeight() / 3) : 0;
+    diagnostics.setVisible(diagnosticsExpanded);
+    clearDiagnosticButton.setVisible(diagnosticsExpanded);
+    diagnostics.setBounds(10, getHeight() - diagnosticHeight + 5, getWidth() - 110, std::max(0, diagnosticHeight - 10));
+    clearDiagnosticButton.setBounds(getWidth() - 90, getHeight() - diagnosticHeight + 5, 80, 24);
 
     if (schematicCanvas != nullptr)
-        schematicCanvas->setBounds(0, 30, getWidth(), getHeight() - 30);
+        schematicCanvas->setBounds(0, 30, getWidth(), getHeight() - 30 - diagnosticHeight);
+}
+
+void TestFixturePanel::setDiagnostic(const juce::String& message)
+{
+    if (auto* s = getSetup()) s->lastError = message;
+    diagnostics.setText(message, false);
+    diagnosticsButton.setEnabled(message.isNotEmpty());
+    diagnosticsButton.setButtonText(message.isNotEmpty() ? "Error Details" : "Diagnostics");
+    diagnosticsExpanded = message.isNotEmpty();
+    if (message.isNotEmpty())
+    {
+        resultsLabel.setText("Test failed - see Error Details.", juce::dontSendNotification);
+        if (callbacks.onStatusMessage) callbacks.onStatusMessage(message);
+    }
+    resized();
+}
+
+juce::String TestFixturePanel::diagnosticAction(const juce::String& action)
+{
+    if (action == "clear") { setDiagnostic({}); updateResultsDisplay(); }
+    else if (action == "show") diagnosticsExpanded = diagnostics.getText().isNotEmpty();
+    else if (action == "hide") diagnosticsExpanded = false;
+    resized();
+    auto* result = new juce::DynamicObject();
+    result->setProperty("ok", true);
+    result->setProperty("message", diagnostics.getText());
+    result->setProperty("expanded", diagnosticsExpanded);
+    return juce::JSON::toString(juce::var(result));
+}
+
+juce::String TestFixturePanel::instrumentAction(const juce::String& eqId, const juce::String& action, const juce::var& settings)
+{
+    auto* c = dynamic_cast<SchematicCanvasPanel*>(schematicCanvas.get());
+    const auto* s = getSetup();
+    const auto* eq = s != nullptr ? s->getEquipment(eqId) : nullptr;
+    auto fail = [](const juce::String& message) {
+        auto* result = new juce::DynamicObject();
+        result->setProperty("ok", false);
+        result->setProperty("error", message);
+        return juce::JSON::toString(juce::var(result));
+    };
+    if (c == nullptr || eq == nullptr || (eq->type != "scope" && eq->type != "oscilloscope_2ch"))
+        return fail("Select a placed fixture oscilloscope by equipment ID.");
+    if (action == "open") c->showEquipmentDialog(eqId);
+    else if (action == "configure")
+    {
+        if (const auto* object = settings.getDynamicObject())
+        {
+            for (const auto& p : object->getProperties())
+            {
+                const auto* spec = parts::findParam("oscilloscope_2ch", p.name.toString());
+                if (spec == nullptr) return fail("Unknown oscilloscope setting: " + p.name.toString());
+                if (spec->kind == parts::Kind::Choice && !spec->options.contains(p.value.toString()))
+                    return fail("Invalid choice for " + spec->key);
+                if (spec->kind == parts::Kind::Quantity)
+                {
+                    double value = 0.0;
+                    if (!circuit_sim::parseValue(p.value.toString().toStdString(), value) || !std::isfinite(value))
+                        return fail("Enter a number for " + spec->key);
+                }
+            }
+            for (const auto& p : object->getProperties()) c->setInstrumentSetting(eqId, p.name.toString(), p.value.toString());
+        }
+    }
+    else if (action != "read") return fail("Use open, read, or configure.");
+    auto* result = new juce::DynamicObject();
+    result->setProperty("ok", true);
+    result->setProperty("equipmentId", eqId);
+    result->setProperty("action", action);
+    if (action == "read")
+    {
+        const auto cap = c->captureScope(eqId);
+        if (!cap.ok) return fail(cap.error);
+        result->setProperty("timePerDiv", cap.timePerDiv);
+        result->setProperty("samples", (int)cap.time.size());
+        result->setProperty("triggered", cap.triggered);
+        juce::Array<juce::var> channels;
+        for (int ch = 0; ch < 2; ++ch)
+        {
+            const auto stats = SchematicCanvasPanel::channelStatsFor(cap, ch);
+            auto* channel = new juce::DynamicObject();
+            channel->setProperty("connected", cap.connected[(size_t)ch]);
+            channel->setProperty("vpp", stats.maximum - stats.minimum);
+            channel->setProperty("rms", stats.rms);
+            channel->setProperty("mean", stats.mean);
+            channels.add(juce::var(channel));
+        }
+        result->setProperty("channels", channels);
+    }
+    return juce::JSON::toString(juce::var(result));
 }
 
 void TestFixturePanel::runSimulation(bool startAudition)
@@ -19355,9 +19722,12 @@ void TestFixturePanel::runSimulation(bool startAudition)
     {
         juce::String summary = callbacks.runSimulation(curSetup, startAudition, &err);
         if (err.isNotEmpty())
-            resultsLabel.setText("Simulation Error: " + err, juce::dontSendNotification);
+            setDiagnostic(err);
         else
+        {
+            setDiagnostic({});
             resultsLabel.setText(curSetup->hasResult ? curSetup->lastSummary : (startAudition ? "Auditioning output..." : summary), juce::dontSendNotification);
+        }
     }
     if (auto* c = dynamic_cast<SchematicCanvasPanel*>(schematicCanvas.get())) c->repaint();
 }
@@ -19380,7 +19750,7 @@ void TestFixturePanel::exportWav()
     {
         callbacks.exportAudio(curSetup, dest.getFullPathName(), &err);
         if (err.isNotEmpty())
-            resultsLabel.setText("Export Error: " + err, juce::dontSendNotification);
+            setDiagnostic(err);
         else
             resultsLabel.setText("Exported audio: " + dest.getFileName(), juce::dontSendNotification);
     }
@@ -19442,7 +19812,12 @@ void TestFixturePanel::updateResultsDisplay()
         return;
     }
 
-    if (s->hasResult)
+    if (s->lastError.isNotEmpty())
+    {
+        if (diagnostics.getText() != s->lastError) setDiagnostic(s->lastError);
+        resultsLabel.setText("Test failed - see Error Details.", juce::dontSendNotification);
+    }
+    else if (s->hasResult)
     {
         resultsLabel.setText("⚡ " + s->lastSummary, juce::dontSendNotification);
     }
@@ -19559,15 +19934,11 @@ bool TestFixturePanel::configureEquipment(const juce::String& eqId, const juce::
     auto* eq = s->getEquipment(eqId);
     if (eq == nullptr) return false;
 
-    if (config.hasProperty("audioFilePath")) eq->audioFilePath = config["audioFilePath"].toString();
-    if (config.hasProperty("stimulusType")) eq->stimulusType = config["stimulusType"].toString();
-    if (config.hasProperty("peakVolts")) eq->peakVolts = (double)config["peakVolts"];
-    if (config.hasProperty("sineFrequencyHz")) eq->sineFrequencyHz = (double)config["sineFrequencyHz"];
-    if (config.hasProperty("isOverride")) eq->isOverride = (bool)config["isOverride"];
-    if (config.hasProperty("overrideRefdes")) eq->overrideRefdes = config["overrideRefdes"].toString();
+    auto* c = dynamic_cast<SchematicCanvasPanel*>(schematicCanvas.get());
+    if (c == nullptr) return false;
+    const auto error = c->configureFixtureEquipment(*s, eqId, config);
+    if (error.isNotEmpty()) { setDiagnostic(error); return false; }
 
-    s->syncSetupFromEquipment();
-    if (auto* c = dynamic_cast<SchematicCanvasPanel*>(schematicCanvas.get())) c->repaint();
     return true;
 }
 
@@ -26794,3 +27165,7 @@ bool ElectronicsWorkbench::renameComponent(const juce::String& from, const juce:
     appendLog("Renamed programmable component " + from + " to " + newName + ".");
     return true;
 }
+
+#if JUCE_DEBUG
+#include "../Testing/TestFixtureUiChecks.inl"
+#endif
