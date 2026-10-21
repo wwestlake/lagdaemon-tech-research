@@ -2946,6 +2946,8 @@ class SchematicCanvasPanel final : public juce::Component,
                                    public juce::DragAndDropTarget
 {
 public:
+    friend class ::TestFixturePanel;
+
     class TestModeBarComponent : public juce::Component
     {
     public:
@@ -3345,51 +3347,63 @@ public:
     std::function<TestFixturePanel*(const juce::String& name)> getFixturePanel;
     std::function<juce::File()> getAuthoritativeDiagramFile;
 
-    test_fixture::FixtureCircuitData getFixtureCircuitData(const juce::String& sheet) const
+    bool isFixtureView = false;
+    juce::String fixtureName;
+    test_mode::TestSetup* fixtureSetup = nullptr;
+    bool breakToolActive = false;
+    juce::String selectedEquipmentId;
+    juce::String selectedConnectionId;
+    bool draggingFixtureEquipment = false;
+    juce::Point<float> dragFixtureStartMouse;
+    juce::Point<float> dragFixtureStartPos;
+    bool isWiringFixture = false;
+    juce::String wiringFromEquipmentId;
+    juce::String wiringFromTerminalId;
+    juce::Point<float> wiringStartPoint;
+    juce::Point<float> pendingLeadPoint;
+    std::unique_ptr<juce::FileChooser> fixtureFileChooser;
+
+    juce::String getCurrentSheet() const { return currentSheet; }
+    juce::String getCurrentInstancePath() const { return currentInstancePath; }
+
+    test_mode::TestSetup* getFixtureSetup()
     {
-        test_fixture::FixtureCircuitData data;
-        data.sheet = sheet;
-        for (int i = 0; i < (int)instances.size(); ++i)
-        {
-            const auto& inst = instances[(size_t)i];
-            if (inst.sheet != sheet) continue;
-            test_fixture::CircuitComponent comp;
-            comp.refdes = inst.refdes;
-            comp.symbolId = inst.symbolId;
-            comp.value = inst.value;
-            comp.pos = inst.position;
-            comp.rotation = (float)inst.rotation;
-            comp.bounds = orientedBounds(inst, symbolForInstance(inst));
-            comp.isSubBlock = (inst.symbolId == "sub_block");
-            comp.childSheet = inst.childSheet;
+        if (fixtureSetup != nullptr) return fixtureSetup;
+        if (fixtureName.isNotEmpty())
+            return testMode.getSetup(fixtureName);
+        return testMode.getActiveSetup();
+    }
 
-            const auto sym = symbolForInstance(inst);
-            for (size_t p = 0; p < sym.pins.size(); ++p)
-            {
-                test_fixture::CircuitPin pin;
-                pin.name = sym.pins[p].name;
-                pin.label = pinLabel({ i, (int)p });
-                pin.pos = pinPosition({ i, (int)p });
-                comp.pins.push_back(pin);
-            }
-            data.components.push_back(std::move(comp));
-        }
+    const test_mode::TestSetup* getFixtureSetup() const
+    {
+        if (fixtureSetup != nullptr) return fixtureSetup;
+        if (fixtureName.isNotEmpty())
+            return testMode.getSetup(fixtureName);
+        return testMode.getActiveSetup();
+    }
 
-        for (size_t w = 0; w < wires.size(); ++w)
+    juce::Point<float> getFixtureTerminalPos(const test_mode::FixtureEquipment& eq, const juce::String& terminalId) const
+    {
+        const auto b = eq.getBounds();
+        if (eq.type == "audio_input" || eq.type == "signal_gen")
         {
-            const auto& wire = wires[w];
-            if (nodeOnSheet(wire.a) || nodeOnSheet(wire.b))
-            {
-                test_fixture::CircuitWire cw;
-                cw.wireIndex = (int)w;
-                cw.a = nodePosition(wire.a);
-                cw.b = nodePosition(wire.b);
-                cw.nodeA = nodeLabel(wire.a);
-                cw.nodeB = nodeLabel(wire.b);
-                data.wires.push_back(cw);
-            }
+            if (terminalId.equalsIgnoreCase("gnd"))
+                return { b.getX() + 18.0f, b.getY() + b.getHeight() - 12.0f };
+            return { b.getX() + b.getWidth() - 18.0f, b.getY() + b.getHeight() - 12.0f };
         }
-        return data;
+        if (eq.type == "audio_output" || eq.type == "probe" || eq.type == "voltmeter" || eq.type == "scope")
+        {
+            if (terminalId.equalsIgnoreCase("ref") || terminalId.equalsIgnoreCase("-") || terminalId.equalsIgnoreCase("gnd"))
+                return { b.getX() + b.getWidth() - 18.0f, b.getY() + b.getHeight() - 12.0f };
+            return { b.getX() + 18.0f, b.getY() + b.getHeight() - 12.0f };
+        }
+        if (eq.type == "ammeter")
+        {
+            if (terminalId.equalsIgnoreCase("-") || terminalId.equalsIgnoreCase("out"))
+                return { b.getX() + b.getWidth() - 18.0f, b.getY() + b.getHeight() - 12.0f };
+            return { b.getX() + 18.0f, b.getY() + b.getHeight() - 12.0f };
+        }
+        return { b.getX() + b.getWidth() - 18.0f, b.getY() + b.getHeight() - 12.0f };
     }
 
     void enterTestMode()
@@ -4647,9 +4661,13 @@ public:
         {
             drawTestModeOverlay(g);
         }
+        if (isFixtureView)
+        {
+            drawFixtureInstrumentation(g);
+        }
         g.restoreState();
         drawBreadcrumb(g);
-        if (testMode.isActive())
+        if (testMode.isActive() || isFixtureView)
         {
             g.setColour(juce::Colour(0xffe056fd).withAlpha(0.25f));
             g.drawRect(getLocalBounds(), 2);
@@ -4657,15 +4675,25 @@ public:
 
         g.setColour(juce::Colour(0xff93a7b0));
         g.setFont(juce::Font(13.0f));
-        const auto stampOn = getStampPlacementEnabled != nullptr && getStampPlacementEnabled();
-        const auto modeText = snapEnabled ? juce::String("Snap on") : juce::String("Snap off");
-        const auto zoomText = juce::String((int)std::round(canvasZoom * 100.0f)) + "%";
-        const auto hintText = juce::String(stampOn ? "Stamp mode: click empty canvas to place selected symbols, drag selected parts to move, R rotates."
-                                                   : "Drag pins/wires/rails to connect. Select a rail and drag its end handles to resize. Delete removes selected parts.")
-            + "  " + modeText + "  Zoom " + zoomText;
-        g.drawText(hintText,
-                   getLocalBounds().reduced(12).removeFromBottom(24),
-                   juce::Justification::centredLeft);
+        if (isFixtureView)
+        {
+            juce::String fixHint = "Test Fixture: " + fixtureName;
+            if (currentInstancePath.isNotEmpty()) fixHint += " [Sub-Fixture: " + currentInstancePath + "]";
+            fixHint += " — Drag terminal to wire lead; Drag equipment to move; Double-click to configure; Del removes selected.";
+            g.drawText(fixHint, getLocalBounds().reduced(12).removeFromBottom(24), juce::Justification::centredLeft);
+        }
+        else
+        {
+            const auto stampOn = getStampPlacementEnabled != nullptr && getStampPlacementEnabled();
+            const auto modeText = snapEnabled ? juce::String("Snap on") : juce::String("Snap off");
+            const auto zoomText = juce::String((int)std::round(canvasZoom * 100.0f)) + "%";
+            const auto hintText = juce::String(stampOn ? "Stamp mode: click empty canvas to place selected symbols, drag selected parts to move, R rotates."
+                                                       : "Drag pins/wires/rails to connect. Select a rail and drag its end handles to resize. Delete removes selected parts.")
+                + "  " + modeText + "  Zoom " + zoomText;
+            g.drawText(hintText,
+                       getLocalBounds().reduced(12).removeFromBottom(24),
+                       juce::Justification::centredLeft);
+        }
 
         if (dragHover)
             g.drawText(dragMessage, getLocalBounds().reduced(12).removeFromBottom(24), juce::Justification::centredRight);
@@ -4907,6 +4935,609 @@ public:
         }
     }
 
+    void drawFixtureInstrumentation(juce::Graphics& g)
+    {
+        auto* s = getFixtureSetup();
+        if (s == nullptr) return;
+
+        const float dashPattern[] = { 6.0f, 4.0f };
+
+        // 1. Connection break visual indicators
+        for (const auto& b : s->connectionBreaks)
+        {
+            if (!b.instancePath.equalsIgnoreCase(currentInstancePath)) continue;
+            if (b.wireIndex >= 0 && b.wireIndex < (int)wires.size())
+            {
+                const auto& w = wires[(size_t)b.wireIndex];
+                if (nodeOnSheet(w.a) || nodeOnSheet(w.b))
+                {
+                    const auto ptA = nodePosition(w.a);
+                    const auto ptB = nodePosition(w.b);
+                    const auto mid = (ptA + ptB) * 0.5f;
+
+                    g.setColour(juce::Colour(0xffe74c3c));
+                    g.drawDashedLine(juce::Line<float>(ptA, ptB), dashPattern, 2, 2.5f);
+                    g.fillEllipse(mid.x - 9.0f, mid.y - 9.0f, 18.0f, 18.0f);
+                    g.setColour(juce::Colours::white);
+                    g.setFont(juce::Font(11.0f, juce::Font::bold));
+                    g.drawText("✕", juce::Rectangle<float>(mid.x - 9.0f, mid.y - 9.0f, 18.0f, 18.0f).toNearestInt(), juce::Justification::centred);
+                    g.setColour(juce::Colour(0xffff7675));
+                    g.setFont(juce::Font(9.0f, juce::Font::bold));
+                    g.drawText("INTERRUPTED", juce::Rectangle<float>(mid.x - 40.0f, mid.y - 22.0f, 80.0f, 12.0f).toNearestInt(), juce::Justification::centred);
+                }
+            }
+            else if (b.pin.isNotEmpty())
+            {
+                WireNode pn;
+                juce::String err;
+                if (nodeFromLabel(b.pin, pn, err, currentSheet) && nodeOnSheet(pn))
+                {
+                    const auto pt = nodePosition(pn);
+                    g.setColour(juce::Colour(0xffe74c3c));
+                    g.fillEllipse(pt.x - 7.0f, pt.y - 7.0f, 14.0f, 14.0f);
+                    g.setColour(juce::Colours::white);
+                    g.setFont(juce::Font(9.0f, juce::Font::bold));
+                    g.drawText("✕", (int)pt.x - 7, (int)pt.y - 7, 14, 14, juce::Justification::centred);
+                    g.setColour(juce::Colour(0xffff7675));
+                    g.drawText("ISOLATED", (int)pt.x - 25, (int)pt.y - 18, 50, 10, juce::Justification::centred);
+                }
+            }
+        }
+
+        // 2. Fixture test lead connections
+        for (const auto& conn : s->fixtureConnections)
+        {
+            if (!conn.instancePath.equalsIgnoreCase(currentInstancePath)) continue;
+            const auto* eq = s->getEquipment(conn.equipmentId);
+            if (eq == nullptr) continue;
+
+            juce::Point<float> fromPt = getFixtureTerminalPos(*eq, conn.terminalId);
+            juce::Point<float> toPt = conn.targetPoint;
+
+            if (conn.targetPinLabel.isNotEmpty())
+            {
+                WireNode n;
+                juce::String err;
+                if (nodeFromLabel(conn.targetPinLabel, n, err, currentSheet) && nodeOnSheet(n))
+                    toPt = nodePosition(n);
+            }
+
+            const bool isSelected = (conn.id == selectedConnectionId);
+            juce::Colour leadCol(0xffe056fd);
+            if (eq->type == "audio_output") leadCol = juce::Colour(0xff00d2d3);
+            else if (eq->type == "signal_gen") leadCol = juce::Colour(0xffff9f43);
+            else if (eq->type == "probe" || eq->type == "voltmeter") leadCol = juce::Colour(0xff2ecc71);
+            else if (eq->type == "scope") leadCol = juce::Colour(0xff54a0ff);
+            else if (eq->type == "ammeter") leadCol = juce::Colour(0xfff39c12);
+
+            if (isSelected) leadCol = juce::Colours::white;
+
+            g.setColour(leadCol.withAlpha(0.85f));
+            g.drawLine(fromPt.x, fromPt.y, toPt.x, toPt.y, isSelected ? 2.8f : 1.8f);
+
+            g.setColour(leadCol);
+            g.fillEllipse(fromPt.x - 3.5f, fromPt.y - 3.5f, 7.0f, 7.0f);
+            g.fillEllipse(toPt.x - 4.0f, toPt.y - 4.0f, 8.0f, 8.0f);
+            g.setColour(juce::Colours::white);
+            g.drawEllipse(toPt.x - 4.0f, toPt.y - 4.0f, 8.0f, 8.0f, 1.0f);
+
+            const auto mid = (fromPt + toPt) * 0.5f;
+            g.setFont(juce::Font(9.0f));
+            g.setColour(leadCol.brighter(0.2f));
+            juce::String leadLbl = conn.terminalId.toUpperCase() + " → " + conn.targetPinLabel;
+            g.drawText(leadLbl, (int)mid.x - 40, (int)mid.y - 14, 80, 12, juce::Justification::centred);
+        }
+
+        // 3. Pending lead wire drag
+        if (isWiringFixture)
+        {
+            g.setColour(juce::Colour(0xfff1c40f));
+            const float dash[] = { 4.0f, 3.0f };
+            g.drawDashedLine(juce::Line<float>(wiringStartPoint, pendingLeadPoint), dash, 2, 2.0f);
+            g.fillEllipse(pendingLeadPoint.x - 5.0f, pendingLeadPoint.y - 5.0f, 10.0f, 10.0f);
+            g.setColour(juce::Colours::white);
+            g.drawEllipse(pendingLeadPoint.x - 7.0f, pendingLeadPoint.y - 7.0f, 14.0f, 14.0f, 1.2f);
+        }
+
+        // 4. Placed test equipment chassis
+        for (const auto& eq : s->equipment)
+        {
+            if (!eq.instancePath.equalsIgnoreCase(currentInstancePath)) continue;
+
+            auto bounds = eq.getBounds();
+            const bool isSelected = (eq.id == selectedEquipmentId);
+
+            g.setColour(juce::Colours::black.withAlpha(0.45f));
+            g.fillRoundedRectangle(bounds.translated(2.0f, 2.0f), 6.0f);
+
+            g.setColour(juce::Colour(0xff151d26));
+            g.fillRoundedRectangle(bounds, 6.0f);
+            g.setColour(isSelected ? juce::Colour(0xff00d2d3) : juce::Colour(0xff2c3a4a));
+            g.drawRoundedRectangle(bounds, 6.0f, isSelected ? 2.0f : 1.2f);
+
+            juce::Colour headerCol(0xff4b6584);
+            juce::String titleText = eq.name;
+            if (eq.type == "audio_input") { headerCol = juce::Colour(0xff8e44ad); titleText = "⚡ AUDIO INPUT"; }
+            else if (eq.type == "audio_output") { headerCol = juce::Colour(0xff0984e3); titleText = "AUDIO SINK"; }
+            else if (eq.type == "signal_gen") { headerCol = juce::Colour(0xffd35400); titleText = "SIGNAL GENERATOR"; }
+            else if (eq.type == "probe" || eq.type == "voltmeter") { headerCol = juce::Colour(0xff20bf6b); titleText = "VOLTMETER"; }
+            else if (eq.type == "scope") { headerCol = juce::Colour(0xff00cec9); titleText = "OSCILLOSCOPE"; }
+            else if (eq.type == "ammeter") { headerCol = juce::Colour(0xffb7791f); titleText = "CURRENT PROBE (IN DEV)"; }
+
+            auto header = bounds.removeFromTop(20.0f);
+            g.setColour(headerCol);
+            g.fillRoundedRectangle(header, 5.0f);
+            g.setColour(juce::Colours::white);
+            g.setFont(juce::Font(10.0f, juce::Font::bold));
+            g.drawText(titleText, header.reduced(6, 1), juce::Justification::centredLeft);
+
+            g.setColour(juce::Colour(0xffd1d8e0));
+            g.setFont(juce::Font(10.0f));
+            int bodyY = (int)bounds.getY() + 3;
+            if (eq.type == "audio_input")
+            {
+                juce::String fn = eq.audioFilePath.isNotEmpty() ? juce::File(eq.audioFilePath).getFileName() : "No WAV loaded";
+                g.drawText(fn, (int)bounds.getX() + 8, bodyY, (int)bounds.getWidth() - 16, 14, juce::Justification::centredLeft);
+                g.setColour(juce::Colour(0xff95afc0));
+                juce::String sub = juce::String(eq.peakVolts * 1000.0, 0) + " mV pk";
+                if (eq.isOverride) sub += " [Override " + eq.overrideRefdes + "]";
+                g.drawText(sub, (int)bounds.getX() + 8, bodyY + 14, (int)bounds.getWidth() - 16, 14, juce::Justification::centredLeft);
+            }
+            else if (eq.type == "signal_gen")
+            {
+                g.drawText(juce::String((int)eq.sineFrequencyHz) + " Hz Sine", (int)bounds.getX() + 8, bodyY, (int)bounds.getWidth() - 16, 14, juce::Justification::centredLeft);
+                g.setColour(juce::Colour(0xff95afc0));
+                juce::String sub = juce::String(eq.peakVolts * 1000.0, 0) + " mV pk";
+                if (eq.isOverride) sub += " [Override " + eq.overrideRefdes + "]";
+                g.drawText(sub, (int)bounds.getX() + 8, bodyY + 14, (int)bounds.getWidth() - 16, 14, juce::Justification::centredLeft);
+            }
+            else if (eq.type == "audio_output")
+            {
+                juce::String target = s->outputNode.isNotEmpty() ? s->outputNode : "(unconnected)";
+                g.drawText("Target: " + target, (int)bounds.getX() + 8, bodyY, (int)bounds.getWidth() - 16, 14, juce::Justification::centredLeft);
+                g.setColour(juce::Colour(0xff00d2d3));
+                juce::String val = s->hasResult ? (juce::String(s->lastOutputPeak, 2) + " V pk (" + juce::String(s->lastGainDb, 1) + " dB)") : "Ready to monitor";
+                g.drawText(val, (int)bounds.getX() + 8, bodyY + 14, (int)bounds.getWidth() - 16, 14, juce::Justification::centredLeft);
+            }
+            else if (eq.type == "probe" || eq.type == "voltmeter")
+            {
+                juce::String val = s->hasResult ? (juce::String(s->lastOutputPeak, 2) + " V pk") : "0.00 V";
+                g.drawText("AC Volts: " + val, (int)bounds.getX() + 8, bodyY, (int)bounds.getWidth() - 16, 14, juce::Justification::centredLeft);
+                g.setColour(juce::Colour(0xff78e08f));
+                g.drawText(s->hasResult ? ("DC: " + juce::String(s->lastOutputDc, 2) + " V") : "Probe idle", (int)bounds.getX() + 8, bodyY + 14, (int)bounds.getWidth() - 16, 14, juce::Justification::centredLeft);
+            }
+            else if (eq.type == "scope")
+            {
+                g.drawText("1 ms/div, 1 V/div", (int)bounds.getX() + 8, bodyY, (int)bounds.getWidth() - 16, 14, juce::Justification::centredLeft);
+                g.setColour(juce::Colour(0xff00cec9));
+                g.drawText(s->hasResult ? (juce::String(s->lastOutputPeak * 2.0, 2) + " V pk-pk") : "Waiting for trigger", (int)bounds.getX() + 8, bodyY + 14, (int)bounds.getWidth() - 16, 14, juce::Justification::centredLeft);
+            }
+            else if (eq.type == "ammeter")
+            {
+                g.setColour(juce::Colour(0xfff39c12));
+                g.drawText("In development", (int)bounds.getX() + 8, bodyY + 6, (int)bounds.getWidth() - 16, 14, juce::Justification::centredLeft);
+            }
+
+            for (const auto& term : eq.getTerminals())
+            {
+                const auto tPos = getFixtureTerminalPos(eq, term.id);
+                g.setColour(juce::Colour(0xff2c3a4a));
+                g.fillEllipse(tPos.x - 5.0f, tPos.y - 5.0f, 10.0f, 10.0f);
+                g.setColour(term.isOutput ? juce::Colour(0xffff9f43) : juce::Colour(0xff00d2d3));
+                g.fillEllipse(tPos.x - 3.0f, tPos.y - 3.0f, 6.0f, 6.0f);
+                g.setColour(juce::Colours::white);
+                g.drawEllipse(tPos.x - 5.0f, tPos.y - 5.0f, 10.0f, 10.0f, 1.0f);
+
+                g.setFont(juce::Font(8.0f, juce::Font::bold));
+                g.setColour(juce::Colour(0xffc8d6e5));
+                g.drawText(term.name, (int)tPos.x - 14, (int)tPos.y - 14, 28, 10, juce::Justification::centred);
+            }
+        }
+    }
+
+    void handleFixtureMouseDown(const juce::MouseEvent& event, juce::Point<float> modelPosition)
+    {
+        auto* s = getFixtureSetup();
+        if (s == nullptr) return;
+
+        if (breakToolActive)
+        {
+            auto wireHit = hitTestWire(modelPosition);
+            if (wireHit >= 0)
+            {
+                toggleFixtureBreak(wireHit, {}, currentInstancePath);
+                repaint();
+                return;
+            }
+            auto pinHit = hitTestPin(modelPosition);
+            if (pinHit.instanceIndex >= 0)
+            {
+                toggleFixtureBreak(-1, pinLabel(pinHit), currentInstancePath);
+                repaint();
+                return;
+            }
+        }
+
+        for (const auto& eq : s->equipment)
+        {
+            if (!eq.instancePath.equalsIgnoreCase(currentInstancePath)) continue;
+            for (const auto& term : eq.getTerminals())
+            {
+                auto tPos = getFixtureTerminalPos(eq, term.id);
+                if ((modelPosition - tPos).getDistanceFromOrigin() <= 10.0f)
+                {
+                    isWiringFixture = true;
+                    wiringFromEquipmentId = eq.id;
+                    wiringFromTerminalId = term.id;
+                    wiringStartPoint = tPos;
+                    pendingLeadPoint = modelPosition;
+                    repaint();
+                    return;
+                }
+            }
+        }
+
+        for (int i = (int)s->equipment.size() - 1; i >= 0; --i)
+        {
+            const auto& eq = s->equipment[(size_t)i];
+            if (!eq.instancePath.equalsIgnoreCase(currentInstancePath)) continue;
+            if (eq.getBounds().contains(modelPosition))
+            {
+                selectedEquipmentId = eq.id;
+                selectedConnectionId.clear();
+                draggingFixtureEquipment = true;
+                dragFixtureStartMouse = modelPosition;
+                dragFixtureStartPos = eq.pos;
+                repaint();
+                return;
+            }
+        }
+
+        for (const auto& conn : s->fixtureConnections)
+        {
+            if (!conn.instancePath.equalsIgnoreCase(currentInstancePath)) continue;
+            const auto* eq = s->getEquipment(conn.equipmentId);
+            if (eq == nullptr) continue;
+            auto fromPt = getFixtureTerminalPos(*eq, conn.terminalId);
+            auto toPt = conn.targetPoint;
+            if (conn.targetPinLabel.isNotEmpty())
+            {
+                WireNode n;
+                juce::String err;
+                if (nodeFromLabel(conn.targetPinLabel, n, err, currentSheet) && nodeOnSheet(n))
+                    toPt = nodePosition(n);
+            }
+            juce::Line<float> line(fromPt, toPt);
+            if (line.findNearestPointTo(modelPosition).getDistanceFrom(modelPosition) <= 6.0f)
+            {
+                selectedConnectionId = conn.id;
+                selectedEquipmentId.clear();
+                repaint();
+                return;
+            }
+        }
+
+        const auto instHit = hitTestInstance(modelPosition);
+        if (instHit >= 0 && instances[(size_t)instHit].symbolId == "sub_block")
+        {
+            return;
+        }
+
+        selectedEquipmentId.clear();
+        selectedConnectionId.clear();
+        panning = true;
+        panStartMouse = event.position;
+        panStartOffset = viewOffset;
+        repaint();
+    }
+
+    void handleFixtureMouseDrag(const juce::MouseEvent& event, juce::Point<float> modelPosition)
+    {
+        if (panning)
+        {
+            viewOffset = panStartOffset + (event.position - panStartMouse);
+            repaint();
+            return;
+        }
+
+        if (draggingFixtureEquipment)
+        {
+            if (auto* s = getFixtureSetup())
+            {
+                if (auto* eq = s->getEquipment(selectedEquipmentId))
+                {
+                    eq->pos = dragFixtureStartPos + (modelPosition - dragFixtureStartMouse);
+                    repaint();
+                    return;
+                }
+            }
+        }
+
+        if (isWiringFixture)
+        {
+            pendingLeadPoint = modelPosition;
+            auto pinHit = hitTestPin(modelPosition);
+            if (pinHit.instanceIndex >= 0)
+            {
+                pendingLeadPoint = pinPosition(pinHit);
+            }
+            else
+            {
+                auto wireHit = hitTestWire(modelPosition);
+                if (wireHit >= 0)
+                {
+                    const auto& w = wires[(size_t)wireHit];
+                    juce::Line<float> wLine(nodePosition(w.a), nodePosition(w.b));
+                    pendingLeadPoint = wLine.findNearestPointTo(modelPosition);
+                }
+            }
+            repaint();
+            return;
+        }
+    }
+
+    void handleFixtureMouseUp(const juce::MouseEvent& event, juce::Point<float> modelPosition)
+    {
+        panning = false;
+
+        if (draggingFixtureEquipment)
+        {
+            draggingFixtureEquipment = false;
+            if (auto* s = getFixtureSetup())
+                s->syncSetupFromEquipment();
+            repaint();
+            return;
+        }
+
+        if (isWiringFixture)
+        {
+            isWiringFixture = false;
+            auto* s = getFixtureSetup();
+            if (s != nullptr)
+            {
+                auto pinHit = hitTestPin(modelPosition);
+                if (pinHit.instanceIndex >= 0)
+                {
+                    const auto& inst = instances[(size_t)pinHit.instanceIndex];
+                    test_mode::FixtureConnection conn;
+                    conn.id = "conn_" + juce::String(juce::Random::getSystemRandom().nextInt(89999) + 10000);
+                    conn.equipmentId = wiringFromEquipmentId;
+                    conn.terminalId = wiringFromTerminalId;
+                    conn.targetRefdes = inst.refdes;
+                    conn.targetPinIndex = pinHit.pinIndex;
+                    conn.targetPinLabel = pinLabel(pinHit);
+                    conn.targetPoint = pinPosition(pinHit);
+                    conn.instancePath = currentInstancePath;
+                    s->addConnection(conn);
+                    if (onStatus) onStatus("Connected " + wiringFromEquipmentId + " to " + conn.targetPinLabel);
+                }
+                else
+                {
+                    auto wireHit = hitTestWire(modelPosition);
+                    if (wireHit >= 0)
+                    {
+                        const auto& w = wires[(size_t)wireHit];
+                        test_mode::FixtureConnection conn;
+                        conn.id = "conn_" + juce::String(juce::Random::getSystemRandom().nextInt(89999) + 10000);
+                        conn.equipmentId = wiringFromEquipmentId;
+                        conn.terminalId = wiringFromTerminalId;
+                        conn.targetWireIndex = wireHit;
+                        conn.targetPinLabel = nodeLabel(w.a);
+                        conn.targetPoint = modelPosition;
+                        conn.instancePath = currentInstancePath;
+                        s->addConnection(conn);
+                        if (onStatus) onStatus("Connected " + wiringFromEquipmentId + " to wire on net " + conn.targetPinLabel);
+                    }
+                }
+            }
+            repaint();
+            return;
+        }
+    }
+
+    void handleFixtureMouseDoubleClick(const juce::MouseEvent& event, juce::Point<float> modelPosition)
+    {
+        auto* s = getFixtureSetup();
+        if (s == nullptr) return;
+
+        for (const auto& eq : s->equipment)
+        {
+            if (!eq.instancePath.equalsIgnoreCase(currentInstancePath)) continue;
+            if (eq.getBounds().contains(modelPosition))
+            {
+                showEquipmentDialog(eq.id);
+                return;
+            }
+        }
+
+        const auto instHit = hitTestInstance(modelPosition);
+        if (instHit >= 0)
+        {
+            const auto& inst = instances[(size_t)instHit];
+            if (inst.symbolId == "sub_block")
+            {
+                juce::String newPath = currentInstancePath.isEmpty() ? inst.refdes : (currentInstancePath + "/" + inst.refdes);
+                openSheetForInstance(inst.childSheet, newPath);
+                repaint();
+                return;
+            }
+        }
+    }
+
+    void handleFixtureMouseMove(const juce::MouseEvent& event, juce::Point<float> modelPosition)
+    {
+        if (breakToolActive)
+        {
+            setMouseCursor(juce::MouseCursor::CrosshairCursor);
+            return;
+        }
+        if (auto* s = getFixtureSetup())
+        {
+            for (const auto& eq : s->equipment)
+            {
+                if (!eq.instancePath.equalsIgnoreCase(currentInstancePath)) continue;
+                for (const auto& term : eq.getTerminals())
+                {
+                    if ((modelPosition - getFixtureTerminalPos(eq, term.id)).getDistanceFromOrigin() <= 10.0f)
+                    {
+                        setMouseCursor(juce::MouseCursor::CrosshairCursor);
+                        return;
+                    }
+                }
+                if (eq.getBounds().contains(modelPosition))
+                {
+                    setMouseCursor(juce::MouseCursor::PointingHandCursor);
+                    return;
+                }
+            }
+        }
+        const auto instHit = hitTestInstance(modelPosition);
+        if (instHit >= 0 && instances[(size_t)instHit].symbolId == "sub_block")
+        {
+            setMouseCursor(juce::MouseCursor::PointingHandCursor);
+            return;
+        }
+        setMouseCursor(juce::MouseCursor::NormalCursor);
+    }
+
+    void toggleFixtureBreak(int wireIndex, const juce::String& pin, const juce::String& instPath)
+    {
+        auto* s = getFixtureSetup();
+        if (s == nullptr) return;
+
+        for (auto it = s->connectionBreaks.begin(); it != s->connectionBreaks.end(); ++it)
+        {
+            if (it->instancePath.equalsIgnoreCase(instPath))
+            {
+                if (wireIndex >= 0 && it->wireIndex == wireIndex)
+                {
+                    s->connectionBreaks.erase(it);
+                    s->syncSetupFromEquipment();
+                    return;
+                }
+                if (pin.isNotEmpty() && it->pin.equalsIgnoreCase(pin))
+                {
+                    s->connectionBreaks.erase(it);
+                    s->syncSetupFromEquipment();
+                    return;
+                }
+            }
+        }
+
+        test_mode::HierarchicalBreak b;
+        b.instancePath = instPath;
+        b.wireIndex = wireIndex;
+        b.pin = pin;
+        if (wireIndex >= 0 && wireIndex < (int)wires.size())
+        {
+            b.nodeA = nodeLabel(wires[(size_t)wireIndex].a);
+            b.nodeB = nodeLabel(wires[(size_t)wireIndex].b);
+        }
+        s->connectionBreaks.push_back(b);
+        s->syncSetupFromEquipment();
+    }
+
+    void showEquipmentDialog(const juce::String& eqId)
+    {
+        auto* s = getFixtureSetup();
+        if (s == nullptr) return;
+        auto* eq = s->getEquipment(eqId);
+        if (eq == nullptr) return;
+
+        if (eq->type == "audio_input")
+        {
+            auto* dialog = new juce::AlertWindow("Configure Audio Input", "Set Audio WAV stimulus and override options:", juce::AlertWindow::NoIcon);
+            dialog->addTextEditor("file", eq->audioFilePath, "WAV File Path:");
+            dialog->addTextEditor("peak", juce::String(eq->peakVolts, 3), "Peak Volts (V):");
+            dialog->addTextEditor("override", eq->overrideRefdes, "Override Refdes (e.g. VIN):");
+            dialog->addButton("OK", 1, juce::KeyPress(juce::KeyPress::returnKey));
+            dialog->addButton("Cancel", 0, juce::KeyPress(juce::KeyPress::escapeKey));
+            dialog->enterModalState(true, juce::ModalCallbackFunction::create([this, dialog, eqId](int result) {
+                std::unique_ptr<juce::AlertWindow> owner(dialog);
+                if (result != 1) return;
+                if (auto* cur = getFixtureSetup())
+                {
+                    if (auto* e = cur->getEquipment(eqId))
+                    {
+                        e->audioFilePath = dialog->getTextEditorContents("file").trim();
+                        e->peakVolts = std::max(0.001, dialog->getTextEditorContents("peak").trim().getDoubleValue());
+                        auto ov = dialog->getTextEditorContents("override").trim();
+                        e->isOverride = ov.isNotEmpty();
+                        e->overrideRefdes = ov;
+                        cur->syncSetupFromEquipment();
+                        repaint();
+                    }
+                }
+            }));
+        }
+        else if (eq->type == "signal_gen")
+        {
+            auto* dialog = new juce::AlertWindow("Configure Signal Generator", "Set frequency, amplitude, and override options:", juce::AlertWindow::NoIcon);
+            dialog->addTextEditor("freq", juce::String((int)eq->sineFrequencyHz), "Frequency (Hz):");
+            dialog->addTextEditor("peak", juce::String(eq->peakVolts, 3), "Peak Volts (V):");
+            dialog->addTextEditor("override", eq->overrideRefdes, "Override Refdes (e.g. VIN):");
+            dialog->addButton("OK", 1, juce::KeyPress(juce::KeyPress::returnKey));
+            dialog->addButton("Cancel", 0, juce::KeyPress(juce::KeyPress::escapeKey));
+            dialog->enterModalState(true, juce::ModalCallbackFunction::create([this, dialog, eqId](int result) {
+                std::unique_ptr<juce::AlertWindow> owner(dialog);
+                if (result != 1) return;
+                if (auto* cur = getFixtureSetup())
+                {
+                    if (auto* e = cur->getEquipment(eqId))
+                    {
+                        e->sineFrequencyHz = std::max(1.0, dialog->getTextEditorContents("freq").trim().getDoubleValue());
+                        e->peakVolts = std::max(0.001, dialog->getTextEditorContents("peak").trim().getDoubleValue());
+                        auto ov = dialog->getTextEditorContents("override").trim();
+                        e->isOverride = ov.isNotEmpty();
+                        e->overrideRefdes = ov;
+                        cur->syncSetupFromEquipment();
+                        repaint();
+                    }
+                }
+            }));
+        }
+        else if (eq->type == "audio_output")
+        {
+            auto* dialog = new juce::AlertWindow("Configure Audio Sink", "Measurement destination & output node:", juce::AlertWindow::NoIcon);
+            dialog->addTextEditor("name", eq->name, "Name:");
+            dialog->addButton("OK", 1, juce::KeyPress(juce::KeyPress::returnKey));
+            dialog->addButton("Cancel", 0, juce::KeyPress(juce::KeyPress::escapeKey));
+            dialog->enterModalState(true, juce::ModalCallbackFunction::create([this, dialog, eqId](int result) {
+                std::unique_ptr<juce::AlertWindow> owner(dialog);
+                if (result != 1) return;
+                if (auto* cur = getFixtureSetup())
+                {
+                    if (auto* e = cur->getEquipment(eqId))
+                    {
+                        e->name = dialog->getTextEditorContents("name").trim();
+                        cur->syncSetupFromEquipment();
+                        repaint();
+                    }
+                }
+            }));
+        }
+        else if (eq->type == "probe" || eq->type == "voltmeter")
+        {
+            auto* dialog = new juce::AlertWindow("Configure Voltmeter", "Voltage probe parameters:", juce::AlertWindow::NoIcon);
+            dialog->addTextEditor("name", eq->name, "Probe Name:");
+            dialog->addButton("OK", 1, juce::KeyPress(juce::KeyPress::returnKey));
+            dialog->addButton("Cancel", 0, juce::KeyPress(juce::KeyPress::escapeKey));
+            dialog->enterModalState(true, juce::ModalCallbackFunction::create([this, dialog, eqId](int result) {
+                std::unique_ptr<juce::AlertWindow> owner(dialog);
+                if (result != 1) return;
+                if (auto* cur = getFixtureSetup())
+                {
+                    if (auto* e = cur->getEquipment(eqId))
+                    {
+                        e->name = dialog->getTextEditorContents("name").trim();
+                        cur->syncSetupFromEquipment();
+                        repaint();
+                    }
+                }
+            }));
+        }
+    }
+
     void mouseDown(const juce::MouseEvent& event) override
     {
         grabKeyboardFocus();
@@ -4923,6 +5554,12 @@ public:
                 }
                 return;
             }
+
+        if (isFixtureView)
+        {
+            handleFixtureMouseDown(event, viewToCanvas(event.position));
+            return;
+        }
 
         if (testMode.isActive())
         {
@@ -5099,6 +5736,12 @@ public:
     void mouseDoubleClick(const juce::MouseEvent& event) override
     {
         const auto modelPosition = viewToCanvas(event.position);
+        if (isFixtureView)
+        {
+            handleFixtureMouseDoubleClick(event, modelPosition);
+            return;
+        }
+
         if (const auto instanceIndex = hitTestInstance(modelPosition); instanceIndex >= 0)
         {
             selectedInstance = instanceIndex;
@@ -5127,6 +5770,15 @@ public:
 
     void resized() override
     {
+        if (isFixtureView)
+        {
+            enterTestModeButton.setVisible(false);
+            openFixtureButton.setVisible(false);
+            createFixtureButton.setVisible(false);
+            if (testModeBar != nullptr) testModeBar->setVisible(false);
+            return;
+        }
+
         enterTestModeButton.setBounds(getWidth() - 110, 8, 100, 26);
         openFixtureButton.setBounds(getWidth() - 230, 8, 115, 26);
         createFixtureButton.setBounds(getWidth() - 355, 8, 120, 26);
@@ -5137,6 +5789,11 @@ public:
     void mouseMove(const juce::MouseEvent& event) override
     {
         const auto modelPosition = viewToCanvas(event.position);
+        if (isFixtureView)
+        {
+            handleFixtureMouseMove(event, modelPosition);
+            return;
+        }
 
         if (hitTestPin(modelPosition).instanceIndex >= 0 || hitTestRailBus(modelPosition) >= 0 || hitTestJunction(modelPosition) >= 0 || hitTestWire(modelPosition) >= 0)
             setMouseCursor(juce::MouseCursor::CrosshairCursor);
@@ -5149,6 +5806,12 @@ public:
     void mouseDrag(const juce::MouseEvent& event) override
     {
         drag_profile::Scope profile("mouseDrag");
+        if (isFixtureView)
+        {
+            handleFixtureMouseDrag(event, viewToCanvas(event.position));
+            return;
+        }
+
         if (panning)
         {
             viewOffset = panStartOffset + (event.position - panStartMouse);
@@ -5224,6 +5887,12 @@ public:
 
     void mouseUp(const juce::MouseEvent& event) override
     {
+        if (isFixtureView)
+        {
+            handleFixtureMouseUp(event, viewToCanvas(event.position));
+            return;
+        }
+
         drag_profile::flush(selectingBox ? "box select" : draggingInstance ? "part drag (" + juce::String((int)std::max<size_t>(1, selectedInstances.size())) + " parts, "
                                                                                + juce::String((int)instances.size()) + " in diagram)"
                                                                            : "other");
@@ -5478,6 +6147,31 @@ public:
             {
                 return false;
             }
+        }
+
+        if (isFixtureView)
+        {
+            if (key == juce::KeyPress::deleteKey || key == juce::KeyPress::backspaceKey)
+            {
+                if (auto* s = getFixtureSetup())
+                {
+                    if (selectedEquipmentId.isNotEmpty())
+                    {
+                        s->removeEquipment(selectedEquipmentId);
+                        selectedEquipmentId.clear();
+                        repaint();
+                        return true;
+                    }
+                    if (selectedConnectionId.isNotEmpty())
+                    {
+                        s->removeConnection(selectedConnectionId);
+                        selectedConnectionId.clear();
+                        repaint();
+                        return true;
+                    }
+                }
+            }
+            return false;
         }
 
         // With Ctrl held, Windows reports a control character as the text
@@ -13492,15 +14186,16 @@ public:
             {
                 eq.stimulusType = "file";
                 eq.peakVolts = 0.1;
-                eq.isOverride = true;
-                eq.overrideRefdes = "VIN";
+                eq.isOverride = args.hasProperty("isOverride") ? (bool)args["isOverride"] : false;
+                eq.overrideRefdes = args.hasProperty("overrideRefdes") ? args["overrideRefdes"].toString() : juce::String();
             }
             else if (eq.type == "signal_gen")
             {
                 eq.stimulusType = "sine";
                 eq.sineFrequencyHz = 1000.0;
                 eq.peakVolts = 0.1;
-                eq.isOverride = false;
+                eq.isOverride = args.hasProperty("isOverride") ? (bool)args["isOverride"] : false;
+                eq.overrideRefdes = args.hasProperty("overrideRefdes") ? args["overrideRefdes"].toString() : juce::String();
             }
 
             s->addEquipment(eq);
@@ -14885,7 +15580,46 @@ private:
             if (instance.sheet != currentSheet)
                 continue;
             const auto symbol = symbolForInstance(instance);
-            drawSymbolBody(g, instance, symbol);
+
+            bool isOverridden = false;
+            if (isFixtureView)
+            {
+                if (auto* s = getFixtureSetup())
+                {
+                    if (currentSheet.isEmpty() && s->inputMode == "replace" && s->inputRefdes.equalsIgnoreCase(instance.refdes))
+                        isOverridden = true;
+                    for (const auto& eq : s->equipment)
+                    {
+                        if (eq.isOverride && eq.overrideRefdes.equalsIgnoreCase(instance.refdes) &&
+                            eq.instancePath.equalsIgnoreCase(currentInstancePath))
+                        {
+                            isOverridden = true;
+                            break;
+                        }
+                    }
+                }
+            }
+
+            if (isOverridden)
+            {
+                g.saveState();
+                g.setOpacity(0.38f);
+                drawSymbolBody(g, instance, symbol);
+                g.restoreState();
+
+                juce::Rectangle<float> badgeBox(instance.position.x - 75.0f, instance.position.y - 42.0f, 150.0f, 20.0f);
+                g.setColour(juce::Colour(0xff2d0d3d));
+                g.fillRoundedRectangle(badgeBox, 4.0f);
+                g.setColour(juce::Colour(0xffe056fd));
+                g.drawRoundedRectangle(badgeBox, 4.0f, 1.2f);
+                g.setFont(juce::Font(10.0f, juce::Font::bold));
+                g.setColour(juce::Colours::white);
+                g.drawText("⚡ OVERRIDDEN BY FIXTURE", badgeBox, juce::Justification::centred);
+            }
+            else
+            {
+                drawSymbolBody(g, instance, symbol);
+            }
 
             if (isRailBus(instance.symbolId))
                 continue;
@@ -18426,6 +19160,439 @@ public:
 };
 
 } // namespace
+
+// ==============================================================================
+// TestFixturePanel implementation
+// ==============================================================================
+
+TestFixturePanel::TestFixturePanel(const juce::String& name, test_mode::TestSetup* s, Callbacks cb)
+    : fixtureName(name), setup(s), callbacks(std::move(cb))
+{
+    setWantsKeyboardFocus(true);
+
+    titleLabel.setText("⚡ FIXTURE: " + fixtureName, juce::dontSendNotification);
+    titleLabel.setFont(juce::Font(13.0f, juce::Font::bold));
+    titleLabel.setColour(juce::Label::textColourId, juce::Colour(0xff00d2d3));
+    addAndMakeVisible(titleLabel);
+
+    auto styleBtn = [](juce::TextButton& btn, juce::Colour bg = juce::Colour(0xff18222c), juce::Colour text = juce::Colour(0xffdce9ee)) {
+        btn.setColour(juce::TextButton::buttonColourId, bg);
+        btn.setColour(juce::TextButton::textColourOffId, text);
+    };
+
+    styleBtn(addAudioInButton, juce::Colour(0xff2d173d), juce::Colour(0xffd066e2));
+    addAudioInButton.onClick = [this] { placeEquipment("audio_input", "Audio Input", 100.0f, 180.0f); };
+    addAndMakeVisible(addAudioInButton);
+
+    styleBtn(addAudioSinkButton, juce::Colour(0xff0e2832), juce::Colour(0xff00d2d3));
+    addAudioSinkButton.onClick = [this] { placeEquipment("audio_output", "Audio Sink", 740.0f, 180.0f); };
+    addAndMakeVisible(addAudioSinkButton);
+
+    styleBtn(addSigGenButton, juce::Colour(0xff3d2514), juce::Colour(0xffff9f43));
+    addSigGenButton.onClick = [this] { placeEquipment("signal_gen", "Signal Gen", 100.0f, 180.0f); };
+    addAndMakeVisible(addSigGenButton);
+
+    styleBtn(addVoltmeterButton, juce::Colour(0xff143322), juce::Colour(0xff2ecc71));
+    addVoltmeterButton.onClick = [this] { placeEquipment("voltmeter", "Voltmeter", 420.0f, 80.0f); };
+    addAndMakeVisible(addVoltmeterButton);
+
+    styleBtn(addScopeButton, juce::Colour(0xff122b30), juce::Colour(0xff54a0ff));
+    addScopeButton.onClick = [this] { placeEquipment("scope", "Oscilloscope", 580.0f, 80.0f); };
+    addAndMakeVisible(addScopeButton);
+
+    styleBtn(addAmmeterButton, juce::Colour(0xff2a2412), juce::Colour(0xfff39c12));
+    addAmmeterButton.onClick = [this] { placeEquipment("ammeter", "Current Probe", 420.0f, 260.0f); };
+    addAndMakeVisible(addAmmeterButton);
+
+    breakToolToggle.setColour(juce::ToggleButton::textColourId, juce::Colour(0xffff7675));
+    breakToolToggle.onClick = [this] {
+        if (auto* c = dynamic_cast<SchematicCanvasPanel*>(schematicCanvas.get()))
+            c->breakToolActive = breakToolToggle.getToggleState();
+    };
+    addAndMakeVisible(breakToolToggle);
+
+    styleBtn(runButton, juce::Colour(0xff3b2754), juce::Colour(0xffe056fd));
+    runButton.onClick = [this] {
+        auto* curSetup = getSetup();
+        if (curSetup == nullptr) return;
+        curSetup->syncSetupFromEquipment();
+        juce::String err;
+        if (callbacks.runSimulation != nullptr)
+        {
+            juce::String summary = callbacks.runSimulation(curSetup, false, &err);
+            if (err.isNotEmpty())
+                resultsLabel.setText("Simulation Error: " + err, juce::dontSendNotification);
+            else
+                resultsLabel.setText(curSetup->hasResult ? curSetup->lastSummary : summary, juce::dontSendNotification);
+        }
+        if (auto* c = dynamic_cast<SchematicCanvasPanel*>(schematicCanvas.get())) c->repaint();
+    };
+    addAndMakeVisible(runButton);
+
+    styleBtn(auditionButton, juce::Colour(0xff1e3a2b), juce::Colour(0xff2ecc71));
+    auditionButton.onClick = [this] {
+        auto* curSetup = getSetup();
+        if (curSetup == nullptr) return;
+        curSetup->syncSetupFromEquipment();
+        juce::String err;
+        if (callbacks.runSimulation != nullptr)
+        {
+            callbacks.runSimulation(curSetup, true, &err);
+            if (err.isNotEmpty())
+                resultsLabel.setText("Simulation Error: " + err, juce::dontSendNotification);
+            else
+                resultsLabel.setText(curSetup->hasResult ? curSetup->lastSummary : "Auditioning...", juce::dontSendNotification);
+        }
+        if (auto* c = dynamic_cast<SchematicCanvasPanel*>(schematicCanvas.get())) c->repaint();
+    };
+    addAndMakeVisible(auditionButton);
+
+    styleBtn(stopButton, juce::Colour(0xff382225), juce::Colour(0xffff7675));
+    stopButton.onClick = [this] {
+        if (callbacks.stopSimulation != nullptr)
+            callbacks.stopSimulation();
+    };
+    addAndMakeVisible(stopButton);
+
+    styleBtn(exportButton);
+    exportButton.onClick = [this] {
+        auto* curSetup = getSetup();
+        if (curSetup == nullptr) return;
+        curSetup->syncSetupFromEquipment();
+        auto dest = juce::File::getSpecialLocation(juce::File::userHomeDirectory).getChildFile(sanitizeId(fixtureName) + "_output.wav");
+        juce::String err;
+        if (callbacks.exportAudio != nullptr)
+        {
+            callbacks.exportAudio(curSetup, dest.getFullPathName(), &err);
+            if (err.isNotEmpty())
+                resultsLabel.setText("Export Error: " + err, juce::dontSendNotification);
+            else
+                resultsLabel.setText("Exported audio: " + dest.getFileName(), juce::dontSendNotification);
+        }
+    };
+    addAndMakeVisible(exportButton);
+
+    styleBtn(saveButton, juce::Colour(0xff18222c), juce::Colour(0xff78dcca));
+    saveButton.onClick = [this] {
+        if (saveFixture())
+            resultsLabel.setText("Saved fixture configuration.", juce::dontSendNotification);
+        else
+            resultsLabel.setText("Failed to save fixture.", juce::dontSendNotification);
+    };
+    addAndMakeVisible(saveButton);
+
+    resultsLabel.setFont(juce::Font(12.0f, juce::Font::bold));
+    resultsLabel.setColour(juce::Label::textColourId, juce::Colour(0xff00d2d3));
+    resultsLabel.setText("Ready. Choose test equipment from palette to attach to schematic.", juce::dontSendNotification);
+    addAndMakeVisible(resultsLabel);
+
+    auto c = std::make_unique<SchematicCanvasPanel>(
+        []() -> juce::String { return {}; },
+        []() -> bool { return false; },
+        [this](juce::String msg) {
+            if (callbacks.onStatusMessage != nullptr) callbacks.onStatusMessage(msg);
+        });
+
+    c->isFixtureView = true;
+    c->fixtureName = fixtureName;
+    c->fixtureSetup = setup;
+
+    if (callbacks.getAuthoritativeDiagramFile != nullptr)
+    {
+        auto diagFile = callbacks.getAuthoritativeDiagramFile();
+        if (diagFile.existsAsFile())
+        {
+            juce::String err;
+            c->loadCircuitJson(diagFile.loadFileAsString(), err);
+        }
+    }
+
+    schematicCanvas = std::move(c);
+    addAndMakeVisible(schematicCanvas.get());
+    updateResultsDisplay();
+}
+
+TestFixturePanel::~TestFixturePanel()
+{
+    if (callbacks.onClose != nullptr)
+        callbacks.onClose(this);
+}
+
+void TestFixturePanel::paint(juce::Graphics& g)
+{
+    g.fillAll(juce::Colour(0xff121820));
+    g.setColour(juce::Colour(0xff26323d));
+    g.drawHorizontalLine(61, 0.0f, (float)getWidth());
+}
+
+void TestFixturePanel::resized()
+{
+    titleLabel.setBounds(10, 6, 175, 26);
+    addAudioInButton.setBounds(190, 6, 85, 26);
+    addAudioSinkButton.setBounds(280, 6, 90, 26);
+    addSigGenButton.setBounds(375, 6, 80, 26);
+    addVoltmeterButton.setBounds(460, 6, 85, 26);
+    addScopeButton.setBounds(550, 6, 75, 26);
+    addAmmeterButton.setBounds(630, 6, 145, 26);
+    breakToolToggle.setBounds(780, 6, 95, 26);
+
+    int rightX = getWidth() - 10;
+    saveButton.setBounds(rightX - 95, 6, 95, 26);
+    exportButton.setBounds(rightX - 190, 6, 90, 26);
+    stopButton.setBounds(rightX - 245, 6, 50, 26);
+    auditionButton.setBounds(rightX - 340, 6, 90, 26);
+    runButton.setBounds(rightX - 415, 6, 70, 26);
+
+    resultsLabel.setBounds(10, 36, getWidth() - 20, 22);
+
+    if (schematicCanvas != nullptr)
+        schematicCanvas->setBounds(0, 62, getWidth(), getHeight() - 62);
+}
+
+test_mode::TestSetup* TestFixturePanel::getSetup()
+{
+    if (callbacks.getSetupByName != nullptr)
+    {
+        if (auto* s = callbacks.getSetupByName(fixtureName))
+            return (setup = s);
+    }
+    return setup;
+}
+
+const test_mode::TestSetup* TestFixturePanel::getSetup() const
+{
+    if (callbacks.getSetupByName != nullptr)
+    {
+        if (auto* s = callbacks.getSetupByName(fixtureName))
+            return s;
+    }
+    return setup;
+}
+
+void TestFixturePanel::updateFromSetup()
+{
+    updateResultsDisplay();
+    if (auto* c = dynamic_cast<SchematicCanvasPanel*>(schematicCanvas.get()))
+    {
+        c->fixtureSetup = getSetup();
+        c->repaint();
+    }
+}
+
+void TestFixturePanel::updateResultsDisplay()
+{
+    const auto* s = getSetup();
+    if (s == nullptr)
+    {
+        resultsLabel.setText("No active test fixture.", juce::dontSendNotification);
+        return;
+    }
+
+    if (s->hasResult)
+    {
+        resultsLabel.setText("⚡ " + s->lastSummary, juce::dontSendNotification);
+    }
+    else
+    {
+        const int eqCount = (int)s->equipment.size();
+        const int connCount = (int)s->fixtureConnections.size();
+        const int breakCount = (int)s->connectionBreaks.size();
+        juce::String status = "Fixture '" + fixtureName + "': " +
+                              juce::String(eqCount) + " instruments, " +
+                              juce::String(connCount) + " leads, " +
+                              juce::String(breakCount) + " breaks. Click [▶ Run] to test.";
+        resultsLabel.setText(status, juce::dontSendNotification);
+    }
+}
+
+bool TestFixturePanel::placeEquipment(const juce::String& type, const juce::String& name, float x, float y, const juce::String& instancePath)
+{
+    auto* s = getSetup();
+    if (s == nullptr) return false;
+
+    auto* c = dynamic_cast<SchematicCanvasPanel*>(schematicCanvas.get());
+
+    test_mode::FixtureEquipment eq;
+    eq.id = sanitizeId(type) + "_" + juce::String(juce::Random::getSystemRandom().nextInt(89999) + 10000);
+    eq.type = type;
+    eq.name = name;
+    eq.pos = { x, y };
+    eq.instancePath = instancePath.isNotEmpty() ? instancePath : (c ? c->getCurrentInstancePath() : juce::String());
+
+    if (type == "audio_input")
+    {
+        eq.stimulusType = "file";
+        eq.peakVolts = 0.1;
+        eq.isOverride = false;
+    }
+    else if (type == "signal_gen")
+    {
+        eq.stimulusType = "sine";
+        eq.sineFrequencyHz = 1000.0;
+        eq.peakVolts = 0.1;
+        eq.isOverride = false;
+    }
+
+    s->addEquipment(eq);
+    if (c != nullptr) c->repaint();
+    return true;
+}
+
+bool TestFixturePanel::moveEquipment(const juce::String& eqId, float x, float y)
+{
+    auto* s = getSetup();
+    if (s == nullptr) return false;
+    auto* eq = s->getEquipment(eqId);
+    if (eq == nullptr) return false;
+    eq->pos = { x, y };
+    s->syncSetupFromEquipment();
+    if (auto* c = dynamic_cast<SchematicCanvasPanel*>(schematicCanvas.get())) c->repaint();
+    return true;
+}
+
+bool TestFixturePanel::removeEquipment(const juce::String& eqId)
+{
+    auto* s = getSetup();
+    if (s == nullptr) return false;
+    bool ok = s->removeEquipment(eqId);
+    if (auto* c = dynamic_cast<SchematicCanvasPanel*>(schematicCanvas.get())) c->repaint();
+    return ok;
+}
+
+bool TestFixturePanel::connectEquipment(const juce::String& eqId, const juce::String& terminalId,
+                                        const juce::String& targetPinLabel, const juce::String& targetRefdes,
+                                        int wireIndex, const juce::String& instancePath)
+{
+    auto* s = getSetup();
+    if (s == nullptr) return false;
+    auto* c = dynamic_cast<SchematicCanvasPanel*>(schematicCanvas.get());
+
+    test_mode::FixtureConnection conn;
+    conn.id = "conn_" + sanitizeId(eqId) + "_" + sanitizeId(terminalId);
+    conn.equipmentId = eqId;
+    conn.terminalId = terminalId.isNotEmpty() ? terminalId : "out";
+    conn.targetPinLabel = targetPinLabel;
+    conn.targetRefdes = targetRefdes;
+    conn.targetWireIndex = wireIndex;
+    conn.instancePath = instancePath.isNotEmpty() ? instancePath : (c ? c->getCurrentInstancePath() : juce::String());
+
+    if (c != nullptr && targetPinLabel.isNotEmpty())
+    {
+        SchematicCanvasPanel::WireNode n;
+        juce::String err;
+        if (c->nodeFromLabel(targetPinLabel, n, err, c->getCurrentSheet()))
+            conn.targetPoint = c->nodePosition(n);
+    }
+
+    s->addConnection(conn);
+    if (c != nullptr) c->repaint();
+    return true;
+}
+
+bool TestFixturePanel::disconnectEquipment(const juce::String& eqIdOrConnId)
+{
+    auto* s = getSetup();
+    if (s == nullptr) return false;
+    bool ok = s->removeConnection(eqIdOrConnId);
+    if (auto* c = dynamic_cast<SchematicCanvasPanel*>(schematicCanvas.get())) c->repaint();
+    return ok;
+}
+
+bool TestFixturePanel::configureEquipment(const juce::String& eqId, const juce::var& config)
+{
+    auto* s = getSetup();
+    if (s == nullptr) return false;
+    auto* eq = s->getEquipment(eqId);
+    if (eq == nullptr) return false;
+
+    if (config.hasProperty("audioFilePath")) eq->audioFilePath = config["audioFilePath"].toString();
+    if (config.hasProperty("stimulusType")) eq->stimulusType = config["stimulusType"].toString();
+    if (config.hasProperty("peakVolts")) eq->peakVolts = (double)config["peakVolts"];
+    if (config.hasProperty("sineFrequencyHz")) eq->sineFrequencyHz = (double)config["sineFrequencyHz"];
+    if (config.hasProperty("isOverride")) eq->isOverride = (bool)config["isOverride"];
+    if (config.hasProperty("overrideRefdes")) eq->overrideRefdes = config["overrideRefdes"].toString();
+
+    s->syncSetupFromEquipment();
+    if (auto* c = dynamic_cast<SchematicCanvasPanel*>(schematicCanvas.get())) c->repaint();
+    return true;
+}
+
+bool TestFixturePanel::breakConnection(const juce::String& nodeA, const juce::String& nodeB,
+                                       const juce::String& pin, int wireIndex, const juce::String& instancePath)
+{
+    auto* s = getSetup();
+    if (s == nullptr) return false;
+    auto* c = dynamic_cast<SchematicCanvasPanel*>(schematicCanvas.get());
+
+    test_mode::HierarchicalBreak b;
+    b.instancePath = instancePath.isNotEmpty() ? instancePath : (c ? c->getCurrentInstancePath() : juce::String());
+    b.nodeA = nodeA;
+    b.nodeB = nodeB;
+    b.pin = pin;
+    b.wireIndex = wireIndex;
+    s->connectionBreaks.push_back(b);
+    s->syncSetupFromEquipment();
+    if (c != nullptr) c->repaint();
+    return true;
+}
+
+bool TestFixturePanel::restoreConnection(bool restoreAll, const juce::String& nodeA,
+                                         const juce::String& nodeB, const juce::String& pin,
+                                         const juce::String& instancePath)
+{
+    auto* s = getSetup();
+    if (s == nullptr) return false;
+    auto* c = dynamic_cast<SchematicCanvasPanel*>(schematicCanvas.get());
+    if (restoreAll)
+    {
+        s->clearBreaks();
+    }
+    else
+    {
+        s->connectionBreaks.erase(std::remove_if(s->connectionBreaks.begin(), s->connectionBreaks.end(),
+            [&](const test_mode::HierarchicalBreak& b) {
+                if (instancePath.isNotEmpty() && !b.instancePath.equalsIgnoreCase(instancePath)) return false;
+                if (pin.isNotEmpty() && b.pin.equalsIgnoreCase(pin)) return true;
+                if (nodeA.isNotEmpty() && nodeB.isNotEmpty())
+                    return (b.nodeA.equalsIgnoreCase(nodeA) && b.nodeB.equalsIgnoreCase(nodeB)) ||
+                           (b.nodeA.equalsIgnoreCase(nodeB) && b.nodeB.equalsIgnoreCase(nodeA));
+                return false;
+            }), s->connectionBreaks.end());
+    }
+    s->syncSetupFromEquipment();
+    if (c != nullptr) c->repaint();
+    return true;
+}
+
+void TestFixturePanel::navigateToSheet(const juce::String& sheetName, const juce::String& instanceRefdes)
+{
+    if (auto* c = dynamic_cast<SchematicCanvasPanel*>(schematicCanvas.get()))
+    {
+        c->openSheetForInstance(sheetName, instanceRefdes);
+        c->repaint();
+    }
+}
+
+bool TestFixturePanel::saveFixture()
+{
+    auto* s = getSetup();
+    if (s == nullptr) return false;
+    s->syncSetupFromEquipment();
+    if (callbacks.onSaveFixture != nullptr)
+    {
+        juce::File f;
+        if (callbacks.getAuthoritativeDiagramFile != nullptr)
+        {
+            auto diagFile = callbacks.getAuthoritativeDiagramFile();
+            if (diagFile.existsAsFile())
+                f = diagFile.getSiblingFile(diagFile.getFileNameWithoutExtension() + "." + sanitizeId(fixtureName) + ".fixture.json");
+        }
+        return callbacks.onSaveFixture(fixtureName, f);
+    }
+    return false;
+}
+
+
 
 ElectronicsWorkbench::ElectronicsWorkbench()
 {
@@ -22018,9 +23185,6 @@ void ElectronicsWorkbench::openTestFixturePanel(const juce::String& fixtureName)
     }
 
     TestFixturePanel::Callbacks cb;
-    cb.getCircuitData = [canvas](const juce::String& sheet) {
-        return canvas->getFixtureCircuitData(sheet);
-    };
     cb.getHierarchySheets = [canvas]() {
         return canvas->hierarchySheets();
     };

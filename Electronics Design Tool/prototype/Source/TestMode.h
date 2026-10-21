@@ -121,8 +121,8 @@ struct FixtureEquipment
     double sineFrequencyHz = 1000.0;
     double sineDurationSec = 0.05;
     double peakVolts = 0.1;
-    bool isOverride = true;
-    juce::String overrideRefdes = "VIN";
+    bool isOverride = false;
+    juce::String overrideRefdes;
 
     double measuredPeak = 0.0;
     double measuredRms = 0.0;
@@ -133,9 +133,30 @@ struct FixtureEquipment
     {
         std::vector<FixtureTerminal> terms;
         if (type == "audio_input" || type == "signal_gen")
+        {
             terms.push_back({ "out", "OUT", { 140.0f, 32.0f }, true });
-        else if (type == "audio_output" || type == "probe")
+            terms.push_back({ "gnd", "GND", { 0.0f, 32.0f }, true });
+        }
+        else if (type == "audio_output")
+        {
             terms.push_back({ "in", "IN", { 0.0f, 32.0f }, false });
+            terms.push_back({ "ref", "REF", { 140.0f, 32.0f }, false });
+        }
+        else if (type == "probe" || type == "voltmeter")
+        {
+            terms.push_back({ "in", "+", { 0.0f, 32.0f }, false });
+            terms.push_back({ "ref", "-", { 140.0f, 32.0f }, false });
+        }
+        else if (type == "scope")
+        {
+            terms.push_back({ "in", "CH1", { 0.0f, 32.0f }, false });
+            terms.push_back({ "ref", "GND", { 140.0f, 32.0f }, false });
+        }
+        else if (type == "ammeter")
+        {
+            terms.push_back({ "in", "+", { 0.0f, 32.0f }, false });
+            terms.push_back({ "out", "-", { 140.0f, 32.0f }, true });
+        }
         return terms;
     }
 
@@ -182,8 +203,8 @@ struct FixtureEquipment
         eq.sineFrequencyHz = (double)v.getProperty("sineFrequencyHz", 1000.0);
         eq.sineDurationSec = (double)v.getProperty("sineDurationSec", 0.05);
         eq.peakVolts = (double)v.getProperty("peakVolts", 0.1);
-        eq.isOverride = (bool)v.getProperty("isOverride", true);
-        eq.overrideRefdes = v.getProperty("overrideRefdes", "VIN").toString();
+        eq.isOverride = (bool)v.getProperty("isOverride", false);
+        eq.overrideRefdes = v.getProperty("overrideRefdes", {}).toString();
         eq.measuredPeak = (double)v.getProperty("measuredPeak", 0.0);
         eq.measuredRms = (double)v.getProperty("measuredRms", 0.0);
         eq.measuredDc = (double)v.getProperty("measuredDc", 0.0);
@@ -457,139 +478,7 @@ struct TestSetup
 
     void syncEquipmentFromSetup()
     {
-        if (equipment.empty())
-        {
-            // Populate default equipment matching this setup
-            FixtureEquipment eqIn;
-            eqIn.id = "audio_in_1";
-            eqIn.type = (stimulusType == "sine" ? "signal_gen" : "audio_input");
-            eqIn.name = (stimulusType == "sine" ? "Signal Generator" : "Audio Input");
-            eqIn.pos = { 80.0f, 220.0f };
-            eqIn.stimulusType = stimulusType;
-            eqIn.audioFilePath = audioFilePath;
-            eqIn.sineFrequencyHz = sineFrequencyHz;
-            eqIn.sineDurationSec = sineDurationSec;
-            eqIn.peakVolts = inputPeakVolts;
-            eqIn.isOverride = (inputMode == "replace");
-            eqIn.overrideRefdes = inputRefdes;
-            equipment.push_back(eqIn);
-
-            FixtureConnection connIn;
-            connIn.id = "conn_in_1";
-            connIn.equipmentId = "audio_in_1";
-            connIn.terminalId = "out";
-            connIn.targetRefdes = (inputMode == "replace" ? inputRefdes : juce::String());
-            connIn.targetPinLabel = (inputMode == "replace" ? inputRefdes : inputNode);
-            fixtureConnections.push_back(connIn);
-
-            FixtureEquipment eqOut;
-            eqOut.id = "audio_out_1";
-            eqOut.type = "audio_output";
-            eqOut.name = "Audio Sink";
-            eqOut.pos = { 760.0f, 220.0f };
-            eqOut.measuredPeak = lastOutputPeak;
-            eqOut.measuredRms = lastOutputRms;
-            eqOut.measuredDc = lastOutputDc;
-            eqOut.gainDb = lastGainDb;
-            equipment.push_back(eqOut);
-
-            if (outputNode.isNotEmpty())
-            {
-                FixtureConnection connOut;
-                connOut.id = "conn_out_1";
-                connOut.equipmentId = "audio_out_1";
-                connOut.terminalId = "in";
-                connOut.targetPinLabel = outputNode;
-                fixtureConnections.push_back(connOut);
-            }
-
-            int pIdx = 1;
-            for (const auto& p : probeNodes)
-            {
-                FixtureEquipment pEq;
-                pEq.id = "probe_" + juce::String(pIdx);
-                pEq.type = "probe";
-                pEq.name = "Probe: " + p;
-                pEq.pos = { 320.0f + (pIdx - 1) * 140.0f, 80.0f };
-                equipment.push_back(pEq);
-
-                FixtureConnection pConn;
-                pConn.id = "conn_probe_" + juce::String(pIdx);
-                pConn.equipmentId = pEq.id;
-                pConn.terminalId = "in";
-                pConn.targetPinLabel = p;
-                fixtureConnections.push_back(pConn);
-                ++pIdx;
-            }
-
-            for (const auto& sf : subFixtures)
-            {
-                if (sf.stimulusEnabled && sf.inputNode.isNotEmpty())
-                {
-                    FixtureEquipment sfIn;
-                    sfIn.id = "audio_in_" + sf.instancePath;
-                    sfIn.type = (sf.stimulusType == "sine" ? "signal_gen" : "audio_input");
-                    sfIn.name = "Sub Stimulus (" + sf.instancePath + ")";
-                    sfIn.pos = { 80.0f, 220.0f };
-                    sfIn.instancePath = sf.instancePath;
-                    sfIn.stimulusType = sf.stimulusType;
-                    sfIn.sineFrequencyHz = sf.sineFrequencyHz;
-                    sfIn.sineDurationSec = sf.sineDurationSec;
-                    sfIn.peakVolts = sf.inputPeakVolts;
-                    sfIn.isOverride = false;
-                    equipment.push_back(sfIn);
-
-                    FixtureConnection sfConn;
-                    sfConn.id = "conn_in_" + sf.instancePath;
-                    sfConn.equipmentId = sfIn.id;
-                    sfConn.terminalId = "out";
-                    sfConn.targetPinLabel = sf.inputNode;
-                    sfConn.instancePath = sf.instancePath;
-                    fixtureConnections.push_back(sfConn);
-                }
-
-                if (sf.outputNode.isNotEmpty())
-                {
-                    FixtureEquipment sfOut;
-                    sfOut.id = "audio_out_" + sf.instancePath;
-                    sfOut.type = "audio_output";
-                    sfOut.name = "Sub Sink (" + sf.instancePath + ")";
-                    sfOut.pos = { 760.0f, 220.0f };
-                    sfOut.instancePath = sf.instancePath;
-                    equipment.push_back(sfOut);
-
-                    FixtureConnection sfConn;
-                    sfConn.id = "conn_out_" + sf.instancePath;
-                    sfConn.equipmentId = sfOut.id;
-                    sfConn.terminalId = "in";
-                    sfConn.targetPinLabel = sf.outputNode;
-                    sfConn.instancePath = sf.instancePath;
-                    fixtureConnections.push_back(sfConn);
-                }
-
-                int sfPIdx = 1;
-                for (const auto& p : sf.probeNodes)
-                {
-                    FixtureEquipment sfPEq;
-                    sfPEq.id = "probe_" + sf.instancePath + "_" + juce::String(sfPIdx);
-                    sfPEq.type = "probe";
-                    sfPEq.name = "Probe: " + p;
-                    sfPEq.pos = { 320.0f + (sfPIdx - 1) * 140.0f, 80.0f };
-                    sfPEq.instancePath = sf.instancePath;
-                    equipment.push_back(sfPEq);
-
-                    FixtureConnection sfPConn;
-                    sfPConn.id = "conn_probe_" + sf.instancePath + "_" + juce::String(sfPIdx);
-                    sfPConn.equipmentId = sfPEq.id;
-                    sfPConn.terminalId = "in";
-                    sfPConn.targetPinLabel = p;
-                    sfPConn.instancePath = sf.instancePath;
-                    fixtureConnections.push_back(sfPConn);
-                    ++sfPIdx;
-                }
-            }
-        }
-        else if (hasResult)
+        if (hasResult)
         {
             for (auto& eq : equipment)
             {

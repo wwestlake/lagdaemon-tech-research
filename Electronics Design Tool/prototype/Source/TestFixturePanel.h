@@ -20,52 +20,11 @@ inline juce::String sanitizeId(const juce::String& text)
     return out;
 }
 
-namespace test_fixture {
-
-struct CircuitPin
-{
-    juce::String label; // e.g. "V1.G", "OUT", "C_IN.1"
-    juce::String name;  // e.g. "G", "1", "2"
-    juce::Point<float> pos;
-};
-
-struct CircuitComponent
-{
-    juce::String refdes;
-    juce::String symbolId;
-    juce::String value;
-    juce::Point<float> pos;
-    float rotation = 0.0f;
-    juce::Rectangle<float> bounds;
-    std::vector<CircuitPin> pins;
-    bool isSubBlock = false;
-    juce::String childSheet;
-};
-
-struct CircuitWire
-{
-    int wireIndex = -1;
-    juce::Point<float> a;
-    juce::Point<float> b;
-    juce::String nodeA;
-    juce::String nodeB;
-};
-
-struct FixtureCircuitData
-{
-    juce::String sheet;
-    std::vector<CircuitComponent> components;
-    std::vector<CircuitWire> wires;
-};
-
-} // namespace test_fixture
-
 class TestFixturePanel final : public juce::Component
 {
 public:
     struct Callbacks
     {
-        std::function<test_fixture::FixtureCircuitData(const juce::String& sheet)> getCircuitData;
         std::function<std::vector<circuit_hierarchy::Sheet>()> getHierarchySheets;
         std::function<juce::String(test_mode::TestSetup* setup, bool startAudition, juce::String* outError)> runSimulation;
         std::function<void()> stopSimulation;
@@ -85,24 +44,8 @@ public:
     void resized() override;
 
     juce::String getFixtureName() const { return fixtureName; }
-    test_mode::TestSetup* getSetup()
-    {
-        if (callbacks.getSetupByName != nullptr)
-        {
-            if (auto* s = callbacks.getSetupByName(fixtureName))
-                return (setup = s);
-        }
-        return setup;
-    }
-    const test_mode::TestSetup* getSetup() const
-    {
-        if (callbacks.getSetupByName != nullptr)
-        {
-            if (auto* s = callbacks.getSetupByName(fixtureName))
-                return s;
-        }
-        return setup;
-    }
+    test_mode::TestSetup* getSetup();
+    const test_mode::TestSetup* getSetup() const;
     void updateFromSetup();
 
     // Direct actions for GUI and Agent API
@@ -117,10 +60,9 @@ public:
     void navigateToSheet(const juce::String& sheetName, const juce::String& instanceRefdes = {});
     bool saveFixture();
 
-private:
-    class CanvasView;
-    friend class CanvasView;
+    juce::Component* getCanvas() { return schematicCanvas.get(); }
 
+private:
     juce::String fixtureName;
     test_mode::TestSetup* setup = nullptr;
     Callbacks callbacks;
@@ -136,20 +78,17 @@ private:
     juce::TextButton addAudioInButton { "+ Audio In" };
     juce::TextButton addAudioSinkButton { "+ Audio Sink" };
     juce::TextButton addSigGenButton { "+ Sig Gen" };
-    juce::TextButton addProbeButton { "+ Probe" };
+    juce::TextButton addVoltmeterButton { "+ Voltmeter" };
+    juce::TextButton addScopeButton { "+ Scope" };
+    juce::TextButton addAmmeterButton { "+ Current Probe (in dev)" };
     juce::ToggleButton breakToolToggle { "✂ Cut Wire" };
 
     juce::Label resultsLabel;
 
-    std::unique_ptr<CanvasView> canvas;
+    std::unique_ptr<juce::Component> schematicCanvas;
     std::unique_ptr<juce::FileChooser> fileChooser;
-    juce::String currentSheet;
-    juce::String currentInstancePath;
-
-    std::vector<std::pair<juce::Rectangle<int>, juce::String>> breadcrumbAreas;
 
     void updateResultsDisplay();
-    void showEquipmentDialog(const juce::String& eqId);
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(TestFixturePanel)
 };
