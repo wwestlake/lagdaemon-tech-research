@@ -96,9 +96,11 @@ int ElectronicsWorkbench::runTestFixtureUiChecks(const juce::File& output, const
     {
         audio_test::Trace trace; trace.label = label;
         for (int i = 0; i < 480; ++i)
-            trace.volts.push_back(juce::String(label) == "VIN.-" ? 0.25f : 0.25f + (juce::String(label) == "A1.IN" ? 0.1f : 1.0f) * std::sin((float)i * 0.13f));
+            trace.volts.push_back(juce::String(label) == "VIN.-" ? 0.25f : (juce::String(label) == "A1.IN" ? 0.25f : 250.25f)
+                + (juce::String(label) == "A1.IN" ? 0.1f : 100.0f) * std::sin((float)i * 0.13f));
         setup.lastProbeTraces.push_back(std::move(trace));
     }
+    ++setup.captureRevision;
     const auto capture = c->captureScope("SCOPE");
     check(capture.ok && capture.connected[0] && capture.connected[1], "Both scope channels acquire cached fixture traces");
     check(std::abs(capture.channel[0][0]) <= 0.101, "Scope subtracts actual reference trace");
@@ -110,10 +112,45 @@ int ElectronicsWorkbench::runTestFixtureUiChecks(const juce::File& output, const
     panel.moveEquipment("SCOPE", 850, 90);
     setup.syncSetupFromEquipment();
     check(setup.hasResult, "Moving scope preserves captured samples");
-    juce::Thread::sleep(400);
-    juce::Timer::callPendingTimersSynchronously();
+    const auto cached = c->scopeStates["SCOPE"].acquisitions;
+    auto settings = juce::JSON::parse(R"({"ch1_volts_per_div":"50m","ch2_volts_per_div":"50","ch2_offset":"250","cursors":"On","cursor_source":"CH2","cursor_t1":"1m","cursor_t2":"3m","cursor_v1":"200","cursor_v2":"300","math":"CH1 - CH2","math_volts_per_div":"100"})");
+    check((bool)juce::JSON::parse(panel.instrumentAction("SCOPE", "configure", settings))["ok"], "Scope accepts high-voltage offset, cursor and math controls");
+    auto read = juce::JSON::parse(panel.instrumentAction("SCOPE", "read", {}));
+    check(std::abs((double)read["cursors"]["frequencyHz"] - 500) < 1e-6 && (double)read["cursors"]["deltaV"] == 100,
+        "Agent reports exact cursor deltas with units from instrument settings");
+    check(c->scopeStates["SCOPE"].acquisitions == cached, "Display-only controls reuse acquisition instead of rerunning simulation");
+    check(!(bool)juce::JSON::parse(panel.instrumentAction("SCOPE", "configure", juce::JSON::parse(R"({"ch2_volts_per_div":"-1"})")))["ok"],
+        "Invalid vertical scale is rejected");
+    auto* view = dynamic_cast<ScopeView*>(c->fixtureInstrumentWindows[0]->getContentComponent());
+    view->refresh();
+    const auto bounds = view->waveformBounds();
+    auto scopeEvent = [&](juce::Point<float> p) {
+        return juce::MouseEvent(juce::Desktop::getInstance().getMainMouseSource(), p, juce::ModifierKeys(juce::ModifierKeys::leftButtonModifier),
+            1, 0, 0, 0, 0, view, view, juce::Time::getCurrentTime(), p, juce::Time::getCurrentTime(), 1, true);
+    };
+    const auto state = c->scopeDisplay("SCOPE");
+    const auto timeX = bounds.getX() + (float)((state.settings.t1 - state.frame.start) / (state.settings.timePerDiv * 10) * bounds.getWidth());
+    auto cursorDown = scopeEvent({ timeX, bounds.getY() + 40 });
+    view->mouseDown(cursorDown); view->mouseDrag(scopeEvent({ timeX + 20, bounds.getY() + 40 })); view->mouseUp(cursorDown);
+    check(c->scopeSettings("SCOPE").t1 > 0.001 && c->scopeStates["SCOPE"].acquisitions == cached,
+        "Dragging a time cursor updates its numerical coordinate without resimulation");
+    const auto verticalY = bounds.getCentreY() + bounds.getHeight() / 8;
+    auto voltageDown = scopeEvent({ bounds.getX() + bounds.getWidth() * 0.8f, verticalY });
+    view->mouseDown(voltageDown); view->mouseDrag(scopeEvent({ voltageDown.position.x, verticalY - 20 })); view->mouseUp(voltageDown);
+    check(c->scopeSettings("SCOPE").v1 > 200, "Dragging voltage cursor uses channel offset and volts/div correctly");
+    view->refresh();
     snapshot(*c->fixtureInstrumentWindows[0]->getContentComponent(), "scope.png");
+    view->setSize(1000, 680); snapshot(*view, "scope-minimum-size.png"); view->setSize(1280, 820);
+    check((bool)juce::JSON::parse(panel.instrumentAction("SCOPE", "export", {}, output.getChildFile("scope.csv").getFullPathName()))["ok"], "Scope exports its full retained sample record");
+    check(output.getChildFile("scope.csv").loadFileAsString().contains("CH2_raw_V"), "CSV identifies raw and coupled voltage columns");
+    panel.instrumentAction("SCOPE", "stop", {});
+    check(!c->scopeDisplay("SCOPE").running, "Stop holds an acquired record");
+    c->requestScopeCapture = [&] { ++setup.captureRevision; return juce::String(); }; // UI suite deliberately uses test records, no solver.
+    panel.instrumentAction("SCOPE", "single", {});
+    check(!c->scopeDisplay("SCOPE").running && c->scopeStates["SCOPE"].singleComplete, "Single holds one matching completed capture");
     panel.disconnectEquipment("SCOPE");
+    check(c->captureScope("SCOPE").ok, "Stopped scope clearly retains the explicitly held record after wiring changes");
+    panel.instrumentAction("SCOPE", "run", {});
     check(!setup.hasResult && !c->captureScope("SCOPE").ok, "Changed wiring cannot display stale acquired data");
     const auto message = juce::String("Simulation conflict: ") + juce::String::repeatedString("complete technical detail; ", 80);
     panel.setDiagnostic(message);

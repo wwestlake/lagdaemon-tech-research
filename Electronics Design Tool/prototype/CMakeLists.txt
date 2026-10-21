@@ -137,6 +137,10 @@ target_sources(DjehutiElectronicsLab PRIVATE
     Source/FrustEngine.cpp
     Source/SignalMeasure.h
     Source/SignalMeasure.cpp
+    Source/Oscilloscope.h
+    Source/Oscilloscope.cpp
+    Source/OscilloscopeView.h
+    Source/OscilloscopeView.cpp
     Source/Analytics.h
     Source/Analytics.cpp
     Source/PlotInstrument.h
@@ -476,6 +480,12 @@ set_target_properties(CircuitSolverTests PROPERTIES
     OUTPUT_NAME "circuit_solver_tests"
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/bin")
 add_test(NAME CircuitSolverTests COMMAND CircuitSolverTests)
+
+# Scope measurement and viewport checks: plain C++, no JUCE or physics solves.
+add_executable(OscilloscopeTests tools/oscilloscope_tests/OscilloscopeTests.cpp Source/Oscilloscope.cpp Source/SignalMeasure.cpp)
+target_include_directories(OscilloscopeTests PRIVATE Source)
+set_target_properties(OscilloscopeTests PROPERTIES OUTPUT_NAME "oscilloscope_tests")
+add_test(NAME OscilloscopeTests COMMAND OscilloscopeTests)
 
 # System simulator foundation (architecture revision 3, phase P0): a headless
 # library, optimised inside Debug builds (libs/sim_core/CMakeLists.txt). The

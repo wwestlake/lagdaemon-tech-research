@@ -39,6 +39,8 @@
 #include "CircuitHierarchyPanel.h"
 #include "PlotInstrument.h"
 #include "PlotInstrumentView.h"
+#include "Oscilloscope.h"
+#include "OscilloscopeView.h"
 #include "CapabilityCatalog.h"
 #include "ErcAdvice.h"
 #include "AgentProgress.h"
@@ -992,9 +994,14 @@ const std::vector<ToolSpecText>& testModeToolSpecs()
             R"({"type":"object","properties":{},"additionalProperties":false})"
         },
         {
+            "oscilloscope_control",
+            "Operate the native oscilloscope on actual simulation samples. refdes is a schematic scope reference or, with fixture, its equipment ID. Configure scope catalog settings: independent ch1/ch2 enabled, coupling, volts_per_div, position, offset, scale; time_per_div, horizontal_position; trigger source/mode/slope/level/position; cursors, cursor_source, cursor_t1/t2/v1/v2; markers; math, math_scale/math_volts_per_div; native capture_duration/step. Read reports visible-sample metrics, raw DC mean, cursor deltas, acquisition count and explicit validity. Run and Single request a real simulation; Stop holds a record. Pan/zoom/cursor changes do not resimulate. Export saves the full capture as CSV.",
+            R"({"type":"object","properties":{"fixture":{"type":"string"},"refdes":{"type":"string"},"action":{"type":"string","enum":["read","configure","open","run","stop","single","autoscale","fit","export"]},"settings":{"type":"object","additionalProperties":{"type":"string"}},"path":{"type":"string","description":"Absolute CSV path for export."}},"required":["refdes","action"],"additionalProperties":false})"
+        },
+        {
             "test_fixture_instrument",
-            "Open, read, or configure an existing fixture oscilloscope by equipment ID. Reuses the native scope window and the latest successful fixture simulation traces. Settings are time_per_div, ch1_volts_per_div, ch2_volts_per_div, ch1_position, ch2_position, trigger_source, trigger_level, trigger_slope.",
-            R"({"type":"object","properties":{"fixture":{"type":"string"},"id":{"type":"string"},"action":{"type":"string","enum":["open","read","configure"]},"settings":{"type":"object","additionalProperties":{"type":"string"}}},"required":["id","action"],"additionalProperties":false})"
+            "Operate an existing fixture oscilloscope by equipment ID. Same acquisition, settings, cursor measurements and CSV export as oscilloscope_control. Fixture operations preserve the authoritative schematic.",
+            R"({"type":"object","properties":{"fixture":{"type":"string"},"id":{"type":"string"},"action":{"type":"string","enum":["open","read","configure","run","stop","single","autoscale","fit","export"]},"settings":{"type":"object","additionalProperties":{"type":"string"}},"path":{"type":"string"}},"required":["id","action"],"additionalProperties":false})"
         },
         {
             "test_fixture_diagnostics",
@@ -3389,6 +3396,7 @@ public:
     std::unique_ptr<juce::FileChooser> fixtureFileChooser;
     juce::OwnedArray<juce::DocumentWindow> fixtureInstrumentWindows;
     std::function<test_mode::TestSetup*()> resolveFixtureSetup;
+    std::function<juce::String()> requestScopeCapture;
 
     juce::String getCurrentSheet() const { return currentSheet; }
     juce::String getCurrentInstancePath() const { return currentInstancePath; }
@@ -8707,7 +8715,7 @@ private:
     // Everything the simulated circuit depends on, and nothing it doesn't
     // (positions): parts and their values/params, wiring, junctions, rails and
     // circuit parameters.
-    juce::String electricalSignature() const
+    juce::String electricalSignature(bool includeScopeSettings = true) const
     {
         juce::String sig;
         sig.preallocateBytes(instances.size() * 64 + wires.size() * 16);
@@ -8716,8 +8724,9 @@ private:
             sig << instance.symbolId << '\x1f' << instance.refdes << '\x1f' << instance.value << '\x1f' << instance.frequency
                 << '\x1f' << instance.busName << '\x1f' << instance.family << '\x1f' << instance.manufacturerPart << '\x1f'
                 << instance.sheet << '\x1f' << instance.childSheet << '\x1f' << (int)instance.busLength << '\x1f' << (int)instance.ports.size();
-            for (const auto& [key, value] : instance.params)
-                sig << '\x1f' << key << '=' << value;
+            if (includeScopeSettings || instance.symbolId != "oscilloscope_2ch")
+                for (const auto& [key, value] : instance.params)
+                    sig << '\x1f' << key << '=' << value;
             sig << '\x1e';
         }
         sig << '|';
@@ -12973,7 +12982,6 @@ public:
                 if (auto* eq = s->getEquipment(refdes))
                 {
                     eq->instrumentSettings[key] = value;
-                    ++s->captureRevision;
                     repaint();
                     return;
                 }
@@ -13023,7 +13031,7 @@ public:
         juce::StringArray warnings;
     };
 
-    ScopeCapture captureScope(const juce::String& refdes) const
+    ScopeCapture acquireScopeRecord(const juce::String& refdes) const
     {
         ScopeCapture cap;
         if (isFixtureView)
@@ -13061,18 +13069,9 @@ public:
                 return traces[(size_t)ch] != nullptr ? (double)(*traces[(size_t)ch])[sample]
                     - (ref != nullptr ? (double)(*ref)[sample] : 0.0) : 0.0;
             };
-            const auto triggerChannel = instrumentSetting(refdes, "trigger_source") == "CH2" ? 1 : 0;
-            const auto level = parseQuantity(instrumentSetting(refdes, "trigger_level"), 0.0);
-            const bool rising = instrumentSetting(refdes, "trigger_slope") != "Falling";
-            const auto screen = std::max<size_t>(2, (size_t)std::ceil(10.0 * cap.timePerDiv * s->lastSampleRate) + 1);
-            size_t start = 0;
-            for (size_t i = 1; i + std::min(screen, count) <= count; ++i)
-                if (rising ? (value(i - 1, triggerChannel) < level && value(i, triggerChannel) >= level)
-                           : (value(i - 1, triggerChannel) > level && value(i, triggerChannel) <= level))
-                { start = i; cap.triggered = true; break; }
-            for (size_t i = start; i < std::min(count, start + screen); ++i)
+            for (size_t i = 0; i < count; ++i)
             {
-                cap.time.push_back((double)(i - start) / s->lastSampleRate);
+                cap.time.push_back((double)i / s->lastSampleRate);
                 for (int ch = 0; ch < 2; ++ch) cap.channel[(size_t)ch].push_back(value(i, ch));
             }
             cap.ok = true;
@@ -13086,7 +13085,11 @@ public:
         }
         const auto& scope = instances[(size_t)index];
         cap.timePerDiv = std::max(1e-7, parseQuantity(partValue(scope, "time_per_div"), 1e-3));
-        const auto window = 10.0 * cap.timePerDiv;
+        const auto window = parseQuantity(instrumentSetting(refdes, "capture_duration"), 20e-3);
+        const auto sampleStep = parseQuantity(instrumentSetting(refdes, "capture_step"), 10e-6);
+        if (!(window > 0.0) || !(sampleStep > 0.0) || !std::isfinite(window) || !std::isfinite(sampleStep)
+            || window / sampleStep > 250000)
+        { cap.error = "Choose a positive record duration / sample step with at most 250,000 intervals."; return cap; }
         auto sim = buildSimNetlist();
         cap.warnings = sim.warnings;
         if (sim.error.isNotEmpty())
@@ -13095,15 +13098,21 @@ public:
             return cap;
         }
         const auto ref = simNodeOfPin(sim, index, "REF");
-        const std::array<circuit_sim::Node, 2> nodes { simNodeOfPin(sim, index, "CH1"), simNodeOfPin(sim, index, "CH2") };
+        std::array<circuit_sim::Node, 2> nodes { simNodeOfPin(sim, index, "CH1"), simNodeOfPin(sim, index, "CH2") };
+        const auto symbol = symbolForInstance(scope);
+        for (int pin = 0; pin < (int)symbol.pins.size(); ++pin)
+            for (int ch = 0; ch < 2; ++ch)
+                if (symbol.pins[(size_t)pin].name == "CH" + juce::String(ch + 1) && wireCountAtPin({ index, pin }) == 0)
+                    nodes[(size_t)ch] = -1;
+        if (nodes[0] < 0 && nodes[1] < 0) { cap.error = "Connect CH1 or CH2 to the simulated circuit."; return cap; }
 
-        // Let the circuit settle for a few signal periods, then capture one
-        // screen after the trigger point.
+        // Retain the configured simulation record after settling. Display
+        // timebase, triggers and cursor changes reuse these same samples.
         const auto fmin = lowestSourceFrequency(sim);
-        const auto step = window / 500.0;
+        const auto step = sampleStep;
         auto settle = std::max(2.0 * window, fmin > 0.0 ? 5.0 / fmin : 0.0);
         settle = std::min(settle, step * 16000.0);
-        const auto tr = circuit_sim::solveTransient(sim.circuit, settle + 2.0 * window, step, {}, 1 << 20);
+        const auto tr = circuit_sim::solveTransient(sim.circuit, settle + window, step, {}, 1 << 20);
         if (!tr.ok)
         {
             cap.error = tr.error;
@@ -13114,33 +13123,250 @@ public:
             return tr.voltages[sample][(size_t)nodes[(size_t)ch]] - (ref >= 0 ? tr.voltages[sample][(size_t)ref] : 0.0);
         };
 
-        const auto trigChannel = partValue(scope, "trigger_source") == "CH2" ? 1 : 0;
-        const auto level = parseQuantity(partValue(scope, "trigger_level"), 0.0);
-        const auto rising = partValue(scope, "trigger_slope") != "Falling";
         size_t start = 0;
-        for (size_t s = 0; s < tr.time.size(); ++s)
-            if (tr.time[s] >= settle) { start = s; break; }
-        size_t trigger = start;
-        for (size_t s = start + 1; s < tr.time.size() && tr.time[s] < settle + window; ++s)
+        while (start < tr.time.size() && tr.time[start] < settle) ++start;
+        for (size_t sample = start; sample < tr.time.size(); ++sample)
         {
-            const auto a = value(s - 1, trigChannel), b = value(s, trigChannel);
-            if (rising ? (a < level && b >= level) : (a > level && b <= level))
-            {
-                trigger = s;
-                cap.triggered = true;
-                break;
-            }
-        }
-        for (size_t s = trigger; s < tr.time.size() && tr.time[s] <= tr.time[trigger] + window + step * 0.5; ++s)
-        {
-            cap.time.push_back(tr.time[s] - tr.time[trigger]);
-            for (int ch = 0; ch < 2; ++ch)
-                cap.channel[(size_t)ch].push_back(value(s, ch));
+            cap.time.push_back(tr.time[sample] - tr.time[start]);
+            for (int ch = 0; ch < 2; ++ch) cap.channel[(size_t)ch].push_back(value(sample, ch));
         }
         for (int ch = 0; ch < 2; ++ch)
             cap.connected[(size_t)ch] = nodes[(size_t)ch] >= 0;
         cap.ok = true;
         return cap;
+    }
+
+    struct ScopeState
+    {
+        std::shared_ptr<oscilloscope::Record> record;
+        juce::String key;
+        juce::int64 revision = 0, acquisitions = 0;
+        bool running = true, single = false, singleComplete = false;
+    };
+    mutable std::map<juce::String, ScopeState> scopeStates;
+
+    oscilloscope::Settings scopeSettings(const juce::String& refdes) const
+    {
+        oscilloscope::Settings s;
+        auto n = [&](const juce::String& key, double fallback) { return parseQuantity(instrumentSetting(refdes, key), fallback); };
+        s.timePerDiv = n("time_per_div", 200e-6); s.horizontalPosition = n("horizontal_position", 0);
+        s.triggerChannel = instrumentSetting(refdes, "trigger_source") == "CH2" ? 1 : 0;
+        s.triggerLevel = n("trigger_level", 0); s.triggerPosition = n("trigger_position", 20) / 100.0;
+        s.rising = instrumentSetting(refdes, "trigger_slope") != "Falling";
+        s.normal = instrumentSetting(refdes, "trigger_mode") != "Auto";
+        s.cursors = instrumentSetting(refdes, "cursors") == "On";
+        s.markers = instrumentSetting(refdes, "markers") == "On";
+        s.cursorChannel = instrumentSetting(refdes, "cursor_source") == "CH2" ? 1 : 0;
+        s.t1 = n("cursor_t1", 0); s.t2 = n("cursor_t2", 1e-3); s.v1 = n("cursor_v1", 0); s.v2 = n("cursor_v2", 1);
+        const auto math = instrumentSetting(refdes, "math");
+        s.math = math == "CH1 + CH2" ? 1 : math == "CH1 - CH2" ? 2 : 0;
+        s.mathScale = n("math_scale", 1); s.mathVoltsPerDiv = n("math_volts_per_div", 1);
+        for (size_t ch = 0; ch < 2; ++ch)
+        {
+            auto& c = s.channel[ch]; const auto prefix = "ch" + juce::String((int)ch + 1) + "_";
+            c.enabled = instrumentSetting(refdes, prefix + "enabled") != "Off";
+            c.acCoupled = instrumentSetting(refdes, prefix + "coupling") == "AC";
+            c.voltsPerDiv = n(prefix + "volts_per_div", 0.5); c.position = n(prefix + "position", 0);
+            c.offset = n(prefix + "offset", 0); c.scale = n(prefix + "scale", 1);
+        }
+        return s;
+    }
+
+    juce::String scopeStateRevision(const juce::String& refdes) const
+    {
+        const auto& state = scopeStates[refdes];
+        return ":" + juce::String(state.revision) + ":" + juce::String(state.acquisitions) + ":" + juce::String((int)state.running);
+    }
+
+    oscilloscope::Display scopeDisplay(const juce::String& refdes) const
+    {
+        auto& state = scopeStates[refdes];
+        oscilloscope::Display d;
+        d.settings = scopeSettings(refdes);
+        juce::String key;
+        if (isFixtureView)
+        {
+            const auto* s = getFixtureSetup();
+            key = "Fixture:" + (s != nullptr ? juce::String(s->captureRevision) + ":" + s->acquisitionSignature : "closed");
+        }
+        else key = electricalSignature(false) + ":" + instrumentSetting(refdes, "capture_duration") + ":" + instrumentSetting(refdes, "capture_step");
+        if (state.running && (state.record == nullptr || state.key != key))
+        {
+            const auto cap = acquireScopeRecord(refdes);
+            state.record = std::make_shared<oscilloscope::Record>();
+            state.record->ok = cap.ok; state.record->error = cap.error.toStdString();
+            state.record->time = cap.time; state.record->channel = cap.channel; state.record->connected = cap.connected;
+            state.key = key; ++state.acquisitions;
+        }
+        d.record = state.record;
+        if (state.single) d.settings.normal = true;
+        if (state.record != nullptr) d.frame = oscilloscope::prepare(*state.record, d.settings);
+        else d.frame.error = "Stopped before a capture. Use Run / Acquire or Single.";
+        if (state.single && d.frame.ok && d.frame.triggered)
+        { state.running = false; state.single = false; state.singleComplete = true; ++state.revision; }
+        d.running = state.running;
+        d.status = isFixtureView ? "Fixture simulation capture" : "Transient simulation capture";
+        d.status += state.singleComplete ? " | SINGLE COMPLETE (held)" : !state.running ? " | STOPPED (held)" : state.single ? " | SINGLE ARMED" : " | RUN";
+        if (d.frame.ok)
+            d.status += d.frame.waiting ? " | WAITING FOR TRIGGER" : d.frame.triggered ? " | TRIGGERED" : " | AUTO (no matching edge)";
+        if (d.record && d.record->ok)
+            d.status += " | " + std::to_string(d.record->time.size()) + " samples | max dt " + circuit_sim::formatValue(d.frame.sampleInterval, "s", 4);
+        if (d.settings.math != 0 && d.frame.mathValues.empty()) d.status += " | Math needs both connected channels";
+        return d;
+    }
+
+    ScopeCapture captureScope(const juce::String& refdes) const
+    {
+        const auto d = scopeDisplay(refdes);
+        ScopeCapture cap; cap.timePerDiv = d.settings.timePerDiv; cap.triggered = d.frame.triggered;
+        cap.ok = d.frame.ok && !d.frame.waiting;
+        cap.error = d.frame.waiting ? "Waiting for a matching trigger in a completed simulation capture." : juce::String(d.frame.error);
+        if (d.record != nullptr)
+        {
+            cap.connected = d.record->connected;
+            for (size_t i = 0; i < d.record->time.size(); ++i)
+                if (d.record->time[i] >= d.frame.start && d.record->time[i] <= d.frame.stop)
+                {
+                    cap.time.push_back(d.record->time[i]);
+                    for (size_t ch = 0; ch < 2; ++ch) cap.channel[ch].push_back(d.frame.values[ch].empty() ? 0.0 : d.frame.values[ch][i]);
+                }
+        }
+        return cap;
+    }
+
+    juce::String scopeReadJson(const juce::String& refdes) const
+    {
+        const auto d = scopeDisplay(refdes);
+        if (!d.frame.ok) return toolFailure("oscilloscope_control", juce::String(d.frame.error));
+        auto* result = new juce::DynamicObject();
+        result->setProperty("ok", true); result->setProperty("instrument", "oscilloscope"); result->setProperty("refdes", refdes);
+        result->setProperty("timePerDiv", d.settings.timePerDiv); result->setProperty("triggered", d.frame.triggered);
+        result->setProperty("waiting", d.frame.waiting); result->setProperty("running", d.running); result->setProperty("status", juce::String(d.status));
+        result->setProperty("recordSamples", (int)d.record->time.size());
+        result->setProperty("samples", (int)std::count_if(d.record->time.begin(), d.record->time.end(), [&](double t) { return t >= d.frame.start && t <= d.frame.stop; }));
+        result->setProperty("recordStart", d.record->time.front()); result->setProperty("recordStop", d.record->time.back());
+        result->setProperty("viewStart", d.frame.start); result->setProperty("viewStop", d.frame.stop);
+        result->setProperty("maxSampleInterval", d.frame.sampleInterval);
+        result->setProperty("acquisitions", (double)scopeStates[refdes].acquisitions);
+        result->setProperty("mathSamples", (int)d.frame.mathValues.size());
+        juce::Array<juce::var> channels;
+        for (size_t ch = 0; ch < 2; ++ch)
+        {
+            auto* channel = new juce::DynamicObject();
+            channel->setProperty("channel", "CH" + juce::String((int)ch + 1));
+            channel->setProperty("connected", d.record->connected[ch]); channel->setProperty("enabled", d.settings.channel[ch].enabled);
+            channel->setProperty("coupling", d.settings.channel[ch].acCoupled ? "AC" : "DC");
+            channel->setProperty("rawMean", d.frame.rawMean[ch]);
+            auto* validity = new juce::DynamicObject();
+            auto metric = [&](const juce::String& name, const signal_measure::Result& value) {
+                const bool valid = d.record->connected[ch] && !d.frame.waiting && value.ok;
+                channel->setProperty(name, valid ? juce::var(value.value) : juce::var());
+                validity->setProperty(name, valid ? "valid" : d.frame.waiting ? "Waiting for trigger" : juce::String(value.error));
+            };
+            const auto& m = d.frame.measurements[ch];
+            metric("minimum", m.minimum); metric("maximum", m.maximum); metric("mean", m.mean); metric("vpp", m.peakToPeak);
+            metric("peakToPeak", m.peakToPeak); // Preserve existing instrument_read clients.
+            metric("rms", m.rms); metric("frequencyHz", m.frequency); metric("period", m.period);
+            metric("riseTime", m.riseTime); metric("fallTime", m.fallTime); metric("pulseWidth", m.pulseWidth); metric("dutyPercent", m.dutyPercent);
+            channel->setProperty("validity", juce::var(validity)); channel->setProperty("edgeTimingSampleLimited", m.edgeResolutionLimited);
+            channels.add(juce::var(channel));
+        }
+        result->setProperty("channels", channels);
+        auto* cursors = new juce::DynamicObject();
+        cursors->setProperty("enabled", d.settings.cursors); cursors->setProperty("t1", d.settings.t1); cursors->setProperty("t2", d.settings.t2);
+        cursors->setProperty("v1", d.settings.v1); cursors->setProperty("v2", d.settings.v2);
+        cursors->setProperty("deltaT", d.settings.t2 - d.settings.t1); cursors->setProperty("deltaV", d.settings.v2 - d.settings.v1);
+        cursors->setProperty("frequencyHz", d.settings.t1 == d.settings.t2 ? juce::var() : juce::var(oscilloscope::cursorFrequency(d.settings)));
+        result->setProperty("cursors", juce::var(cursors));
+        result->setProperty("measurementBasis", "Visible coupled samples; RMS includes DC in DC coupling. AC is full-record mean removal. Edge timing is interpolated, not a hardware bandwidth specification.");
+        return juce::JSON::toString(juce::var(result));
+    }
+
+    juce::String scopeControl(const juce::String& refdes, const juce::String& action, const juce::var& settings = {}, const juce::String& path = {})
+    {
+        auto fail = [&](const juce::String& message) { return toolFailure("oscilloscope_control", message); };
+        const auto* setup = isFixtureView ? getFixtureSetup() : nullptr;
+        const auto* eq = setup != nullptr ? setup->getEquipment(refdes) : nullptr;
+        const auto index = instanceIndexForRefdesAnySheet(refdes);
+        if (isFixtureView ? (eq == nullptr || (eq->type != "scope" && eq->type != "oscilloscope_2ch"))
+                          : (index < 0 || instances[(size_t)index].symbolId != "oscilloscope_2ch"))
+            return fail("Select an existing oscilloscope by schematic refdes or fixture equipment ID.");
+        auto& state = scopeStates[refdes];
+        if (action == "read") return scopeReadJson(refdes);
+        if (action == "configure")
+        {
+            const auto* object = settings.getDynamicObject();
+            if (object == nullptr) return fail("Provide a settings object.");
+            for (const auto& p : object->getProperties())
+            {
+                const auto key = p.name.toString();
+                const auto* spec = parts::findParam("oscilloscope_2ch", key);
+                if (spec == nullptr) return fail("Unknown oscilloscope setting: " + key);
+                if (spec->kind == parts::Kind::Choice && !spec->options.contains(p.value.toString())) return fail("Invalid choice for " + key);
+                if (spec->kind == parts::Kind::Quantity)
+                {
+                    double value = 0;
+                    if (!circuit_sim::parseValue(p.value.toString().toStdString(), value) || !std::isfinite(value)) return fail("Enter a finite engineering value for " + key);
+                    if ((key.endsWith("volts_per_div") || key == "time_per_div" || key == "capture_duration" || key == "capture_step" || key == "ch1_scale" || key == "ch2_scale") && value <= 0)
+                        return fail(key + " must be greater than zero.");
+                    if (key == "trigger_position" && (value < 0 || value > 100)) return fail("Trigger position must be between 0 and 100 percent.");
+                }
+            }
+            for (const auto& p : object->getProperties()) setInstrumentSetting(refdes, p.name.toString(), p.value.toString());
+        }
+        else if (action == "open") { if (onInstrumentOpen) onInstrumentOpen(refdes, "oscilloscope_2ch"); }
+        else if (action == "stop") { state.running = false; state.single = false; }
+        else if (action == "run" || action == "single")
+        {
+            state.running = true; state.single = action == "single" || instrumentSetting(refdes, "trigger_mode") == "Single";
+            state.singleComplete = false; state.record.reset(); state.key.clear();
+            if (isFixtureView)
+            {
+                if (!requestScopeCapture) return fail("This fixture has no simulation host. Run the Test Fixture first.");
+                if (auto error = requestScopeCapture(); error.isNotEmpty()) return fail(error);
+            }
+            const auto d = scopeDisplay(refdes);
+            if (!d.frame.ok) return fail(juce::String(d.frame.error));
+        }
+        else if (action == "autoscale" || action == "fit")
+        {
+            const auto d = scopeDisplay(refdes);
+            if (!d.record || !d.record->ok) return fail("Acquire a valid record before scaling.");
+            const auto s = oscilloscope::autoscale(*d.record, d.settings, action == "fit");
+            setInstrumentSetting(refdes, "time_per_div", juce::String(s.timePerDiv, 12));
+            setInstrumentSetting(refdes, "horizontal_position", "0");
+            for (size_t ch = 0; ch < 2; ++ch)
+            {
+                const auto prefix = "ch" + juce::String((int)ch + 1) + "_";
+                setInstrumentSetting(refdes, prefix + "volts_per_div", juce::String(s.channel[ch].voltsPerDiv, 12));
+                setInstrumentSetting(refdes, prefix + "offset", juce::String(s.channel[ch].offset, 12));
+                setInstrumentSetting(refdes, prefix + "position", "0");
+                setInstrumentSetting(refdes, prefix + "enabled", s.channel[ch].enabled ? "On" : "Off");
+            }
+        }
+        else if (action == "export")
+        {
+            const auto d = scopeDisplay(refdes);
+            if (!d.record || !d.record->ok) return fail("Acquire a valid record before exporting.");
+            if (path.isEmpty() || !juce::File::isAbsolutePath(path)) return fail("Provide an absolute CSV output path.");
+            const juce::File file(path); file.getParentDirectory().createDirectory();
+            juce::FileOutputStream stream(file);
+            if (!stream.openedOk()) return fail("Cannot open CSV output: " + path);
+            stream.setPosition(0); stream.truncate();
+            stream.writeText("time_s,CH1_raw_V,CH2_raw_V,CH1_coupled_V,CH2_coupled_V,math_V\n", false, false, nullptr);
+            for (size_t i = 0; i < d.record->time.size(); ++i)
+            {
+                juce::String line(d.record->time[i], 15);
+                for (size_t ch = 0; ch < 2; ++ch) line << "," << (d.record->connected[ch] ? juce::String(d.record->channel[ch][i], 15) : juce::String());
+                for (size_t ch = 0; ch < 2; ++ch) line << "," << (d.frame.values[ch].empty() ? juce::String() : juce::String(d.frame.values[ch][i], 15));
+                line << "," << (d.frame.mathValues.empty() ? juce::String() : juce::String(d.frame.mathValues[i], 15)) << "\n";
+                if (!stream.writeText(line, false, false, nullptr)) return fail("Could not finish writing CSV: " + path);
+            }
+            stream.flush();
+        }
+        else return fail("Use read, configure, open, run, stop, single, autoscale, fit, or export.");
+        ++state.revision;
+        return "{\"ok\":true,\"action\":" + quote(action) + ",\"message\":" + quote(action == "export" ? "Exported complete captured record to " + path : juce::String()) + "}";
     }
 
     // ---- 2D/3D plotter: what to acquire, built here; the run itself touches no canvas state.
@@ -13558,20 +13784,7 @@ public:
         const auto& id = instances[(size_t)index].symbolId;
         if (id == "oscilloscope_2ch")
         {
-            const auto cap = captureScope(refdes);
-            if (!cap.ok) return toolFailure("instrument_read", cap.error);
-            juce::String channels = "[";
-            for (int ch = 0; ch < 2; ++ch)
-            {
-                const auto s = channelStatsFor(cap, ch);
-                channels << (ch == 0 ? "" : ", ") << "{ \"channel\": \"CH" << (ch + 1) << "\", \"connected\": " << (cap.connected[(size_t)ch] ? "true" : "false")
-                         << ", \"peakToPeak\": " << juce::String(s.maximum - s.minimum, 6) << ", \"rms\": " << juce::String(s.rms, 6)
-                         << ", \"mean\": " << juce::String(s.mean, 6) << ", \"frequencyHz\": " << juce::String(s.frequency, 6) << " }";
-            }
-            channels << "]";
-            return "{ \"ok\": true, \"tool\": \"instrument_read\", \"instrument\": \"oscilloscope\", \"refdes\": " + quote(refdes)
-                 + ", \"timePerDiv\": " + juce::String(cap.timePerDiv, 9) + ", \"triggered\": " + (cap.triggered ? "true" : "false")
-                 + ", \"channels\": " + channels + " }";
+            return scopeReadJson(refdes);
         }
         if (id == "digital_multimeter")
         {
@@ -14482,6 +14695,17 @@ public:
             if (closeFixtureTab) closeFixtureTab(fixName);
             return "{ \"ok\": true, \"fixture\": " + quote(fixName) + ", \"tabClosed\": true }";
         }
+        if (name == "oscilloscope_control")
+        {
+            const auto fixture = arg("fixture");
+            if (fixture.isNotEmpty())
+            {
+                auto* panel = getFixturePanel ? getFixturePanel(fixture) : nullptr;
+                if (panel == nullptr) return toolFailure(name, "Open the target Test Fixture tab first.");
+                return panel->instrumentAction(arg("refdes"), arg("action"), args["settings"], arg("path"));
+            }
+            return scopeControl(arg("refdes"), arg("action"), args["settings"], arg("path"));
+        }
         if (name == "test_fixture_sources")
         {
             juce::Array<juce::var> sources;
@@ -14504,7 +14728,7 @@ public:
             auto* s = fixture.isNotEmpty() ? testMode.getSetup(fixture) : testMode.getActiveSetup();
             auto* panel = s != nullptr && getFixturePanel ? getFixturePanel(s->name) : nullptr;
             if (panel == nullptr) return toolFailure(name, "Open the target Test Fixture tab first.");
-            if (name == "test_fixture_instrument") return panel->instrumentAction(arg("id"), arg("action"), args["settings"]);
+            if (name == "test_fixture_instrument") return panel->instrumentAction(arg("id"), arg("action"), args["settings"], arg("path"));
             const auto action = arg("action");
             if (action != "read" && action != "show" && action != "hide" && action != "clear") return toolFailure(name, "Use read, show, hide, or clear.");
             return panel->diagnosticAction(action);
@@ -16355,199 +16579,32 @@ private:
     juce::int64 lastRevision = 0;
 };
 
-class ScopeView final : public InstrumentView
+class ScopeView final : public OscilloscopeView
 {
 public:
-    ScopeView(SchematicCanvasPanel* canvasPanel, juce::String scopeRef)
-        : InstrumentView(canvasPanel, std::move(scopeRef))
-    {
-        styleSmallLabel(timeLabel, "Time/div");
-        styleSmallLabel(triggerLabel, "Trigger");
-        styleSmallLabel(levelLabel, "Level");
-        styleSmallLabel(ch1Label, "CH1 V/div");
-        styleSmallLabel(ch2Label, "CH2 V/div");
-        for (auto* label : { &timeLabel, &triggerLabel, &levelLabel, &ch1Label, &ch2Label })
-            addAndMakeVisible(*label);
-        bindChoice(timePerDiv, "oscilloscope_2ch", "time_per_div");
-        bindChoice(triggerSource, "oscilloscope_2ch", "trigger_source");
-        bindChoice(triggerSlope, "oscilloscope_2ch", "trigger_slope");
-        bindField(triggerLevel, "trigger_level");
-        bindChoice(ch1VoltsPerDiv, "oscilloscope_2ch", "ch1_volts_per_div");
-        bindChoice(ch2VoltsPerDiv, "oscilloscope_2ch", "ch2_volts_per_div");
-        for (auto* slider : { &ch1Position, &ch2Position })
-        {
-            slider->setSliderStyle(juce::Slider::LinearVertical);
-            slider->setTextBoxStyle(juce::Slider::NoTextBox, false, 0, 0);
-            slider->setRange(-4.0, 4.0, 0.25);
-            slider->setColour(juce::Slider::trackColourId, juce::Colour(0xff33424d));
-            addAndMakeVisible(*slider);
-        }
-        ch1Position.setColour(juce::Slider::thumbColourId, channelColour(0));
-        ch2Position.setColour(juce::Slider::thumbColourId, channelColour(1));
-        ch1Position.setValue(setting("ch1_position").getDoubleValue(), juce::dontSendNotification);
-        ch2Position.setValue(setting("ch2_position").getDoubleValue(), juce::dontSendNotification);
-        ch1Position.onValueChange = [this] { setSetting("ch1_position", juce::String(ch1Position.getValue())); };
-        ch2Position.onValueChange = [this] { setSetting("ch2_position", juce::String(ch2Position.getValue())); };
-        ch1Position.setTooltip("CH1 vertical position");
-        ch2Position.setTooltip("CH2 vertical position");
-        setSize(900, 560);
-    }
-
-    static juce::Colour channelColour(int ch) { return ch == 0 ? juce::Colour(0xfff4d35e) : juce::Colour(0xff78dcca); }
-
-    void paint(juce::Graphics& g) override
-    {
-        g.fillAll(juce::Colour(0xff10161d));
-        const auto plot = plotArea();
-        g.setColour(juce::Colour(0xff070b0f));
-        g.fillRoundedRectangle(plot, 6.0f);
-
-        // 10 x 8 graticule with minor ticks on the centre lines.
-        for (int i = 0; i <= 10; ++i)
-        {
-            const auto x = plot.getX() + plot.getWidth() * (float)i / 10.0f;
-            g.setColour(i == 5 ? juce::Colour(0xff3a4a56) : juce::Colour(0xff1f2a33));
-            g.drawVerticalLine((int)x, plot.getY(), plot.getBottom());
-        }
-        for (int i = 0; i <= 8; ++i)
-        {
-            const auto y = plot.getY() + plot.getHeight() * (float)i / 8.0f;
-            g.setColour(i == 4 ? juce::Colour(0xff3a4a56) : juce::Colour(0xff1f2a33));
-            g.drawHorizontalLine((int)y, plot.getX(), plot.getRight());
-        }
-        g.setColour(juce::Colour(0xff3a4a56));
-        for (int i = 0; i <= 50; ++i)
-        {
-            const auto x = plot.getX() + plot.getWidth() * (float)i / 50.0f;
-            g.drawLine(x, plot.getCentreY() - 3.0f, x, plot.getCentreY() + 3.0f, 1.0f);
-        }
-
-        if (!capture.ok)
-        {
-            g.setColour(juce::Colour(0xffff8a65));
-            g.setFont(juce::Font(14.0f));
-            g.drawFittedText(capture.error.isNotEmpty() ? capture.error : juce::String("Waiting for the simulation..."),
-                             plot.reduced(20.0f).toNearestInt(), juce::Justification::centred, 3);
-            return;
-        }
-
-        const auto window = 10.0 * capture.timePerDiv;
-        for (int ch = 0; ch < 2; ++ch)
-        {
-            if (!capture.connected[(size_t)ch] || capture.channel[(size_t)ch].empty())
-                continue;
-            const auto vdiv = std::max(1e-6, voltsPerDiv(ch));
-            const auto position = (ch == 0 ? ch1Position : ch2Position).getValue();
-            auto yOf = [&](double v) { return plot.getCentreY() - (float)((v / vdiv + position) * plot.getHeight() / 8.0); };
-
-            juce::Path trace;
-            for (size_t s = 0; s < capture.time.size(); ++s)
-            {
-                const auto x = plot.getX() + (float)(capture.time[s] / window) * plot.getWidth();
-                const auto y = juce::jlimit(plot.getY() - 2.0f, plot.getBottom() + 2.0f, yOf(capture.channel[(size_t)ch][s]));
-                if (s == 0) trace.startNewSubPath(x, y); else trace.lineTo(x, y);
-            }
-            g.saveState();
-            g.reduceClipRegion(plot.toNearestInt());
-            g.setColour(channelColour(ch));
-            g.strokePath(trace, juce::PathStrokeType(1.8f));
-            g.restoreState();
-
-            // Ground marker for the channel at the left edge.
-            const auto groundY = juce::jlimit(plot.getY(), plot.getBottom(), yOf(0.0));
-            juce::Path marker;
-            marker.addTriangle(plot.getX() - 10.0f, groundY - 5.0f, plot.getX() - 10.0f, groundY + 5.0f, plot.getX() - 2.0f, groundY);
-            g.fillPath(marker);
-        }
-
-        // Trigger level marker on the right edge.
-        {
-            const auto ch = setting("trigger_source") == "CH2" ? 1 : 0;
-            const auto vdiv = std::max(1e-6, voltsPerDiv(ch));
-            const auto position = (ch == 0 ? ch1Position : ch2Position).getValue();
-            double level = 0.0;
-            circuit_sim::parseValue(setting("trigger_level").toStdString(), level);
-            const auto y = juce::jlimit(plot.getY(), plot.getBottom(), plot.getCentreY() - (float)((level / vdiv + position) * plot.getHeight() / 8.0));
-            juce::Path marker;
-            marker.addTriangle(plot.getRight() + 10.0f, y - 5.0f, plot.getRight() + 10.0f, y + 5.0f, plot.getRight() + 2.0f, y);
-            g.setColour(capture.triggered ? juce::Colour(0xffff8a65) : juce::Colour(0xff71808c));
-            g.fillPath(marker);
-        }
-
-        // Status and measurements.
-        auto info = getLocalBounds().toFloat().withTop(plot.getBottom() + 8.0f).reduced(16.0f, 0.0f);
-        g.setFont(juce::Font("Consolas", 13.0f, juce::Font::plain));
-        g.setColour(capture.triggered ? juce::Colour(0xff6fac7d) : juce::Colour(0xffff8a65));
-        g.drawText(capture.triggered ? "TRIG'D" : "AUTO", info.removeFromLeft(70.0f).withHeight(18.0f).toNearestInt(), juce::Justification::centredLeft);
-        for (int ch = 0; ch < 2; ++ch)
-        {
-            auto row = info.removeFromTop(20.0f);
-            g.setColour(channelColour(ch));
-            if (!capture.connected[(size_t)ch])
-            {
-                g.drawText("CH" + juce::String(ch + 1) + "  not connected", row.toNearestInt(), juce::Justification::centredLeft);
-                continue;
-            }
-            const auto s = SchematicCanvasPanel::channelStatsFor(capture, ch);
-            g.drawText("CH" + juce::String(ch + 1)
-                           + "   Vpp " + juce::String(circuit_sim::formatValue(s.maximum - s.minimum, "V", 4))
-                           + "   Vrms " + juce::String(circuit_sim::formatValue(s.rms, "V", 4))
-                           + "   Mean " + juce::String(circuit_sim::formatValue(s.mean, "V", 4))
-                           + "   Freq " + (s.frequency > 0.0 ? juce::String(circuit_sim::formatValue(s.frequency, "Hz", 4)) : juce::String("--")),
-                       row.toNearestInt(), juce::Justification::centredLeft);
-        }
-        if (!capture.warnings.isEmpty())
-        {
-            g.setColour(juce::Colour(0xffff8a65));
-            g.drawText(capture.warnings[0], info.removeFromTop(18.0f).toNearestInt(), juce::Justification::centredLeft);
-        }
-    }
-
-    void resized() override
-    {
-        auto top = getLocalBounds().reduced(16).removeFromTop(28);
-        auto place = [&](juce::Label& label, juce::Component& control, int labelWidth, int width) {
-            label.setBounds(top.removeFromLeft(labelWidth));
-            control.setBounds(top.removeFromLeft(width).reduced(0, 2));
-            top.removeFromLeft(14);
-        };
-        place(timeLabel, timePerDiv, 56, 82);
-        place(ch1Label, ch1VoltsPerDiv, 64, 74);
-        place(ch2Label, ch2VoltsPerDiv, 64, 74);
-        place(triggerLabel, triggerSource, 50, 66);
-        triggerSlope.setBounds(top.removeFromLeft(86).reduced(0, 2));
-        top.removeFromLeft(10);
-        place(levelLabel, triggerLevel, 38, 70);
-
-        const auto plot = plotArea();
-        ch1Position.setBounds((int)plot.getRight() + 16, (int)plot.getY(), 18, (int)plot.getHeight());
-        ch2Position.setBounds((int)plot.getRight() + 38, (int)plot.getY(), 18, (int)plot.getHeight());
-    }
-
+    ScopeView(SchematicCanvasPanel* canvas, juce::String refdes)
+        : OscilloscopeView(makeCallbacks(canvas, std::move(refdes))) {}
 private:
-    juce::Rectangle<float> plotArea() const
+    static Callbacks makeCallbacks(SchematicCanvasPanel* canvas, juce::String refdes)
     {
-        return getLocalBounds().toFloat().reduced(16.0f).withTrimmedTop(44.0f).withTrimmedLeft(14.0f).withTrimmedRight(66.0f).withTrimmedBottom(70.0f);
+        juce::Component::SafePointer<SchematicCanvasPanel> safe(canvas);
+        Callbacks cb;
+        cb.read = [safe, refdes] { return safe != nullptr ? safe->scopeDisplay(refdes) : oscilloscope::Display(); };
+        cb.get = [safe, refdes](const juce::String& key) { return safe != nullptr ? safe->instrumentSetting(refdes, key) : juce::String(); };
+        cb.revision = [safe, refdes] { return safe != nullptr ? juce::String(safe->modelRevision()) + safe->scopeStateRevision(refdes) : juce::String(); };
+        cb.set = [safe, refdes](const juce::String& key, const juce::String& value) -> juce::String {
+            if (safe == nullptr) return "Instrument has been closed.";
+            auto* settings = new juce::DynamicObject(); settings->setProperty(key, value);
+            const auto result = juce::JSON::parse(safe->scopeControl(refdes, "configure", juce::var(settings)));
+            return result["ok"] ? juce::String() : result["error"].toString();
+        };
+        cb.action = [safe, refdes](const juce::String& action, const juce::String& path) -> juce::String {
+            if (safe == nullptr) return "Instrument has been closed.";
+            const auto result = juce::JSON::parse(safe->scopeControl(refdes, action, {}, path));
+            return result["ok"] ? result.getProperty("message", "").toString() : result["error"].toString();
+        };
+        return cb;
     }
-
-    double voltsPerDiv(int ch) const
-    {
-        double v = 0.1;
-        circuit_sim::parseValue(setting(ch == 0 ? "ch1_volts_per_div" : "ch2_volts_per_div").toStdString(), v);
-        return v;
-    }
-
-    void measure() override
-    {
-        if (canvas != nullptr)
-            capture = canvas->captureScope(refdes);
-    }
-
-    juce::Label timeLabel, triggerLabel, levelLabel, ch1Label, ch2Label;
-    juce::ComboBox timePerDiv, triggerSource, triggerSlope, ch1VoltsPerDiv, ch2VoltsPerDiv;
-    juce::TextEditor triggerLevel;
-    juce::Slider ch1Position, ch2Position;
-    SchematicCanvasPanel::ScopeCapture capture;
 };
 
 class MeterView final : public InstrumentView
@@ -19565,6 +19622,12 @@ TestFixturePanel::TestFixturePanel(const juce::String& name, test_mode::TestSetu
     c->fixtureName = fixtureName;
     c->fixtureSetup = setup;
     c->resolveFixtureSetup = [this] { return getSetup(); };
+    c->requestScopeCapture = [this]() -> juce::String {
+        if (!callbacks.runSimulation) return "No simulation host is available for this fixture.";
+        runSimulation(false);
+        const auto* s = getSetup();
+        return s != nullptr ? s->lastError : "The fixture has been closed.";
+    };
     c->onInstrumentOpen = [safe = juce::Component::SafePointer<SchematicCanvasPanel>(c.get())](juce::String id, juce::String symbol) {
         if (safe == nullptr || symbol != "oscilloscope_2ch") return;
         for (auto* window : safe->fixtureInstrumentWindows)
@@ -19573,7 +19636,8 @@ TestFixturePanel::TestFixturePanel(const juce::String& name, test_mode::TestSetu
         auto* window = new FloatingInstrumentWindow(safe->fixtureName + " - " + id + " Oscilloscope");
         window->setComponentID(id);
         window->setContentOwned(new ScopeView(safe.getComponent(), id), true);
-        window->centreWithSize(900, 560);
+        window->setResizeLimits(1000, 680, 2560, 1600);
+        window->centreWithSize(1280, 820);
         window->setVisible(true);
         safe->fixtureInstrumentWindows.add(window);
     };
@@ -19650,66 +19714,10 @@ juce::String TestFixturePanel::diagnosticAction(const juce::String& action)
     return juce::JSON::toString(juce::var(result));
 }
 
-juce::String TestFixturePanel::instrumentAction(const juce::String& eqId, const juce::String& action, const juce::var& settings)
+juce::String TestFixturePanel::instrumentAction(const juce::String& eqId, const juce::String& action, const juce::var& settings, const juce::String& path)
 {
-    auto* c = dynamic_cast<SchematicCanvasPanel*>(schematicCanvas.get());
-    const auto* s = getSetup();
-    const auto* eq = s != nullptr ? s->getEquipment(eqId) : nullptr;
-    auto fail = [](const juce::String& message) {
-        auto* result = new juce::DynamicObject();
-        result->setProperty("ok", false);
-        result->setProperty("error", message);
-        return juce::JSON::toString(juce::var(result));
-    };
-    if (c == nullptr || eq == nullptr || (eq->type != "scope" && eq->type != "oscilloscope_2ch"))
-        return fail("Select a placed fixture oscilloscope by equipment ID.");
-    if (action == "open") c->showEquipmentDialog(eqId);
-    else if (action == "configure")
-    {
-        if (const auto* object = settings.getDynamicObject())
-        {
-            for (const auto& p : object->getProperties())
-            {
-                const auto* spec = parts::findParam("oscilloscope_2ch", p.name.toString());
-                if (spec == nullptr) return fail("Unknown oscilloscope setting: " + p.name.toString());
-                if (spec->kind == parts::Kind::Choice && !spec->options.contains(p.value.toString()))
-                    return fail("Invalid choice for " + spec->key);
-                if (spec->kind == parts::Kind::Quantity)
-                {
-                    double value = 0.0;
-                    if (!circuit_sim::parseValue(p.value.toString().toStdString(), value) || !std::isfinite(value))
-                        return fail("Enter a number for " + spec->key);
-                }
-            }
-            for (const auto& p : object->getProperties()) c->setInstrumentSetting(eqId, p.name.toString(), p.value.toString());
-        }
-    }
-    else if (action != "read") return fail("Use open, read, or configure.");
-    auto* result = new juce::DynamicObject();
-    result->setProperty("ok", true);
-    result->setProperty("equipmentId", eqId);
-    result->setProperty("action", action);
-    if (action == "read")
-    {
-        const auto cap = c->captureScope(eqId);
-        if (!cap.ok) return fail(cap.error);
-        result->setProperty("timePerDiv", cap.timePerDiv);
-        result->setProperty("samples", (int)cap.time.size());
-        result->setProperty("triggered", cap.triggered);
-        juce::Array<juce::var> channels;
-        for (int ch = 0; ch < 2; ++ch)
-        {
-            const auto stats = SchematicCanvasPanel::channelStatsFor(cap, ch);
-            auto* channel = new juce::DynamicObject();
-            channel->setProperty("connected", cap.connected[(size_t)ch]);
-            channel->setProperty("vpp", stats.maximum - stats.minimum);
-            channel->setProperty("rms", stats.rms);
-            channel->setProperty("mean", stats.mean);
-            channels.add(juce::var(channel));
-        }
-        result->setProperty("channels", channels);
-    }
-    return juce::JSON::toString(juce::var(result));
+    if (auto* c = dynamic_cast<SchematicCanvasPanel*>(schematicCanvas.get())) return c->scopeControl(eqId, action, settings, path);
+    return "{\"ok\":false,\"error\":\"Fixture canvas is unavailable.\"}";
 }
 
 void TestFixturePanel::runSimulation(bool startAudition)
@@ -22882,6 +22890,7 @@ void ElectronicsWorkbench::openInstrumentWindow(juce::String refdes, juce::Strin
         return;
 
     auto* window = new FloatingInstrumentWindow(title);
+    if (symbolId == "oscilloscope_2ch") window->setResizeLimits(1000, 680, 2560, 1600);
     window->setContentOwned(view, true);
     window->centreWithSize(view->getWidth(), view->getHeight());
     window->setVisible(true);

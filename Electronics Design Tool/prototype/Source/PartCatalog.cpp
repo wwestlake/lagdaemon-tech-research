@@ -305,14 +305,33 @@ std::map<juce::String, std::vector<ParamSpec>> buildCatalog()
     c["audio_in"] = { choice("source", "Input Type", { "Hardware", "File" }, "Hardware"), text("file", "File Path", "") };
     c["audio_out"] = { choice("sink", "Output Type", { "Hardware", "File" }, "Hardware"), text("file", "File Path", "") };
     c["ground_bus"] = { text("busName", "Rail name", "0", Storage::BusName) };
-    c["oscilloscope_2ch"] = { choice("time_per_div", "Time / div", { "10u", "20u", "50u", "100u", "200u", "500u", "1m", "2m", "5m", "10m", "20m", "50m" }, "200u"),
-                              choice("ch1_volts_per_div", "CH1 volts / div", { "10m", "20m", "50m", "100m", "200m", "500m", "1", "2", "5", "10" }, "500m"),
-                              choice("ch2_volts_per_div", "CH2 volts / div", { "10m", "20m", "50m", "100m", "200m", "500m", "1", "2", "5", "10" }, "500m"),
-                              quantity("ch1_position", "CH1 position", "div", "0"),
-                              quantity("ch2_position", "CH2 position", "div", "0"),
-                              choice("trigger_source", "Trigger source", { "CH1", "CH2" }, "CH1"),
-                              quantity("trigger_level", "Trigger level", "V", "0"),
-                              choice("trigger_slope", "Trigger slope", { "Rising", "Falling" }, "Rising") };
+    c["oscilloscope_2ch"] = { quantity("time_per_div", "Time / division", "s", "200u"),
+        quantity("horizontal_position", "Horizontal position", "s", "0"),
+        quantity("capture_duration", "Record duration", "s", "20m"), quantity("capture_step", "Maximum sample step", "s", "10u"),
+        choice("trigger_source", "Trigger source", { "CH1", "CH2" }, "CH1"),
+        choice("trigger_mode", "Trigger mode", { "Auto", "Normal", "Single" }, "Auto"),
+        quantity("trigger_level", "Trigger level", "V", "0"),
+        quantity("trigger_position", "Trigger position", "%", "20"),
+        choice("trigger_slope", "Trigger slope", { "Rising", "Falling" }, "Rising"),
+        choice("cursors", "Measurement cursors", { "Off", "On" }, "Off"),
+        choice("cursor_source", "Cursor voltage channel", { "CH1", "CH2" }, "CH1"),
+        quantity("cursor_t1", "Time cursor 1", "s", "0"), quantity("cursor_t2", "Time cursor 2", "s", "1m"),
+        quantity("cursor_v1", "Voltage cursor 1", "V", "0"), quantity("cursor_v2", "Voltage cursor 2", "V", "1"),
+        choice("markers", "Sample markers", { "Off", "On" }, "Off"),
+        choice("math", "Waveform math", { "Off", "CH1 + CH2", "CH1 - CH2" }, "Off"),
+        quantity("math_scale", "Math gain", "", "1"), quantity("math_volts_per_div", "Math volts / division", "V", "1") };
+    for (int channel = 1; channel <= 2; ++channel)
+    {
+        const auto prefix = "ch" + juce::String(channel) + "_";
+        const auto title = "CH" + juce::String(channel) + " ";
+        auto& scope = c["oscilloscope_2ch"];
+        scope.push_back(choice(prefix + "enabled", title + "trace", { "On", "Off" }, "On"));
+        scope.push_back(choice(prefix + "coupling", title + "coupling", { "DC", "AC" }, "DC"));
+        scope.push_back(quantity(prefix + "volts_per_div", title + "volts / division", "V", "500m"));
+        scope.push_back(quantity(prefix + "offset", title + "display offset", "V", "0"));
+        scope.push_back(quantity(prefix + "position", title + "position", "div", "0"));
+        scope.push_back(quantity(prefix + "scale", title + "input scaling", "", "1"));
+    }
     c["digital_multimeter"] = { choice("value", "Function", { "DC V", "AC V", "DC A", "Ohms" }, "DC V", Storage::Value) };
     c["bode_analyzer"] = { quantity("start_frequency", "Start frequency", "Hz", "10"),
                            quantity("stop_frequency", "Stop frequency", "Hz", "100k"),

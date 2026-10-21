@@ -68,7 +68,7 @@ public:
     bool isBreakToolActive() const;
     void setDiagnostic(const juce::String& message);
     juce::String diagnosticAction(const juce::String& action);
-    juce::String instrumentAction(const juce::String& eqId, const juce::String& action, const juce::var& settings);
+    juce::String instrumentAction(const juce::String& eqId, const juce::String& action, const juce::var& settings, const juce::String& path = {});
 
     juce::Component* getCanvas() { return schematicCanvas.get(); }
 
