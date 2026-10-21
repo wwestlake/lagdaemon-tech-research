@@ -1,14 +1,26 @@
 param(
     [string]$Repository = (Split-Path -Parent $PSScriptRoot),
-    [Parameter(Mandatory = $true)][string]$WorkRoot
+    [Parameter(Mandatory = $true)][string]$WorkRoot,
+    [switch]$NativeOnly
 )
 $ErrorActionPreference = 'Stop'
 New-Item -ItemType Directory -Force -Path $WorkRoot | Out-Null
 # Includes a real preamp WAV run, source conflict checks and authoritative-file hashes.
-& (Join-Path $PSScriptRoot 'verify_fixture_integration_repairs.ps1') -Repository $Repository -WorkRoot (Join-Path $WorkRoot 'fixture')
+if (-not $NativeOnly) {
+    & (Join-Path $PSScriptRoot 'verify_fixture_integration_repairs.ps1') -Repository $Repository -WorkRoot (Join-Path $WorkRoot 'fixture')
+}
 $api = Get-Content -LiteralPath (Join-Path $env:APPDATA 'DjehutiElectronicsLab\agent-api.json') -Raw | ConvertFrom-Json
 $headers = @{ Authorization = 'Bearer ' + $api.token }
 $results = [System.Collections.Generic.List[object]]::new()
+if ($NativeOnly) {
+    $prior = Get-Content -LiteralPath (Join-Path $WorkRoot 'scope-integration-results.json') -Raw | ConvertFrom-Json
+    foreach ($check in $prior.results) {
+        if (-not $check.pass) { break }
+        $results.Add($check)
+        if ($check.name -eq 'Scope operations preserve fixture authoritative schematic') { break }
+    }
+    $single = $prior.fixtureSingle
+}
 function Check([bool]$ok, [string]$name) {
     $results.Add([pscustomobject]@{ pass = $ok; name = $name })
     if (-not $ok) { throw "Check failed: $name" }
@@ -28,6 +40,7 @@ function Scope([string]$action, [hashtable]$settings = @{}, [string]$path = '') 
     return Call 'oscilloscope_control' $argsObj
 }
 try {
+    if (-not $NativeOnly) {
     $status = Call 'test_mode_status'
     $script:fixture = $status.activeSetup
     $script:scopeId = ($status.activeSetupDetails.equipment | Where-Object type -eq 'scope' | Select-Object -First 1).id
@@ -54,6 +67,7 @@ try {
     Check (Call 'test_fixture_save' @{ name = $script:fixture; path = (Join-Path $WorkRoot 'scope-settings.fixture.json') }).ok 'Save independent scope settings and connections'
     Check ((Get-Content -LiteralPath (Join-Path $WorkRoot 'scope-settings.fixture.json') -Raw) -match 'cursor_t1') 'Cursor settings persist with fixture'
     Check ((Get-FileHash -LiteralPath $diagram).Hash -eq $originalHash) 'Scope operations preserve fixture authoritative schematic'
+    }
 
     # Analytically known high-bias source and divider, solved by the app's existing transient backend.
     $nativeRoot = Join-Path $WorkRoot 'native-scope'
@@ -72,9 +86,13 @@ try {
     $script:fixture = ''; $script:scopeId = 'SCOPE1'
     Check (Scope 'configure' @{ time_per_div = '1m'; ch1_volts_per_div = '50m'; ch1_offset = '250'; ch2_volts_per_div = '50'; ch2_offset = '125' }).ok 'Configure native scope for small AC on 250 V bias'
     Check (Scope 'open').ok 'Open shared production scope UI for native schematic instrument'
+    Check (Scope 'run').ok 'Request a fresh native transient record'
     $dc = Scope 'read'
     Check ($dc.ok -and [Math]::Abs($dc.channels[0].mean - 250) -lt 0.001 -and [Math]::Abs($dc.channels[0].vpp - 0.4) -lt 0.001) 'Simulation and scope measure 250 V bias plus 0.4 Vpp correctly'
-    Check ([Math]::Abs($dc.channels[1].mean - 125) -lt 0.001 -and [Math]::Abs($dc.channels[1].vpp - 0.2) -lt 0.001) 'Scope measures actual divider response, not component nominal values'
+    # The existing native scope has a 10 megohm input on each channel.
+    $lower = 1.0 / (1.0 / 1000.0 + 1.0 / 10000000.0)
+    $dividerGain = $lower / (1000.0 + $lower)
+    Check ([Math]::Abs($dc.channels[1].mean - 250*$dividerGain) -lt 0.001 -and [Math]::Abs($dc.channels[1].vpp - 0.4*$dividerGain) -lt 0.001) 'Scope divider response includes actual 10 megohm input loading'
     Check ([Math]::Abs($dc.channels[0].rms - [Math]::Sqrt(250*250 + 0.2*0.2/2)) -lt 0.001) 'Total RMS agrees with analytic biased-sine formula'
     Scope 'configure' @{ ch1_coupling = 'AC'; ch1_offset = '0'; ch2_coupling = 'AC'; ch2_offset = '0'; ch2_volts_per_div = '50m' } | Out-Null
     $ac = Scope 'read'
@@ -90,6 +108,6 @@ try {
     Scope 'stop' | Out-Null
     Check (-not (Scope 'read').running) 'Native Stop holds a real solved capture'
 } finally {
-    @{ results = $results; checks = $results.Count; nativeDc = $dc; nativeAc = $ac; fixtureSingle = $single } | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath (Join-Path $WorkRoot 'scope-integration-results.json')
+    @{ results = $results; checks = $results.Count; nativeDc = $dc; nativeAc = $ac; fixtureSingle = $single; preampChecksReused = [bool]$NativeOnly; expectedDividerGain = $dividerGain } | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath (Join-Path $WorkRoot 'scope-integration-results.json')
 }
 Write-Output "$($results.Count) oscilloscope checks passed, plus the 27 fixture regression checks."

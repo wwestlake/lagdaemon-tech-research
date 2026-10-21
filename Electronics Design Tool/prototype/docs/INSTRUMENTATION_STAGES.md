@@ -60,8 +60,13 @@ is permission to rewrite the circuit's authoritative source values.
   presentation reuse captured samples. Native record duration and sample step
   are acquisition settings; fixture record length/rate belong to its stimulus.
 - AC coupling means full-record digital mean removal. The scope does not claim
-  an analog input bandwidth, probe loading model or analog coupling time constant.
-  Input scaling multiplies already simulated volts; its default is 1x.
+  an analog input bandwidth or analog coupling time constant. Native schematic
+  scopes retain their existing 10 MOhm input resistance per channel. Fixture
+  scope traces currently observe nodes without inserting that load. Unifying
+  fixture loading with native instrument models is a distinct common-integration
+  extension to settle before the later multi-instrument acceptance stage.
+  Input scaling multiplies already simulated volts; its default is 1x and it
+  does not change either input model.
 - Automatic measurements use visible coupled samples. RMS includes DC under DC
   coupling. Edge time uses observed min/max 10–90% levels; pulse width uses the
   midrange crossing. Missing complete edges are unavailable, not zero. Timing

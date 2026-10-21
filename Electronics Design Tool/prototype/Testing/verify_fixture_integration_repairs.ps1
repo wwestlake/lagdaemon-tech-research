@@ -66,7 +66,9 @@ try {
     Check (Call 'diagram_open' @{ name = '12AX7 Two Stage Preamp' }).ok 'Open actual two-stage preamp schematic'
     $sources = Call 'test_fixture_sources'
     Check (($sources.sources | Where-Object refdes -eq 'VIN').eligible -and -not ($sources.sources | Where-Object refdes -eq 'VCC').eligible) 'VIN eligible and VCC identified as DC supply'
-    $fixture = 'Integration Repairs QA'
+    # create_fixture reopens an existing name, including a fixture restored at
+    # application startup. A unique name keeps repeated runs independent.
+    $fixture = 'Integration Repairs QA ' + [guid]::NewGuid().ToString('N').Substring(0, 8)
     Check (Call 'test_fixture_create' @{ name = $fixture }).ok 'Create fixture tab in running application'
     $inputId = (Call 'test_fixture_place_equipment' @{ fixture = $fixture; type = 'audio_input'; x = 40; y = 60 }).equipment.id
     $sinkId = (Call 'test_fixture_place_equipment' @{ fixture = $fixture; type = 'audio_output'; x = 780; y = 450 }).equipment.id
