@@ -1,5 +1,6 @@
 #include "OscilloscopeView.h"
 #include "CircuitSolver.h"
+#include "OscilloscopeInput.h"
 #include <algorithm>
 #include <cmath>
 
@@ -46,6 +47,9 @@ OscilloscopeView::OscilloscopeView(Callbacks cb) : callbacks(std::move(cb))
         field(prefix + "offset", "Display offset (V)", "Subtracts volts for display centering only; measured data is preserved.");
         field(prefix + "position", "Vertical position (div)");
         field(prefix + "scale", "Input scaling (x)", "Multiplies the simulated volts for probe-equivalent scaling. Solver node voltages already use volts; default is 1x.");
+        choice(prefix + "impedance_enabled", "Input Impedance", { "Off", "On" },
+            "Off: infinite impedance (no loading). On: resistance from this channel to REF. Reacquire after changing.");
+        field(prefix + "impedance", "Finite impedance (ohm)", "Positive resistance: 50, 1k, 10M or 1G. M means mega. Last value is retained while Off.");
     }
     group("TRIGGER");
     choice("trigger_source", "Source", { "CH1", "CH2" });
@@ -80,6 +84,7 @@ void OscilloscopeView::field(const juce::String& key, const juce::String& text, 
     auto* label = labels.add(new juce::Label({}, text));
     label->setFont(juce::Font(12.0f));
     auto* editor = new juce::TextEditor(); fields.add(editor);
+    editor->setComponentID(key);
     editor->setFont(juce::Font("Consolas", 13.0f, juce::Font::plain));
     editor->setTooltip(help); label->setTooltip(help);
     auto save = [this, editor, key] { if (!synchronising) commit(key, editor->getText().trim()); };
@@ -92,6 +97,7 @@ void OscilloscopeView::choice(const juce::String& key, const juce::String& text,
     auto* label = labels.add(new juce::Label({}, text));
     label->setFont(juce::Font(12.0f));
     auto* box = new juce::ComboBox(); fields.add(box);
+    box->setComponentID(key);
     box->addItemList(options, 1); box->setTooltip(help); label->setTooltip(help);
     box->onChange = [this, box, key] { if (!synchronising) commit(key, box->getText()); };
     controlPanel.addAndMakeVisible(label); controlPanel.addAndMakeVisible(box);
@@ -132,16 +138,31 @@ void OscilloscopeView::refresh()
     {
         const auto value = callbacks.get(row.key);
         if (auto* editor = dynamic_cast<juce::TextEditor*>(row.control))
-        { if (!editor->hasKeyboardFocus(false)) editor->setText(value, false); }
+        {
+            if (!editor->hasKeyboardFocus(false))
+            {
+                double ohms = 0;
+                editor->setText((row.key == "ch1_impedance" || row.key == "ch2_impedance")
+                    && oscilloscope::parseInputOhms(value.toStdString(), ohms) ? number(ohms, juce::String::charToString(0x03a9)) : value, false);
+            }
+        }
         else if (auto* box = dynamic_cast<juce::ComboBox*>(row.control)) box->setText(value, juce::dontSendNotification);
         if (row.key == "capture_duration" || row.key == "capture_step")
             row.control->setEnabled(display.status.find("Fixture") == std::string::npos);
+        if (row.key == "ch1_impedance" || row.key == "ch2_impedance")
+            row.control->setEnabled(callbacks.get(row.key + "_enabled") == "On");
     }
     synchronising = false;
     juce::String text;
     for (size_t ch = 0; ch < 2; ++ch)
     {
         text << "CH" << (int)(ch + 1) << (display.settings.channel[ch].enabled ? "  " : " [hidden]  ");
+        const auto prefix = "ch" + juce::String((int)ch + 1) + "_";
+        double ohms = 0;
+        text << "Input " << (callbacks.get(prefix + "impedance_enabled") == "On"
+            && oscilloscope::parseInputOhms(callbacks.get(prefix + "impedance").toStdString(), ohms)
+                ? number(ohms, juce::String::charToString(0x03a9))
+                : juce::String::charToString(0x221e) + " " + juce::String::charToString(0x03a9)) << "  ";
         if (!display.record || !display.record->connected[ch]) { text << "Not connected\n"; continue; }
         if (display.frame.waiting) { text << "Waiting for trigger; no accepted visible measurement.\n"; continue; }
         const auto& m = display.frame.measurements[ch];

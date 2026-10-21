@@ -168,6 +168,65 @@ int ElectronicsWorkbench::runTestFixtureUiChecks(const juce::File& output, const
         if (auto* button = dynamic_cast<juce::TextButton*>(child)) browse |= button->getButtonText() == "Browse...";
     check(browse, "Audio configuration exposes WAV Browse control");
     check(original == c->buildCircuitJson(), "Fixture operations preserve authoritative schematic model");
+    double inputOhms = 0;
+    bool engineeringValues = true;
+    for (const auto& value : std::vector<std::pair<std::string, double>> { {"50", 50}, {"1k", 1000}, {"10M", 1e7}, {"1G", 1e9}, {"50 ohm", 50}, {"10 M\xce\xa9", 1e7} })
+        engineeringValues &= oscilloscope::parseInputOhms(value.first, inputOhms) && inputOhms == value.second;
+    check(engineeringValues, "Input impedance accepts engineering values and resistance units including 50 ohm");
+    circuit_sim::setCapitalMIsMilli(true);
+    check(oscilloscope::parseInputOhms("10M", inputOhms) && inputOhms == 1e7, "Input impedance M always means mega even with SPICE milli preference");
+    circuit_sim::setCapitalMIsMilli(prefs::get("units.capital_m") != "Mega");
+    for (const auto& value : { "0", "-50", "nonsense", "50banana", "1kV", "nan", "inf", "1e999", "1e-320" })
+        check(!oscilloscope::parseInputOhms(value, inputOhms), "Rejects invalid input impedance: " + juce::String(value));
+    panel.connectEquipment("SCOPE", "in", "A1.IN");
+    panel.connectEquipment("SCOPE", "ch2", "R_LOAD.1");
+    panel.connectEquipment("SCOPE", "ref", "VIN.-");
+    auto configureInput = [&](const juce::String& json) {
+        return (bool)juce::JSON::parse(panel.instrumentAction("SCOPE", "configure", juce::JSON::parse(json)))["ok"];
+    };
+    auto fixtureNetlist = c->buildSimNetlist();
+    const auto unloadedElements = fixtureNetlist.circuit.elements().size();
+    check(c->applyFixtureScopeLoads(setup, fixtureNetlist).isEmpty() && fixtureNetlist.circuit.elements().size() == unloadedElements,
+        "Legacy fixture default Off adds no scope load elements");
+    check(configureInput(R"({"ch1_impedance_enabled":"On","ch1_impedance":"50","ch2_impedance_enabled":"Off","ch2_impedance":"1G"})"),
+        "Configure independent finite impedance and saved Off value");
+    fixtureNetlist = c->buildSimNetlist();
+    const auto loadError = c->applyFixtureScopeLoads(setup, fixtureNetlist);
+    check(loadError.isEmpty() && fixtureNetlist.circuit.elements().size() == unloadedElements + 1
+        && fixtureNetlist.circuit.elements().back().value == 50,
+        "Fixture netlist adds exactly one ordinary 50 ohm resistor without duplicate probe loads");
+    view->refresh();
+    std::function<juce::Component*(juce::Component&, const juce::String&)> findControl;
+    findControl = [&](juce::Component& root, const juce::String& id) -> juce::Component* {
+        if (root.getComponentID() == id) return &root;
+        for (auto* child : root.getChildren()) if (auto* found = findControl(*child, id)) return found;
+        return nullptr;
+    };
+    auto* ch1Ohms = dynamic_cast<juce::TextEditor*>(findControl(*view, "ch1_impedance"));
+    auto* ch2Ohms = dynamic_cast<juce::TextEditor*>(findControl(*view, "ch2_impedance"));
+    check(ch1Ohms != nullptr && ch2Ohms != nullptr && ch1Ohms->isEnabled() && !ch2Ohms->isEnabled()
+        && ch1Ohms->getText().contains(juce::String::charToString(0x03a9)), "Production UI independently enables impedance fields and displays resistance units");
+    if (ch1Ohms != nullptr)
+    {
+        ch1Ohms->setText("0", false); ch1Ohms->onReturnKey();
+        check(c->instrumentSetting("SCOPE", "ch1_impedance").getDoubleValue() == 50,
+            "Invalid UI entry preserves last finite impedance");
+    }
+    check(!configureInput(R"({"ch1_impedance":"0","ch2_impedance_enabled":"On"})")
+        && c->instrumentSetting("SCOPE", "ch2_impedance_enabled") == "Off", "Invalid multi-setting request is rejected transactionally");
+    configureInput(R"({"ch1_impedance_enabled":"Off"})");
+    view->refresh();
+    check(ch1Ohms != nullptr && !ch1Ohms->isEnabled() && c->instrumentSetting("SCOPE", "ch1_impedance").getDoubleValue() == 50,
+        "Off disables field and retains previous 50 ohm value");
+    configureInput(R"({"ch1_impedance_enabled":"On"})");
+    const auto restoredInput = test_mode::TestSetup::fromVar(juce::JSON::parse(juce::JSON::toString(setup.toVar())));
+    const auto& savedInput = restoredInput.getEquipment("SCOPE")->instrumentSettings;
+    check(savedInput.at("ch1_impedance_enabled") == "On" && savedInput.at("ch1_impedance").getDoubleValue() == 50
+        && savedInput.at("ch2_impedance_enabled") == "Off" && savedInput.at("ch2_impedance").getDoubleValue() == 1e9,
+        "Fixture serialization restores both independent impedance states and values");
+    check(!setup.hasResult && c->scopeStates["SCOPE"].record == nullptr, "Impedance changes discard stale fixture and held scope samples");
+    check(original == c->buildCircuitJson(), "Input impedance never modifies authoritative fixture circuit model");
+    view->refresh(); snapshot(*view, "scope-input-impedance.png");
     c->fixtureInstrumentWindows.clear();
     log << checks << " checks, " << failures << " failures\n";
     output.getChildFile("ui-checks.txt").replaceWithText(log);

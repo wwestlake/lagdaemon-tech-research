@@ -1,5 +1,6 @@
 #include "SpiceLibrary.h"
 #include "PartCatalog.h"
+#include "OscilloscopeInput.h"
 
 #include "CircuitSolver.h"
 
@@ -331,6 +332,10 @@ std::map<juce::String, std::vector<ParamSpec>> buildCatalog()
         scope.push_back(quantity(prefix + "offset", title + "display offset", "V", "0"));
         scope.push_back(quantity(prefix + "position", title + "position", "div", "0"));
         scope.push_back(quantity(prefix + "scale", title + "input scaling", "", "1"));
+        scope.push_back(choice(prefix + "impedance_enabled", title + "input impedance", { "Off", "On" }, "On",
+            Storage::Param, "Off: infinite impedance, no load. On: resistive load to REF. Independent of trace visibility."));
+        scope.push_back(quantity(prefix + "impedance", title + "finite input impedance", "ohm", "10M",
+            Storage::Param, "Positive resistance, e.g. 50, 1k, 10M or 1G. M means mega. Retained while Off."));
     }
     c["digital_multimeter"] = { choice("value", "Function", { "DC V", "AC V", "DC A", "Ohms" }, "DC V", Storage::Value) };
     c["bode_analyzer"] = { quantity("start_frequency", "Start frequency", "Hz", "10"),
@@ -460,6 +465,13 @@ juce::String simulationFidelity(const juce::String& id)
 
 bool validate(const ParamSpec& spec, const juce::String& value, juce::String& error)
 {
+    if (spec.key == "ch1_impedance" || spec.key == "ch2_impedance")
+    {
+        double ohms = 0;
+        if (oscilloscope::parseInputOhms(value.toStdString(), ohms)) return true;
+        error = "Input impedance must be a finite resistance greater than zero. Use 50, 1k, 10M or 1G ohm.";
+        return false;
+    }
     switch (spec.kind)
     {
         case Kind::Quantity:

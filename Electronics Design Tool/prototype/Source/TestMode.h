@@ -429,9 +429,15 @@ struct TestSetup
         // Moving a body or changing display scales must not discard acquired waveforms.
         juce::String signature;
         for (const auto& eq : equipment)
+        {
             signature << eq.id << ":" << eq.type << ":" << eq.instancePath << ":" << eq.audioFilePath << ":"
                       << eq.stimulusType << ":" << eq.peakVolts << ":" << eq.sineFrequencyHz << ":"
                       << eq.sineDurationSec << ":" << (int)eq.isOverride << ":" << eq.overrideRefdes << ";";
+            if (eq.type == "scope" || eq.type == "oscilloscope_2ch")
+                for (const auto& [key, value] : eq.instrumentSettings)
+                    if (key == "ch1_impedance" || key == "ch2_impedance" || key == "ch1_impedance_enabled" || key == "ch2_impedance_enabled")
+                        signature << key << "=" << value << ";";
+        }
         for (const auto& c : fixtureConnections) signature << juce::JSON::toString(c.toVar(), true);
         for (const auto& b : connectionBreaks) signature << juce::JSON::toString(b.toVar(), true);
         if (signature != acquisitionSignature) { invalidateResult(); acquisitionSignature = signature; }

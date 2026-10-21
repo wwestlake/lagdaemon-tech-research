@@ -64,6 +64,7 @@ signal to stop and just build the Windows version.
 
 ## Djehuti Electronics Lab (`Electronics Design Tool/prototype`)
 
+- **Application lifecycle:** close every application instance launched for an assignment promptly when application-level testing finishes, before reports, commits or pushes. This includes DEWB and its floating instrument/test windows. Try normal close first; if it cannot close, report that condition and terminate only the process started by the assignment. Verify termination before declaring completion. Never terminate unrelated or user-owned sessions.
 - **Agent parity:** anything a user can do in the app, the in-app BYOK agent
   can do through a tool (create, change, edit, delete). A UI feature is not
   done until its agent tool, description, and tool card exist.

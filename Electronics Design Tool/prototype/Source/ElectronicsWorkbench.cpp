@@ -41,6 +41,7 @@
 #include "PlotInstrumentView.h"
 #include "Oscilloscope.h"
 #include "OscilloscopeView.h"
+#include "OscilloscopeInput.h"
 #include "CapabilityCatalog.h"
 #include "ErcAdvice.h"
 #include "AgentProgress.h"
@@ -995,7 +996,7 @@ const std::vector<ToolSpecText>& testModeToolSpecs()
         },
         {
             "oscilloscope_control",
-            "Operate the native oscilloscope on actual simulation samples. refdes is a schematic scope reference or, with fixture, its equipment ID. Configure scope catalog settings: independent ch1/ch2 enabled, coupling, volts_per_div, position, offset, scale; time_per_div, horizontal_position; trigger source/mode/slope/level/position; cursors, cursor_source, cursor_t1/t2/v1/v2; markers; math, math_scale/math_volts_per_div; native capture_duration/step. Read reports visible-sample metrics, raw DC mean, cursor deltas, acquisition count and explicit validity. Run and Single request a real simulation; Stop holds a record. Pan/zoom/cursor changes do not resimulate. Export saves the full capture as CSV.",
+            "Operate the native oscilloscope on actual simulation samples. refdes is a schematic scope reference or, with fixture, its equipment ID. Configure scope catalog settings: independent ch1/ch2 enabled, coupling, volts_per_div, position, offset, scale; ch1_impedance_enabled/ch2_impedance_enabled On/Off and ch1_impedance/ch2_impedance positive ohms (50, 1k, 10M, 1G; M means mega). Off adds no load; On adds a resistor to REF, independent of trace visibility. Native defaults On/10M; fixtures default Off/10M. Impedance changes discard stale samples; Run/Single reacquires the loaded circuit. time_per_div, horizontal_position; trigger source/mode/slope/level/position; cursors, cursor_source, cursor_t1/t2/v1/v2; markers; math, math_scale/math_volts_per_div; native capture_duration/step. Read reports metrics, input impedance, cursor deltas, acquisition count and validity. Pan/zoom/cursor changes reuse samples. Export saves full CSV.",
             R"({"type":"object","properties":{"fixture":{"type":"string"},"refdes":{"type":"string"},"action":{"type":"string","enum":["read","configure","open","run","stop","single","autoscale","fit","export"]},"settings":{"type":"object","additionalProperties":{"type":"string"}},"path":{"type":"string","description":"Absolute CSV path for export."}},"required":["refdes","action"],"additionalProperties":false})"
         },
         {
@@ -8724,8 +8725,8 @@ private:
             sig << instance.symbolId << '\x1f' << instance.refdes << '\x1f' << instance.value << '\x1f' << instance.frequency
                 << '\x1f' << instance.busName << '\x1f' << instance.family << '\x1f' << instance.manufacturerPart << '\x1f'
                 << instance.sheet << '\x1f' << instance.childSheet << '\x1f' << (int)instance.busLength << '\x1f' << (int)instance.ports.size();
-            if (includeScopeSettings || instance.symbolId != "oscilloscope_2ch")
-                for (const auto& [key, value] : instance.params)
+            for (const auto& [key, value] : instance.params)
+                if (includeScopeSettings || instance.symbolId != "oscilloscope_2ch" || oscilloscope::isInputSetting(key.toStdString()))
                     sig << '\x1f' << key << '=' << value;
             sig << '\x1e';
         }
@@ -10746,7 +10747,7 @@ private:
     {
         if (parts::validate(spec, value, error))
             return true;
-        if (spec.kind != parts::Kind::Quantity)
+        if (spec.kind != parts::Kind::Quantity || oscilloscope::isInputSetting(spec.key.toStdString()))
             return false;
         std::vector<std::pair<std::string, std::string>> definitions;
         for (const auto& p : circuitParameters)
@@ -11231,9 +11232,24 @@ public:
                 element = c.addResistor(name, node(i, "1"), node(i, "2"), 0.01);
             else if (id == "oscilloscope_2ch")
             {
-                c.elements()[(size_t)c.addResistor(name + ".ch1", node(i, "CH1"), node(i, "REF"), 10e6)].noiseless = true;
-                element = c.addResistor(name + ".ch2", node(i, "CH2"), node(i, "REF"), 10e6);
-                c.elements()[(size_t)element].noiseless = true;
+                for (int ch = 1; ch <= 2; ++ch)
+                {
+                    const auto prefix = "ch" + juce::String(ch) + "_";
+                    double ohms = 0;
+                    const auto enabled = partValue(inst, prefix + "impedance_enabled");
+                    if ((enabled != "Off" && enabled != "On")
+                        || !oscilloscope::parseInputOhms(partValue(inst, prefix + "impedance").toStdString(), ohms))
+                    {
+                        sim.error = inst.refdes + " CH" + juce::String(ch) + ": enter a positive input impedance (50, 1k, 10M or 1G ohm), with On or Off.";
+                        sim.valueErrors.add(sim.error);
+                        continue;
+                    }
+                    if (enabled == "On")
+                    {
+                        const auto load = oscilloscope::addInputLoad(c, name + ".ch" + std::to_string(ch), node(i, "CH" + juce::String(ch)), node(i, "REF"), true, ohms);
+                        if (load >= 0) element = load;
+                    }
+                }
             }
             else if (id == "bode_analyzer")
             {
@@ -12968,6 +12984,9 @@ public:
                 {
                     const auto found = eq->instrumentSettings.find(key);
                     if (found != eq->instrumentSettings.end()) return found->second;
+                    // Preserve legacy fixtures' nonloading probes. Native scope
+                    // defaults remain On/10M via the same catalog parameters.
+                    if (key == "ch1_impedance_enabled" || key == "ch2_impedance_enabled") return "Off";
                     if (const auto* spec = parts::findParam("oscilloscope_2ch", key)) return spec->defaultValue;
                     return {};
                 }
@@ -12981,13 +13000,21 @@ public:
             if (auto* s = getFixtureSetup())
                 if (auto* eq = s->getEquipment(refdes))
                 {
+                    const bool loadingChanged = oscilloscope::isInputSetting(key.toStdString()) && instrumentSetting(refdes, key) != value;
                     eq->instrumentSettings[key] = value;
+                    if (loadingChanged)
+                    {
+                        s->syncSetupFromEquipment();
+                        for (auto& entry : scopeStates) { entry.second.record.reset(); entry.second.key.clear(); }
+                    }
                     repaint();
                     return;
                 }
         const auto index = instanceIndexForRefdesAnySheet(refdes);
         if (index < 0)
             return;
+        if (oscilloscope::isInputSetting(key.toStdString()) && instrumentSetting(refdes, key) != value)
+            for (auto& entry : scopeStates) { entry.second.record.reset(); entry.second.key.clear(); }
         setPartValue(instances[(size_t)index], key, value);
         notifySelection();
         repaint();
@@ -13256,6 +13283,14 @@ public:
             channel->setProperty("channel", "CH" + juce::String((int)ch + 1));
             channel->setProperty("connected", d.record->connected[ch]); channel->setProperty("enabled", d.settings.channel[ch].enabled);
             channel->setProperty("coupling", d.settings.channel[ch].acCoupled ? "AC" : "DC");
+            const auto prefix = "ch" + juce::String((int)ch + 1) + "_";
+            double ohms = 0;
+            oscilloscope::parseInputOhms(instrumentSetting(refdes, prefix + "impedance").toStdString(), ohms);
+            const bool finiteInput = instrumentSetting(refdes, prefix + "impedance_enabled") == "On";
+            channel->setProperty("impedanceEnabled", finiteInput);
+            channel->setProperty("finiteImpedanceOhms", ohms);
+            channel->setProperty("inputImpedanceOhms", finiteInput ? juce::var(ohms) : juce::var());
+            channel->setProperty("inputImpedance", finiteInput ? juce::String(circuit_sim::formatValue(ohms, "ohm", 6)) : "Infinite (no load)");
             channel->setProperty("rawMean", d.frame.rawMean[ch]);
             auto* validity = new juce::DynamicObject();
             auto metric = [&](const juce::String& name, const signal_measure::Result& value) {
@@ -13302,6 +13337,12 @@ public:
                 const auto key = p.name.toString();
                 const auto* spec = parts::findParam("oscilloscope_2ch", key);
                 if (spec == nullptr) return fail("Unknown oscilloscope setting: " + key);
+                if (key == "ch1_impedance" || key == "ch2_impedance")
+                {
+                    juce::String error;
+                    if (!parts::validate(*spec, p.value.toString(), error)) return fail(error);
+                    continue;
+                }
                 if (spec->kind == parts::Kind::Choice && !spec->options.contains(p.value.toString())) return fail("Invalid choice for " + key);
                 if (spec->kind == parts::Kind::Quantity)
                 {
@@ -13312,7 +13353,17 @@ public:
                     if (key == "trigger_position" && (value < 0 || value > 100)) return fail("Trigger position must be between 0 and 100 percent.");
                 }
             }
-            for (const auto& p : object->getProperties()) setInstrumentSetting(refdes, p.name.toString(), p.value.toString());
+            for (const auto& p : object->getProperties())
+            {
+                const auto key = p.name.toString();
+                auto value = p.value.toString();
+                if (key == "ch1_impedance" || key == "ch2_impedance")
+                {
+                    double ohms = 0; oscilloscope::parseInputOhms(value.toStdString(), ohms);
+                    value = juce::String(ohms, 17, true); // persist unambiguous numeric ohms
+                }
+                setInstrumentSetting(refdes, key, value);
+            }
         }
         else if (action == "open") { if (onInstrumentOpen) onInstrumentOpen(refdes, "oscilloscope_2ch"); }
         else if (action == "stop") { state.running = false; state.single = false; }
@@ -13888,6 +13939,38 @@ public:
         return folder.getChildFile("schematic_" + juce::File::createLegalFileName(sheetLabel).replaceCharacter(' ', '_') + ".png");
     }
 
+    juce::String applyFixtureScopeLoads(const test_mode::TestSetup& setup, SimNetlist& sim,
+                                        const std::set<int>& broken = {}, const std::set<int>& isolated = {}) const
+    {
+        for (const auto& eq : setup.equipment)
+        {
+            if (eq.type != "scope" && eq.type != "oscilloscope_2ch") continue;
+            auto setting = [&](const juce::String& key, const juce::String& fallback) {
+                const auto it = eq.instrumentSettings.find(key);
+                return it == eq.instrumentSettings.end() ? fallback : it->second;
+            };
+            auto resolve = [&](const test_mode::FixtureConnection* lead) -> circuit_sim::Node {
+                if (lead == nullptr) return 0; // Same implicit reference as waveform acquisition.
+                juce::String error;
+                return simNodeForLabel(sim, lead->targetPinLabel, error, broken, isolated, sheetForInstance(lead->instancePath));
+            };
+            for (int ch = 1; ch <= 2; ++ch)
+            {
+                const auto prefix = "ch" + juce::String(ch) + "_";
+                double ohms = 0;
+                const auto enabled = setting(prefix + "impedance_enabled", "Off");
+                if ((enabled != "Off" && enabled != "On") || !oscilloscope::parseInputOhms(setting(prefix + "impedance", "10M").toStdString(), ohms))
+                    return eq.id + " CH" + juce::String(ch) + ": input impedance must be positive finite ohms (50, 1k, 10M or 1G), with On or Off.";
+                const auto* signal = setup.terminalConnection(eq.id, ch == 1 ? "in" : "ch2");
+                if (enabled == "Off" || signal == nullptr) continue;
+                const auto a = resolve(signal), b = resolve(setup.terminalConnection(eq.id, "ref"));
+                if (a < 0 || b < 0) return eq.id + " CH" + juce::String(ch) + ": cannot resolve input impedance terminals. Check channel and REF wiring.";
+                oscilloscope::addInputLoad(sim.circuit, "__fixture." + eq.id.toStdString() + ".ch" + std::to_string(ch), a, b, true, ohms);
+            }
+        }
+        return {};
+    }
+
     juce::String runTestSetup(test_mode::TestSetup* setup, bool startAudition = true, juce::String* outError = nullptr)
     {
         if (setup == nullptr)
@@ -13965,6 +14048,11 @@ public:
             const juce::String err = "Circuit build error: " + sim.error;
             return fail(err);
         }
+
+        // Loads belong only to this run's private netlist. Probe trace collection
+        // adds no elements, so each enabled channel contributes exactly one load.
+        if (auto error = applyFixtureScopeLoads(*setup, sim, brokenWireIndices, isolatedPinOrdinals); error.isNotEmpty())
+            return fail(error);
 
         // Check if an active sub-fixture has stimulus enabled
         const test_mode::SubFixture* activeSf = nullptr;
