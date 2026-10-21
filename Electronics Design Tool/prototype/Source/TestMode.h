@@ -132,30 +132,44 @@ struct FixtureEquipment
     std::vector<FixtureTerminal> getTerminals() const
     {
         std::vector<FixtureTerminal> terms;
-        if (type == "audio_input" || type == "signal_gen")
+        if (type == "audio_input" || type == "signal_gen" || type == "signal_source")
         {
-            terms.push_back({ "out", "OUT", { 140.0f, 32.0f }, true });
-            terms.push_back({ "gnd", "GND", { 0.0f, 32.0f }, true });
+            terms.push_back({ "out", "OUT", { 128.0f, 48.0f }, true });
+            terms.push_back({ "gnd", "GND", { 18.0f, 48.0f }, true });
         }
-        else if (type == "audio_output")
+        else if (type == "audio_output" || type == "audio_out")
         {
-            terms.push_back({ "in", "IN", { 0.0f, 32.0f }, false });
-            terms.push_back({ "ref", "REF", { 140.0f, 32.0f }, false });
+            terms.push_back({ "in", "IN", { 18.0f, 48.0f }, false });
+            terms.push_back({ "ref", "REF", { 128.0f, 48.0f }, false });
         }
-        else if (type == "probe" || type == "voltmeter")
+        else if (type == "probe" || type == "voltmeter" || type == "digital_multimeter")
         {
-            terms.push_back({ "in", "+", { 0.0f, 32.0f }, false });
-            terms.push_back({ "ref", "-", { 140.0f, 32.0f }, false });
+            terms.push_back({ "in", "+", { 18.0f, 48.0f }, false });
+            terms.push_back({ "ref", "-", { 128.0f, 48.0f }, false });
         }
-        else if (type == "scope")
+        else if (type == "scope" || type == "oscilloscope_2ch")
         {
-            terms.push_back({ "in", "CH1", { 0.0f, 32.0f }, false });
-            terms.push_back({ "ref", "GND", { 140.0f, 32.0f }, false });
+            terms.push_back({ "in", "CH1", { 18.0f, 36.0f }, false });
+            terms.push_back({ "ch2", "CH2", { 18.0f, 52.0f }, false });
+            terms.push_back({ "ref", "GND", { 128.0f, 48.0f }, false });
+        }
+        else if (type == "bode_analyzer")
+        {
+            terms.push_back({ "in", "IN", { 18.0f, 36.0f }, false });
+            terms.push_back({ "out", "OUT", { 18.0f, 52.0f }, true });
+            terms.push_back({ "ref", "GND", { 128.0f, 48.0f }, false });
+        }
+        else if (type == "xyz_plotter")
+        {
+            terms.push_back({ "x", "X", { 18.0f, 32.0f }, false });
+            terms.push_back({ "y", "Y", { 18.0f, 44.0f }, false });
+            terms.push_back({ "z", "Z", { 18.0f, 56.0f }, false });
+            terms.push_back({ "ref", "GND", { 128.0f, 48.0f }, false });
         }
         else if (type == "ammeter")
         {
-            terms.push_back({ "in", "+", { 0.0f, 32.0f }, false });
-            terms.push_back({ "out", "-", { 140.0f, 32.0f }, true });
+            terms.push_back({ "in", "+", { 18.0f, 48.0f }, false });
+            terms.push_back({ "out", "-", { 128.0f, 48.0f }, true });
         }
         return terms;
     }
@@ -388,7 +402,7 @@ struct TestSetup
     {
         for (const auto& eq : equipment)
         {
-            if (eq.type == "audio_input" || eq.type == "signal_gen")
+            if (eq.type == "audio_input" || eq.type == "signal_gen" || eq.type == "signal_source")
             {
                 if (eq.instancePath.isEmpty())
                 {
@@ -436,7 +450,7 @@ struct TestSetup
                     }
                 }
             }
-            else if (eq.type == "audio_output")
+            else if (eq.type == "audio_output" || eq.type == "audio_out")
             {
                 for (const auto& c : fixtureConnections)
                 {
@@ -453,7 +467,7 @@ struct TestSetup
                     }
                 }
             }
-            else if (eq.type == "probe")
+            else if (eq.type == "probe" || eq.type == "scope" || eq.type == "oscilloscope_2ch" || eq.type == "voltmeter" || eq.type == "digital_multimeter" || eq.type == "bode_analyzer" || eq.type == "xyz_plotter")
             {
                 for (const auto& c : fixtureConnections)
                 {
@@ -482,14 +496,14 @@ struct TestSetup
         {
             for (auto& eq : equipment)
             {
-                if (eq.type == "audio_output")
+                if (eq.type == "audio_output" || eq.type == "audio_out")
                 {
                     eq.measuredPeak = lastOutputPeak;
                     eq.measuredRms = lastOutputRms;
                     eq.measuredDc = lastOutputDc;
                     eq.gainDb = lastGainDb;
                 }
-                else if (eq.type == "audio_input" || eq.type == "signal_gen")
+                else if (eq.type == "audio_input" || eq.type == "signal_gen" || eq.type == "signal_source")
                 {
                     eq.measuredPeak = lastInputPeak;
                 }

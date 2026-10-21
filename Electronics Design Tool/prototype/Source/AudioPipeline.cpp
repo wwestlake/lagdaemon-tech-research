@@ -2,7 +2,12 @@
 
 AudioPipeline::AudioPipeline()
 {
-    deviceManager.initialiseWithDefaultDevices(1, 2); // 1 input, 2 outputs default
+    const auto err = deviceManager.initialiseWithDefaultDevices(1, 2); // 1 input, 2 outputs default
+    if (err.isNotEmpty())
+    {
+        // Fall back to output-only if 1 input channel fails (e.g. systems without microphone)
+        deviceManager.initialise(0, 2, nullptr, true);
+    }
     deviceManager.addAudioCallback(this);
     formatManager.registerBasicFormats();
 }
@@ -85,7 +90,7 @@ void AudioPipeline::audioDeviceIOCallbackWithContext(
             float val = 0.0f;
             if (pos < total)
             {
-                val = playbackSamples[pos++] * playbackGain;
+                val = juce::jlimit(-1.0f, 1.0f, playbackSamples[pos++] * playbackGain);
             }
             else
             {
@@ -198,11 +203,45 @@ void AudioPipeline::audioDeviceStopped()
 
 void AudioPipeline::playRenderedAudio(const std::vector<float>& samples, double sampleRate, float volume)
 {
+    juce::ignoreUnused(sampleRate);
+    if (samples.empty())
+    {
+        stopRenderedAudio();
+        return;
+    }
+
+    // Circuit voltages may contain high DC offsets (e.g. +150V plate voltage)
+    // Remove DC mean and normalize AC peak to 0.85 (-1.4 dBFS) for clean audition playback
+    double sum = 0.0;
+    for (float v : samples)
+        sum += (double)v;
+    const float dcMean = (float)(sum / (double)samples.size());
+
+    float maxAcPeak = 0.0f;
+    std::vector<float> conditioned(samples.size());
+    for (size_t i = 0; i < samples.size(); ++i)
+    {
+        float ac = samples[i] - dcMean;
+        conditioned[i] = ac;
+        maxAcPeak = std::max(maxAcPeak, std::abs(ac));
+    }
+
+    float normScale = 1.0f;
+    if (maxAcPeak > 1e-6f)
+    {
+        // Normalize AC signal to 0.85 peak so it is clearly audible and never clips
+        normScale = 0.85f / maxAcPeak;
+    }
+    for (size_t i = 0; i < conditioned.size(); ++i)
+    {
+        conditioned[i] = juce::jlimit(-1.0f, 1.0f, conditioned[i] * normScale);
+    }
+
     juce::ScopedLock lock(callbackLock);
-    playbackSamples = samples;
+    playbackSamples = std::move(conditioned);
     playbackPosition.store(0);
     playbackGain = volume;
-    isPlaying.store(!samples.empty());
+    isPlaying.store(true);
 }
 
 void AudioPipeline::stopRenderedAudio()

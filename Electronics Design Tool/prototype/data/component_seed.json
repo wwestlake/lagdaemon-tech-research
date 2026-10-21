@@ -260,12 +260,12 @@
     {
       "id": "oscilloscope_2ch",
       "name": "2-Channel Oscilloscope",
-      "category": "Instrument"
+      "category": "Instruments"
     },
     {
       "id": "digital_multimeter",
       "name": "Digital Multimeter",
-      "category": "Instrument"
+      "category": "Instruments"
     },
     {
       "id": "annotation_text",

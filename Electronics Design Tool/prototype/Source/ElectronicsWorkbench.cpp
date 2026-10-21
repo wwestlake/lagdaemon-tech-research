@@ -2132,11 +2132,14 @@ public:
 
     static Grouping categoryAndSubcategoryFor(const SymbolInfo& symbol)
     {
-        if (symbol.category.isNotEmpty() && symbol.subcategory.isNotEmpty())
-            return { symbol.category, symbol.subcategory };
+        auto cat = symbol.category;
+        if (cat == "Instrument")
+            cat = "Instruments";
+        if (cat.isNotEmpty() && symbol.subcategory.isNotEmpty())
+            return { cat, symbol.subcategory };
 
         const auto& id = symbol.id;
-        const auto& c = symbol.category;
+        const auto& c = cat;
 
         if (id.startsWith("tube_") || c == "Vacuum Tube" || c == "Vacuum Tubes")
         {
@@ -2239,7 +2242,7 @@ public:
                 return { "Connectors & Test Points", "Test Points" };
             return { "Connectors & Test Points", "Connectors" };
         }
-        if (c == "Instrument")
+        if (c == "Instrument" || c == "Instruments")
         {
             if (id.contains("scope") || id.contains("meter"))
                 return { "Instruments", "Meters & Scopes" };
@@ -2376,9 +2379,9 @@ public:
         if (std::none_of(allSymbols.begin(), allSymbols.end(), [](const SymbolInfo& s) { return s.id == "net_label"; }))
             add({ "net_label", "Net Label", "Power & Ground", "Supplies & Ports", {}, {} });
         if (std::none_of(allSymbols.begin(), allSymbols.end(), [](const SymbolInfo& s) { return s.id == "bode_analyzer"; }))
-            add({ "bode_analyzer", "Frequency Analyzer (Bode)", "Instrument", "Analyzers & Plotters", {}, {} });
+            add({ "bode_analyzer", "Frequency Analyzer (Bode)", "Instruments", "Analyzers & Plotters", {}, {} });
         if (std::none_of(allSymbols.begin(), allSymbols.end(), [](const SymbolInfo& s) { return s.id == "xyz_plotter"; }))
-            add({ "xyz_plotter", "2D/3D Plotter (Time / XY / XYZ)", "Instrument", "Analyzers & Plotters", {}, {} });
+            add({ "xyz_plotter", "2D/3D Plotter (Time / XY / XYZ)", "Instruments", "Analyzers & Plotters", {}, {} });
         // Top-down Sub Diagrams: an empty block, and a port placed inside one.
         if (std::none_of(allSymbols.begin(), allSymbols.end(), [](const SymbolInfo& s) { return s.id == "sub_block"; }))
             add({ "sub_block", "Sub Diagram (empty)", "Sub Diagrams", "Blocks & Ports", {}, {} });
@@ -2816,7 +2819,12 @@ private:
     std::vector<SymbolInfo> allSymbols;
     juce::String selectedId { "resistor" };
 
-    void add(SymbolInfo item) { allSymbols.push_back(std::move(item)); }
+    void add(SymbolInfo item)
+    {
+        if (item.category == "Instrument")
+            item.category = "Instruments";
+        allSymbols.push_back(std::move(item));
+    }
 
     bool loadSeedLibrary()
     {
@@ -2932,10 +2940,10 @@ private:
         add({ "dc_motor_tach", "DC Motor with Tachometer", "Electromechanical" });
         add({ "dc_motor_servo", "DC Servomotor", "Electromechanical" });
         add({ "position_sensor", "Rotary Position Sensor", "Electromechanical" });
-        add({ "oscilloscope_2ch", "2-Channel Oscilloscope", "Instrument" });
-        add({ "digital_multimeter", "Digital Multimeter", "Instrument" });
-        add({ "bode_analyzer", "Frequency Analyzer (Bode)", "Instrument" });
-        add({ "xyz_plotter", "2D/3D Plotter (Time / XY / XYZ)", "Instrument" });
+        add({ "oscilloscope_2ch", "2-Channel Oscilloscope", "Instruments" });
+        add({ "digital_multimeter", "Digital Multimeter", "Instruments" });
+        add({ "bode_analyzer", "Frequency Analyzer (Bode)", "Instruments" });
+        add({ "xyz_plotter", "2D/3D Plotter (Time / XY / XYZ)", "Instruments" });
         add({ "annotation_text", "Text Note", "Annotation" });
     }
 
@@ -3385,13 +3393,18 @@ public:
     juce::Point<float> getFixtureTerminalPos(const test_mode::FixtureEquipment& eq, const juce::String& terminalId) const
     {
         const auto b = eq.getBounds();
-        if (eq.type == "audio_input" || eq.type == "signal_gen")
+        for (const auto& t : eq.getTerminals())
+        {
+            if (t.id.equalsIgnoreCase(terminalId))
+                return { b.getX() + t.relativePos.x, b.getY() + t.relativePos.y };
+        }
+        if (eq.type == "audio_input" || eq.type == "signal_gen" || eq.type == "signal_source")
         {
             if (terminalId.equalsIgnoreCase("gnd"))
                 return { b.getX() + 18.0f, b.getY() + b.getHeight() - 12.0f };
             return { b.getX() + b.getWidth() - 18.0f, b.getY() + b.getHeight() - 12.0f };
         }
-        if (eq.type == "audio_output" || eq.type == "probe" || eq.type == "voltmeter" || eq.type == "scope")
+        if (eq.type == "audio_output" || eq.type == "audio_out" || eq.type == "probe" || eq.type == "voltmeter" || eq.type == "digital_multimeter" || eq.type == "scope" || eq.type == "oscilloscope_2ch" || eq.type == "bode_analyzer" || eq.type == "xyz_plotter")
         {
             if (terminalId.equalsIgnoreCase("ref") || terminalId.equalsIgnoreCase("-") || terminalId.equalsIgnoreCase("gnd"))
                 return { b.getX() + b.getWidth() - 18.0f, b.getY() + b.getHeight() - 12.0f };
@@ -5004,10 +5017,12 @@ public:
 
             const bool isSelected = (conn.id == selectedConnectionId);
             juce::Colour leadCol(0xffe056fd);
-            if (eq->type == "audio_output") leadCol = juce::Colour(0xff00d2d3);
-            else if (eq->type == "signal_gen") leadCol = juce::Colour(0xffff9f43);
-            else if (eq->type == "probe" || eq->type == "voltmeter") leadCol = juce::Colour(0xff2ecc71);
-            else if (eq->type == "scope") leadCol = juce::Colour(0xff54a0ff);
+            if (eq->type == "audio_output" || eq->type == "audio_out") leadCol = juce::Colour(0xff00d2d3);
+            else if (eq->type == "signal_gen" || eq->type == "signal_source") leadCol = juce::Colour(0xffff9f43);
+            else if (eq->type == "probe" || eq->type == "voltmeter" || eq->type == "digital_multimeter") leadCol = juce::Colour(0xff2ecc71);
+            else if (eq->type == "scope" || eq->type == "oscilloscope_2ch") leadCol = juce::Colour(0xff54a0ff);
+            else if (eq->type == "bode_analyzer") leadCol = juce::Colour(0xffe17055);
+            else if (eq->type == "xyz_plotter") leadCol = juce::Colour(0xff6c5ce7);
             else if (eq->type == "ammeter") leadCol = juce::Colour(0xfff39c12);
 
             if (isSelected) leadCol = juce::Colours::white;
@@ -5058,10 +5073,12 @@ public:
             juce::Colour headerCol(0xff4b6584);
             juce::String titleText = eq.name;
             if (eq.type == "audio_input") { headerCol = juce::Colour(0xff8e44ad); titleText = "⚡ AUDIO INPUT"; }
-            else if (eq.type == "audio_output") { headerCol = juce::Colour(0xff0984e3); titleText = "AUDIO SINK"; }
-            else if (eq.type == "signal_gen") { headerCol = juce::Colour(0xffd35400); titleText = "SIGNAL GENERATOR"; }
-            else if (eq.type == "probe" || eq.type == "voltmeter") { headerCol = juce::Colour(0xff20bf6b); titleText = "VOLTMETER"; }
-            else if (eq.type == "scope") { headerCol = juce::Colour(0xff00cec9); titleText = "OSCILLOSCOPE"; }
+            else if (eq.type == "audio_output" || eq.type == "audio_out") { headerCol = juce::Colour(0xff0984e3); titleText = "AUDIO SINK"; }
+            else if (eq.type == "signal_gen" || eq.type == "signal_source") { headerCol = juce::Colour(0xffd35400); titleText = "SIGNAL GENERATOR"; }
+            else if (eq.type == "probe" || eq.type == "voltmeter" || eq.type == "digital_multimeter") { headerCol = juce::Colour(0xff20bf6b); titleText = "DIGITAL MULTIMETER"; }
+            else if (eq.type == "scope" || eq.type == "oscilloscope_2ch") { headerCol = juce::Colour(0xff00cec9); titleText = "OSCILLOSCOPE (2-CH)"; }
+            else if (eq.type == "bode_analyzer") { headerCol = juce::Colour(0xffe17055); titleText = "BODE ANALYZER"; }
+            else if (eq.type == "xyz_plotter") { headerCol = juce::Colour(0xff6c5ce7); titleText = "XYZ PLOTTER"; }
             else if (eq.type == "ammeter") { headerCol = juce::Colour(0xffb7791f); titleText = "CURRENT PROBE (IN DEV)"; }
 
             auto header = bounds.removeFromTop(20.0f);
@@ -5083,7 +5100,7 @@ public:
                 if (eq.isOverride) sub += " [Override " + eq.overrideRefdes + "]";
                 g.drawText(sub, (int)bounds.getX() + 8, bodyY + 14, (int)bounds.getWidth() - 16, 14, juce::Justification::centredLeft);
             }
-            else if (eq.type == "signal_gen")
+            else if (eq.type == "signal_gen" || eq.type == "signal_source")
             {
                 g.drawText(juce::String((int)eq.sineFrequencyHz) + " Hz Sine", (int)bounds.getX() + 8, bodyY, (int)bounds.getWidth() - 16, 14, juce::Justification::centredLeft);
                 g.setColour(juce::Colour(0xff95afc0));
@@ -5091,7 +5108,7 @@ public:
                 if (eq.isOverride) sub += " [Override " + eq.overrideRefdes + "]";
                 g.drawText(sub, (int)bounds.getX() + 8, bodyY + 14, (int)bounds.getWidth() - 16, 14, juce::Justification::centredLeft);
             }
-            else if (eq.type == "audio_output")
+            else if (eq.type == "audio_output" || eq.type == "audio_out")
             {
                 juce::String target = s->outputNode.isNotEmpty() ? s->outputNode : "(unconnected)";
                 g.drawText("Target: " + target, (int)bounds.getX() + 8, bodyY, (int)bounds.getWidth() - 16, 14, juce::Justification::centredLeft);
@@ -5099,18 +5116,30 @@ public:
                 juce::String val = s->hasResult ? (juce::String(s->lastOutputPeak, 2) + " V pk (" + juce::String(s->lastGainDb, 1) + " dB)") : "Ready to monitor";
                 g.drawText(val, (int)bounds.getX() + 8, bodyY + 14, (int)bounds.getWidth() - 16, 14, juce::Justification::centredLeft);
             }
-            else if (eq.type == "probe" || eq.type == "voltmeter")
+            else if (eq.type == "probe" || eq.type == "voltmeter" || eq.type == "digital_multimeter")
             {
                 juce::String val = s->hasResult ? (juce::String(s->lastOutputPeak, 2) + " V pk") : "0.00 V";
                 g.drawText("AC Volts: " + val, (int)bounds.getX() + 8, bodyY, (int)bounds.getWidth() - 16, 14, juce::Justification::centredLeft);
                 g.setColour(juce::Colour(0xff78e08f));
                 g.drawText(s->hasResult ? ("DC: " + juce::String(s->lastOutputDc, 2) + " V") : "Probe idle", (int)bounds.getX() + 8, bodyY + 14, (int)bounds.getWidth() - 16, 14, juce::Justification::centredLeft);
             }
-            else if (eq.type == "scope")
+            else if (eq.type == "scope" || eq.type == "oscilloscope_2ch")
             {
                 g.drawText("1 ms/div, 1 V/div", (int)bounds.getX() + 8, bodyY, (int)bounds.getWidth() - 16, 14, juce::Justification::centredLeft);
                 g.setColour(juce::Colour(0xff00cec9));
                 g.drawText(s->hasResult ? (juce::String(s->lastOutputPeak * 2.0, 2) + " V pk-pk") : "Waiting for trigger", (int)bounds.getX() + 8, bodyY + 14, (int)bounds.getWidth() - 16, 14, juce::Justification::centredLeft);
+            }
+            else if (eq.type == "bode_analyzer")
+            {
+                g.drawText("10 Hz - 100 kHz", (int)bounds.getX() + 8, bodyY, (int)bounds.getWidth() - 16, 14, juce::Justification::centredLeft);
+                g.setColour(juce::Colour(0xffe17055));
+                g.drawText(s->hasResult ? ("Gain: " + juce::String(s->lastGainDb, 1) + " dB") : "Ready for sweep", (int)bounds.getX() + 8, bodyY + 14, (int)bounds.getWidth() - 16, 14, juce::Justification::centredLeft);
+            }
+            else if (eq.type == "xyz_plotter")
+            {
+                g.drawText("3-Axis Vector", (int)bounds.getX() + 8, bodyY, (int)bounds.getWidth() - 16, 14, juce::Justification::centredLeft);
+                g.setColour(juce::Colour(0xffa29bfe));
+                g.drawText("Ready for signal", (int)bounds.getX() + 8, bodyY + 14, (int)bounds.getWidth() - 16, 14, juce::Justification::centredLeft);
             }
             else if (eq.type == "ammeter")
             {
@@ -5206,6 +5235,17 @@ public:
                 juce::String err;
                 if (nodeFromLabel(conn.targetPinLabel, n, err, currentSheet) && nodeOnSheet(n))
                     toPt = nodePosition(n);
+            }
+            if ((modelPosition - toPt).getDistanceFromOrigin() <= 10.0f)
+            {
+                isWiringFixture = true;
+                wiringFromEquipmentId = conn.equipmentId;
+                wiringFromTerminalId = conn.terminalId;
+                wiringStartPoint = fromPt;
+                pendingLeadPoint = modelPosition;
+                s->removeConnection(conn.id);
+                repaint();
+                return;
             }
             juce::Line<float> line(fromPt, toPt);
             if (line.findNearestPointTo(modelPosition).getDistanceFrom(modelPosition) <= 6.0f)
@@ -5878,10 +5918,6 @@ public:
             moveSelectedInstances(delta);
         else
             instances[(size_t)selectedInstance].position = snapPoint(dragStartPosition + (modelPosition - dragStartMouse));
-        {
-            drag_profile::Scope p("drag.notifySelection");
-            notifySelection();
-        }
         repaint();
     }
 
@@ -5927,7 +5963,11 @@ public:
             repaint();
         }
 
-        draggingInstance = false;
+        if (draggingInstance)
+        {
+            draggingInstance = false;
+            notifySelection();
+        }
         dragSnapshotTaken = false;
         selectingBox = false;
         resizingRail = false;
@@ -6246,9 +6286,10 @@ public:
     void itemDragEnter(const SourceDetails& details) override
     {
         dragHover = true;
-        dragMessage = details.description.toString().startsWith("probe:")
-            ? "Drop probe on a pin or wire"
-            : "Drop symbol on schematic";
+        dragMessage = isFixtureView ? "Drop test equipment onto fixture"
+            : (details.description.toString().startsWith("probe:")
+                ? "Drop probe on a pin or wire"
+                : "Drop symbol on schematic");
         setMouseCursor(juce::MouseCursor::DraggingHandCursor);
         repaint();
     }
@@ -6267,6 +6308,82 @@ public:
         const auto description = details.description.toString();
         const auto modelPosition = viewToCanvas(details.localPosition.toFloat());
         const auto p = snapPoint(modelPosition);
+
+        if (isFixtureView)
+        {
+            if (description.startsWith("symbol:"))
+            {
+                const auto symbolId = description.fromFirstOccurrenceOf("symbol:", false, false).trim();
+                auto* s = getFixtureSetup();
+                if (s != nullptr)
+                {
+                    juce::String eqType;
+                    juce::String eqName;
+                    if (symbolId == "oscilloscope_2ch" || symbolId == "scope" || symbolId.contains("scope"))
+                    {
+                        eqType = "scope";
+                        eqName = "Oscilloscope";
+                    }
+                    else if (symbolId == "digital_multimeter" || symbolId == "voltmeter" || symbolId.contains("meter"))
+                    {
+                        eqType = "voltmeter";
+                        eqName = "Digital Multimeter";
+                    }
+                    else if (symbolId == "bode_analyzer")
+                    {
+                        eqType = "bode_analyzer";
+                        eqName = "Bode Analyzer";
+                    }
+                    else if (symbolId == "xyz_plotter")
+                    {
+                        eqType = "xyz_plotter";
+                        eqName = "XYZ Plotter";
+                    }
+                    else if (symbolId == "audio_in")
+                    {
+                        eqType = "audio_input";
+                        eqName = "Audio Input";
+                    }
+                    else if (symbolId == "audio_out")
+                    {
+                        eqType = "audio_output";
+                        eqName = "Audio Output";
+                    }
+                    else if (symbolId == "signal_source" || symbolId.contains("source"))
+                    {
+                        eqType = "signal_gen";
+                        eqName = "Signal Generator";
+                    }
+                    else
+                    {
+                        eqType = "probe";
+                        eqName = symbolId;
+                    }
+
+                    int count = 1;
+                    juce::String eqId = eqType + "_" + juce::String(count);
+                    while (s->getEquipment(eqId) != nullptr)
+                    {
+                        count++;
+                        eqId = eqType + "_" + juce::String(count);
+                    }
+
+                    test_mode::FixtureEquipment eq;
+                    eq.id = eqId;
+                    eq.type = eqType;
+                    eq.name = eqName + " " + juce::String(count);
+                    eq.pos = p;
+                    eq.instancePath = currentInstancePath;
+                    s->addEquipment(eq);
+                    if (onStatus)
+                        onStatus("Placed fixture equipment: " + eq.name + " (" + eq.id + ")");
+                    repaint();
+                    return;
+                }
+            }
+            return;
+        }
+
         if (description.startsWith("probe:"))
         {
             const auto node = nodeAt(modelPosition, p);
@@ -19175,115 +19292,9 @@ TestFixturePanel::TestFixturePanel(const juce::String& name, test_mode::TestSetu
     titleLabel.setColour(juce::Label::textColourId, juce::Colour(0xff00d2d3));
     addAndMakeVisible(titleLabel);
 
-    auto styleBtn = [](juce::TextButton& btn, juce::Colour bg = juce::Colour(0xff18222c), juce::Colour text = juce::Colour(0xffdce9ee)) {
-        btn.setColour(juce::TextButton::buttonColourId, bg);
-        btn.setColour(juce::TextButton::textColourOffId, text);
-    };
-
-    styleBtn(addAudioInButton, juce::Colour(0xff2d173d), juce::Colour(0xffd066e2));
-    addAudioInButton.onClick = [this] { placeEquipment("audio_input", "Audio Input", 100.0f, 180.0f); };
-    addAndMakeVisible(addAudioInButton);
-
-    styleBtn(addAudioSinkButton, juce::Colour(0xff0e2832), juce::Colour(0xff00d2d3));
-    addAudioSinkButton.onClick = [this] { placeEquipment("audio_output", "Audio Sink", 740.0f, 180.0f); };
-    addAndMakeVisible(addAudioSinkButton);
-
-    styleBtn(addSigGenButton, juce::Colour(0xff3d2514), juce::Colour(0xffff9f43));
-    addSigGenButton.onClick = [this] { placeEquipment("signal_gen", "Signal Gen", 100.0f, 180.0f); };
-    addAndMakeVisible(addSigGenButton);
-
-    styleBtn(addVoltmeterButton, juce::Colour(0xff143322), juce::Colour(0xff2ecc71));
-    addVoltmeterButton.onClick = [this] { placeEquipment("voltmeter", "Voltmeter", 420.0f, 80.0f); };
-    addAndMakeVisible(addVoltmeterButton);
-
-    styleBtn(addScopeButton, juce::Colour(0xff122b30), juce::Colour(0xff54a0ff));
-    addScopeButton.onClick = [this] { placeEquipment("scope", "Oscilloscope", 580.0f, 80.0f); };
-    addAndMakeVisible(addScopeButton);
-
-    styleBtn(addAmmeterButton, juce::Colour(0xff2a2412), juce::Colour(0xfff39c12));
-    addAmmeterButton.onClick = [this] { placeEquipment("ammeter", "Current Probe", 420.0f, 260.0f); };
-    addAndMakeVisible(addAmmeterButton);
-
-    breakToolToggle.setColour(juce::ToggleButton::textColourId, juce::Colour(0xffff7675));
-    breakToolToggle.onClick = [this] {
-        if (auto* c = dynamic_cast<SchematicCanvasPanel*>(schematicCanvas.get()))
-            c->breakToolActive = breakToolToggle.getToggleState();
-    };
-    addAndMakeVisible(breakToolToggle);
-
-    styleBtn(runButton, juce::Colour(0xff3b2754), juce::Colour(0xffe056fd));
-    runButton.onClick = [this] {
-        auto* curSetup = getSetup();
-        if (curSetup == nullptr) return;
-        curSetup->syncSetupFromEquipment();
-        juce::String err;
-        if (callbacks.runSimulation != nullptr)
-        {
-            juce::String summary = callbacks.runSimulation(curSetup, false, &err);
-            if (err.isNotEmpty())
-                resultsLabel.setText("Simulation Error: " + err, juce::dontSendNotification);
-            else
-                resultsLabel.setText(curSetup->hasResult ? curSetup->lastSummary : summary, juce::dontSendNotification);
-        }
-        if (auto* c = dynamic_cast<SchematicCanvasPanel*>(schematicCanvas.get())) c->repaint();
-    };
-    addAndMakeVisible(runButton);
-
-    styleBtn(auditionButton, juce::Colour(0xff1e3a2b), juce::Colour(0xff2ecc71));
-    auditionButton.onClick = [this] {
-        auto* curSetup = getSetup();
-        if (curSetup == nullptr) return;
-        curSetup->syncSetupFromEquipment();
-        juce::String err;
-        if (callbacks.runSimulation != nullptr)
-        {
-            callbacks.runSimulation(curSetup, true, &err);
-            if (err.isNotEmpty())
-                resultsLabel.setText("Simulation Error: " + err, juce::dontSendNotification);
-            else
-                resultsLabel.setText(curSetup->hasResult ? curSetup->lastSummary : "Auditioning...", juce::dontSendNotification);
-        }
-        if (auto* c = dynamic_cast<SchematicCanvasPanel*>(schematicCanvas.get())) c->repaint();
-    };
-    addAndMakeVisible(auditionButton);
-
-    styleBtn(stopButton, juce::Colour(0xff382225), juce::Colour(0xffff7675));
-    stopButton.onClick = [this] {
-        if (callbacks.stopSimulation != nullptr)
-            callbacks.stopSimulation();
-    };
-    addAndMakeVisible(stopButton);
-
-    styleBtn(exportButton);
-    exportButton.onClick = [this] {
-        auto* curSetup = getSetup();
-        if (curSetup == nullptr) return;
-        curSetup->syncSetupFromEquipment();
-        auto dest = juce::File::getSpecialLocation(juce::File::userHomeDirectory).getChildFile(sanitizeId(fixtureName) + "_output.wav");
-        juce::String err;
-        if (callbacks.exportAudio != nullptr)
-        {
-            callbacks.exportAudio(curSetup, dest.getFullPathName(), &err);
-            if (err.isNotEmpty())
-                resultsLabel.setText("Export Error: " + err, juce::dontSendNotification);
-            else
-                resultsLabel.setText("Exported audio: " + dest.getFileName(), juce::dontSendNotification);
-        }
-    };
-    addAndMakeVisible(exportButton);
-
-    styleBtn(saveButton, juce::Colour(0xff18222c), juce::Colour(0xff78dcca));
-    saveButton.onClick = [this] {
-        if (saveFixture())
-            resultsLabel.setText("Saved fixture configuration.", juce::dontSendNotification);
-        else
-            resultsLabel.setText("Failed to save fixture.", juce::dontSendNotification);
-    };
-    addAndMakeVisible(saveButton);
-
     resultsLabel.setFont(juce::Font(12.0f, juce::Font::bold));
     resultsLabel.setColour(juce::Label::textColourId, juce::Colour(0xff00d2d3));
-    resultsLabel.setText("Ready. Choose test equipment from palette to attach to schematic.", juce::dontSendNotification);
+    resultsLabel.setText("Ready. Drag instruments from Toolbox onto canvas. Use 'Test Fixture' menu to run or audition.", juce::dontSendNotification);
     addAndMakeVisible(resultsLabel);
 
     auto c = std::make_unique<SchematicCanvasPanel>(
@@ -19322,31 +19333,74 @@ void TestFixturePanel::paint(juce::Graphics& g)
 {
     g.fillAll(juce::Colour(0xff121820));
     g.setColour(juce::Colour(0xff26323d));
-    g.drawHorizontalLine(61, 0.0f, (float)getWidth());
+    g.drawHorizontalLine(29, 0.0f, (float)getWidth());
 }
 
 void TestFixturePanel::resized()
 {
-    titleLabel.setBounds(10, 6, 175, 26);
-    addAudioInButton.setBounds(190, 6, 85, 26);
-    addAudioSinkButton.setBounds(280, 6, 90, 26);
-    addSigGenButton.setBounds(375, 6, 80, 26);
-    addVoltmeterButton.setBounds(460, 6, 85, 26);
-    addScopeButton.setBounds(550, 6, 75, 26);
-    addAmmeterButton.setBounds(630, 6, 145, 26);
-    breakToolToggle.setBounds(780, 6, 95, 26);
-
-    int rightX = getWidth() - 10;
-    saveButton.setBounds(rightX - 95, 6, 95, 26);
-    exportButton.setBounds(rightX - 190, 6, 90, 26);
-    stopButton.setBounds(rightX - 245, 6, 50, 26);
-    auditionButton.setBounds(rightX - 340, 6, 90, 26);
-    runButton.setBounds(rightX - 415, 6, 70, 26);
-
-    resultsLabel.setBounds(10, 36, getWidth() - 20, 22);
+    titleLabel.setBounds(10, 3, 220, 24);
+    resultsLabel.setBounds(235, 3, getWidth() - 245, 24);
 
     if (schematicCanvas != nullptr)
-        schematicCanvas->setBounds(0, 62, getWidth(), getHeight() - 62);
+        schematicCanvas->setBounds(0, 30, getWidth(), getHeight() - 30);
+}
+
+void TestFixturePanel::runSimulation(bool startAudition)
+{
+    auto* curSetup = getSetup();
+    if (curSetup == nullptr) return;
+    curSetup->syncSetupFromEquipment();
+    juce::String err;
+    if (callbacks.runSimulation != nullptr)
+    {
+        juce::String summary = callbacks.runSimulation(curSetup, startAudition, &err);
+        if (err.isNotEmpty())
+            resultsLabel.setText("Simulation Error: " + err, juce::dontSendNotification);
+        else
+            resultsLabel.setText(curSetup->hasResult ? curSetup->lastSummary : (startAudition ? "Auditioning output..." : summary), juce::dontSendNotification);
+    }
+    if (auto* c = dynamic_cast<SchematicCanvasPanel*>(schematicCanvas.get())) c->repaint();
+}
+
+void TestFixturePanel::stopSimulation()
+{
+    if (callbacks.stopSimulation != nullptr)
+        callbacks.stopSimulation();
+    resultsLabel.setText("Stopped playback/simulation.", juce::dontSendNotification);
+}
+
+void TestFixturePanel::exportWav()
+{
+    auto* curSetup = getSetup();
+    if (curSetup == nullptr) return;
+    curSetup->syncSetupFromEquipment();
+    auto dest = juce::File::getSpecialLocation(juce::File::userHomeDirectory).getChildFile(sanitizeId(fixtureName) + "_output.wav");
+    juce::String err;
+    if (callbacks.exportAudio != nullptr)
+    {
+        callbacks.exportAudio(curSetup, dest.getFullPathName(), &err);
+        if (err.isNotEmpty())
+            resultsLabel.setText("Export Error: " + err, juce::dontSendNotification);
+        else
+            resultsLabel.setText("Exported audio: " + dest.getFileName(), juce::dontSendNotification);
+    }
+}
+
+void TestFixturePanel::toggleBreakTool()
+{
+    if (auto* c = dynamic_cast<SchematicCanvasPanel*>(schematicCanvas.get()))
+    {
+        c->breakToolActive = !c->breakToolActive;
+        resultsLabel.setText(c->breakToolActive ? "✂ Cut Tool active: click wire or pin to break connection." : "Cut Tool deactivated.", juce::dontSendNotification);
+        c->repaint();
+    }
+}
+
+bool TestFixturePanel::isBreakToolActive() const
+{
+    if (auto* c = dynamic_cast<SchematicCanvasPanel*>(schematicCanvas.get()))
+        return c->breakToolActive;
+    return false;
 }
 
 test_mode::TestSetup* TestFixturePanel::getSetup()
@@ -20335,7 +20389,7 @@ void ElectronicsWorkbench::adjustSchematicZoom(float factor)
 
 juce::StringArray ElectronicsWorkbench::getMenuBarNames()
 {
-    return { "File", "Circuit", "Analytics", "Tools", "Agent", "View", "Layout", "Help" };
+    return { "File", "Circuit", "Test Fixture", "Analytics", "Tools", "Agent", "View", "Layout", "Help" };
 }
 
 juce::PopupMenu ElectronicsWorkbench::getMenuForIndex(int, const juce::String& menuName)
@@ -20344,6 +20398,26 @@ juce::PopupMenu ElectronicsWorkbench::getMenuForIndex(int, const juce::String& m
     if (menuName == "Tools")
     {
         menu.addItem(cadMotionLinkItem, "CAD Motion Link...");
+        return menu;
+    }
+    if (menuName == "Test Fixture")
+    {
+        menu.addItem(fixtureNewItem, "New Test Fixture...");
+        menu.addItem(fixtureOpenItem, "Open Test Fixture...");
+        auto* activeFixture = findTestFixturePanel({});
+        const bool hasFixture = (activeFixture != nullptr);
+        menu.addSeparator();
+        menu.addItem(fixtureSaveItem, "Save Fixture", hasFixture);
+        menu.addSeparator();
+        menu.addItem(fixtureRunItem, "Run Simulation", hasFixture);
+        menu.addItem(fixtureAuditionItem, "Audition Output", hasFixture);
+        menu.addItem(fixtureStopItem, "Stop", hasFixture);
+        menu.addItem(fixtureExportWavItem, "Export WAV...", hasFixture);
+        menu.addSeparator();
+        const bool cutActive = hasFixture ? activeFixture->isBreakToolActive() : false;
+        menu.addItem(fixtureCutToolItem, "Cut Tool (Wire Break)", hasFixture, cutActive);
+        menu.addSeparator();
+        menu.addItem(fixtureCloseItem, "Close Fixture", hasFixture);
         return menu;
     }
     if (menuName == "File")
@@ -20699,6 +20773,40 @@ void ElectronicsWorkbench::menuItemSelected(int menuItemID, int)
         case openHelpControlPanelItem: openHelp("control-panel"); break;
         case openHelpMachineBuilderItem: openHelp("machine-builder"); break;
         case openHelpFrustItem: openHelp("frust"); break;
+        case fixtureNewItem:
+            createTestFixturePrompt();
+            break;
+        case fixtureOpenItem:
+            openTestFixturePanel({});
+            break;
+        case fixtureSaveItem:
+            if (auto* p = findTestFixturePanel({}))
+                p->saveFixture();
+            break;
+        case fixtureRunItem:
+            if (auto* p = findTestFixturePanel({}))
+                p->runSimulation(false);
+            break;
+        case fixtureAuditionItem:
+            if (auto* p = findTestFixturePanel({}))
+                p->runSimulation(true);
+            break;
+        case fixtureStopItem:
+            if (auto* p = findTestFixturePanel({}))
+                p->stopSimulation();
+            break;
+        case fixtureExportWavItem:
+            if (auto* p = findTestFixturePanel({}))
+                p->exportWav();
+            break;
+        case fixtureCutToolItem:
+            if (auto* p = findTestFixturePanel({}))
+                p->toggleBreakTool();
+            break;
+        case fixtureCloseItem:
+            if (auto* p = findTestFixturePanel({}))
+                closeTestFixturePanel(p->getFixtureName());
+            break;
         default: break;
     }
 }

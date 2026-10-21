@@ -97,7 +97,16 @@ private:
         startAudioSimItem,
         loadAudioSourceItem,
         exportVst3PluginItem,
-        cadMotionLinkItem
+        cadMotionLinkItem,
+        fixtureNewItem,
+        fixtureOpenItem,
+        fixtureSaveItem,
+        fixtureRunItem,
+        fixtureAuditionItem,
+        fixtureStopItem,
+        fixtureExportWavItem,
+        fixtureCutToolItem,
+        fixtureCloseItem
     };
 
     static constexpr int recentProjectBase = 1000;

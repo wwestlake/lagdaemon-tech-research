@@ -60,6 +60,13 @@ public:
     void navigateToSheet(const juce::String& sheetName, const juce::String& instanceRefdes = {});
     bool saveFixture();
 
+    // Simulation, Audition, and Break tool actions (invoked from Test Fixture menu and API)
+    void runSimulation(bool startAudition);
+    void stopSimulation();
+    void exportWav();
+    void toggleBreakTool();
+    bool isBreakToolActive() const;
+
     juce::Component* getCanvas() { return schematicCanvas.get(); }
 
 private:
@@ -67,22 +74,8 @@ private:
     test_mode::TestSetup* setup = nullptr;
     Callbacks callbacks;
 
-    // Controls
+    // Status display
     juce::Label titleLabel;
-    juce::TextButton runButton { "▶ Run" };
-    juce::TextButton auditionButton { "🔊 Audition" };
-    juce::TextButton stopButton { "⏹ Stop" };
-    juce::TextButton exportButton { "💾 Export WAV" };
-    juce::TextButton saveButton { "💾 Save Fixture" };
-
-    juce::TextButton addAudioInButton { "+ Audio In" };
-    juce::TextButton addAudioSinkButton { "+ Audio Sink" };
-    juce::TextButton addSigGenButton { "+ Sig Gen" };
-    juce::TextButton addVoltmeterButton { "+ Voltmeter" };
-    juce::TextButton addScopeButton { "+ Scope" };
-    juce::TextButton addAmmeterButton { "+ Current Probe (in dev)" };
-    juce::ToggleButton breakToolToggle { "✂ Cut Wire" };
-
     juce::Label resultsLabel;
 
     std::unique_ptr<juce::Component> schematicCanvas;
