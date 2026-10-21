@@ -10,6 +10,7 @@ if (Get-Process -Name djehuti_electronics_lab -ErrorAction SilentlyContinue) {
 $checks = [System.Collections.Generic.List[object]]::new()
 $records = [ordered]@{}
 $app = $null
+$qaProjectOpened = $false
 $cleanup = @{ terminated = $false; forced = $false; normalCloseAttempted = $false }
 function Check([bool]$ok, [string]$name) {
     $checks.Add([pscustomobject]@{ pass = $ok; name = $name })
@@ -45,7 +46,11 @@ function Capture([string]$key, [double]$z1, [double]$z2) {
         $gain = Gain $z
         Check ([Math]::Abs($r.channels[$ch].vpp - 2*$gain) -lt $tolerance) "$key CH$($ch+1) Vpp matches independent loaded-divider formula"
         if (-not $script:fixture) {
-            Check ([Math]::Abs($r.channels[$ch].mean - 10*$gain) -lt $tolerance) "$key CH$($ch+1) DC agrees with loaded-divider formula"
+            # Record endpoint rounding may leave slightly less than an integer
+            # cycle. Its visible-window mean includes that genuine AC remainder;
+            # use the observed extrema midpoint for the known DC bias instead.
+            $dcMidpoint = ($r.channels[$ch].minimum + $r.channels[$ch].maximum) / 2
+            Check ([Math]::Abs($dcMidpoint - 10*$gain) -lt $tolerance) "$key CH$($ch+1) DC midpoint agrees with loaded-divider formula"
         }
     }
     return $r
@@ -84,6 +89,7 @@ try {
     $api = Get-Content -LiteralPath $apiPath -Raw | ConvertFrom-Json
     $headers = @{ Authorization = 'Bearer ' + $api.token }
     Check (Call 'project_open' @{ project = $project }).ok 'Open isolated analytic divider project'
+    $qaProjectOpened = $true
     $script:fixture = ''; $script:scopeId = 'SCOPE1'
     Check (Scope 'configure' @{ capture_duration = '10m'; capture_step = '10u'; time_per_div = '1m' }).ok 'Configure existing acquisition controls'
     Check (Scope 'open').ok 'Open production scope window'
@@ -161,6 +167,11 @@ try {
     Scope 'stop' | Out-Null
 } finally {
     if ($null -ne $app) {
+        # Only this generated QA project is eligible for a cleanup save. Saving
+        # also avoids leaving an unsaved-change prompt after an early failure.
+        if ($qaProjectOpened -and -not $app.HasExited) {
+            try { Call 'diagram_save' | Out-Null } catch { Write-Warning 'Could not save temporary QA diagram before closing.' }
+        }
         $app.Refresh()
         # Close owned floating windows and the main window normally. Each refresh
         # discovers the remaining main handle; no unrelated process is targeted.

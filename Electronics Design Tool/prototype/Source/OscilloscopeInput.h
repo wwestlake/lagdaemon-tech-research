@@ -19,7 +19,12 @@ inline bool parseInputOhms(std::string text, double& ohms)
 {
     text.erase(std::remove_if(text.begin(), text.end(), [](unsigned char c) { return std::isspace(c) != 0; }), text.end());
     size_t pos = 0;
-    try { std::stod(text, &pos); } catch (...) { return false; }
+    try
+    {
+        const auto numeric = std::stod(text, &pos);
+        if (!std::isfinite(numeric) || numeric <= 0.0) return false;
+    }
+    catch (...) { return false; }
     auto suffix = text.substr(pos);
     std::string lower = suffix;
     std::transform(lower.begin(), lower.end(), lower.begin(), [](unsigned char c) { return (char)std::tolower(c); });
