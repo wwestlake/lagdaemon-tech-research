@@ -41,6 +41,20 @@ struct Circuit
 std::vector<Circuit> referenceCircuits()
 {
     std::vector<Circuit> circuits;
+    for(const auto& id:juce::StringArray{"4865","4885","4845","3229"})
+    {
+        const bool encoder=id!="3229";
+        Circuit circuit; circuit.name="pololu_25d_"+id;
+        circuit.parts.push_back({"voltage_source","V1","12",{"+12V","0"}});
+        if(encoder)
+        {
+            circuit.parts.push_back({"voltage_source","V2","5",{"+5V","0"}});
+            circuit.parts.push_back({"motor_pololu_"+id,"M1",id,{"+12V","0","+5V","0","A","B"}});
+            circuit.parts.push_back({"oscilloscope_2ch","SCOPE1","",{"A","B","0"}});
+        }
+        else circuit.parts.push_back({"motor_pololu_"+id,"M1",id,{"+12V","0"}});
+        circuits.push_back(std::move(circuit));
+    }
 
     circuits.push_back({ "rc_lowpass", {
         { "ac_voltage_source", "V1", "1 @ 1k", { "in", "0" } },

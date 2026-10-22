@@ -29,6 +29,8 @@ set(CIRCUIT_SIM_SOURCES
     "${CIRCUIT_SIM_SOURCE_DIR}/LogicGates.cpp"
     "${CIRCUIT_SIM_SOURCE_DIR}/Mechanical.h"
     "${CIRCUIT_SIM_SOURCE_DIR}/Mechanical.cpp"
+    "${CIRCUIT_SIM_SOURCE_DIR}/Pololu25DMotor.h"
+    "${CIRCUIT_SIM_SOURCE_DIR}/Pololu25DMotor.cpp"
     "${CIRCUIT_SIM_SOURCE_DIR}/StepperMotor.h"
     "${CIRCUIT_SIM_SOURCE_DIR}/StepperMotor.cpp"
     "${CIRCUIT_SIM_SOURCE_DIR}/AudioTestRender.h"

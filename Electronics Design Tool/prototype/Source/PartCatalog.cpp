@@ -4,6 +4,7 @@
 
 #include "CircuitSolver.h"
 #include "StepperCatalog.h"
+#include "Pololu25DMotor.h"
 
 #include <map>
 
@@ -236,6 +237,41 @@ std::map<juce::String, std::vector<ParamSpec>> buildCatalog()
             text("source","Driver datasheet",dm?"https://www.omc-stepperonline.com/download/DM542T_V4.0_user_manual.pdf":"https://www.analog.com/media/en/technical-documentation/data-sheets/TMC2209_datasheet_rev1.09.pdf")};
     }
     c["driver_uln2003"]={hidden(text("component_id","Shared driver ID","driver-uln2003a-reference")),text("model_scope","Modeled behavior","Four low-side switches with clamp diodes. No current regulation; no package thermal/current-limit enforcement. Carrier pinout unknown."),quantity("threshold","Logic threshold (reference)","V","2.4"),quantity("ron","On resistance (reference)","ohm","1"),quantity("vsat","Darlington drop (reference)","V","1",Storage::Param,"Illustrative regularized saturation drop; not a characterized semiconductor model."),text("ratings","Specification-only ratings","ULN2003A: 50V outputs, 0.5A single channel; aggregate current depends on package/duty/temperature."),text("source","Datasheet","https://www.ti.com/lit/ds/symlink/uln2003a.pdf")};
+    for(const auto& reference:pololu25d::references())
+    {
+        const auto m=pololu25d::endpointModel(reference);
+        const auto number=[](double v){return juce::String(v,12);};
+        auto& p=c[reference.symbol];p={
+            hidden(text("component_id","Shared CAD/DEWB identity",reference.id)),text("part_number","Pololu manufacturer part",reference.part),
+            hidden(text("reference_revision","Source snapshot","Pololu 25D 2026-10-22; datasheet July 2026 rev 2.0")),
+            hidden(quantity("reference_rpm","Published typical no-load rpm","rpm",number(reference.rpm))),
+            hidden(quantity("reference_i0","Published typical no-load current","A",number(reference.noLoadCurrent))),
+            hidden(quantity("reference_is","Published extrapolated stall current","A",number(reference.stallCurrent))),
+            hidden(quantity("reference_ts_kgcm","Published extrapolated stall torque","kg*cm",number(reference.stallKgCm))),
+            hidden(quantity("reference_fit_speed","Published fitted speed slope","rpm/(kg*mm)",number(reference.fitSpeedSlope))),
+            hidden(quantity("reference_fit_i0","Published fitted current intercept","A",number(reference.fitCurrentIntercept))),
+            hidden(quantity("reference_fit_i_slope","Published fitted current slope","A/(kg*mm)",number(reference.fitCurrentSlope))),
+            text("data_status","Model scope","Output-shaft equivalent. Verified typical endpoints; derived terminal coefficients. Unknown intrinsic R/L, rotor/gear inertia and friction. Transient timing uncalibrated."),
+            text("nominal_data","Published 12V endpoints",number(reference.rpm)+" rpm; "+number(reference.noLoadCurrent)+" A no load; "+number(reference.stallCurrent)+" A and "+number(reference.stallKgCm)+" kg*cm extrapolated stall; "+number(reference.maxPower)+" W max output"),
+            choice("calibration","DC model calibration",{"Published typical endpoints","Datasheet fitted lines","User coefficients"},"Published typical endpoints",Storage::Param,"Output-equivalent R=12/Is; Kt=Ts/Is; Ke=(12-R*I0)/w0; B=Kt*I0/w0. Fit mode derives Is/Ts from the published fitted speed/current lines instead of product typicals. Neither is intrinsic motor/gearbox identification."),
+            when(quantity("ra","Effective terminal resistance (derived)","ohm",number(m.ra)),"calibration=User coefficients"),
+            when(quantity("kt","Effective output torque constant (derived)","N*m/A",number(m.kt)),"calibration=User coefficients"),
+            when(quantity("ke","Effective output back-EMF constant (derived)","V*s/rad",number(m.ke)),"calibration=User coefficients"),
+            when(quantity("b","Effective output viscous loss (derived)","N*m*s/rad",number(m.b)),"calibration=User coefficients"),
+            quantity("la","Armature inductance (unknown; 0 neglects)","H","0",Storage::Param,"Manufacturer winding inductance is unpublished. Default 0 explicitly neglects electrical transients."),
+            quantity("j","Output-equivalent inertia (reference assumption)","kg*m^2","10u",Storage::Param,"Unpublished. Default 1e-5 is a numerical reference inertia, not measured; transient timing requires user calibration."),
+            quantity("load_inertia","Added output load inertia","kg*m^2","0"),quantity("load_damping","Output load damping","N*m*s/rad","0"),quantity("load_torque","Opposing output load torque","N*m","0"),
+            quantity("initial_position","Initial gearbox output angle","rad","0"),quantity("initial_speed","Initial gearbox output speed","rad/s","0"),
+            text("gearbox_limits","Published operating guidance","46.85:1 rounded ratio; continuous <=4 kg*cm and intermittent <=8 kg*cm gearbox torque; continuous current generally <=25% of stall current. No thermal/damage model."),
+            text("curve_reference","Complete manufacturer performance curves","assets/manufacturers/pololu/pololu-25d-metal-gearmotors-rev-2-0.pdf, page "+juce::String(reference.curvePage)+". Graph-fit no-load currents differ from product typicals; retained in pololu-25d-reference.json."),
+            text("source","Manufacturer source",juce::String("https://www.pololu.com/product/")+reference.part+"/specs")};
+        if(reference.encoder)
+        {
+            p.push_back(quantity("gear_ratio","Encoder-count-consistent ratio","1",number(pololu25d::encoderRatio),Storage::Param,"Calculated 2248.86/48, preserving Pololu's published output counts. Not a tooth-count-derived exact rational ratio; rounded product ratio is 46.85."));
+            p.push_back(quantity("encoder_rout","Encoder output resistance (reference)","ohm","100",Storage::Param,"Unpublished output drive impedance; explicit ideal push-pull reference approximation, not a manufacturer rating."));
+            p.push_back(text("encoder_spec","Encoder specifications","3.5-20V, max 10mA; 48 counts/rotor revolution (both edges/both channels), 12 cycles; 2248.86 counts/output rev. Red M1, black M2, green GND, blue VCC, yellow A, white B. A/B ideal sampled quadrature; no timing jitter/frequency/current-limit model."));
+        }
+    }
     c["position_sensor"] = {
         text("motor", "Target motor refdes", "M1", Storage::Param, "Refdes of the motor whose shaft angle is measured."),
         quantity("constant", "Sensor constant", "V/rad", "1.0", Storage::Param, "Output voltage per radian of shaft angle."),
@@ -430,6 +466,7 @@ const ParamSpec* findParam(const juce::String& symbolId, const juce::String& key
 
 juce::String displayName(const juce::String& id)
 {
+    if(const auto* r=pololu25d::find(id.toStdString()))return r->name;
     if(const auto* reference=stepper_catalog::find(id))return reference->name;
     if(stepper_catalog::isDriver(id))return id=="driver_uln2003"?"ULN2003A unipolar driver reference":id=="driver_tmc2209"?"TMC2209 driver reference":"STEPPERONLINE DM542T V4 driver";
     static const std::map<juce::String, juce::String> names {
@@ -470,6 +507,7 @@ juce::String displayName(const juce::String& id)
 
 juce::String simulationFidelity(const juce::String& id)
 {
+    if(pololu25d::isMotor(id.toStdString()))return "manufacturer_endpoint_reference";
     if(stepper_catalog::isMotor(id)||stepper_catalog::isDriver(id))return "reference_model";
     if (id == "opamp_741" || id == "comparator_lm311" || id == "regulator_lm317")
         return "vendor_model";

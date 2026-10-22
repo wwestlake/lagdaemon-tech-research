@@ -7,6 +7,7 @@
 #include "RouteEditing.h"
 #include "PartCatalog.h"
 #include "StepperPart.h"
+#include "Pololu25DPart.h"
 #include "VacuumTubeCatalog.h"
 #include "CircuitSolver.h"
 #include "LogicGates.h"
@@ -2963,6 +2964,7 @@ private:
         add({ "logic_xnor", "XNOR Gate", "Digital" });
         add({ "dc_motor", "DC Motor (brushed)", "Electromechanical" });
         for(const auto& motor:stepper_catalog::motors())add({motor.symbol,motor.name,"Electromechanical"});
+        for(const auto& motor:pololu25d::references())add({motor.symbol,motor.name,"Electromechanical"});
         add({"driver_uln2003","ULN2003A four-phase driver reference","Electromechanical"});
         add({"driver_tmc2209","TMC2209 STEP/DIR driver reference","Electromechanical"});
         add({"driver_dm542t_v4","STEPPERONLINE DM542T V4 driver reference","Electromechanical"});
@@ -4496,7 +4498,8 @@ public:
                 && !schematic::isLogicGate(instance.symbolId) // a gate's model is its parameters
                 && instance.symbolId != "dc_motor" && instance.symbolId != "dc_motor_tach"
                 && instance.symbolId != "dc_motor_servo" && instance.symbolId != "position_sensor"
-                && !stepper_catalog::isMotor(instance.symbolId) && !stepper_catalog::isDriver(instance.symbolId)) // parameterized electromechanical parts
+                && !stepper_catalog::isMotor(instance.symbolId) && !stepper_catalog::isDriver(instance.symbolId)
+                && !pololu25d::isMotor(instance.symbolId.toStdString())) // parameterized electromechanical parts
                 add(partFinding("WARN", "missing_value", instance.refdes + " has no value or model text.", i));
 
             if (instance.symbolId == "net_label" && instance.busName.trim().isEmpty())
@@ -8049,6 +8052,7 @@ private:
         if (symbolId == "logic_nand") return "digital.logic.nand";
         if (symbolId == "logic_nor") return "digital.logic.nor";
         if (symbolId == "logic_xor") return "digital.logic.xor";
+        if(pololu25d::isMotor(symbolId.toStdString()))return "electromechanical.motor.dc_geared.pololu25d";
         if(stepper_catalog::isMotor(symbolId))return stepper_catalog::isUnipolar(symbolId)?"electromechanical.motor.stepper.unipolar":"electromechanical.motor.stepper.bipolar";
         if(stepper_catalog::isDriver(symbolId))return "electromechanical.driver.stepper";
         if (symbolId == "dc_motor") return "electromechanical.motor.dc_brushed";
@@ -8064,6 +8068,7 @@ private:
 
     juce::String familyFor(const juce::String& symbolId) const
     {
+        if(pololu25d::isMotor(symbolId.toStdString()))return "pololu25d";
         if(stepper_catalog::isMotor(symbolId))return "stepper_reference";
         if(stepper_catalog::isDriver(symbolId))return "stepper_driver_reference";
         if (symbolId == "opamp_generic") return "generic_opamp";
@@ -11322,6 +11327,12 @@ public:
                         sim.warnings.add(inst.refdes + " (" + parts::displayName(id) + "): input(s) " + open.joinIntoString(", ")
                                          + " not wired; an open input reads LOW (its input resistance to ground).");
                 }
+            }
+            else if(const auto* reference=pololu25d::find(id.toStdString()))
+            {
+                const auto built=pololu25d::build(c,*reference,name,[&](const char* key){return node(i,key);},[&](const char* key){return partValue(inst,key);});
+                if(built.error.isNotEmpty()){const auto message=inst.refdes+": "+built.error;sim.valueErrors.add(message);if(sim.error.isEmpty())sim.error=message;}
+                else{element=built.element;motorAngles[inst.refdes]=built.angle;sim.quantities.insert(sim.quantities.end(),built.quantities.begin(),built.quantities.end());sim.warnings.add(inst.refdes+": "+built.warning);}
             }
             else if(stepper_catalog::isMotor(id)||stepper_catalog::isDriver(id))
             {
@@ -16062,12 +16073,13 @@ private:
                               0,
                               isRailBus(symbol.id) ? 420.0f : 0.0f });
         instances.back().sheet = currentSheet;
-        if(stepper_catalog::isMotor(symbolId)||stepper_catalog::isDriver(symbolId))
+        if(pololu25d::isMotor(symbolId.toStdString())||stepper_catalog::isMotor(symbolId)||stepper_catalog::isDriver(symbolId))
         {
             // Persist this reference's defaults and canonical identity with the occurrence.
             for(const auto& spec:parts::paramsFor(symbolId))
                 if(spec.storage==parts::Storage::Param)instances.back().params[spec.key]=spec.defaultValue;
             if(const auto* reference=stepper_catalog::find(symbolId))instances.back().manufacturerPart=reference->part;
+            if(const auto* reference=pololu25d::find(symbolId.toStdString()))instances.back().manufacturerPart=reference->part;
         }
         selectedInstance = (int)instances.size() - 1;
         selectedInstances.clear();

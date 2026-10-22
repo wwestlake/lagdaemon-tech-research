@@ -928,6 +928,7 @@ set_target_properties(SchematicPreview PROPERTIES OUTPUT_NAME "schematic_preview
 target_sources(SchematicPreview PRIVATE
     tools/schematic_preview/SchematicPreview.cpp
     Source/SchematicSymbols.cpp
+    Source/VacuumTubeCatalog.cpp
     Source/SchematicLayout.cpp
     Source/SchematicRouter.cpp
     Source/RouteEditing.cpp

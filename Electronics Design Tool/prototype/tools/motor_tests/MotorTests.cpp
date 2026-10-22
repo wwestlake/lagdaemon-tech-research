@@ -18,6 +18,7 @@
 #include "../../Source/CircuitSolver.h"
 #include "../../Source/LogicGates.h"
 #include "../../Source/Mechanical.h"
+#include "../../Source/Pololu25DMotor.h"
 
 #include <algorithm>
 #include <array>
@@ -1304,6 +1305,53 @@ int compareDirs(const std::string& a, const std::string& b)
     return failures == 0 ? 0 : 1;
 }
 
+// Bounded manufacturer-profile checks, deliberately separate from the long
+// motor/controller/optimisation campaign below. No transient settle loop.
+int pololu25dChecks()
+{
+    std::ofstream rows(fs::path(outDir)/"pololu25d-benchmarks.csv");
+    rows<<"part,load_fraction,expected_rpm,calculated_rpm,expected_A,calculated_A\n";
+    for(const auto& r:pololu25d::references())
+    {
+        const auto model=pololu25d::endpointModel(r);
+        check(model.ke>=model.kt&&model.ra>0,"Pololu "+std::string(r.part)+" effective conversion is passive");
+        for(double fraction:{0.0,0.5,1.0})
+        {
+            Circuit c;const auto supply=c.addNode();Waveform voltage;voltage.offset=12;c.addVoltageSource("12V",supply,0,voltage);
+            mech::MotorLoad load;load.torque.offset=fraction*r.stallKgCm*pololu25d::kgCmToNm;
+            auto motor=mech::addDcMotor(c,"M",supply,0,model,load,{});const auto op=solveOperatingPoint(c);
+            const double expectedRpm=r.rpm*(1-fraction),expectedI=r.noLoadCurrent+(r.stallCurrent-r.noLoadCurrent)*fraction;
+            const double actualRpm=op.ok?op.voltages[(size_t)motor.shaft]*60/(2*3.14159265358979323846):NAN;
+            const double actualI=op.ok?op.sourceCurrents[(size_t)motor.armature]:NAN;
+            check(op.ok&&std::abs(actualRpm-expectedRpm)<1e-4&&std::abs(actualI-expectedI)<1e-6,"Pololu "+std::string(r.part)+" published typical endpoint/load line",fmt("load %.2f rpm %.9g/%.9g A %.9g/%.9g %s",fraction,actualRpm,expectedRpm,actualI,expectedI,op.error.c_str()));
+            std::printf("  %s fraction=%.2f rpm expected=%.9g calculated=%.9g; A expected=%.9g calculated=%.9g\n",r.part,fraction,expectedRpm,actualRpm,expectedI,actualI);
+            rows<<r.part<<","<<fraction<<","<<expectedRpm<<","<<actualRpm<<","<<expectedI<<","<<actualI<<"\n";
+        }
+        Circuit fitted;const auto supply=fitted.addNode();Waveform voltage;voltage.offset=12;fitted.addVoltageSource("12V",supply,0,voltage);
+        mech::MotorLoad load;load.torque.offset=.2;const double kgMm=.2/(pololu25d::kgCmToNm/10);
+        const auto motor=mech::addDcMotor(fitted,"M",supply,0,pololu25d::curveFitModel(r),load,{});const auto op=solveOperatingPoint(fitted);
+        const double expectedRpm=r.rpm-r.fitSpeedSlope*kgMm,expectedI=r.fitCurrentIntercept+r.fitCurrentSlope*kgMm;
+        check(op.ok&&std::abs(op.voltages[motor.shaft]*60/(2*3.14159265358979323846)-expectedRpm)<1e-4&&std::abs(op.sourceCurrents[motor.armature]-expectedI)<1e-6,"Pololu "+std::string(r.part)+" manufacturer fitted curves at 0.2 N*m");
+    }
+    check(pololu25d::references()[0].noLoadCurrent!=pololu25d::references()[3].noLoadCurrent,"MP encoder and non-encoder typical currents remain distinct");
+    check(!pololu25d::references()[3].encoder,"3229 has no encoder configuration");
+    pololu25d::QuadratureEncoder encoder(pololu25d::encoderRatio,100);
+    std::vector<double> v(5),i;std::string error;v[1]=5;int transitions=0,previous=-1;bool gray=true,ok=true;
+    for(int k=0;k<=48;++k)
+    {
+        v[0]=(k+.25)*3.14159265358979323846/(24*pololu25d::encoderRatio);
+        ok=ok&&encoder.evaluate(0,0,v,i,error);if(!ok)break;
+        const int state=(i[3]>0?1:0)|(i[4]>0?2:0);
+        if(previous>=0){const int difference=state^previous;gray=gray&&(difference==1||difference==2);transitions+=difference==1||difference==2;}previous=state;
+    }
+    check(ok&&gray&&transitions==48,"Encoder emits 48 Gray-code edges per motor-shaft revolution");
+    check(std::abs(pololu25d::encoderRatio*48-2248.86)<1e-9,"Encoder preserves published output counts rather than rounded gear ratio");
+    std::vector<std::uint8_t> state;check(encoder.saveState(state)&&encoder.restoreState(state),"Encoder supports solver rollback");
+    v[1]=0;encoder.evaluate(0,0,v,i,error);check(i==std::vector<double>(5,0),"Unpowered encoder is high impedance");
+    v[1]=21;check(!encoder.evaluate(0,0,v,i,error)&&!error.empty(),"Encoder overvoltage is rejected");
+    std::printf("Pololu 25D: %d passed, %d failed\n",passes,failures);return failures?1:0;
+}
+
 int main(int argc, char** argv)
 {
     if (argc >= 4 && std::string(argv[1]) == "--compare")
@@ -1312,6 +1360,7 @@ int main(int argc, char** argv)
         if (std::string(argv[i]) == "--out")
             outDir = argv[i + 1];
     fs::create_directories(outDir);
+    if(argc>=2&&std::string(argv[1])=="--pololu25d")return pololu25dChecks();
     std::printf("motor tests, circuit_sim configuration: %s, output: %s\n", MOTOR_TESTS_CONFIG, outDir.c_str());
     std::vector<double> startup, load, friction, events, rollback, control;
     testStartupAndSteadyState(startup);

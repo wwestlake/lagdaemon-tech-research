@@ -1,6 +1,7 @@
 #include "SystemAssembly.h"
 #include "FrustComponentCompiler.h"
 #include "StepperPart.h"
+#include "Pololu25DPart.h"
 
 #include <algorithm>
 #include <cmath>
@@ -2077,6 +2078,14 @@ CompiledAssemblyCircuit AssemblyCompiler::compile(const SystemAssembly& assembly
                 if (sym == "block_port" || sym == "power_port" || sym == "net_label" || sym == "annotation_text")
                 {
                     continue;
+                }
+                else if(const auto* reference=pololu25d::find(sym.toStdString()))
+                {
+                    const auto built=pololu25d::build(c,*reference,inst.instanceId+"_"+refdes,[&](const char* key){return getPinNode(key);},[&](const char* key)
+                    {const auto parameters=co->getProperty("params");if(parameters.hasProperty(key))return parameters[key].toString();const auto numeric=inst.numericParams.find(key);if(numeric!=inst.numericParams.end())return juce::String(numeric->second,12);return juce::String(inst.getTextParam(key));});
+                    if(built.error.isNotEmpty()){res.error=built.error.toStdString();return res;}
+                    res.signalNodes[inst.instanceId+"."+refdes+".speed"]=built.speed;res.signalNodes[inst.instanceId+"."+refdes+".angle"]=built.angle;
+                    res.signalBranches[inst.instanceId+"."+refdes+".current"]=built.element;
                 }
                 else if(stepper_catalog::isMotor(sym)||stepper_catalog::isDriver(sym))
                 {
