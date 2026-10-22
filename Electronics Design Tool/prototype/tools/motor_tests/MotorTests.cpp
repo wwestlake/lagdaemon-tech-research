@@ -1317,7 +1317,7 @@ int pololu25dChecks()
         check(model.ke>=model.kt&&model.ra>0,"Pololu "+std::string(r.part)+" effective conversion is passive");
         for(double fraction:{0.0,0.5,1.0})
         {
-            Circuit c;const auto supply=c.addNode();Waveform voltage;voltage.offset=12;c.addVoltageSource("12V",supply,0,voltage);
+            Circuit c;const auto supply=c.addNode();Waveform voltage;voltage.offset=r.supply;c.addVoltageSource("12V",supply,0,voltage);
             mech::MotorLoad load;load.torque.offset=fraction*r.stallKgCm*pololu25d::kgCmToNm;
             auto motor=mech::addDcMotor(c,"M",supply,0,model,load,{});const auto op=solveOperatingPoint(c);
             const double expectedRpm=r.rpm*(1-fraction),expectedI=r.noLoadCurrent+(r.stallCurrent-r.noLoadCurrent)*fraction;
@@ -1327,7 +1327,7 @@ int pololu25dChecks()
             std::printf("  %s fraction=%.2f rpm expected=%.9g calculated=%.9g; A expected=%.9g calculated=%.9g\n",r.part,fraction,expectedRpm,actualRpm,expectedI,actualI);
             rows<<r.part<<","<<fraction<<","<<expectedRpm<<","<<actualRpm<<","<<expectedI<<","<<actualI<<"\n";
         }
-        Circuit fitted;const auto supply=fitted.addNode();Waveform voltage;voltage.offset=12;fitted.addVoltageSource("12V",supply,0,voltage);
+        Circuit fitted;const auto supply=fitted.addNode();Waveform voltage;voltage.offset=r.supply;fitted.addVoltageSource("12V",supply,0,voltage);
         mech::MotorLoad load;load.torque.offset=.2;const double kgMm=.2/(pololu25d::kgCmToNm/10);
         const auto motor=mech::addDcMotor(fitted,"M",supply,0,pololu25d::curveFitModel(r),load,{});const auto op=solveOperatingPoint(fitted);
         const double expectedRpm=r.rpm-r.fitSpeedSlope*kgMm,expectedI=r.fitCurrentIntercept+r.fitCurrentSlope*kgMm;
@@ -1335,6 +1335,11 @@ int pololu25dChecks()
     }
     check(pololu25d::references()[0].noLoadCurrent!=pololu25d::references()[3].noLoadCurrent,"MP encoder and non-encoder typical currents remain distinct");
     check(!pololu25d::references()[3].encoder,"3229 has no encoder configuration");
+    {const auto* micro=pololu25d::find("motor_pololu_5134");check(micro&&micro->encoder&&micro->micro&&micro->supply==6&&std::abs(micro->encRatio-51.45)<1e-12,"5134 micro encoder: 6 V, 51.45:1 motor-to-output ratio");
+     pololu25d::QuadratureEncoder e(micro->encRatio,100);std::vector<double> v(5),i;std::string error;v[1]=5;int edges=0,previous=-1;bool ok=true;
+     for(int k=0;k<=48;++k){v[0]=(k+.25)*3.14159265358979323846/(24*micro->encRatio);ok=ok&&e.evaluate(0,0,v,i,error);const int state=(i[3]>0?1:0)|(i[4]>0?2:0);if(previous>=0){const int d=state^previous;edges+=d==1||d==2;}previous=state;}
+     check(ok&&edges==48,"5134 emits 48 quadrature edges per motor revolution (617.4 nominal output counts/rev)");
+     check(!pololu25d::find("motor_pololu_2379")->encoder&&!pololu25d::find("motor_dfrobot_fit0016")->encoder&&pololu25d::find("motor_dfrobot_fit0016")->supply==6,"2379 and FIT0016 have no encoder; FIT0016 rated at 6 V");}
     pololu25d::QuadratureEncoder encoder(pololu25d::encoderRatio,100);
     std::vector<double> v(5),i;std::string error;v[1]=5;int transitions=0,previous=-1;bool gray=true,ok=true;
     for(int k=0;k<=48;++k)

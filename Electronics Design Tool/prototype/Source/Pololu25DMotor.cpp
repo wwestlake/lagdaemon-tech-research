@@ -8,8 +8,8 @@ constexpr double pi=3.14159265358979323846;
 mech::DcMotorModel endpointModel(const Reference& r)
 {
     mech::DcMotorModel m;const double omega=r.rpm*2*pi/60;
-    m.ra=12/r.stallCurrent;m.kt=r.stallKgCm*kgCmToNm/r.stallCurrent;
-    m.ke=(12-m.ra*r.noLoadCurrent)/omega;m.b=m.kt*r.noLoadCurrent/omega;
+    m.ra=r.supply/r.stallCurrent;m.kt=r.stallKgCm*kgCmToNm/r.stallCurrent;
+    m.ke=(r.supply-m.ra*r.noLoadCurrent)/omega;m.b=m.kt*r.noLoadCurrent/omega;
     // Explicit reference assumptions: no winding inductance; arbitrary positive
     // output-equivalent inertia required by the existing dynamic motor interface.
     // Neither is manufacturer data; transient timing is not calibrated.

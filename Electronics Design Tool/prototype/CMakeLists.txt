@@ -1160,6 +1160,7 @@ endif()
 target_link_libraries(DjehutiElectronicsLab PRIVATE bcrypt)
 add_custom_command(TARGET DjehutiElectronicsLab POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_CURRENT_SOURCE_DIR}/assets/manufacturer-reference-library.json" "$<TARGET_FILE_DIR:DjehutiElectronicsLab>/manufacturer-reference-library.json"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_CURRENT_SOURCE_DIR}/assets/robotics-component-library.json" "$<TARGET_FILE_DIR:DjehutiElectronicsLab>/robotics-component-library.json"
     COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_CURRENT_SOURCE_DIR}/assets/manufacturer-foundation" "$<TARGET_FILE_DIR:DjehutiElectronicsLab>/manufacturer-foundation")
 add_executable(manufacturer_reference_checks EXCLUDE_FROM_ALL tools/manufacturer_reference_checks.cpp)
 target_link_libraries(manufacturer_reference_checks PRIVATE juce::juce_core bcrypt)

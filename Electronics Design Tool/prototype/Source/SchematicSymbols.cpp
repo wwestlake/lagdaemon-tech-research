@@ -486,8 +486,8 @@ SymbolDef symbolFor(const juce::String& id)
     // Brushed DC motor; the shaft is drawn, not a pin (Mechanical.h).
     if(const auto* motor=pololu25d::find(id.toStdString()))
     {
-        if(motor->encoder)return make(id,juce::String("25D ")+motor->part,{-72,-72,144,144},{{"M1",{-96,-24}},{"M2",{-96,24}},{"VCC",{-48,-96}},{"GND",{48,96}},{"A",{96,-24}},{"B",{96,24}}},true);
-        return make(id,"25D 3229",{-48,-48,96,96},{{"M1",{-72,0}},{"M2",{72,0}}},true);
+        if(motor->encoder)return make(id,juce::String(motor->micro?"":"25D ")+motor->part,{-72,-72,144,144},{{"M1",{-96,-24}},{"M2",{-96,24}},{"VCC",{-48,-96}},{"GND",{48,96}},{"A",{96,-24}},{"B",{96,24}}},true);
+        return make(id,juce::String(motor->micro?"":"25D ")+motor->part,{-48,-48,96,96},{{"M1",{-72,0}},{"M2",{72,0}}},true);
     }
     if(stepper_catalog::isMotor(id))
     {

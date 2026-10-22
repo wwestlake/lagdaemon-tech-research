@@ -33,7 +33,7 @@ inline BuildResult build(circuit_sim::Circuit& c,const Reference& reference,cons
     if(const auto problem=mech::problemsWith(m,load);!problem.empty())out.error=problem;
     if(const auto problem=mech::problemsWith(initial);!problem.empty())out.error=problem;
     double ratio=encoderRatio,rout=100;
-    if(reference.encoder){ratio=number("gear_ratio",encoderRatio);rout=number("encoder_rout",100);if(!(ratio>0&&rout>0))out.error="Encoder ratio and reference output resistance must be positive.";}
+    if(reference.encoder){ratio=number("gear_ratio",reference.encRatio);rout=number("encoder_rout",100);if(!(ratio>0&&rout>0))out.error="Encoder ratio and reference output resistance must be positive.";}
     if(out.error.isNotEmpty())return out;
     const auto motor=mech::addDcMotor(c,name,pin("M1"),pin("M2"),m,load,initial);
     out.element=motor.armature;out.speed=motor.shaft;out.angle=motor.angle;out.quantities=motor.quantities;

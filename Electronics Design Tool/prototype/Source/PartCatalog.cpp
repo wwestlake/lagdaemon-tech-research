@@ -242,8 +242,8 @@ std::map<juce::String, std::vector<ParamSpec>> buildCatalog()
         const auto m=pololu25d::endpointModel(reference);
         const auto number=[](double v){return juce::String(v,12);};
         auto& p=c[reference.symbol];p={
-            hidden(text("component_id","Shared CAD/DEWB identity",reference.id)),text("part_number","Pololu manufacturer part",reference.part),
-            hidden(text("reference_revision","Source snapshot","Pololu 25D 2026-10-22; datasheet July 2026 rev 2.0")),
+            hidden(text("component_id","Shared CAD/DEWB identity",reference.id)),text("part_number",reference.micro?"Manufacturer part":"Pololu manufacturer part",reference.part),
+            hidden(text("reference_revision","Source snapshot",(reference.micro?"Robotics acquisition 2026-10-22; Pololu micro Rev 6.2 Feb 2026 / DFRobot FIT0016 catalog; robotics-component-library.json":"Pololu 25D 2026-10-22; datasheet July 2026 rev 2.0"))),
             hidden(quantity("reference_rpm","Published typical no-load rpm","rpm",number(reference.rpm))),
             hidden(quantity("reference_i0","Published typical no-load current","A",number(reference.noLoadCurrent))),
             hidden(quantity("reference_is","Published extrapolated stall current","A",number(reference.stallCurrent))),
@@ -252,8 +252,8 @@ std::map<juce::String, std::vector<ParamSpec>> buildCatalog()
             hidden(quantity("reference_fit_i0","Published fitted current intercept","A",number(reference.fitCurrentIntercept))),
             hidden(quantity("reference_fit_i_slope","Published fitted current slope","A/(kg*mm)",number(reference.fitCurrentSlope))),
             text("data_status","Model scope","Output-shaft equivalent. Verified typical endpoints; derived terminal coefficients. Unknown intrinsic R/L, rotor/gear inertia and friction. Transient timing uncalibrated."),
-            text("nominal_data","Published 12V endpoints",number(reference.rpm)+" rpm; "+number(reference.noLoadCurrent)+" A no load; "+number(reference.stallCurrent)+" A and "+number(reference.stallKgCm)+" kg*cm extrapolated stall; "+number(reference.maxPower)+" W max output"),
-            choice("calibration","DC model calibration",{"Published typical endpoints","Datasheet fitted lines","User coefficients"},"Published typical endpoints",Storage::Param,"Output-equivalent R=12/Is; Kt=Ts/Is; Ke=(12-R*I0)/w0; B=Kt*I0/w0. Fit mode derives Is/Ts from the published fitted speed/current lines instead of product typicals. Neither is intrinsic motor/gearbox identification."),
+            text("nominal_data",juce::String("Published ")+number(reference.supply)+"V endpoints",number(reference.rpm)+" rpm; "+number(reference.noLoadCurrent)+" A no load; "+number(reference.stallCurrent)+" A and "+number(reference.stallKgCm)+" kg*cm extrapolated stall; "+number(reference.maxPower)+" W max output"),
+            choice("calibration","DC model calibration",{"Published typical endpoints","Datasheet fitted lines","User coefficients"},"Published typical endpoints",Storage::Param,"Output-equivalent R=V/Is; Kt=Ts/Is; Ke=(V-R*I0)/w0; B=Kt*I0/w0 (V = rated supply of this part). Fit mode derives Is/Ts from the published fitted speed/current lines instead of product typicals. Neither is intrinsic motor/gearbox identification."),
             when(quantity("ra","Effective terminal resistance (derived)","ohm",number(m.ra)),"calibration=User coefficients"),
             when(quantity("kt","Effective output torque constant (derived)","N*m/A",number(m.kt)),"calibration=User coefficients"),
             when(quantity("ke","Effective output back-EMF constant (derived)","V*s/rad",number(m.ke)),"calibration=User coefficients"),
@@ -262,12 +262,12 @@ std::map<juce::String, std::vector<ParamSpec>> buildCatalog()
             quantity("j","Output-equivalent inertia (reference assumption)","kg*m^2","10u",Storage::Param,"Unpublished. Default 1e-5 is a numerical reference inertia, not measured; transient timing requires user calibration."),
             quantity("load_inertia","Added output load inertia","kg*m^2","0"),quantity("load_damping","Output load damping","N*m*s/rad","0"),quantity("load_torque","Opposing output load torque","N*m","0"),
             quantity("initial_position","Initial gearbox output angle","rad","0"),quantity("initial_speed","Initial gearbox output speed","rad/s","0"),
-            text("gearbox_limits","Published operating guidance","46.85:1 rounded ratio; continuous <=4 kg*cm and intermittent <=8 kg*cm gearbox torque; continuous current generally <=25% of stall current. No thermal/damage model."),
-            text("curve_reference","Complete manufacturer performance curves","assets/manufacturers/pololu/pololu-25d-metal-gearmotors-rev-2-0.pdf, page "+juce::String(reference.curvePage)+". Graph-fit no-load currents differ from product typicals; retained in pololu-25d-reference.json."),
-            text("source","Manufacturer source",juce::String("https://www.pololu.com/product/")+reference.part+"/specs")};
+            text("gearbox_limits","Published operating guidance",reference.micro?juce::String(reference.part=="FIT0016"?"1:120 catalog ratio; 0.8 kg*cm is a catalog maximum, 2.8 A stall current has no stated supply voltage; 160 vs 180 rpm documentation conflict (160 used). Back-shaft/plastic gearbox limits not modeled. No thermal/damage model.":"51.45:1 ratio; extrapolated stall values are not safe operating points; no thermal/damage model, backlash or gearbox efficiency model."):juce::String("46.85:1 rounded ratio; continuous <=4 kg*cm and intermittent <=8 kg*cm gearbox torque; continuous current generally <=25% of stall current. No thermal/damage model.")),
+            text("curve_reference","Complete manufacturer performance curves",reference.micro?juce::String(reference.curvePage>0?"assets/manufacturer-foundation/pololu-micro-metal-gearmotors-rev-6-2.pdf, page "+juce::String(reference.curvePage)+" (6 V MP 50:1 plot). Plotted fit differs from product-page typicals (about 390 rpm/53 mA vs 420 rpm/70 mA); both retained.":"No plotted curve. Fit mode uses endpoint-equivalent lines (not a measured fit); source assets/manufacturer-foundation/FIT0016_Web.pdf."):juce::String("assets/manufacturers/pololu/pololu-25d-metal-gearmotors-rev-2-0.pdf, page "+juce::String(reference.curvePage)+". Graph-fit no-load currents differ from product typicals; retained in pololu-25d-reference.json.")),
+            text("source","Manufacturer source",juce::String(reference.part)=="FIT0016"?juce::String("https://www.dfrobot.com/product-100.html"):juce::String("https://www.pololu.com/product/")+reference.part+"/specs")};
         if(reference.encoder)
         {
-            p.push_back(quantity("gear_ratio","Encoder-count-consistent ratio","1",number(pololu25d::encoderRatio),Storage::Param,"Calculated 2248.86/48, preserving Pololu's published output counts. Not a tooth-count-derived exact rational ratio; rounded product ratio is 46.85."));
+            p.push_back(quantity("gear_ratio","Encoder-count-consistent ratio","1",number(reference.encRatio),Storage::Param,reference.micro?"Motor-to-output ratio 51.45 (rounded published ratio); encoder gives 12 cycles/motor rev, nominal 617.4 output counts/rev.":"Calculated 2248.86/48, preserving Pololu's published output counts. Not a tooth-count-derived exact rational ratio; rounded product ratio is 46.85."));
             p.push_back(quantity("encoder_rout","Encoder output resistance (reference)","ohm","100",Storage::Param,"Unpublished output drive impedance; explicit ideal push-pull reference approximation, not a manufacturer rating."));
             p.push_back(text("encoder_spec","Encoder specifications","3.5-20V, max 10mA; 48 counts/rotor revolution (both edges/both channels), 12 cycles; 2248.86 counts/output rev. Red M1, black M2, green GND, blue VCC, yellow A, white B. A/B ideal sampled quadrature; no timing jitter/frequency/current-limit model."));
         }
@@ -584,13 +584,13 @@ bool validate(const ParamSpec& spec, const juce::String& value, juce::String& er
             auto suffix = textValue.substring(pos).trim();
             if (suffix.startsWithIgnoreCase("meg")) suffix = suffix.substring(3);
             else if (suffix.isNotEmpty() && juce::String("TGMkKmunpf").containsChar(suffix[0])) suffix = suffix.substring(1);
-            else if (suffix.startsWith(juce::String::fromUTF8("Âµ"))) suffix = suffix.substring(1);
+            else if (suffix.startsWith(juce::String::fromUTF8("Ã‚Âµ"))) suffix = suffix.substring(1);
             while (suffix.isNotEmpty() && juce::CharacterFunctions::isDigit(suffix[0])) suffix = suffix.substring(1); // 4k7
             if (suffix.isEmpty())
                 return true;
             juce::StringArray accepted { spec.unit };
-            if (spec.unit == "ohm") accepted.addArray({ "ohms", "r", juce::String::fromUTF8("Î©") });
-            if (spec.unit == "deg") accepted.add(juce::String::fromUTF8("Â°"));
+            if (spec.unit == "ohm") accepted.addArray({ "ohms", "r", juce::String::fromUTF8("ÃŽÂ©") });
+            if (spec.unit == "deg") accepted.add(juce::String::fromUTF8("Ã‚Â°"));
             for (const auto& unit : accepted)
                 if (unit.isNotEmpty() && suffix.equalsIgnoreCase(unit))
                     return true;
