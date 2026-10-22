@@ -3,6 +3,7 @@
 #include "OscilloscopeInput.h"
 
 #include "CircuitSolver.h"
+#include "StepperCatalog.h"
 
 #include <map>
 
@@ -201,6 +202,40 @@ std::map<juce::String, std::vector<ParamSpec>> buildCatalog()
         }
         c[id] = m;
     }
+    for(const auto& reference:stepper_catalog::motors())
+    {
+        const bool unipolar=stepper_catalog::isUnipolar(reference.symbol);
+        c[reference.symbol]={
+            hidden(text("component_id","Shared CAD/DEWB component ID",reference.canonical)),
+            text("part_number","Manufacturer part",reference.part),
+            text("data_status","Specification confidence",unipolar?"Supplier unknown; Maintex family geometry only; winding/motion coefficients required":"Manufacturer nominal R/L/inertia; sinusoidal reference model, not a torque-speed prediction"),
+            choice("calibration","Electromechanical calibration",{"User coefficients","Holding-torque sine reference"},unipolar?"User coefficients":"Holding-torque sine reference",Storage::Param,"Holding reference assumes two equal rated phase currents and sinusoidal flux: Kt=Ke=holding/(sqrt(2)*rated current). This is a modeling assumption, not a measured Kt/Ke."),
+            quantity("phase_r","Phase resistance","ohm",stepper_catalog::value(reference.resistance)),
+            quantity("phase_l","Phase inductance","H",stepper_catalog::value(reference.inductance)),
+            quantity("rotor_j","Rotor inertia","kg*m^2",stepper_catalog::value(reference.inertia)),
+            quantity("electrical_cycles","Electrical cycles / rotor revolution","1",reference.fullStep>0?stepper_catalog::value(90/reference.fullStep):juce::String(),Storage::Param,"Bipolar sinusoidal reference: 90/full-step angle. Unipolar 5.625-degree excitation interval does not establish this value; supply the actual motor's value."),
+            quantity("holding_torque","Published holding torque","N*m",stepper_catalog::value(reference.holding)),
+            quantity("rated_current","Published phase current","A",stepper_catalog::value(reference.current)),
+            quantity("kt","User torque constant","N*m/A","",Storage::Param,"Required with User coefficients. Not inferred as a commercial motor specification."),
+            quantity("ke","User back-EMF constant","V*s/rad","",Storage::Param,"Required with User coefficients. For energy-consistent ideal conversion use Ke=Kt."),
+            quantity("gear_ratio","Separate ideal output reduction","1",stepper_catalog::value(reference.ratio),Storage::Param,"Rotor/output speed ratio. Nominal 64 is unverified for an unidentified 28BYJ; ideal lossless gear only. Output load reflects to the rotor; backlash/efficiency are not modeled."),
+            quantity("damping","Ideal rotor viscous damping","N*m*s/rad","0",Storage::Param,"Zero is an explicit frictionless model assumption; commercial damping is unknown."),
+            quantity("load_inertia","Output load inertia","kg*m^2","0"),quantity("load_damping","Output viscous damping","N*m*s/rad","0"),quantity("load_torque","Output load torque","N*m","0"),
+            quantity("initial_position","Initial rotor angle","rad","0"),quantity("initial_speed","Initial rotor speed","rad/s","0")
+        };
+    }
+    for(const auto* id:{"driver_tmc2209","driver_dm542t_v4"})
+    {
+        const bool dm=juce::String(id)=="driver_dm542t_v4";
+        c[id]={hidden(text("component_id","Shared driver ID",dm?"driver-dm542t-v4":"driver-tmc2209-reference")),
+            text("model_scope","Modeled behavior","Averaged current-limited bridge, STEP/DIR/disable and pulse timing. No PWM switching, UART, interpolation, thermal/protection or alarm simulation."),
+            quantity("current_peak","Configured peak phase current","A",dm?"2.84":"1.414",Storage::Param,"Peak, not RMS. Approximate sinusoidal RMS=peak/sqrt(2). TMC carrier/sense resistor/cooling are unspecified; this is a configurable reference driver, not a particular module."),
+            quantity("microsteps","Microsteps per full step","1","16",Storage::Param,dm?"Supported DM542T V4 DIP choices: 1,2,4,5,8,10,16,20,25,32,40,50,64,100,125,128.":"Reference command resolution 1..256; actual IC strap/UART and interpolation are specification-only."),
+            quantity("logic_high","High input threshold (reference)","V",dm?"4.5":"2",Storage::Param,"DM differential control assumes S2=5V. Direct 3.3V input is not accepted. TMC uses a nominal 3.3V interface; actual module VIO/pinout must be verified."),
+            quantity("min_pulse","Minimum STEP high/low interval","s",dm?"2.5u":"100n"),quantity("dir_setup","DIR setup before STEP","s",dm?"5u":"20n"),
+            text("source","Driver datasheet",dm?"https://www.omc-stepperonline.com/download/DM542T_V4.0_user_manual.pdf":"https://www.analog.com/media/en/technical-documentation/data-sheets/TMC2209_datasheet_rev1.09.pdf")};
+    }
+    c["driver_uln2003"]={hidden(text("component_id","Shared driver ID","driver-uln2003a-reference")),text("model_scope","Modeled behavior","Four low-side switches with clamp diodes. No current regulation; no package thermal/current-limit enforcement. Carrier pinout unknown."),quantity("threshold","Logic threshold (reference)","V","2.4"),quantity("ron","On resistance (reference)","ohm","1"),quantity("vsat","Darlington drop (reference)","V","1",Storage::Param,"Illustrative regularized saturation drop; not a characterized semiconductor model."),text("ratings","Specification-only ratings","ULN2003A: 50V outputs, 0.5A single channel; aggregate current depends on package/duty/temperature."),text("source","Datasheet","https://www.ti.com/lit/ds/symlink/uln2003a.pdf")};
     c["position_sensor"] = {
         text("motor", "Target motor refdes", "M1", Storage::Param, "Refdes of the motor whose shaft angle is measured."),
         quantity("constant", "Sensor constant", "V/rad", "1.0", Storage::Param, "Output voltage per radian of shaft angle."),
@@ -395,6 +430,8 @@ const ParamSpec* findParam(const juce::String& symbolId, const juce::String& key
 
 juce::String displayName(const juce::String& id)
 {
+    if(const auto* reference=stepper_catalog::find(id))return reference->name;
+    if(stepper_catalog::isDriver(id))return id=="driver_uln2003"?"ULN2003A unipolar driver reference":id=="driver_tmc2209"?"TMC2209 driver reference":"STEPPERONLINE DM542T V4 driver";
     static const std::map<juce::String, juce::String> names {
         { "resistor", "Resistor" }, { "potentiometer", "Potentiometer" }, { "capacitor", "Capacitor" },
         { "capacitor_polarized", "Polarized Capacitor" }, { "variable_capacitor", "Variable Capacitor" },
@@ -433,6 +470,7 @@ juce::String displayName(const juce::String& id)
 
 juce::String simulationFidelity(const juce::String& id)
 {
+    if(stepper_catalog::isMotor(id)||stepper_catalog::isDriver(id))return "reference_model";
     if (id == "opamp_741" || id == "comparator_lm311" || id == "regulator_lm317")
         return "vendor_model";
     if (id == "opamp_generic" || id == "comparator_generic"

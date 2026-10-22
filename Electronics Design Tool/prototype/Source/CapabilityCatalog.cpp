@@ -2,6 +2,7 @@
 
 #include "Analytics.h"
 #include "PartCatalog.h"
+#include "StepperCatalog.h"
 #include "SchematicSymbols.h"
 #include "XyceBackend.h"
 
@@ -537,6 +538,8 @@ juce::String toJson(const Request& request)
             root->setProperty("programmableComponents", programmableSection(request));
         if (schematic::isLogicGate(id))
             root->setProperty("logicGates", logicSection());
+        if(stepper_catalog::isMotor(id)||stepper_catalog::isDriver(id))
+            root->setProperty("stepperScope","Internal solver: configurable sinusoidal R/L + reciprocal torque/back-EMF and rotor/load dynamics; independent ideal gearbox ratio. Driver references use averaged current limiting or ULN switches. Unknown coefficients must be entered. No verified commercial torque-speed, thermal, UART, module pinout or gearbox efficiency prediction. Part parameters persist through existing schematic tools.");
         if (id == "dc_motor" || id == "dc_motor_tach" || id == "dc_motor_servo" || id == "position_sensor")
             root->setProperty("electromechanical", motorSection());
         return juce::JSON::toString(juce::var(root), true);

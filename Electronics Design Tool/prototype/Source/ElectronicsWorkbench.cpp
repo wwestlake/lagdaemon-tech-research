@@ -6,6 +6,7 @@
 #include "SchematicRouter.h"
 #include "RouteEditing.h"
 #include "PartCatalog.h"
+#include "StepperPart.h"
 #include "VacuumTubeCatalog.h"
 #include "CircuitSolver.h"
 #include "LogicGates.h"
@@ -799,7 +800,7 @@ const SchematicToolSpec schematicToolSpecs[] = {
     },
     {
         "schematic_set_parameters",
-        "Set one or more of a part's properties by key, validated like the Properties pane: values take units and prefixes (4.7k, 10u, 1meg), choices must match an option. Use schematic_get_parameters to see the keys. Covers component values, source waveform/amplitude/frequency/offset, transistor and diode models, switch state, net and label names, and instrument settings (time_per_div, ch1_volts_per_div, trigger_level, meter function in value, start_frequency).",
+        "Set one or more of a part's properties by key, validated like the Properties pane: values take units and prefixes (4.7k, 10u, 1meg), choices must match an option. Use schematic_get_parameters to see the keys. Covers component values, stepper winding/calibration/load and driver peak-current/microstep/timing parameters, source waveform/amplitude/frequency/offset, transistor and diode models, switch state, net and label names, and instrument settings (time_per_div, ch1_volts_per_div, trigger_level, meter function in value, start_frequency).",
         R"({"type":"object","properties":{"refdes":{"type":"string"},"params":{"type":"object","description":"Property key to new value, such as {\"value\": \"4.7k\"} or {\"waveform\": \"Square\", \"frequency\": \"500\"}.","additionalProperties":{"type":"string"}}},"required":["refdes","params"],"additionalProperties":false})"
     },
     {
@@ -2961,6 +2962,10 @@ private:
         add({ "logic_xor", "XOR Gate", "Digital" });
         add({ "logic_xnor", "XNOR Gate", "Digital" });
         add({ "dc_motor", "DC Motor (brushed)", "Electromechanical" });
+        for(const auto& motor:stepper_catalog::motors())add({motor.symbol,motor.name,"Electromechanical"});
+        add({"driver_uln2003","ULN2003A four-phase driver reference","Electromechanical"});
+        add({"driver_tmc2209","TMC2209 STEP/DIR driver reference","Electromechanical"});
+        add({"driver_dm542t_v4","STEPPERONLINE DM542T V4 driver reference","Electromechanical"});
         add({ "dc_motor_tach", "DC Motor with Tachometer", "Electromechanical" });
         add({ "dc_motor_servo", "DC Servomotor", "Electromechanical" });
         add({ "position_sensor", "Rotary Position Sensor", "Electromechanical" });
@@ -4490,7 +4495,8 @@ public:
                 && instance.symbolId != "block_port"
                 && !schematic::isLogicGate(instance.symbolId) // a gate's model is its parameters
                 && instance.symbolId != "dc_motor" && instance.symbolId != "dc_motor_tach"
-                && instance.symbolId != "dc_motor_servo" && instance.symbolId != "position_sensor") // so is a motor's
+                && instance.symbolId != "dc_motor_servo" && instance.symbolId != "position_sensor"
+                && !stepper_catalog::isMotor(instance.symbolId) && !stepper_catalog::isDriver(instance.symbolId)) // parameterized electromechanical parts
                 add(partFinding("WARN", "missing_value", instance.refdes + " has no value or model text.", i));
 
             if (instance.symbolId == "net_label" && instance.busName.trim().isEmpty())
@@ -8043,6 +8049,8 @@ private:
         if (symbolId == "logic_nand") return "digital.logic.nand";
         if (symbolId == "logic_nor") return "digital.logic.nor";
         if (symbolId == "logic_xor") return "digital.logic.xor";
+        if(stepper_catalog::isMotor(symbolId))return stepper_catalog::isUnipolar(symbolId)?"electromechanical.motor.stepper.unipolar":"electromechanical.motor.stepper.bipolar";
+        if(stepper_catalog::isDriver(symbolId))return "electromechanical.driver.stepper";
         if (symbolId == "dc_motor") return "electromechanical.motor.dc_brushed";
         if (symbolId == "dc_motor_tach") return "electromechanical.motor.dc_brushed.tachometer";
         if (symbolId == "dc_motor_servo") return "electromechanical.motor.dc_brushed.servo";
@@ -8056,6 +8064,8 @@ private:
 
     juce::String familyFor(const juce::String& symbolId) const
     {
+        if(stepper_catalog::isMotor(symbolId))return "stepper_reference";
+        if(stepper_catalog::isDriver(symbolId))return "stepper_driver_reference";
         if (symbolId == "opamp_generic") return "generic_opamp";
         if (symbolId == "opamp_741") return "741";
         if (symbolId == "comparator_generic") return "generic_comparator";
@@ -11312,6 +11322,12 @@ public:
                         sim.warnings.add(inst.refdes + " (" + parts::displayName(id) + "): input(s) " + open.joinIntoString(", ")
                                          + " not wired; an open input reads LOW (its input resistance to ground).");
                 }
+            }
+            else if(stepper_catalog::isMotor(id)||stepper_catalog::isDriver(id))
+            {
+                const auto built=stepper_catalog::build(c,id,name,[&](const char* key){return node(i,key);},[&](const char* key){return partValue(inst,key);});
+                if(!built.error.isEmpty()){const auto message=inst.refdes+": "+built.error;sim.valueErrors.add(message);if(sim.error.isEmpty())sim.error=message;}
+                else{element=built.element;if(built.angle)motorAngles[inst.refdes]=built.angle;sim.quantities.insert(sim.quantities.end(),built.quantities.begin(),built.quantities.end());if(!built.warning.isEmpty())sim.warnings.add(inst.refdes+": "+built.warning);}
             }
             else if (id == "dc_motor" || id == "dc_motor_tach" || id == "dc_motor_servo")
             {
@@ -16046,6 +16062,13 @@ private:
                               0,
                               isRailBus(symbol.id) ? 420.0f : 0.0f });
         instances.back().sheet = currentSheet;
+        if(stepper_catalog::isMotor(symbolId)||stepper_catalog::isDriver(symbolId))
+        {
+            // Persist this reference's defaults and canonical identity with the occurrence.
+            for(const auto& spec:parts::paramsFor(symbolId))
+                if(spec.storage==parts::Storage::Param)instances.back().params[spec.key]=spec.defaultValue;
+            if(const auto* reference=stepper_catalog::find(symbolId))instances.back().manufacturerPart=reference->part;
+        }
         selectedInstance = (int)instances.size() - 1;
         selectedInstances.clear();
         selectedInstances.add(selectedInstance);

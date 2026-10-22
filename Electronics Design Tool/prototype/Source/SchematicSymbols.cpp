@@ -1,5 +1,6 @@
 #include "SchematicSymbols.h"
 #include "VacuumTubeCatalog.h"
+#include "StepperCatalog.h"
 
 #include <climits>
 
@@ -387,6 +388,8 @@ const juce::StringArray& supportedSymbolIds()
         for (const auto& tube : parts::getAllVacuumTubeSpecs())
             if (!ids.contains(tube.id))
                 ids.add(tube.id);
+        for(const auto& motor:stepper_catalog::motors())ids.add(motor.symbol);
+        ids.addArray({"driver_uln2003","driver_tmc2209","driver_dm542t_v4"});
         return ids;
     }();
     return allIds;
@@ -479,6 +482,16 @@ SymbolDef symbolFor(const juce::String& id)
     if (id == "test_point")          return make(id, "TP", { -12, -12, 24, 24 }, { { "1", { -24, 0 } } });
     if (isLogicGate(id))             return logicGateSymbol(id, defaultGateInputs(id));
     // Brushed DC motor; the shaft is drawn, not a pin (Mechanical.h).
+    if(stepper_catalog::isMotor(id))
+    {
+        if(stepper_catalog::isUnipolar(id))return make(id,"PM STEP",{-48,-48,96,96},{{"COM",{0,-72}},{"A",{-72,-24}},{"B",{-72,24}},{"C",{72,-24}},{"D",{72,24}}},true);
+        return make(id,"PM STEP",{-48,-48,96,96},{{"A+",{-72,-24}},{"A-",{-72,24}},{"B+",{72,-24}},{"B-",{72,24}}},true);
+    }
+    if(stepper_catalog::isDriver(id))
+    {
+        if(id=="driver_uln2003")return make(id,"ULN2003",{-48,-60,96,120},{{"IN1",{-72,-48}},{"IN2",{-72,-24}},{"IN3",{-72,24}},{"IN4",{-72,48}},{"OUT1",{72,-48}},{"OUT2",{72,-24}},{"OUT3",{72,24}},{"OUT4",{72,48}},{"COM",{-24,-96}},{"GND",{24,96}}},true);
+        return make(id,id=="driver_tmc2209"?"TMC2209 REF":"DM542T V4",{-72,-144,144,288},{{"VM",{-48,-168}},{"GND",{48,168}},{"STEP+",{-96,-48}},{"STEP-",{-96,-24}},{"DIR+",{-96,0}},{"DIR-",{-96,48}},{"DIS+",{-96,72}},{"DIS-",{-96,96}},{"A+",{96,-24}},{"A-",{96,0}},{"B+",{96,48}},{"B-",{96,72}}},true);
+    }
     if (id == "dc_motor")            return make(id, "M", { -30, -30, 72, 60 }, { { "+", { 0, -48 } }, { "-", { 0, 48 } } });
     // With a tachogenerator on its shaft: T+ - T- = k * speed.
     if (id == "dc_motor_tach")       return make(id, "M TG", { -30, -30, 126, 60 }, { { "+", { 0, -48 } }, { "-", { 0, 48 } },
@@ -499,6 +512,8 @@ SymbolDef symbolFor(const juce::String& id)
 
 juce::String refdesPrefixFor(const juce::String& id)
 {
+    if(stepper_catalog::isMotor(id))return "M";
+    if(stepper_catalog::isDriver(id))return "U";
     if (id == "resistor" || id == "potentiometer") return "R";
     if (id.startsWith("capacitor") || id == "variable_capacitor") return "C";
     if (id == "inductor" || id == "coupled_inductor") return "L";
@@ -872,7 +887,11 @@ void drawSymbolArt(juce::Graphics& g, const SymbolDef& symbol, const juce::Strin
     const auto& id = symbol.id;
     g.setColour(lineColour);
 
-    if (id == "annotation_text")
+    if(stepper_catalog::isMotor(id)||stepper_catalog::isDriver(id))
+    {
+        drawBlockArt(g,symbol,symbol.title);
+    }
+    else if (id == "annotation_text")
     {
         const juce::Rectangle<float> body { -96.0f, -42.0f, 192.0f, 84.0f };
         g.setColour(juce::Colour(0xff17222b));
