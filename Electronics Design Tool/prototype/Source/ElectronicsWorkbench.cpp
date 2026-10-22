@@ -6,6 +6,7 @@
 #include "SchematicRouter.h"
 #include "RouteEditing.h"
 #include "PartCatalog.h"
+#include "ManufacturerReferences.h"
 #include "StepperPart.h"
 #include "Pololu25DPart.h"
 #include "VacuumTubeCatalog.h"
@@ -224,6 +225,11 @@ struct SchematicToolSpec
 };
 
 const SchematicToolSpec schematicToolSpecs[] = {
+    {
+        "manufacturer_reference",
+        "List or inspect portable manufacturer engineering records, verify original assets, or bind a frozen reference to a part. Preserves units, conditions, sources, curves and unknown model inputs. Binding does not change simulator coefficients. Actions: list, inspect, bind, clear; libraryPath is optional for the bundled reference library; inspect with refdes reads its persisted snapshot.",
+        R"({"type":"object","properties":{"action":{"type":"string","enum":["list","inspect","bind","clear"]},"libraryPath":{"type":"string"},"componentId":{"type":"string"},"refdes":{"type":"string"},"verifyAssets":{"type":"boolean"}},"required":["action"],"additionalProperties":false})"
+    },
     {
         "library_get_hierarchy",
         "Inspect the Component Library hierarchy, categories, subcategories, expanded/collapsed states, item counts, and currently visible rows.",
@@ -14415,6 +14421,36 @@ public:
 
     juce::String runSchematicTool(const juce::String& name, const juce::var& args)
     {
+        if (name == "manufacturer_reference")
+        {
+            const auto action=args["action"].toString(),refdes=args["refdes"].toString();
+            const bool verify=(bool)args.getProperty("verifyAssets",false);
+            if(action=="clear"||(action=="inspect"&&refdes.isNotEmpty()))
+            {
+                const auto index=instanceIndexForRefdesAnySheet(refdes);
+                if(index<0)return toolFailure(name,"Select an existing schematic part by refdes.");
+                auto& part=instances[(size_t)index];
+                if(action=="inspect")return juce::JSON::toString(manufacturer_references::inspect(part.params,verify,part.manufacturerPart));
+                if(isFixtureView)return toolFailure(name,"Edit references in the authoritative schematic.");
+                pushUndoSnapshot();part.params.erase("engineering_record");part.params.erase("engineering_asset_root");notifySelection();forceDeferredRepaint();
+                return R"({"ok":true,"note":"Reference removed; physical identity and simulator values retained."})";
+            }
+            if(action!="list"&&action!="inspect"&&action!="bind")return toolFailure(name,"Unknown manufacturer reference action.");
+            const auto path=args["libraryPath"].toString();
+            if(path.isNotEmpty()&&!juce::File::isAbsolutePath(path))return toolFailure(name,"libraryPath must be absolute.");
+            const auto file=path.isEmpty()?manufacturer_references::bundledLibrary():juce::File(path);
+            if(action!="list"&&args["componentId"].toString().isEmpty())return toolFailure(name,"componentId is required.");
+            auto result=manufacturer_references::query(file,action=="list"?juce::String():args["componentId"].toString(),verify||action=="bind");
+            if(action=="bind"&&(bool)result["ok"])
+            {
+                if(isFixtureView)return toolFailure(name,"Bind the reference in the authoritative schematic, then update the fixture source.");
+                const auto index=instanceIndexForRefdesAnySheet(refdes);if(index<0)return toolFailure(name,"Select an existing schematic part by refdes.");
+                auto candidate=instances[(size_t)index];juce::String error;
+                if(!manufacturer_references::bind(candidate.params,candidate.manufacturerPart,result["record"],file.getParentDirectory().getFullPathName(),error))return toolFailure(name,error);
+                pushUndoSnapshot();instances[(size_t)index]=std::move(candidate);notifySelection();forceDeferredRepaint();
+            }
+            return juce::JSON::toString(result);
+        }
         if (name == "instrument_read")
             return instrumentReadJson(args.getProperty("refdes", {}).toString());
         if (name == "workbench_capabilities")

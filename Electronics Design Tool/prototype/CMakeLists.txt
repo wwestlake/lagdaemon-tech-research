@@ -1155,3 +1155,13 @@ if(POWERSHELL_EXECUTABLE)
 else()
     message(WARNING "PowerShell was not found; cookbook validation target is unavailable.")
 endif()
+
+# Original manufacturer references and portable component records; no simulator replacement.
+target_link_libraries(DjehutiElectronicsLab PRIVATE bcrypt)
+add_custom_command(TARGET DjehutiElectronicsLab POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_CURRENT_SOURCE_DIR}/assets/manufacturer-reference-library.json" "$<TARGET_FILE_DIR:DjehutiElectronicsLab>/manufacturer-reference-library.json"
+    COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_CURRENT_SOURCE_DIR}/assets/manufacturer-foundation" "$<TARGET_FILE_DIR:DjehutiElectronicsLab>/manufacturer-foundation")
+add_executable(manufacturer_reference_checks EXCLUDE_FROM_ALL tools/manufacturer_reference_checks.cpp)
+target_link_libraries(manufacturer_reference_checks PRIVATE juce::juce_core bcrypt)
+target_compile_definitions(manufacturer_reference_checks PRIVATE JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0)
+target_compile_options(manufacturer_reference_checks PRIVATE /MP1)
