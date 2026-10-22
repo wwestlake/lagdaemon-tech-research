@@ -20,5 +20,24 @@ int main(int argc,char** argv)
         const auto before=params;part="different manufacturer variant";
         check(!manufacturer_references::bind(params,part,query["record"],file.getParentDirectory().getFullPathName(),error)&&params==before,"Conflicting physical identity rejects binding atomically");
     }
+    {
+        const juce::File roboticsFile = file.getSiblingFile("robotics-component-library.json");
+        juce::var roboticsLib; juce::String roboticsErr;
+        const bool loadedRobotics = loadLibrary(roboticsFile, roboticsLib, roboticsErr);
+        check(loadedRobotics, "Load 24-record robotics component library");
+        const auto roboticsList = manufacturer_references::query(roboticsFile, {});
+        check((bool)roboticsList["ok"] && roboticsList["records"].size() == 24, "24 robotics manufacturer identities available");
+        if (loadedRobotics)
+        {
+            for (const auto& summary : *roboticsList["records"].getArray())
+            {
+                const auto q = manufacturer_references::query(roboticsFile, summary["id"].toString(), true);
+                check((bool)q["ok"] && (bool)q["assetsVerified"], ("Robotics record and assets verified: " + summary["id"].toString()).toRawUTF8());
+                std::map<juce::String, juce::String> params{{"resistance", "10"}}; juce::String part, err;
+                check(manufacturer_references::bind(params, part, q["record"], roboticsFile.getParentDirectory().getFullPathName(), err),
+                      ("Bind robotics reference: " + summary["id"].toString()).toRawUTF8());
+            }
+        }
+    }
     put(report,"bindings",rows);put(report,"passed",passed);juce::File(juce::String::fromUTF8(argv[2])).replaceWithText(juce::JSON::toString(report));std::cout<<(passed?"PASS":"FAIL")<<" manufacturer engineering and binding checks\n";return passed?0:1;
 }

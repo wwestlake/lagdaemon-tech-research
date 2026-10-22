@@ -9,6 +9,7 @@
 #include "ManufacturerReferences.h"
 #include "StepperPart.h"
 #include "Pololu25DPart.h"
+#include "RoboticsPart.h"
 #include "VacuumTubeCatalog.h"
 #include "CircuitSolver.h"
 #include "LogicGates.h"
@@ -2971,6 +2972,7 @@ private:
         add({ "dc_motor", "DC Motor (brushed)", "Electromechanical" });
         for(const auto& motor:stepper_catalog::motors())add({motor.symbol,motor.name,"Electromechanical"});
         for(const auto& motor:pololu25d::references())add({motor.symbol,motor.name,"Electromechanical"});
+        for(const auto& r:robotics_catalog::references())add({r.symbol,r.name,"Electromechanical"});
         add({"driver_uln2003","ULN2003A four-phase driver reference","Electromechanical"});
         add({"driver_tmc2209","TMC2209 STEP/DIR driver reference","Electromechanical"});
         add({"driver_dm542t_v4","STEPPERONLINE DM542T V4 driver reference","Electromechanical"});
@@ -4505,7 +4507,8 @@ public:
                 && instance.symbolId != "dc_motor" && instance.symbolId != "dc_motor_tach"
                 && instance.symbolId != "dc_motor_servo" && instance.symbolId != "position_sensor"
                 && !stepper_catalog::isMotor(instance.symbolId) && !stepper_catalog::isDriver(instance.symbolId)
-                && !pololu25d::isMotor(instance.symbolId.toStdString())) // parameterized electromechanical parts
+                && !pololu25d::isMotor(instance.symbolId.toStdString())
+                && !robotics_catalog::isRoboticsPart(instance.symbolId.toStdString())) // parameterized electromechanical parts
                 add(partFinding("WARN", "missing_value", instance.refdes + " has no value or model text.", i));
 
             if (instance.symbolId == "net_label" && instance.busName.trim().isEmpty())
@@ -8059,6 +8062,11 @@ private:
         if (symbolId == "logic_nor") return "digital.logic.nor";
         if (symbolId == "logic_xor") return "digital.logic.xor";
         if(pololu25d::isMotor(symbolId.toStdString()))return "electromechanical.motor.dc_geared.pololu25d";
+        if(robotics_catalog::isHBridge(symbolId.toStdString()))return "electromechanical.driver.hbridge.drv8833";
+        if(robotics_catalog::isLimitSwitch(symbolId.toStdString()))return "electromechanical.switch.limit.d2f";
+        if(robotics_catalog::isMagneticEncoder(symbolId.toStdString()))return "electromechanical.sensor.encoder.as5600";
+        if(robotics_catalog::isPositionalServo(symbolId.toStdString()))return "electromechanical.actuator.servo.positional";
+        if(robotics_catalog::isContinuousServo(symbolId.toStdString()))return "electromechanical.actuator.servo.continuous";
         if(stepper_catalog::isMotor(symbolId))return stepper_catalog::isUnipolar(symbolId)?"electromechanical.motor.stepper.unipolar":"electromechanical.motor.stepper.bipolar";
         if(stepper_catalog::isDriver(symbolId))return "electromechanical.driver.stepper";
         if (symbolId == "dc_motor") return "electromechanical.motor.dc_brushed";
@@ -8075,6 +8083,7 @@ private:
     juce::String familyFor(const juce::String& symbolId) const
     {
         if(pololu25d::isMotor(symbolId.toStdString()))return "pololu25d";
+        if(robotics_catalog::isRoboticsPart(symbolId.toStdString()))return "robotics_reference";
         if(stepper_catalog::isMotor(symbolId))return "stepper_reference";
         if(stepper_catalog::isDriver(symbolId))return "stepper_driver_reference";
         if (symbolId == "opamp_generic") return "generic_opamp";
@@ -11333,6 +11342,15 @@ public:
                         sim.warnings.add(inst.refdes + " (" + parts::displayName(id) + "): input(s) " + open.joinIntoString(", ")
                                          + " not wired; an open input reads LOW (its input resistance to ground).");
                 }
+            }
+            else if(const auto* r=robotics_catalog::find(id.toStdString()))
+            {
+                circuit_sim::Node targetAngle=0;
+                if(r->family==robotics_catalog::Family::MagneticEncoderAs5600)
+                {const auto it=motorAngles.find(partValue(inst,"motor").trim());if(it!=motorAngles.end())targetAngle=it->second;}
+                const auto built=robotics_catalog::build(c,*r,name,[&](const char* key){return node(i,key);},[&](const char* key){return partValue(inst,key);},targetAngle);
+                if(built.error.isNotEmpty()){const auto message=inst.refdes+": "+built.error;sim.valueErrors.add(message);if(sim.error.isEmpty())sim.error=message;}
+                else{element=built.element;if(built.angle)motorAngles[inst.refdes]=built.angle;sim.quantities.insert(sim.quantities.end(),built.quantities.begin(),built.quantities.end());if(built.warning.isNotEmpty())sim.warnings.add(inst.refdes+": "+built.warning);}
             }
             else if(const auto* reference=pololu25d::find(id.toStdString()))
             {
@@ -16109,13 +16127,14 @@ private:
                               0,
                               isRailBus(symbol.id) ? 420.0f : 0.0f });
         instances.back().sheet = currentSheet;
-        if(pololu25d::isMotor(symbolId.toStdString())||stepper_catalog::isMotor(symbolId)||stepper_catalog::isDriver(symbolId))
+        if(pololu25d::isMotor(symbolId.toStdString())||robotics_catalog::isRoboticsPart(symbolId.toStdString())||stepper_catalog::isMotor(symbolId)||stepper_catalog::isDriver(symbolId))
         {
             // Persist this reference's defaults and canonical identity with the occurrence.
             for(const auto& spec:parts::paramsFor(symbolId))
                 if(spec.storage==parts::Storage::Param)instances.back().params[spec.key]=spec.defaultValue;
             if(const auto* reference=stepper_catalog::find(symbolId))instances.back().manufacturerPart=reference->part;
             if(const auto* reference=pololu25d::find(symbolId.toStdString()))instances.back().manufacturerPart=reference->part;
+            if(const auto* reference=robotics_catalog::find(symbolId.toStdString()))instances.back().manufacturerPart=reference->part;
         }
         selectedInstance = (int)instances.size() - 1;
         selectedInstances.clear();

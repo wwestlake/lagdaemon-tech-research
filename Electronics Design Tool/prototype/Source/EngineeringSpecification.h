@@ -1,6 +1,11 @@
 #pragma once
 #include <juce_core/juce_core.h>
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
 #include <windows.h>
+#undef min
+#undef max
 #include <bcrypt.h>
 #include <cmath>
 #include <map>

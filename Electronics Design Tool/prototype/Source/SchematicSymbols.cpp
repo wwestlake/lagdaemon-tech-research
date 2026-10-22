@@ -2,6 +2,7 @@
 #include "VacuumTubeCatalog.h"
 #include "StepperCatalog.h"
 #include "Pololu25DCatalog.h"
+#include "RoboticsCatalog.h"
 
 #include <climits>
 
@@ -391,6 +392,7 @@ const juce::StringArray& supportedSymbolIds()
                 ids.add(tube.id);
         for(const auto& motor:stepper_catalog::motors())ids.add(motor.symbol);
         for(const auto& motor:pololu25d::references())ids.add(motor.symbol);
+        for(const auto& r:robotics_catalog::references())ids.add(r.symbol);
         ids.addArray({"driver_uln2003","driver_tmc2209","driver_dm542t_v4"});
         return ids;
     }();
@@ -484,6 +486,16 @@ SymbolDef symbolFor(const juce::String& id)
     if (id == "test_point")          return make(id, "TP", { -12, -12, 24, 24 }, { { "1", { -24, 0 } } });
     if (isLogicGate(id))             return logicGateSymbol(id, defaultGateInputs(id));
     // Brushed DC motor; the shaft is drawn, not a pin (Mechanical.h).
+    if(const auto* r=robotics_catalog::find(id.toStdString()))
+    {
+        if(r->family==robotics_catalog::Family::HBridgeDrv8833)
+            return make(id,juce::String(r->part)=="2130"?"POLOLU 2130":"DRV8833",{-72,-120,144,240},{{"VM",{-48,-144}},{"GND",{48,144}},{"AIN1",{-96,-72}},{"AIN2",{-96,-48}},{"BIN1",{-96,-24}},{"BIN2",{-96,0}},{"nSLEEP",{-96,48}},{"nFAULT",{96,72}},{"AOUT1",{96,-72}},{"AOUT2",{96,-48}},{"BOUT1",{96,-24}},{"BOUT2",{96,0}}},true);
+        if(r->family==robotics_catalog::Family::LimitSwitchD2F)
+            return make(id,r->part,{-48,-48,96,96},{{"COM",{-72,0}},{"NC",{72,-24}},{"NO",{72,24}},{"ACT",{0,-72}}},true);
+        if(r->family==robotics_catalog::Family::MagneticEncoderAs5600)
+            return make(id,juce::String(r->part)=="101020692"?"GROVE AS5600":"AS5600",{-60,-60,120,120},{{"ANGLE",{-84,0}},{"VCC",{-24,-84}},{"GND",{24,84}},{"OUT",{84,-24}},{"DIR",{84,24}}},true);
+        return make(id,r->part,{-48,-48,96,96},{{"VCC",{0,-72}},{"GND",{0,72}},{"PWM",{-72,0}}},true);
+    }
     if(const auto* motor=pololu25d::find(id.toStdString()))
     {
         if(motor->encoder)return make(id,juce::String(motor->micro?"":"25D ")+motor->part,{-72,-72,144,144},{{"M1",{-96,-24}},{"M2",{-96,24}},{"VCC",{-48,-96}},{"GND",{48,96}},{"A",{96,-24}},{"B",{96,24}}},true);
@@ -520,6 +532,7 @@ SymbolDef symbolFor(const juce::String& id)
 juce::String refdesPrefixFor(const juce::String& id)
 {
     if(pololu25d::isMotor(id.toStdString()))return "M";
+    if(const auto* r=robotics_catalog::find(id.toStdString()))return r->family==robotics_catalog::Family::LimitSwitchD2F?"SW":(r->family==robotics_catalog::Family::PositionalServo||r->family==robotics_catalog::Family::ContinuousServo)?"M":"U";
     if(stepper_catalog::isMotor(id))return "M";
     if(stepper_catalog::isDriver(id))return "U";
     if (id == "resistor" || id == "potentiometer") return "R";
@@ -895,7 +908,7 @@ void drawSymbolArt(juce::Graphics& g, const SymbolDef& symbol, const juce::Strin
     const auto& id = symbol.id;
     g.setColour(lineColour);
 
-    if(pololu25d::isMotor(id.toStdString())||stepper_catalog::isMotor(id)||stepper_catalog::isDriver(id))
+    if(pololu25d::isMotor(id.toStdString())||robotics_catalog::isRoboticsPart(id.toStdString())||stepper_catalog::isMotor(id)||stepper_catalog::isDriver(id))
     {
         drawBlockArt(g,symbol,symbol.title);
     }

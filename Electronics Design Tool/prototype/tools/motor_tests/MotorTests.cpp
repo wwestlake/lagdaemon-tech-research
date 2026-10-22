@@ -19,6 +19,7 @@
 #include "../../Source/LogicGates.h"
 #include "../../Source/Mechanical.h"
 #include "../../Source/Pololu25DMotor.h"
+#include "../../Source/RoboticsComponents.h"
 
 #include <algorithm>
 #include <array>
@@ -1354,6 +1355,253 @@ int pololu25dChecks()
     std::vector<std::uint8_t> state;check(encoder.saveState(state)&&encoder.restoreState(state),"Encoder supports solver rollback");
     v[1]=0;encoder.evaluate(0,0,v,i,error);check(i==std::vector<double>(5,0),"Unpowered encoder is high impedance");
     v[1]=21;check(!encoder.evaluate(0,0,v,i,error)&&!error.empty(),"Encoder overvoltage is rejected");
+
+    // ---- Robotics Component Family 1: TI DRV8833 / Pololu #2130 H-Bridge ----
+    {
+        std::printf("-- DRV8833 / Pololu 2130 H-Bridge checks --\n");
+        const auto* tiRef = robotics_catalog::find("driver_ti_drv8833pwpr");
+        const auto* polRef = robotics_catalog::find("driver_pololu_2130");
+        check(tiRef != nullptr && polRef != nullptr && tiRef->p3 == 1.5 && polRef->p3 == 1.2 && polRef->p5 == 1.0,
+              "DRV8833 catalog entries distinguish TI 1.5 A RMS bare IC from Pololu 2130 1.2 A carrier with nSLEEP pull-up");
+
+        // Truth table check on Pololu #2130 (nSLEEP pulled high internally via 47k to VM) driving a 10 ohm load on Bridge A
+        auto runBridgeA = [&](double vVm, double vAin1, double vAin2, double vSleep, double rLoad = 10.0) {
+            Circuit c;
+            const auto vm = c.addNode(), ain1 = c.addNode(), ain2 = c.addNode(), bin1 = c.addNode(), bin2 = c.addNode();
+            const auto nsleep = c.addNode(), nfault = c.addNode();
+            const auto aout1 = c.addNode(), aout2 = c.addNode(), bout1 = c.addNode(), bout2 = c.addNode();
+            c.addVoltageSource("VM", vm, 0, dc(vVm));
+            c.addVoltageSource("AIN1", ain1, 0, dc(vAin1));
+            c.addVoltageSource("AIN2", ain2, 0, dc(vAin2));
+            c.addVoltageSource("BIN1", bin1, 0, dc(0.0));
+            c.addVoltageSource("BIN2", bin2, 0, dc(0.0));
+            if (vSleep >= 0.0)
+                c.addVoltageSource("SLEEP", nsleep, 0, dc(vSleep));
+            c.addResistor("R_PULLUP_FLT", vm, nfault, 10e3);
+            c.addResistor("R_LOAD_A", aout1, aout2, rLoad);
+
+            mech::Drv8833Model m;
+            m.carrierPullupSleep = true;
+            m.currentLimit = 1.2;
+            mech::addDrv8833Driver(c, "U_DRV", { vm, 0, ain1, ain2, bin1, bin2, nsleep, nfault, aout1, aout2, bout1, bout2 }, m);
+            return std::tuple { solveOperatingPoint(c), aout1, aout2, nfault };
+        };
+
+        // 1) Forward (AIN1=3.3V, AIN2=0V, nSLEEP floating -> pulled high on Pololu #2130)
+        {
+            auto [op, aout1, aout2, nfault] = runBridgeA(6.0, 3.3, 0.0, -1.0, 10.0);
+            const double vDiff = op.ok ? (op.voltages[(size_t)aout1] - op.voltages[(size_t)aout2]) : NAN;
+            const double expectedDiff = 6.0 * (10.0 / (10.0 + 0.36));
+            check(op.ok && std::abs(vDiff - expectedDiff) < 1e-4 && op.voltages[(size_t)nfault] > 5.5,
+                  fmt("Pololu 2130 forward (AIN1=1, AIN2=0, nSLEEP floating): V(AOUT1,AOUT2)=%.6g V (expected %.6g V), nFAULT high", vDiff, expectedDiff));
+        }
+        // 2) Reverse (AIN1=0V, AIN2=3.3V)
+        {
+            auto [op, aout1, aout2, nfault] = runBridgeA(6.0, 0.0, 3.3, 3.3, 10.0);
+            const double vDiff = op.ok ? (op.voltages[(size_t)aout1] - op.voltages[(size_t)aout2]) : NAN;
+            const double expectedDiff = -6.0 * (10.0 / (10.0 + 0.36));
+            check(op.ok && std::abs(vDiff - expectedDiff) < 1e-4,
+                  fmt("Pololu 2130 reverse (AIN1=0, AIN2=1): V(AOUT1,AOUT2)=%.6g V (expected %.6g V)", vDiff, expectedDiff));
+        }
+        // 3) Brake / slow decay (AIN1=3.3V, AIN2=3.3V): both outputs pulled to GND
+        {
+            auto [op, aout1, aout2, nfault] = runBridgeA(6.0, 3.3, 3.3, 3.3, 10.0);
+            check(op.ok && std::abs(op.voltages[(size_t)aout1]) < 1e-6 && std::abs(op.voltages[(size_t)aout2]) < 1e-6,
+                  "DRV8833 brake (AIN1=1, AIN2=1): both AOUT1 and AOUT2 tied low to GND");
+        }
+        // 4) Sleep mode (nSLEEP=0V): outputs disabled (0V differential across load)
+        {
+            auto [op, aout1, aout2, nfault] = runBridgeA(6.0, 3.3, 0.0, 0.0, 10.0);
+            check(op.ok && std::abs(op.voltages[(size_t)aout1] - op.voltages[(size_t)aout2]) < 1e-6,
+                  "DRV8833 sleep mode (nSLEEP=0): bridge outputs disabled");
+        }
+        // 5) Overcurrent chopping limit and nFAULT assertion (1 ohm load on 6 V -> unclamped ~5.79 A, clamped to 1.2 A)
+        {
+            auto [op, aout1, aout2, nfault] = runBridgeA(6.0, 3.3, 0.0, 3.3, 1.0);
+            const double iLoad = op.ok ? (op.voltages[(size_t)aout1] - op.voltages[(size_t)aout2]) / 1.0 : NAN;
+            check(op.ok && std::abs(iLoad - 1.2) < 1e-3 && op.voltages[(size_t)nfault] < 0.1,
+                  fmt("Pololu 2130 current limit: 1 ohm load current clamped to %.6g A (1.2 A limit) and nFAULT asserted low (%.4g V)",
+                      iLoad, op.ok ? op.voltages[(size_t)nfault] : NAN));
+        }
+        // 6) UVLO (VM = 2.0 V < 2.7 V): outputs disabled and nFAULT pulled low
+        {
+            auto [op, aout1, aout2, nfault] = runBridgeA(2.0, 3.3, 0.0, 3.3, 10.0);
+            check(op.ok && std::abs(op.voltages[(size_t)aout1] - op.voltages[(size_t)aout2]) < 1e-6 && op.voltages[(size_t)nfault] < 0.1,
+                  "DRV8833 UVLO (VM=2.0 V < 2.7 V): bridge disabled and nFAULT asserted low");
+        }
+        // 7) DRV8833 driving Pololu #2379 6V micro metal gearmotor in forward and reverse
+        {
+            const auto* m2379 = pololu25d::find("motor_pololu_2379");
+            Circuit c;
+            const auto vm = c.addNode(), ain1 = c.addNode(), ain2 = c.addNode(), bin1 = c.addNode(), bin2 = c.addNode();
+            const auto nsleep = c.addNode(), nfault = c.addNode();
+            const auto aout1 = c.addNode(), aout2 = c.addNode(), bout1 = c.addNode(), bout2 = c.addNode();
+            c.addVoltageSource("VM", vm, 0, dc(6.0));
+            c.addVoltageSource("AIN1", ain1, 0, dc(3.3));
+            c.addVoltageSource("AIN2", ain2, 0, dc(0.0));
+            c.addVoltageSource("BIN1", bin1, 0, dc(0.0));
+            c.addVoltageSource("BIN2", bin2, 0, dc(0.0));
+            c.addVoltageSource("SLEEP", nsleep, 0, dc(3.3));
+            c.addResistor("R_FLT", vm, nfault, 10e3);
+            mech::Drv8833Model drvModel;
+            mech::addDrv8833Driver(c, "U_DRV", { vm, 0, ain1, ain2, bin1, bin2, nsleep, nfault, aout1, aout2, bout1, bout2 }, drvModel);
+            const auto motor = mech::addDcMotor(c, "M_2379", aout1, aout2, pololu25d::endpointModel(*m2379), {}, {});
+            const auto op = solveOperatingPoint(c);
+            const double rpm = op.ok ? op.voltages[(size_t)motor.shaft] * 60.0 / (2.0 * 3.14159265358979323846) : NAN;
+            check(op.ok && rpm > 410.0 && rpm < 420.0,
+                  fmt("DRV8833 driving Pololu 2379 micro gearmotor at 6 V: steady speed %.5g rpm (includes 0.36 ohm bridge drop)", rpm));
+        }
+    }
+
+    // ---- Robotics Component Family 2: Omron D2F-01F / D2F-01FL Limit Switches ----
+    {
+        std::printf("-- Omron D2F-01F / D2F-01FL limit switch checks --\n");
+        const auto* fRef = robotics_catalog::find("switch_omron_d2f_01f");
+        const auto* flRef = robotics_catalog::find("switch_omron_d2f_01fl");
+        check(fRef != nullptr && flRef != nullptr && std::abs(fRef->p5 - 0.5) < 1e-9 && std::abs(flRef->p5 - 2.5) < 1e-9,
+              "Omron D2F catalog distinguishes D2F-01F (PT=0.5 mm, MD=0.1 mm) and D2F-01FL (PT=2.5 mm, MD=0.5 mm)");
+
+        // Hysteresis sweep on D2F-01F (PT = 0.5 mm, MD = 0.1 mm -> trips at >= 0.5 mm, releases at <= 0.4 mm)
+        mech::LimitSwitchD2FModel swModel;
+        swModel.pretravelMm = 0.5;
+        swModel.movementDiffMm = 0.1;
+        mech::LimitSwitchD2FDevice dev(swModel);
+        std::vector<double> v { 5.0, 0.0, 0.0, 0.0 }, i;
+        std::string err;
+
+        // At 0.45 mm approaching from 0: still unactuated (NC closed, NO open)
+        v[3] = 0.45;
+        check(dev.evaluate(0, 1e-4, v, i, err) && !dev.isActuated() && i[1] > 40.0 && i[2] < 1e-6,
+              "D2F-01F at 0.45 mm (below 0.5 mm PT): NC closed (0.1 ohm), NO open (1 GOhm)");
+        dev.accept(1e-4);
+
+        // At 0.52 mm: crosses PT (0.5 mm) -> actuates (NC open, NO closed)
+        v[3] = 0.52;
+        check(dev.evaluate(2e-4, 1e-4, v, i, err) && i[2] > 40.0 && i[1] < 1e-6,
+              "D2F-01F at 0.52 mm (>= 0.5 mm PT): snaps to NO closed (0.1 ohm), NC open");
+        dev.accept(2e-4);
+        check(dev.isActuated(), "D2F-01F committed state is actuated");
+
+        // Save state for rollback check
+        std::vector<std::uint8_t> savedSw;
+        check(dev.saveState(savedSw), "D2F-01F saves hysteresis state");
+
+        // Retract to 0.45 mm (above release threshold PT - MD = 0.40 mm): stays actuated due to snap-action hysteresis!
+        v[3] = 0.45;
+        check(dev.evaluate(3e-4, 1e-4, v, i, err) && i[2] > 40.0 && i[1] < 1e-6,
+              "D2F-01F retracting to 0.45 mm (> 0.40 mm release point): remains actuated (NO closed) by MD hysteresis");
+        dev.accept(3e-4);
+
+        // Retract to 0.38 mm (<= 0.40 mm release point): snaps back to NC!
+        v[3] = 0.38;
+        check(dev.evaluate(4e-4, 1e-4, v, i, err) && i[1] > 40.0 && i[2] < 1e-6,
+              "D2F-01F retracting to 0.38 mm (<= 0.40 mm release point): snaps back to NC closed");
+        dev.accept(4e-4);
+        check(!dev.isActuated(), "D2F-01F committed state is unactuated after release");
+
+        // Restore state and verify rollback restores actuated state
+        check(dev.restoreState(savedSw) && dev.isActuated(), "D2F-01F restores state on solver rollback");
+    }
+
+    // ---- Robotics Component Family 3: ams AS5600 / Seeed Grove 12-Bit Magnetic Encoder ----
+    {
+        std::printf("-- ams AS5600 / Seeed Grove 12-bit magnetic encoder checks --\n");
+        mech::As5600Model encModel;
+        mech::As5600EncoderDevice encDev(encModel);
+        check(encDev.codeForAngle(0.0, false) == 0, "AS5600 code at 0 rad is 0");
+        check(encDev.codeForAngle(3.14159265358979323846, false) == 2048, "AS5600 code at pi rad (180 deg) is 2048");
+        check(encDev.codeForAngle(2.0 * 3.14159265358979323846 + 0.5 * 3.14159265358979323846, false) == 1024,
+              "AS5600 wraps multi-turn angle modulo 2*pi (2.5*pi -> pi/2 -> code 1024)");
+        check(encDev.codeForAngle(0.5 * 3.14159265358979323846, true) == 3072,
+              "AS5600 DIR=HIGH reverses polarity (pi/2 CW -> 3*pi/2 -> code 3072)");
+
+        // Circuit operating point check at 5.0 V supply, pi rad angle -> V(OUT) = 5.0 * (2048 / 4095)
+        Circuit c;
+        const auto angleNode = c.addQuantityNode(), vcc = c.addNode(), outNode = c.addNode(), dirNode = c.addNode();
+        c.addVoltageSource("ANG", angleNode, 0, dc(3.14159265358979323846));
+        c.addVoltageSource("VCC", vcc, 0, dc(5.0));
+        c.addVoltageSource("DIR", dirNode, 0, dc(0.0));
+        mech::addAs5600Encoder(c, "U_AS5600", angleNode, vcc, 0, outNode, dirNode, encModel);
+        const auto op = solveOperatingPoint(c);
+        const double expectedV = 5.0 * (2048.0 / 4095.0);
+        check(op.ok && std::abs(op.voltages[(size_t)outNode] - expectedV) < 1e-4,
+              fmt("AS5600 ratiometric analog output at 180 deg (5 V supply): %.6g V (expected %.6g V)",
+                  op.ok ? op.voltages[(size_t)outNode] : NAN, expectedV));
+    }
+
+    // ---- Robotics Component Family 4: Positional (SG90, MG90S) and Continuous (FS90R) Servos ----
+    {
+        std::printf("-- Positional (SG90, MG90S) and Continuous (FS90R V1/V2) Servo checks --\n");
+
+        // 4a. Positional servo SG90: command_pulse_us = 1950 us (+45 deg = pi/4 rad) at 4.8 V
+        {
+            Circuit c;
+            const auto vcc = c.addNode(), pwm = c.addNode();
+            c.addVoltageSource("VCC", vcc, 0, dc(4.8));
+            c.addVoltageSource("PWM", pwm, 0, dc(0.0));
+            mech::PositionalServoModel sg90;
+            sg90.unloadedSpeedDegPerSec4V8 = 500.0;
+            sg90.stallTorqueKgCm4V8 = 1.8;
+            sg90.commandPulseUs = 1950.0; // Halfway between 1500 us and 2400 us -> +45 deg (pi/4 rad)
+            const auto servo = mech::addPositionalServo(c, "SRV_SG90", vcc, 0, pwm, sg90, {}, {});
+            const auto r = run(c, 0.25, 100e-6);
+            const double targetRad = 0.25 * 3.14159265358979323846;
+            const double finalRad = r.ok ? r.voltages.back()[(size_t)servo.angle] : NAN;
+            double maxSpeed = 0.0;
+            for (const auto& vRow : r.voltages)
+                maxSpeed = std::max(maxSpeed, vRow[(size_t)servo.shaft]);
+            const double expectedMaxSpeed = 500.0 * (3.14159265358979323846 / 180.0);
+            check(r.ok && std::abs(finalRad - targetRad) < 1e-3 && maxSpeed <= expectedMaxSpeed * 1.02 && maxSpeed > expectedMaxSpeed * 0.95,
+                  fmt("SG90 positional servo slews at <= %.4g rad/s (500 deg/s) and settles at %.5g rad (target %.5g rad)",
+                      maxSpeed, finalRad, targetRad));
+        }
+
+        // 4b. Continuous servo FS90R: deadband (1500 us & 1530 us -> 0 rpm), full speed at 4.8 V (80 rpm) & 6.0 V (100 rpm), half-load droop
+        for (double vSupply : { 4.8, 6.0 })
+        {
+            const double expectedNoLoadRpm = (vSupply == 4.8) ? 80.0 : 100.0;
+            const double expectedNoLoadI = (vSupply == 4.8) ? 0.070 : 0.080;
+            const double expectedStallKgCm = (vSupply == 4.8) ? 1.3 : 1.5;
+
+            // Inside 90 us deadband (1530 us = +30 us < 45 us half-deadband): 0 rpm
+            {
+                Circuit c;
+                const auto vcc = c.addNode(), pwm = c.addNode();
+                c.addVoltageSource("VCC", vcc, 0, dc(vSupply));
+                c.addVoltageSource("PWM", pwm, 0, dc(0.0));
+                mech::ContinuousServoModel fs90r;
+                fs90r.commandPulseUs = 1530.0;
+                const auto servo = mech::addContinuousServo(c, "SRV_FS90R", vcc, 0, pwm, fs90r, {}, {});
+                const auto op = solveOperatingPoint(c);
+                check(op.ok && std::abs(op.voltages[(size_t)servo.shaft]) < 1e-9,
+                      fmt("FS90R at %.1f V, pulse 1530 us (inside +/-45 us deadband): speed is 0 rpm", vSupply));
+            }
+
+            // Full CCW pulse (2300 us) at zero load and 50% stall load
+            for (double loadFrac : { 0.0, 0.5 })
+            {
+                Circuit c;
+                const auto vcc = c.addNode(), pwm = c.addNode();
+                const int vSrc = c.addVoltageSource("VCC", vcc, 0, dc(vSupply));
+                c.addVoltageSource("PWM", pwm, 0, dc(0.0));
+                mech::ContinuousServoModel fs90r;
+                fs90r.commandPulseUs = 2300.0;
+                mech::MotorLoad load;
+                load.torque.offset = loadFrac * expectedStallKgCm * robotics_catalog::kgCmToNm;
+                const auto servo = mech::addContinuousServo(c, "SRV_FS90R", vcc, 0, pwm, fs90r, load, {});
+                const auto op = solveOperatingPoint(c);
+                const double actualRpm = op.ok ? op.voltages[(size_t)servo.shaft] * 60.0 / (2.0 * 3.14159265358979323846) : NAN;
+                const double expectedRpm = expectedNoLoadRpm * (1.0 - loadFrac);
+                const double actualI = op.ok ? -op.sourceCurrents[(size_t)vSrc] : NAN;
+                check(op.ok && std::abs(actualRpm - expectedRpm) < 1e-4,
+                      fmt("FS90R at %.1f V, 2300 us, load %.0f%%: speed %.6g rpm (expected %.6g rpm), I=%.4g A",
+                          vSupply, loadFrac * 100.0, actualRpm, expectedRpm, actualI));
+                if (loadFrac == 0.0)
+                    check(std::abs(actualI - expectedNoLoadI) < 1e-5,
+                          fmt("FS90R at %.1f V no-load supply current %.5g A matches datasheet %.5g A", vSupply, actualI, expectedNoLoadI));
+            }
+        }
+    }
     std::printf("Pololu 25D: %d passed, %d failed\n",passes,failures);return failures?1:0;
 }
 
@@ -1365,7 +1613,7 @@ int main(int argc, char** argv)
         if (std::string(argv[i]) == "--out")
             outDir = argv[i + 1];
     fs::create_directories(outDir);
-    if(argc>=2&&std::string(argv[1])=="--pololu25d")return pololu25dChecks();
+    if(argc>=2&&(std::string(argv[1])=="--pololu25d"||std::string(argv[1])=="--robotics"))return pololu25dChecks();
     std::printf("motor tests, circuit_sim configuration: %s, output: %s\n", MOTOR_TESTS_CONFIG, outDir.c_str());
     std::vector<double> startup, load, friction, events, rollback, control;
     testStartupAndSteadyState(startup);

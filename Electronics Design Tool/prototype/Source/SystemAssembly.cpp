@@ -2,6 +2,7 @@
 #include "FrustComponentCompiler.h"
 #include "StepperPart.h"
 #include "Pololu25DPart.h"
+#include "RoboticsPart.h"
 
 #include <algorithm>
 #include <cmath>
@@ -2086,6 +2087,14 @@ CompiledAssemblyCircuit AssemblyCompiler::compile(const SystemAssembly& assembly
                     if(built.error.isNotEmpty()){res.error=built.error.toStdString();return res;}
                     res.signalNodes[inst.instanceId+"."+refdes+".speed"]=built.speed;res.signalNodes[inst.instanceId+"."+refdes+".angle"]=built.angle;
                     res.signalBranches[inst.instanceId+"."+refdes+".current"]=built.element;
+                }
+                else if(const auto* r=robotics_catalog::find(sym.toStdString()))
+                {
+                    const auto built=robotics_catalog::build(c,*r,inst.instanceId+"_"+refdes,[&](const char* key){return getPinNode(key);},[&](const char* key)
+                    {const auto parameters=co->getProperty("params");if(parameters.hasProperty(key))return parameters[key].toString();const auto numeric=inst.numericParams.find(key);if(numeric!=inst.numericParams.end())return juce::String(numeric->second,12);return juce::String(inst.getTextParam(key));});
+                    if(!built.error.isEmpty()){res.error=built.error.toStdString();return res;}
+                    if(built.speed){res.signalNodes[inst.instanceId+"."+refdes+".speed"]=built.speed;res.signalNodes[inst.instanceId+"."+refdes+".angle"]=built.angle;}
+                    if(built.element>=0)res.signalBranches[inst.instanceId+"."+refdes+".current"]=built.element;
                 }
                 else if(stepper_catalog::isMotor(sym)||stepper_catalog::isDriver(sym))
                 {

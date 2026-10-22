@@ -33,6 +33,8 @@ set(CIRCUIT_SIM_SOURCES
     "${CIRCUIT_SIM_SOURCE_DIR}/Pololu25DMotor.cpp"
     "${CIRCUIT_SIM_SOURCE_DIR}/StepperMotor.h"
     "${CIRCUIT_SIM_SOURCE_DIR}/StepperMotor.cpp"
+    "${CIRCUIT_SIM_SOURCE_DIR}/RoboticsComponents.h"
+    "${CIRCUIT_SIM_SOURCE_DIR}/RoboticsComponents.cpp"
     "${CIRCUIT_SIM_SOURCE_DIR}/AudioTestRender.h"
     "${CIRCUIT_SIM_SOURCE_DIR}/AudioTestRender.cpp"
 )

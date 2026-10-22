@@ -4,6 +4,7 @@
 #include "PartCatalog.h"
 #include "StepperCatalog.h"
 #include "Pololu25DCatalog.h"
+#include "RoboticsCatalog.h"
 #include "SchematicSymbols.h"
 #include "XyceBackend.h"
 
@@ -536,6 +537,7 @@ juce::String toJson(const Request& request)
         }
         root->setProperty("component", component(id, true));
         if(pololu25d::isMotor(id.toStdString()))root->setProperty("pololu25dScope","Manufacturer-specific output-equivalent DC/shaft model. Published typical no-load/stall endpoints calibrate effective R/Kt/Ke/B. Unknown L/inertia and transient time scales are reference assumptions. Encoder variants alone have powered A/B quadrature (48 counts/rotor rev, 2248.86/output rev); resolve edges with sufficient simulation time steps. Complete source curves and hashes: assets/manufacturers/pololu and assets/pololu-25d-reference.json.");
+        if(robotics_catalog::isRoboticsPart(id.toStdString()))root->setProperty("roboticsScope","Manufacturer-backed robotics component model linked to assets/robotics-component-library.json and assets/manufacturer-foundation/. Supports DRV8833 H-bridge truth table/UVLO/current limiting, Omron D2F snap-action limit switch hysteresis, ams AS5600 12-bit magnetic rotary encoder (analog/PWM), and SG90/MG90S/FS90R RC servos.");
         if (id == "frust_component")
             root->setProperty("programmableComponents", programmableSection(request));
         if (schematic::isLogicGate(id))

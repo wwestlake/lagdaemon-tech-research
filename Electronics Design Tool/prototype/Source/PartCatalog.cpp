@@ -5,6 +5,7 @@
 #include "CircuitSolver.h"
 #include "StepperCatalog.h"
 #include "Pololu25DMotor.h"
+#include "RoboticsCatalog.h"
 
 #include <map>
 
@@ -272,6 +273,104 @@ std::map<juce::String, std::vector<ParamSpec>> buildCatalog()
             p.push_back(text("encoder_spec","Encoder specifications","3.5-20V, max 10mA; 48 counts/rotor revolution (both edges/both channels), 12 cycles; 2248.86 counts/output rev. Red M1, black M2, green GND, blue VCC, yellow A, white B. A/B ideal sampled quadrature; no timing jitter/frequency/current-limit model."));
         }
     }
+    for (const auto& reference : robotics_catalog::references())
+    {
+        const auto num = [](double v) { return juce::String(v, 6); };
+        auto& p = c[reference.symbol];
+        p = {
+            hidden(text("component_id", "Shared CAD/DEWB identity", reference.id)),
+            text("part_number", "Manufacturer part", reference.part),
+            text("source", "Manufacturer source", reference.source)
+        };
+        if (reference.family == robotics_catalog::Family::HBridgeDrv8833)
+        {
+            p.push_back(text("model_scope", "Modeled behavior", "Dual H-bridge (coast, forward, reverse, brake), nSLEEP enable, UVLO, averaged current chopping, and open-drain nFAULT."));
+            p.push_back(quantity("rds_on", "Bridge on-resistance (HS + LS)", "ohm", num(reference.p2), Storage::Param, "Published typical 0.36 ohm (0.20 ohm HS + 0.16 ohm LS at 25 C)."));
+            p.push_back(quantity("current_limit", "Bridge current limit", "A", num(reference.p3), Storage::Param, "1.5 A RMS (DRV8833PWPR) or 1.2 A continuous (Pololu 2130), up to 2.0 A peak."));
+            p.push_back(quantity("min_supply", "Minimum VM supply (UVLO)", "V", num(reference.p0)));
+            p.push_back(quantity("max_supply", "Maximum VM supply", "V", num(reference.p1)));
+            p.push_back(quantity("logic_high", "Logic input HIGH threshold", "V", "2.0"));
+            p.push_back(quantity("logic_low", "Logic input LOW threshold", "V", "0.8"));
+        }
+        else if (reference.family == robotics_catalog::Family::LimitSwitchD2F)
+        {
+            p.push_back(text("model_scope", "Modeled behavior", "SPDT snap-action microswitch with pretravel/movement-differential hysteresis on travel_mm + V(ACT)."));
+            p.push_back(choice("state_override", "Actuation mode", { "Auto (from travel)", "Unactuated (NC)", "Actuated (NO)" }, "Auto (from travel)", Storage::Param, "Auto switches at pretravel_mm with movement_diff_mm hysteresis; override forces NC or NO."));
+            p.push_back(quantity("travel_mm", "Static plunger/lever travel", "mm", "0", Storage::Param, "Added to mechanical input pin ACT (1 V = 1 mm)."));
+            p.push_back(quantity("ron", "Closed contact resistance", "ohm", num(reference.p2), Storage::Param, "Published initial contact resistance <= 0.1 ohm (100 mOhm max)."));
+            p.push_back(quantity("roff", "Open contact resistance", "ohm", "1G"));
+            p.push_back(quantity("pretravel_mm", "Pretravel (PT)", "mm", num(reference.p5)));
+            p.push_back(quantity("overtravel_mm", "Overtravel (OT)", "mm", num(reference.p6)));
+            p.push_back(quantity("movement_diff_mm", "Movement differential (MD)", "mm", num(reference.p7)));
+            p.push_back(quantity("operating_force", "Operating force (OF max)", "N", num(reference.p3)));
+            p.push_back(quantity("release_force", "Release force (RF min)", "N", num(reference.p4)));
+            p.push_back(quantity("max_voltage", "Rated DC voltage", "V", num(reference.p0)));
+            p.push_back(quantity("max_current", "Rated resistive current", "A", num(reference.p1)));
+        }
+        else if (reference.family == robotics_catalog::Family::MagneticEncoderAs5600)
+        {
+            p.push_back(text("model_scope", "Modeled behavior", "12-bit (4096-step) contactless magnetic rotary encoder with wrapped angle input, DIR polarity, angular window, and ratiometric analog or PWM output."));
+            p.push_back(text("motor", "Target motor refdes (when ANGLE unwired)", "M1", Storage::Param, "Refdes of a motor/servo whose shaft angle drives the sensor when pin ANGLE is unwired."));
+            p.push_back(choice("output_mode", "Output mode", { "Analog (0%-100% VCC)", "Analog (10%-90% VCC)", "PWM" }, "Analog (0%-100% VCC)"));
+            p.push_back(quantity("start_angle_deg", "Start angle (ZPOS)", "deg", "0"));
+            p.push_back(quantity("stop_angle_deg", "Stop angle (MPOS)", "deg", "360"));
+            p.push_back(quantity("angle_offset_rad", "Mechanical zero offset", "rad", "0"));
+            p.push_back(quantity("rout", "Output resistance", "ohm", num(reference.p3)));
+            p.push_back(quantity("pwm_frequency", "PWM carrier frequency", "Hz", "460"));
+            p.push_back(quantity("min_supply", "Minimum VCC supply", "V", num(reference.p0)));
+            p.push_back(quantity("max_supply", "Maximum VCC supply", "V", num(reference.p1)));
+        }
+        else if (reference.family == robotics_catalog::Family::PositionalServo)
+        {
+            p.push_back(text("model_scope", "Modeled behavior", "Positional RC servo mapping pulse width (command_pulse_us or PWM pulse train) to target angle with datasheet unloaded slew rate and stall torque saturation."));
+            p.push_back(quantity("command_pulse_us", "Command pulse width (DC / initial)", "us", num(reference.p5), Storage::Param, "Used when PWM pin is steady or before the first measured PWM pulse."));
+            p.push_back(quantity("unloaded_speed_deg_s", "Unloaded speed at 4.8 V", "deg/s", num(reference.p2)));
+            p.push_back(quantity("stall_torque_kgcm", "Stall torque at 4.8 V", "kg*cm", num(reference.p3)));
+            p.push_back(quantity("min_pulse_us", "Minimum pulse width (-max_angle)", "us", num(reference.p4)));
+            p.push_back(quantity("neutral_pulse_us", "Neutral pulse width (0 rad)", "us", num(reference.p5)));
+            p.push_back(quantity("max_pulse_us", "Maximum pulse width (+max_angle)", "us", num(reference.p6)));
+            p.push_back(quantity("deadband_us", "Deadband width", "us", num(reference.p7)));
+            p.push_back(quantity("max_angle_deg", "Half-travel angle limit", "deg", "90"));
+            p.push_back(quantity("loop_gain", "Position loop velocity gain", "1/s", "60"));
+            p.push_back(quantity("idle_current", "Idle supply current", "A", num(reference.p8)));
+            p.push_back(quantity("stall_current", "Stall supply current", "A", num(reference.p9)));
+            p.push_back(quantity("j", "Output-equivalent inertia", "kg*m^2", "10u"));
+            p.push_back(quantity("b", "Added passive viscous damping", "N*m*s/rad", "0"));
+            p.push_back(quantity("load_inertia", "Added load inertia", "kg*m^2", "0"));
+            p.push_back(quantity("load_damping", "Added load damping", "N*m*s/rad", "0"));
+            p.push_back(quantity("load_torque", "Opposing load torque", "N*m", "0"));
+            p.push_back(quantity("initial_position", "Initial output angle", "rad", "0"));
+            p.push_back(quantity("initial_speed", "Initial output speed", "rad/s", "0"));
+        }
+        else if (reference.family == robotics_catalog::Family::ContinuousServo)
+        {
+            p.push_back(text("model_scope", "Modeled behavior", "Continuous-rotation RC servo with 90 us neutral deadband around 1500 us and 4.8 V / 6.0 V speed-torque droop."));
+            p.push_back(quantity("command_pulse_us", "Command pulse width (DC / initial)", "us", num(reference.p11), Storage::Param, "Used when PWM pin is steady or before the first measured PWM pulse."));
+            p.push_back(quantity("noload_rpm_4v8", "No-load speed at 4.8 V", "rpm", num(reference.p2)));
+            p.push_back(quantity("noload_rpm_6v", "No-load speed at 6.0 V", "rpm", num(reference.p3)));
+            p.push_back(quantity("noload_current_4v8", "No-load current at 4.8 V", "A", num(reference.p4)));
+            p.push_back(quantity("noload_current_6v", "No-load current at 6.0 V", "A", num(reference.p5)));
+            p.push_back(quantity("stall_torque_kgcm_4v8", "Stall torque at 4.8 V", "kg*cm", num(reference.p6)));
+            p.push_back(quantity("stall_torque_kgcm_6v", "Stall torque at 6.0 V", "kg*cm", num(reference.p7)));
+            p.push_back(quantity("stall_current_4v8", "Stall current at 4.8 V", "A", num(reference.p8)));
+            p.push_back(quantity("stall_current_6v", "Stall current at 6.0 V", "A", num(reference.p9)));
+            p.push_back(quantity("min_pulse_us", "Full-speed CW pulse limit", "us", num(reference.p10)));
+            p.push_back(quantity("neutral_pulse_us", "Neutral stop pulse width", "us", num(reference.p11)));
+            p.push_back(quantity("max_pulse_us", "Full-speed CCW pulse limit", "us", num(reference.p12)));
+            p.push_back(quantity("deadband_us", "Neutral deadband width", "us", "90"));
+            p.push_back(quantity("idle_current", "Idle supply current", "A", "5m"));
+            p.push_back(quantity("j", "Output-equivalent inertia", "kg*m^2", "10u"));
+            p.push_back(quantity("b", "Added passive viscous damping", "N*m*s/rad", "0"));
+            p.push_back(quantity("load_inertia", "Added load inertia", "kg*m^2", "0"));
+            p.push_back(quantity("load_damping", "Added load damping", "N*m*s/rad", "0"));
+            p.push_back(quantity("load_torque", "Opposing load torque", "N*m", "0"));
+            p.push_back(quantity("initial_position", "Initial output angle", "rad", "0"));
+            p.push_back(quantity("initial_speed", "Initial output speed", "rad/s", "0"));
+        }
+    }
+    if (false) { if (false) {
+        }
+    }
     c["position_sensor"] = {
         text("motor", "Target motor refdes", "M1", Storage::Param, "Refdes of the motor whose shaft angle is measured."),
         quantity("constant", "Sensor constant", "V/rad", "1.0", Storage::Param, "Output voltage per radian of shaft angle."),
@@ -467,6 +566,7 @@ const ParamSpec* findParam(const juce::String& symbolId, const juce::String& key
 juce::String displayName(const juce::String& id)
 {
     if(const auto* r=pololu25d::find(id.toStdString()))return r->name;
+    if(const auto* r=robotics_catalog::find(id.toStdString()))return r->name;
     if(const auto* reference=stepper_catalog::find(id))return reference->name;
     if(stepper_catalog::isDriver(id))return id=="driver_uln2003"?"ULN2003A unipolar driver reference":id=="driver_tmc2209"?"TMC2209 driver reference":"STEPPERONLINE DM542T V4 driver";
     static const std::map<juce::String, juce::String> names {
@@ -508,6 +608,7 @@ juce::String displayName(const juce::String& id)
 juce::String simulationFidelity(const juce::String& id)
 {
     if(pololu25d::isMotor(id.toStdString()))return "manufacturer_endpoint_reference";
+    if(robotics_catalog::isRoboticsPart(id.toStdString()))return "reference_model";
     if(stepper_catalog::isMotor(id)||stepper_catalog::isDriver(id))return "reference_model";
     if (id == "opamp_741" || id == "comparator_lm311" || id == "regulator_lm317")
         return "vendor_model";
