@@ -40,6 +40,7 @@
 #include "FixtureAudioInputDialog.h"
 #include "AudioDsp.h"
 #include "SpiceLibrary.h"
+#include "UserBlockLibrary.h"
 #include "CircuitHierarchyPanel.h"
 #include "PlotInstrument.h"
 #include "PlotInstrumentView.h"
@@ -330,6 +331,11 @@ const SchematicToolSpec schematicToolSpecs[] = {
         "library_save_block",
         "Save an existing sub-diagram block into the user's reusable circuit-block library. Saved blocks are copy templates: placing one later creates a new editable sub-diagram copy, not a linked/shared definition.",
         R"({"type":"object","properties":{"block":{"type":"string","description":"Sub-diagram block refdes (A1) or name to save."},"name":{"type":"string","description":"Optional library name; defaults to the block name."},"description":{"type":"string","description":"Optional notes for the user and assistant."},"category":{"type":"string","description":"Optional category such as Filters, Amplifiers, Power, or Utilities."}},"required":["block"],"additionalProperties":false})"
+    },
+    {
+        "library_manage_user",
+        "Manage the shared User Defined library: create/rename/delete empty categories, rename/delete saved templates, move a component to a category (empty value means User Defined root), or refresh. Existing inserted copies are never modified. name identifies the category/component; value is the new name or destination category.",
+        R"({"type":"object","properties":{"action":{"type":"string","enum":["create_category","rename_category","delete_category","rename_component","delete_component","move_component","refresh"]},"name":{"type":"string"},"value":{"type":"string"}},"required":["action"],"additionalProperties":false})"
     },
     {
         "library_list_blocks",
@@ -2166,6 +2172,7 @@ public:
     static Grouping categoryAndSubcategoryFor(const SymbolInfo& symbol)
     {
         auto cat = symbol.category;
+        if (cat == "User Defined") return {cat, symbol.subcategory};
         if (cat == "Instrument")
             cat = "Instruments";
         if (cat.isNotEmpty() && symbol.subcategory.isNotEmpty())
@@ -2313,6 +2320,7 @@ public:
             "Instruments",
             "Electromechanical",
             "Sub Diagrams",
+            "User Defined",
             programmableGroup
         };
         return order;
@@ -2371,6 +2379,60 @@ public:
             add({ "frust_component:" + name, name, programmableGroup, "FRust Definitions",
                   "programmable, " + juce::String(pins) + (pins == 1 ? " pin" : " pins"), {} });
         content.rebuild();
+    }
+
+    void setUserComponents()
+    {
+        allSymbols.erase(std::remove_if(allSymbols.begin(), allSymbols.end(),
+            [](const SymbolInfo& s) { return s.category == "User Defined"; }), allSymbols.end());
+        for (const auto& entry : user_blocks::collection().entries())
+            add({"user_block:" + entry.name, entry.name, "User Defined", entry.category, entry.description, {}});
+        if (selectedId.startsWith("user_block:") && !user_blocks::collection().find(selectedId.substring(11)).existsAsFile())
+            selectSymbol("resistor");
+        content.rebuild();
+    }
+
+    void manageUserEntry(int level, juce::String category, juce::String component)
+    {
+        juce::PopupMenu menu;
+        if (level == 0) menu.addItem(1, "Create Subcategory...");
+        if (level == 1) { menu.addItem(2, "Rename Subcategory..."); menu.addItem(3, "Delete Empty Subcategory"); }
+        if (level == 2)
+        {
+            menu.addItem(4, "Rename Component..."); menu.addItem(5, "Delete Library Component...");
+            juce::PopupMenu moves;
+            moves.addItem(100, "Directly under User Defined");
+            const auto cats = user_blocks::collection().categories();
+            for (int i = 0; i < cats.size(); ++i) moves.addItem(101 + i, cats[i]);
+            menu.addSubMenu("Move to Category", moves);
+        }
+        juce::Component::SafePointer<ComponentLibraryPanel> self(this);
+        const auto cats = user_blocks::collection().categories();
+        menu.showMenuAsync(juce::PopupMenu::Options().withTargetComponent(this),
+            [self, category, component, cats](int choice) {
+                if (self == nullptr || choice == 0) return;
+                const auto action = choice == 1 ? "create_category" : choice == 2 ? "rename_category" : choice == 3 ? "delete_category"
+                    : choice == 4 ? "rename_component" : choice == 5 ? "delete_component" : "move_component";
+                const auto name = choice <= 3 ? category : component;
+                const auto apply = [self, action = juce::String(action), name](juce::String value) {
+                    if (self == nullptr) return;
+                    juce::String error;
+                    if (!user_blocks::collection().manage(action, action == "create_category" ? value : name,
+                                                         action == "create_category" ? juce::String() : value, error))
+                        juce::AlertWindow::showMessageBoxAsync(juce::AlertWindow::WarningIcon, "User Library", error);
+                };
+                if (choice >= 100) { apply(choice == 100 ? juce::String() : cats[choice - 101]); return; }
+                if (choice == 3) { apply({}); return; }
+                auto* dialog = new juce::AlertWindow("User Library", choice == 5
+                    ? "Delete this saved template? Existing diagram copies remain unchanged." : "Enter a name.", juce::AlertWindow::NoIcon);
+                if (choice != 5) dialog->addTextEditor("name", choice == 1 ? juce::String() : name, "Name");
+                dialog->addButton(choice == 5 ? "Delete" : "Save", 1);
+                dialog->addButton("Cancel", 0, juce::KeyPress(juce::KeyPress::escapeKey));
+                juce::Component::SafePointer<juce::AlertWindow> safe(dialog);
+                dialog->enterModalState(true, juce::ModalCallbackFunction::create([safe, apply, choice](int result) {
+                    if (result == 1 && safe != nullptr) apply(choice == 5 ? juce::String() : safe->getTextEditor("name")->getText());
+                }), true);
+            });
     }
 
     // The mouse came into the library: the Workbench rescans the project's
@@ -2604,6 +2666,11 @@ private:
                 }
             }
 
+            if (!isSearching)
+            {
+                hierarchy["User Defined"][""];
+                for (const auto& cat : user_blocks::collection().categories()) hierarchy["User Defined"][cat];
+            }
             entries.clear();
 
             juce::StringArray categories = categoryOrder();
@@ -2633,9 +2700,14 @@ private:
                 for (const auto& sub : subcats)
                 {
                     auto subIt = catIt->second.find(sub);
-                    if (subIt == catIt->second.end() || subIt->second.empty())
+                    if (subIt == catIt->second.end() || (subIt->second.empty() && cat != "User Defined"))
                         continue;
 
+                    if (cat == "User Defined" && sub.isEmpty())
+                    {
+                        for (int symIdx : subIt->second) entries.push_back({2, cat, {}, symIdx, 0, {}});
+                        continue;
+                    }
                     const auto subKey = cat + "/" + sub;
                     const int countInSub = subTotal[subKey];
                     // Level 1: Subcategory header
@@ -2797,6 +2869,11 @@ private:
             if (i < 0)
                 return;
             const auto entry = entries[(size_t)i];
+            if (event.mods.isPopupMenu() && entry.category == "User Defined")
+            {
+                owner.manageUserEntry(entry.level, entry.subcategory, entry.symbol >= 0 ? owner.allSymbols[(size_t)entry.symbol].name : juce::String());
+                return;
+            }
             if (entry.level == 0) // Category Header
             {
                 if (owner.filter.getText().trim().isNotEmpty())
@@ -6200,7 +6277,8 @@ public:
             juce::PopupMenu libraryMenu;
             std::map<juce::String, juce::PopupMenu> categories;
             for (int i = 0; i < (int)libraryBlocks.size(); ++i)
-                categories[libraryBlocks[(size_t)i].category].addItem(1000 + i, libraryBlocks[(size_t)i].name);
+                if (libraryBlocks[(size_t)i].category.isEmpty()) libraryMenu.addItem(1000 + i, libraryBlocks[(size_t)i].name);
+                else categories[libraryBlocks[(size_t)i].category].addItem(1000 + i, libraryBlocks[(size_t)i].name);
             for (auto& [category, submenu] : categories)
                 libraryMenu.addSubMenu(category, submenu);
             menu.addSubMenu("Place User Library Block", libraryMenu);
@@ -6601,6 +6679,13 @@ public:
             const auto block = blockForSheet(currentSheet);
             return "{ \"ok\": true, \"tool\": \"schematic_place_symbol\", \"refdes\": " + quote(instances.back().refdes)
                  + ", \"symbolId\": \"block_port\", \"block\": " + blockJson(block) + " }";
+        }
+        if (requestedSymbol.startsWith("user_block:"))
+        {
+            juce::String error;
+            const auto placed = placeUserBlock(requestedSymbol.substring(11), snapPoint({x, y}), value, error);
+            return placed.isEmpty() ? "{ \"ok\": false, \"error\": " + quote(error) + " }"
+                : "{ \"ok\": true, \"block\": " + placed + " }";
         }
         if (requestedSymbol == "frust_component" || requestedSymbol.startsWith("frust_component:"))
         {
@@ -7765,14 +7850,6 @@ private:
             safe = safe.replace("__", "_");
         safe = safe.trimCharactersAtStart("_").trimCharactersAtEnd("_");
         return safe.isNotEmpty() ? safe : juce::String("block");
-    }
-
-    static juce::File userBlockLibraryFolder()
-    {
-        return juce::File::getSpecialLocation(juce::File::userApplicationDataDirectory)
-            .getChildFile("DjehutiElectronicsLab")
-            .getChildFile("user_library")
-            .getChildFile("blocks");
     }
 
     static juce::String stringProperty(const juce::DynamicObject& object,
@@ -10211,26 +10288,9 @@ private:
         return text;
     }
 
-    juce::File fileForUserBlockName(const juce::String& name) const
-    {
-        return userBlockLibraryFolder().getChildFile(safeFileStem(name) + ".block.json");
-    }
-
     juce::File findUserBlockFile(const juce::String& name) const
     {
-        const auto direct = fileForUserBlockName(name);
-        if (direct.existsAsFile())
-            return direct;
-
-        const auto files = userBlockLibraryFolder().findChildFiles(juce::File::findFiles, false, "*.block.json");
-        for (const auto& file : files)
-        {
-            const auto parsed = juce::JSON::parse(file);
-            if (const auto* object = parsed.getDynamicObject())
-                if (stringProperty(*object, "name", {}).equalsIgnoreCase(name))
-                    return file;
-        }
-        return {};
+        return user_blocks::collection().find(name);
     }
 
     juce::String saveUserBlock(int blockIndex, juce::String name, const juce::String& description, const juce::String& category, juce::String& error) const
@@ -10260,19 +10320,8 @@ private:
         root->setProperty("sourceSheet", block.childSheet);
         root->setProperty("circuit", parsedCircuit);
 
-        auto folder = userBlockLibraryFolder();
-        if (!folder.createDirectory())
-        {
-            error = "Could not create user block library folder: " + folder.getFullPathName();
-            return {};
-        }
-
-        const auto file = fileForUserBlockName(name);
-        if (!file.replaceWithText(juce::JSON::toString(juce::var(root), true)))
-        {
-            error = "Could not write " + file.getFullPathName();
-            return {};
-        }
+        juce::File file;
+        if (!user_blocks::collection().save(juce::var(root), file, error)) return {};
 
         return "{ \"name\": " + quote(name) + ", \"file\": " + quote(file.getFullPathName())
             + ", \"block\": " + blockJson(blockIndex) + " }";
@@ -10281,25 +10330,16 @@ private:
     juce::String listUserBlocks(const juce::String& query) const
     {
         const auto q = query.trim().toLowerCase();
-        auto files = userBlockLibraryFolder().findChildFiles(juce::File::findFiles, false, "*.block.json");
         juce::String list = "\"blocks\": [";
         bool first = true;
-        for (const auto& file : files)
+        for (const auto& entry : user_blocks::collection().entries())
         {
-            const auto parsed = juce::JSON::parse(file);
-            const auto* object = parsed.getDynamicObject();
-            if (object == nullptr)
-                continue;
-            const auto name = stringProperty(*object, "name", file.getFileNameWithoutExtension());
-            const auto description = stringProperty(*object, "description", {});
-            const auto category = stringProperty(*object, "category", {});
-            const auto haystack = (name + " " + description + " " + category + " " + stringProperty(*object, "sourceSheet", {})).toLowerCase();
-            if (q.isNotEmpty() && !haystack.contains(q))
-                continue;
-            list << (first ? "" : ", ") << "{ \"name\": " << quote(name)
-                 << ", \"category\": " << quote(category)
-                 << ", \"description\": " << quote(description)
-                 << ", \"file\": " << quote(file.getFullPathName()) << " }";
+            const auto haystack = (entry.name + " " + entry.description + " " + entry.category).toLowerCase();
+            if (q.isNotEmpty() && !haystack.contains(q)) continue;
+            list << (first ? "" : ", ") << "{ \"name\": " << quote(entry.name)
+                 << ", \"category\": " << quote(entry.category)
+                 << ", \"description\": " << quote(entry.description)
+                 << ", \"file\": " << quote(entry.file.getFullPathName()) << " }";
             first = false;
         }
         list << "]";
@@ -10534,18 +10574,8 @@ private:
     std::vector<UserBlockInfo> userBlocks() const
     {
         std::vector<UserBlockInfo> blocks;
-        const auto files = userBlockLibraryFolder().findChildFiles(juce::File::findFiles, false, "*.block.json");
-        for (const auto& file : files)
-        {
-            const auto parsed = juce::JSON::parse(file);
-            if (const auto* object = parsed.getDynamicObject())
-            {
-                auto category = stringProperty(*object, "category", "User Blocks").trim();
-                if (category.isEmpty())
-                    category = "User Blocks";
-                blocks.push_back({ stringProperty(*object, "name", file.getFileNameWithoutExtension()), category });
-            }
-        }
+        for (const auto& entry : user_blocks::collection().entries())
+            blocks.push_back({entry.name, entry.category});
         std::sort(blocks.begin(), blocks.end(), [](const UserBlockInfo& a, const UserBlockInfo& b) {
             const auto categoryCompare = a.category.compareIgnoreCase(b.category);
             return categoryCompare == 0 ? a.name.compareIgnoreCase(b.name) < 0 : categoryCompare < 0;
@@ -10562,7 +10592,7 @@ private:
                                              "This saves the sub-diagram as a reusable copy template.",
                                              juce::AlertWindow::NoIcon);
         dialog->addTextEditor("name", instances[(size_t)blockIndex].value, "Name");
-        dialog->addTextEditor("category", "User Blocks", "Category");
+        dialog->addTextEditor("category", {}, "Category (optional)");
         dialog->addTextEditor("description", {}, "Description");
         dialog->addButton("Save", 1, juce::KeyPress(juce::KeyPress::returnKey));
         dialog->addButton("Cancel", 0, juce::KeyPress(juce::KeyPress::escapeKey));
@@ -16090,6 +16120,12 @@ private:
 
     void placeSymbol(const juce::String& symbolId, juce::Point<float> p, const juce::String& portName = {})
     {
+        if (symbolId.startsWith("user_block:"))
+        {
+            juce::String error;
+            if (placeUserBlock(symbolId.substring(11), p, {}, error).isEmpty() && onStatus) onStatus(error);
+            return;
+        }
         if (symbolId == "frust_component" || symbolId.startsWith("frust_component:"))
         {
             juce::String error;
@@ -20235,7 +20271,12 @@ ElectronicsWorkbench::ElectronicsWorkbench()
         if (safeLibrary != nullptr)
             safeLibrary->setProgrammableComponents(definitions);
     };
-    library->onRescanRequested = [this] { refreshComponentPalette(); };
+    user_blocks::collection().onChanged = [safeLibrary] { if (safeLibrary != nullptr) safeLibrary->setUserComponents(); };
+    library->setUserComponents();
+    library->onRescanRequested = [this, safeLibrary] {
+        refreshComponentPalette();
+        if (safeLibrary != nullptr) safeLibrary->setUserComponents();
+    };
     dockManager->registerPanel("library", "Component Library", std::move(library), CreationDock::DockTargetZone::Left);
     auto schematic = std::make_unique<SchematicCanvasPanel>(
         [this] { return selectedSymbolId; },
@@ -20515,6 +20556,16 @@ ElectronicsWorkbench::ElectronicsWorkbench()
         {
             if (safeLibrary == nullptr)
                 return juce::String(R"({"ok": false, "error": "Library panel unavailable."})");
+            if (name == "library_manage_user")
+            {
+                juce::String error;
+                const auto success = user_blocks::collection().manage(args.getProperty("action", {}).toString(),
+                    args.getProperty("name", {}).toString(), args.getProperty("value", {}).toString(), error);
+                auto* result = new juce::DynamicObject();
+                result->setProperty("ok", success);
+                if (!success) result->setProperty("error", error);
+                return juce::JSON::toString(juce::var(result));
+            }
             if (name == "library_get_hierarchy")
             {
                 auto* res = new juce::DynamicObject();
@@ -20547,7 +20598,10 @@ ElectronicsWorkbench::ElectronicsWorkbench()
             {
                 const auto q = args.getProperty("query", {}).toString();
                 safeLibrary->setSearchQuery(q);
-                return juce::String(R"({"ok": true, "query": ")") + q + R"("})";
+                auto* result = new juce::DynamicObject();
+                result->setProperty("ok", true);
+                result->setProperty("query", q);
+                return juce::JSON::toString(juce::var(result));
             }
             if (name == "library_select")
             {
@@ -20555,7 +20609,10 @@ ElectronicsWorkbench::ElectronicsWorkbench()
                 safeLibrary->selectSymbol(id);
                 if (safeProperties != nullptr)
                     safeProperties->showLibrarySymbol(id);
-                return juce::String(R"({"ok": true, "symbolId": ")") + id + R"("})";
+                auto* result = new juce::DynamicObject();
+                result->setProperty("ok", true);
+                result->setProperty("symbolId", id);
+                return juce::JSON::toString(juce::var(result));
             }
             if (name == "library_get_selected")
             {

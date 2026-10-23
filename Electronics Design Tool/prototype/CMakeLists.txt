@@ -1166,3 +1166,14 @@ add_executable(manufacturer_reference_checks EXCLUDE_FROM_ALL tools/manufacturer
 target_link_libraries(manufacturer_reference_checks PRIVATE juce::juce_core bcrypt)
 target_compile_definitions(manufacturer_reference_checks PRIVATE JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0)
 target_compile_options(manufacturer_reference_checks PRIVATE /MP1)
+
+# Focused persistence/management checks; no solver or application dependencies.
+if(BUILD_TESTING)
+    juce_add_console_app(UserLibraryTests PRODUCT_NAME "User Library Tests")
+    set_target_properties(UserLibraryTests PROPERTIES OUTPUT_NAME "user_library_tests" RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/bin")
+    target_sources(UserLibraryTests PRIVATE tools/user_library_tests/UserLibraryTests.cpp)
+    target_include_directories(UserLibraryTests PRIVATE Source)
+    target_compile_definitions(UserLibraryTests PRIVATE JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0)
+    target_link_libraries(UserLibraryTests PRIVATE juce::juce_core)
+    add_test(NAME UserLibraryTests COMMAND UserLibraryTests)
+endif()
